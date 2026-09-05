@@ -41,6 +41,7 @@ def norm(path: str) -> str:
 
 
 def main() -> int:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]  # Cyrillic subjects
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://100.97.120.53:9020")
     ap.add_argument("--token", required=True)

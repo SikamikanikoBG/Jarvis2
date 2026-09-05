@@ -341,3 +341,86 @@ async def test_confirmations_off_runs_a_destructive_tool_without_asking(harness:
     seen = await harness.wait_for(sub, "run.done", timeout=10)
     assert tools.calls == ["send"]
     assert not any(e.type == "tool.confirm_requested" for e in seen)
+
+
+# --- email policy ----------------------------------------------------------------------------
+
+
+def test_email_policy_matching():
+    from jarvis_proto.settings import EmailPolicy
+
+    p = EmailPolicy(approved_direct_send=["aapostolov@postbank.bg", "@smartlab.bg"])
+    assert p.unapproved("aapostolov@postbank.bg") == []
+    assert p.unapproved("Someone <x@smartlab.bg>") == []
+    assert p.unapproved("rumen@bank.bg") == ["rumen@bank.bg"]
+    # Mixed lists: only the unapproved ones are named, separators are both , and ;
+    assert p.unapproved("aapostolov@postbank.bg, rumen@bank.bg; ceo@bank.bg") == ["rumen@bank.bg", "ceo@bank.bg"]
+    # cc counts too
+    assert p.unapproved("aapostolov@postbank.bg", "boss@bank.bg") == ["boss@bank.bg"]
+    # An empty list drafts everything - the safe default for a fresh install.
+    assert EmailPolicy().unapproved("anyone@anywhere.com") == ["anyone@anywhere.com"]
+    assert EmailPolicy(allow_any_recipient=True).unapproved("anyone@anywhere.com") == []
+
+
+async def test_unapproved_recipient_becomes_a_draft(harness: Harness):
+    """The rewrite happens before dispatch, so the model cannot talk its way past it."""
+    from pydantic import BaseModel
+
+    from jarvis_core.tools import BuiltinProvider, tool
+    from jarvis_proto import ToolResult
+    from jarvis_proto.settings import EmailPolicy
+
+    class _SendArgs(BaseModel):
+        to: str
+        subject: str = ""
+        body: str = ""
+        cc: str = ""
+        draft: bool = False
+
+    class MailHost(BuiltinProvider):
+        name = "laptop"
+
+        def __init__(self) -> None:
+            self.sent: list[dict] = []
+            super().__init__()
+
+        @tool("laptop.outlook_send", description="send", args=_SendArgs, destructive=True)
+        async def _send(
+            self, to: str, subject: str = "", body: str = "", cc: str = "", draft: bool = False
+        ) -> ToolResult:
+            self.sent.append({"to": to, "cc": cc, "draft": draft})
+            return ToolResult.data("drafted" if draft else "sent")
+
+    host = MailHost()
+    harness.core.registry.add(host)
+    await harness.core.registry.refresh()
+    harness.enable(email=EmailPolicy(approved_direct_send=["boss@bank.bg"]))
+
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    harness.chat.push(
+        FakeTurn(
+            tool_calls=[
+                ToolCall(id="c1", name="laptop.outlook_send", arguments={"to": "stranger@x.com", "subject": "hi"})
+            ]
+        ),
+        FakeTurn(text="drafted it"),
+    )
+    await harness.core.engine.create_run(text="mail the stranger", conversation_id=conv.id, kind=RunKind.SCHEDULED)
+    seen = await harness.wait_for(sub, "run.done", timeout=10)
+    assert host.sent == [{"to": "stranger@x.com", "cc": "", "draft": True}]
+    result = next(e for e in seen if e.type == "tool.result")
+    assert "saved as a draft" in result.result.text and "stranger@x.com" in result.result.text
+
+    # An approved recipient really goes out.
+    harness.chat.push(
+        FakeTurn(
+            tool_calls=[
+                ToolCall(id="c2", name="laptop.outlook_send", arguments={"to": "boss@bank.bg", "subject": "hi"})
+            ]
+        ),
+        FakeTurn(text="sent"),
+    )
+    await harness.core.engine.create_run(text="mail the boss", conversation_id=conv.id, kind=RunKind.SCHEDULED)
+    await harness.wait_for(sub, "run.done", timeout=10)
+    assert host.sent[-1] == {"to": "boss@bank.bg", "cc": "", "draft": False}

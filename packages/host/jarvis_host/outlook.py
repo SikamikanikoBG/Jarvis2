@@ -1035,6 +1035,7 @@ class OutlookBackend:
         cc: str = "",
         reply_to_entry_id: str = "",
         html_body: bool = False,
+        draft: bool = False,
     ) -> dict[str, Any]:
         self._session()
         store = self._store(account)
@@ -1072,7 +1073,8 @@ class OutlookBackend:
             mail.Body = body
         final_subject = _text(_prop(mail, "Subject", ""))
         final: dict[str, Any] = {
-            "sent": True,
+            "sent": not draft,
+            "drafted": draft,
             "account": _text(_prop(store, "DisplayName", "")),
             "to": _text(_prop(mail, "To", "")),
             "cc": _text(_prop(mail, "CC", "")),
@@ -1083,9 +1085,16 @@ class OutlookBackend:
         if threaded and subject and subject.strip() != final_subject.strip():
             final["note"] = f"kept the threaded subject {final_subject!r}; changing it would fork the conversation"
         try:
-            mail.Send()
+            if draft:
+                # Saved to Drafts, not sent: the caller decides, a human presses Send.
+                mail.Save()
+                final["entry_id"] = _text(_prop(mail, "EntryID", ""))
+                final["note"] = "saved as a draft in Outlook; nothing was sent"
+            else:
+                mail.Send()
         except Exception as exc:
-            raise OutlookError(f"Send failed: {describe_com_error(exc)}") from exc
+            verb = "Save" if draft else "Send"
+            raise OutlookError(f"{verb} failed: {describe_com_error(exc)}") from exc
         return final
 
     # -- calendar -----------------------------------------------------------------------------

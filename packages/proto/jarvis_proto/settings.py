@@ -133,6 +133,51 @@ class TriageSettings(BaseModel):
     categories: list[dict[str, str]] = Field(default_factory=list)  # {name, folder, rule}
 
 
+class EmailPolicy(BaseModel):
+    """Who Jarvis may send to directly. Everyone else gets a draft in Outlook.
+
+    Entries are full addresses (``rumen@bank.bg``) or whole domains (``@bank.bg``), matched
+    case-insensitively. An empty list means nothing goes out automatically — every message is
+    drafted, which is the safe default for a fresh install.
+    """
+
+    approved_direct_send: list[str] = Field(default_factory=list)
+    # Turn the whole policy off and let the model send to anyone. Off by design.
+    allow_any_recipient: bool = False
+
+    @staticmethod
+    def split_recipients(*fields: str) -> list[str]:
+        out: list[str] = []
+        for field in fields:
+            for part in str(field or "").replace(";", ",").split(","):
+                if addr := part.strip():
+                    out.append(addr)
+        return out
+
+    def is_approved(self, recipient: str) -> bool:
+        # Take the address out of "Name <addr@host>" when it is there.
+        addr = recipient.strip().lower()
+        if "<" in addr and ">" in addr:
+            addr = addr[addr.rfind("<") + 1 : addr.rfind(">")].strip()
+        if not addr:
+            return False
+        for entry in self.approved_direct_send:
+            e = entry.strip().lower()
+            if not e:
+                continue
+            if e.startswith("@") and addr.endswith(e):
+                return True
+            if e == addr:
+                return True
+        return False
+
+    def unapproved(self, *fields: str) -> list[str]:
+        """Recipients that may NOT be written to directly (empty = safe to send)."""
+        if self.allow_any_recipient:
+            return []
+        return [r for r in self.split_recipients(*fields) if not self.is_approved(r)]
+
+
 class Confirmations(BaseModel):
     """When Jarvis stops to ask before running a tool.
 
@@ -192,6 +237,7 @@ class Settings(BaseModel):
     language_hint: str = "Reply in the language the user wrote in (Bulgarian or English)."
     personality: Personality = Field(default_factory=Personality)
     confirmations: Confirmations = Field(default_factory=Confirmations)
+    email: EmailPolicy = Field(default_factory=EmailPolicy)
     roles: dict[RoleName, ModelSpec] = Field(default_factory=_default_roles)
     budgets: dict[RunKind, RunBudget] = Field(default_factory=_default_budgets)
     mcp_servers: list[McpServerSpec] = Field(default_factory=_default_mcp_servers)

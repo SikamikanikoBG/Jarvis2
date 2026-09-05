@@ -187,12 +187,20 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
 
     @tool("outlook_send", DESTRUCTIVE_OPEN)
     async def outlook_send(
-        account: str, to: str, subject: str, body: str, cc: str = "", reply_to_entry_id: str = "", html: bool = False
+        account: str,
+        to: str,
+        subject: str,
+        body: str,
+        cc: str = "",
+        reply_to_entry_id: str = "",
+        html: bool = False,
+        draft: bool = False,
     ) -> str:
-        """Send an email from `account`. With `reply_to_entry_id` the message is built with Reply() so it stays in the thread — the inherited 'RE:' subject is kept and the body goes above the quoted original. Recipients may be comma- or semicolon-separated."""
+        """Send an email from `account`, or save it as a draft with `draft=true`. With `reply_to_entry_id` the message is built with Reply() so it stays in the thread — the inherited 'RE:' subject is kept and the body goes above the quoted original. Recipients may be comma- or semicolon-separated. The reply says whether it was sent or drafted."""
         return json_text(
             await _run(
-                "outlook_send", lambda: outlook().call("send", account, to, subject, body, cc, reply_to_entry_id, html)
+                "outlook_send",
+                lambda: outlook().call("send", account, to, subject, body, cc, reply_to_entry_id, html, draft),
             )
         )
 

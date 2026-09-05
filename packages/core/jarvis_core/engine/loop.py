@@ -37,6 +37,7 @@ from jarvis_proto import (
     ThinkLevel,
     ToolCall,
     ToolResult,
+    ToolResultKind,
     ToolSpec,
 )
 from jarvis_proto.events import (
@@ -365,6 +366,17 @@ class AgentLoop:
                 )
                 continue
 
+            # Sending: anyone not on the approved list gets a draft instead. This rewrites the
+            # call before it is dispatched, so the model cannot talk its way past it.
+            if call.name.split(".")[-1] == "outlook_send" and not call.arguments.get("draft"):
+                blocked = self._settings().email.unapproved(
+                    str(call.arguments.get("to", "")), str(call.arguments.get("cc", ""))
+                )
+                if blocked:
+                    call.arguments["draft"] = True
+                    call.arguments["_policy_note"] = f"not on the approved-direct-send list: {', '.join(blocked)}"
+                    log.info("email policy: drafting instead of sending to %s", ", ".join(blocked))
+
             if self._settings().confirmations.needs_confirmation(
                 call.name, destructive=bool(spec and spec.destructive), unattended=run.kind in _UNATTENDED
             ):
@@ -395,10 +407,14 @@ class AgentLoop:
                     idempotency_key=key,
                 )
             )
+            policy_note = call.arguments.pop("_policy_note", None)
             t0 = time.perf_counter()
             result = await self._registry.call(
                 call.name, call.arguments, cancel=ctl.cancel, idempotency_key=key, timeout_s=_TOOL_TIMEOUT_S
             )
+            if policy_note and result.kind is not ToolResultKind.ERROR:
+                note = f"\n[saved as a draft: {policy_note}]"
+                result = result.model_copy(update={"text": result.text + note})
             duration = int((time.perf_counter() - t0) * 1000)
             if not read_only:
                 await self._store.record_idempotent_result(key, result.model_dump_json())

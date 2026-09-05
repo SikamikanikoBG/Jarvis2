@@ -73,6 +73,7 @@ from jarvis_proto.runs import (
 )
 from jarvis_proto.settings import (
     Confirmations,
+    EmailPolicy,
     McpServerSpec,
     McpTransport,
     ModelSpec,
@@ -94,6 +95,7 @@ __all__ = [
     "ConversationKind",
     "ConversationUpdated",
     "Edge",
+    "EmailPolicy",
     "Entity",
     "EntityDetail",
     "Graph",

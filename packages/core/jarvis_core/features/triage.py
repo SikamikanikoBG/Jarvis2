@@ -182,7 +182,7 @@ class TriageJob:
                     await self._record(entry_id, account, category, "left")
                 state.processed_today += 1
                 report.processed += 1
-                lines.append(f"- {item.get('sender', '?')} — {str(item.get('subject', ''))[:70]} → {action}")
+                lines.append(f"- {self._sender(item) or '?'} — {str(item.get('subject') or '')[:70]} → {action}")
             report.routed = state.routed_today
             if cursor:
                 state.cursor = cursor
@@ -233,9 +233,20 @@ class TriageJob:
             return items, max((str(i.get("received", "")) for i in items), default=cursor)
         return [], cursor
 
+    @staticmethod
+    def _sender(item: dict[str, Any]) -> str:
+        """The host sends ``from: {name, address}`` plus flat aliases; be tolerant of both."""
+        sender = item.get("sender")
+        if isinstance(sender, str) and sender.strip():
+            return sender
+        frm = item.get("from")
+        if isinstance(frm, dict):
+            return str(frm.get("name") or frm.get("address") or "")
+        return str(frm or "")
+
     async def _route(self, item: dict[str, Any], cfg: Any) -> tuple[str | None, str | None]:
         subject = str(item.get("subject") or "")
-        preview = str(item.get("preview") or item.get("body_preview") or "")
+        preview = str(item.get("preview") or item.get("body_preview") or item.get("snippet") or "")
         for prefix in cfg.demand_prefixes:
             pattern = re.compile(r"(?<![A-Z0-9])(" + re.escape(prefix) + r"\d{3,7})(?!\d)")
             m = pattern.search(subject) or pattern.search(preview)
@@ -245,7 +256,7 @@ class TriageJob:
             return None, None
         cats = "\n".join(f"- {c.get('name')}: {c.get('rule', '')}" for c in cfg.categories if c.get("name"))
         prompt = _CLASSIFY.format(
-            categories=cats, sender=item.get("sender", ""), subject=subject[:200], preview=preview[:500]
+            categories=cats, sender=self._sender(item), subject=subject[:200], preview=preview[:500]
         )
         try:
             from jarvis_proto.settings import RoleName

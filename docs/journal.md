@@ -77,3 +77,15 @@ harness — library vs. own is an open question to settle in the design.
 - 2026-09-05 — Facades measured with qwen3.8-27b: flat = 1 call / 9.5k prompt tokens; facade
   (20-op homelab) = 7 calls / 12.1k tokens, model flailed on op+args. Default set to flat,
   facades kept as a setting. `fetch` and `notes.add` correct either way.
+- 2026-09-05 — jarvis-host verified against the REAL Outlook on workocholic: 7 stores found,
+  default = the Bulgarian one (`Входящи` resolved by GetDefaultFolder id, never by name);
+  GetTable listing 71-86 ms, read 721 ms with 3 attachments, 45 calendar events 1.8 s.
+  Two real defects found by that run: (1) the core's triage read `item["sender"]`/`["preview"]`
+  while the host sends `from: {name,address}` and no preview — triage would have classified
+  every mail with an empty sender and body; (2) Outlook's table CAN return the body
+  (`urn:schemas:httpmail:textdescription`, verified live), so a preview column now ships with
+  the listing and triage needs no per-mail COM read.
+- 2026-09-05 — End-to-end with qwen3.8-27b over 52 flat tools: "what is in my inbox" →
+  `workocholic.outlook_list` → correct 2 messages; "meetings in the next 3 days" →
+  `workocholic.calendar_list` → correct, including a canceled meeting and a Bulgarian title.
+  ~10k prompt tokens per call at 52 tools.

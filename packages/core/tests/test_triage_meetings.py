@@ -41,25 +41,27 @@ class FakeHost(BuiltinProvider):
 
     def __init__(self) -> None:
         self.moves: list[tuple[str, str]] = []
+        # Shaped exactly like jarvis-host's outlook_list rows (from + flat aliases + preview).
         self.items = [
             {
                 "entry_id": "e1",
-                "subject": "RE: DM-4521 budget approval",
-                "sender": "Rumen",
+                "subject": "RE: budget approval",
+                "from": {"name": "Rumen Petrov", "address": "rumen@bank.bg"},
+                "sender": "Rumen Petrov",
                 "received": "2026-09-05T08:00:00",
-                "preview": "see attached",
+                "preview": "As agreed in DM-4521 the budget is approved.",  # demand only in the body
             },
             {
                 "entry_id": "e2",
                 "subject": "Team lunch on Friday?",
-                "sender": "Maria",
+                "from": {"name": "Maria", "address": "maria@bank.bg"},
                 "received": "2026-09-05T08:05:00",
                 "preview": "who is in",
             },
             {
                 "entry_id": "e3",
                 "subject": "Invoice 2026-118",
-                "sender": "vendor",
+                "from": {"name": "", "address": "billing@vendor.com"},
                 "received": "2026-09-05T08:10:00",
                 "preview": "payment due",
             },
@@ -133,7 +135,9 @@ async def test_triage_routes_demands_structurally_and_classifies_the_rest(harnes
     convs = [c for c in await core.store.list_conversations() if c.kind.value == "triage"]
     assert len(convs) == 1 and convs[0].folder_key == "Work"
     msgs = await core.store.list_messages(convs[0].id)
-    assert msgs[-1].name == "triage" and "DM-4521" in msgs[-1].content and "Demands/DM-4521" in msgs[-1].content
+    # The summary names the sender: `from` dict for e1, address-only fallback for e3.
+    assert msgs[-1].name == "triage" and "Rumen Petrov" in msgs[-1].content and "Demands/DM-4521" in msgs[-1].content
+    assert "billing@vendor.com" in msgs[-1].content
     assert any(getattr(e, "type", "") == "conversation.updated" for e in _drain(global_sub))
 
 

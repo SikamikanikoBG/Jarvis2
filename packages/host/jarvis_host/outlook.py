@@ -96,6 +96,8 @@ DASL_SUBJECT = '"urn:schemas:httpmail:subject"'
 DASL_FROMNAME = '"urn:schemas:httpmail:fromname"'
 DASL_FROMEMAIL = '"urn:schemas:httpmail:fromemail"'
 
+DASL_BODY = "urn:schemas:httpmail:textdescription"
+
 TABLE_COLUMNS: tuple[str, ...] = (
     "EntryID",
     "Subject",
@@ -108,8 +110,12 @@ TABLE_COLUMNS: tuple[str, ...] = (
     "Size",
     PR_HASATTACH,
     PR_CONVERSATION_ID,
+    # A body preview straight from the table: verified on the real mailbox 2026-09-05. It is
+    # what makes triage one fast call per batch instead of a COM read per message.
+    DASL_BODY,
 )
 
+PREVIEW_CHARS = 400
 MAX_LIST_LIMIT = 500
 MAX_BODY_CHARS = 20_000
 CALENDAR_SCAN_CAP = 2_000
@@ -446,6 +452,7 @@ class Row:
     size: int | None
     has_attachments: bool | None
     conversation_id: str
+    preview: str = ""
 
     def as_item(self, store_id: str) -> dict[str, Any]:
         item: dict[str, Any] = {
@@ -453,6 +460,10 @@ class Row:
             "store_id": store_id,
             "subject": self.subject,
             "from": {"name": self.sender_name, "address": self.sender_addr},
+            # Flat aliases: consumers (triage, the model) should not have to dig into `from`.
+            "sender": self.sender_name or self.sender_addr,
+            "sender_address": self.sender_addr,
+            "preview": self.preview,
             "received": iso_local(self.received),
             "unread": self.unread,
             "flagged": self.flag_status == 2,
@@ -498,6 +509,7 @@ def parse_row(row: Sequence[Any], columns: Sequence[str]) -> Row:
         size=size,
         has_attachments=has_attach,
         conversation_id=_text(conv),
+        preview=" ".join(_text(values.get(DASL_BODY)).split())[:PREVIEW_CHARS],
     )
 
 

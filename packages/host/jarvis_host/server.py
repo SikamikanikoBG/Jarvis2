@@ -155,9 +155,10 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
         )
 
     @tool("outlook_read", READ)
-    async def outlook_read(entry_id: str, account: str = "") -> str:
-        """One message in full: headers, sender SMTP address, plain-text body (HTML converted; capped at 20k chars), attachment names/sizes, flag and read state. Returns the durable entry_id."""
-        return json_text(await _run("outlook_read", lambda: outlook().call("read", entry_id, account)))
+    async def outlook_read(entry_id: str, account: str = "", max_chars: int = 20_000) -> str:
+        """One message: headers, sender SMTP address, plain-text body (HTML converted), attachment names/sizes, flag and read state. `max_chars` caps the body (default 20k; use 3000-5000 for notification-style mail such as Jira, whose tail is boilerplate). Returns the durable entry_id."""
+        cap = max(200, min(int(max_chars), 20_000))
+        return json_text(await _run("outlook_read", lambda: outlook().call("read", entry_id, account, cap)))
 
     @tool("outlook_search", READ)
     async def outlook_search(

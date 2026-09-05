@@ -254,6 +254,9 @@ class Settings(BaseModel):
     # truncated to a head. Large enough for "read 26 mails and summarise"; small enough that a
     # 49-event calendar does not ride along whole in every one of 8 model calls.
     tool_context_token_budget: int = 40_000
+    # Ceiling for a single tool call. A tool that asks for its own timeout_s (shell_run running a
+    # long report) is honoured up to this; everything else gets the 120 s default.
+    tool_timeout_max_s: int = 600
     boards_context_chars: int = 6_000
     skill_max_chars: int = 6_000
     planning_enabled: bool = True
@@ -266,6 +269,8 @@ class Settings(BaseModel):
     # The push channel for reminders and scheduled-run summaries (notify.discord). Secret:
     # never echoed in logs or the UI beyond "configured".
     discord_webhook_url: str | None = None
+    # SearXNG base URL for web.search (ardi runs one). None = no search tool.
+    searxng_url: str | None = None
     stt_url: str | None = None
     stt_kind: Literal["openai", "asr"] = "openai"  # OpenAI-compatible /v1/audio/transcriptions or WhisperX /asr
     stt_model: str = "large-v3"

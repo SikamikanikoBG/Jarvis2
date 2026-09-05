@@ -417,7 +417,11 @@ class AgentLoop:
             policy_note = call.arguments.pop("_policy_note", None)
             t0 = time.perf_counter()
             result = await self._registry.call(
-                call.name, call.arguments, cancel=ctl.cancel, idempotency_key=key, timeout_s=_TOOL_TIMEOUT_S
+                call.name,
+                call.arguments,
+                cancel=ctl.cancel,
+                idempotency_key=key,
+                timeout_s=self._tool_timeout(call),
             )
             if policy_note and result.kind is not ToolResultKind.ERROR:
                 note = f"\n[saved as a draft: {policy_note}]"
@@ -522,6 +526,20 @@ class AgentLoop:
                     result = ToolResult.data(f"Step {idx + 1} done. All steps complete — give the final answer.")
                 await self._store.save_run(run)
         return await self._tool_message(run, call, result, 0, emit)
+
+    def _tool_timeout(self, call: ToolCall) -> float:
+        """The core's deadline for one tool call.
+
+        A tool that takes its own ``timeout_s`` (shell_run, a 5-minute report script) knows how
+        long its work takes; the core honours that up to ``settings.tool_timeout_max_s`` and adds
+        a little slack so the tool's own timeout fires first and reports properly. Otherwise the
+        default applies. Before this every call was cut at 120 s regardless (2026-09-05).
+        """
+        limit = float(self._settings().tool_timeout_max_s)
+        asked = call.arguments.get("timeout_s")
+        if isinstance(asked, int | float) and asked > 0:
+            return min(float(asked) + 10.0, limit)
+        return min(_TOOL_TIMEOUT_S, limit)
 
     # --- finishing -----------------------------------------------------------------
 

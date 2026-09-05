@@ -32,6 +32,7 @@ from jarvis_core.features.schedules import Scheduler, ScheduleStore, ScheduleToo
 from jarvis_core.features.skills import SkillDetector, SkillsTools, SkillStore
 from jarvis_core.features.stt import Transcriber
 from jarvis_core.features.triage import TriageJob
+from jarvis_core.features.web import WebTools
 from jarvis_core.models import AdapterFactory
 from jarvis_core.tools import CoreTools, ToolRegistry
 from jarvis_core.tools.facades import ExposurePolicy
@@ -66,6 +67,7 @@ class Core:
         self.schedules = ScheduleStore(self.db, self.bus)
         self.browser = WsProvider()
         self.notify = NotifyTools(settings)
+        self.web = WebTools(settings)
         self.collab_keys = CollabKeys(self.db)
         self.transcriber = Transcriber(settings)
         self.mcp_server = build_mcp_server(self)
@@ -146,6 +148,7 @@ class Core:
             await provider.stop()
         await self.transcriber.aclose()
         await self.notify.aclose()
+        await self.web.aclose()
         await self.db.close()
 
     def apply_settings(self, settings: Settings) -> None:
@@ -169,6 +172,7 @@ class Core:
                 SkillsTools(self.skills),
                 ScheduleTools(self.schedules, tz=lambda: self.settings.timezone),
                 self.notify,
+                self.web,
                 self.browser,
                 *self.mcp,
             ]

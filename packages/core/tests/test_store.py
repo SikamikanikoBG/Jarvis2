@@ -9,12 +9,13 @@ async def test_migrations_apply_once(tmp_path: Path):
     db = Database(tmp_path / "t.db")
     await db.open()
     rows = await db.fetchall("SELECT version FROM schema_migrations")
-    assert [r["version"] for r in rows] == [1]
+    versions = [r["version"] for r in rows]
+    assert versions == sorted(versions) and versions[0] == 1 and len(versions) >= 2
     await db.close()
     db2 = Database(tmp_path / "t.db")
     await db2.open()  # idempotent
     rows = await db2.fetchall("SELECT version FROM schema_migrations")
-    assert len(rows) == 1
+    assert len(rows) == len(versions)
     await db2.close()
 
 

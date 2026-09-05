@@ -46,6 +46,7 @@ class RunWatch:
     steps: list[StepRecord] = field(default_factory=list)
     empty_replies: int = 0
     nudges: int = 0
+    plan_nudged: bool = False
 
     def elapsed_s(self) -> float:
         return time.monotonic() - self.started

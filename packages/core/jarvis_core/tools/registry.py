@@ -44,6 +44,10 @@ class ToolRegistry:
     def set_providers(self, providers: list[ToolProvider]) -> None:
         self._providers = list(providers)
 
+    def forget(self, provider: ToolProvider) -> None:
+        """Drop a provider's tools synchronously (used when a connection goes away)."""
+        self._index = {name: entry for name, entry in self._index.items() if entry[0] is not provider}
+
     async def refresh(self) -> None:
         index: dict[str, tuple[ToolProvider, ToolSpec]] = {}
         self._errors: dict[str, str] = {}

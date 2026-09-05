@@ -15,9 +15,15 @@ from jarvis_proto import ModelSpec, Provider, RoleName, Settings
 
 
 def fake_settings() -> Settings:
+    """Deterministic defaults for scripted-model tests: no MCP servers, no pre-flight/planner
+    calls, no background learning — each test switches on exactly what it exercises."""
     spec = ModelSpec(provider=Provider.FAKE, base_url="fake://", model="fake")
     return Settings(
         roles={r: spec.model_copy(update={"think": r is RoleName.CHAT}) for r in RoleName},
+        mcp_servers=[],
+        planning_enabled=False,
+        kg_learning=False,
+        tool_exposure="flat",
     )
 
 
@@ -38,8 +44,13 @@ class Harness:
         self.core.apply_settings(await self.core.store.load_settings())
         self.core.adapters.fakes = {r: self.chat for r in RoleName}
         self.core.adapters.fakes[RoleName.JUDGE] = self.judge
-        await self.core.registry.refresh()
+        await self.core.reload_tools()
         await self.core.engine.start()
+        await self.core.scheduler.start()
+
+    def enable(self, **fields: object) -> None:
+        """Switch on a feature for one test (planning_enabled, kg_learning, ...)."""
+        self.core.apply_settings(self.core.settings.model_copy(update=fields))
 
     async def stop(self) -> None:
         await self.core.stop()

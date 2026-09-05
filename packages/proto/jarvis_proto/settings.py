@@ -7,6 +7,7 @@ host that owns them and are not here.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -122,6 +123,16 @@ def _default_mcp_servers() -> list[McpServerSpec]:
     ]
 
 
+class TriageSettings(BaseModel):
+    enabled: bool = False
+    interval_min: int = 15
+    host: str = ""  # name of the MCP server (jarvis-host) that owns Outlook
+    accounts: list[str] = Field(default_factory=list)
+    demand_root: str = "Demands"
+    demand_prefixes: list[str] = Field(default_factory=lambda: ["DM-"])
+    categories: list[dict[str, str]] = Field(default_factory=list)  # {name, folder, rule}
+
+
 class Settings(BaseModel):
     assistant_name: str = "Jarvis"
     user_name: str = "Arsen"
@@ -132,6 +143,16 @@ class Settings(BaseModel):
     mcp_servers: list[McpServerSpec] = Field(default_factory=_default_mcp_servers)
     max_concurrent_runs_per_endpoint: int = 1
     repeated_call_threshold: int = 3
+    # Tool exposure: "facade" = one tool per namespace with an op enum (derived from the live
+    # list); "flat" = every tool; "auto" = facades once more than facade_threshold tools exist.
+    tool_exposure: Literal["auto", "flat", "facade"] = "auto"
+    facade_threshold: int = 12
+    history_token_budget: int = 24_000
+    boards_context_chars: int = 6_000
+    skill_max_chars: int = 6_000
+    planning_enabled: bool = True
+    kg_learning: bool = True
+    triage: TriageSettings = Field(default_factory=TriageSettings)
     stt_url: str | None = None
     stt_languages: list[str] = Field(default_factory=lambda: ["bg", "en"])
 

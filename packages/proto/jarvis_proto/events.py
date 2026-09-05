@@ -204,6 +204,55 @@ class Pong(_Base):
     type: Literal["pong"] = "pong"
 
 
+# --- features (Phases 2–7) --------------------------------------------------------------
+
+
+class ContextSkills(RunEvent):
+    type: Literal["context.skills"] = "context.skills"
+    names: list[str]
+
+
+class BoardChanged(_Base):
+    type: Literal["board.changed"] = "board.changed"
+    board_id: str | None = None
+
+
+class KgChanged(_Base):
+    type: Literal["kg.changed"] = "kg.changed"
+    entity_ids: list[str] = Field(default_factory=list)
+
+
+class SkillsChanged(_Base):
+    type: Literal["skills.changed"] = "skills.changed"
+
+
+class ScheduleChanged(_Base):
+    type: Literal["schedule.changed"] = "schedule.changed"
+    schedule_id: str | None = None
+
+
+class ToolsChanged(_Base):
+    type: Literal["tools.changed"] = "tools.changed"
+    provider: str | None = None
+
+
+class MeetingSegment(_Base):
+    type: Literal["meeting.segment"] = "meeting.segment"
+    meeting_id: str
+    conversation_id: str
+    seq: int
+    t0: float
+    t1: float
+    text: str
+
+
+class MeetingChanged(_Base):
+    type: Literal["meeting.changed"] = "meeting.changed"
+    meeting_id: str
+    conversation_id: str
+    status: str
+
+
 ServerEvent = Annotated[
     RunQueued
     | RunStarted
@@ -230,7 +279,15 @@ ServerEvent = Annotated[
     | ConversationDeleted
     | MessageCreated
     | RunUpdated
-    | Pong,
+    | Pong
+    | ContextSkills
+    | BoardChanged
+    | KgChanged
+    | SkillsChanged
+    | ScheduleChanged
+    | ToolsChanged
+    | MeetingSegment
+    | MeetingChanged,
     Field(discriminator="type"),
 ]
 

@@ -41,6 +41,21 @@ from jarvis_proto.events import (
     Unsubscribe,
     parse_client_message,
 )
+from jarvis_proto.features import (
+    Board,
+    CollabKey,
+    Edge,
+    Entity,
+    EntityDetail,
+    Graph,
+    Meeting,
+    MeetingDetail,
+    Note,
+    Schedule,
+    ScheduleFire,
+    Skill,
+    TriageState,
+)
 from jarvis_proto.ids import new_id
 from jarvis_proto.messages import Message, Role, ToolCall, ToolResult, ToolResultKind
 from jarvis_proto.runs import (
@@ -56,20 +71,36 @@ from jarvis_proto.runs import (
     RunStatus,
     ThinkLevel,
 )
-from jarvis_proto.settings import McpServerSpec, McpTransport, ModelSpec, Provider, RoleName, Settings
+from jarvis_proto.settings import (
+    McpServerSpec,
+    McpTransport,
+    ModelSpec,
+    Provider,
+    RoleName,
+    Settings,
+    TriageSettings,
+)
 from jarvis_proto.tools import ToolSpec
 
 __all__ = [
+    "Board",
     "ClientMessage",
+    "CollabKey",
     "Conversation",
     "ConversationDeleted",
     "ConversationKind",
     "ConversationUpdated",
+    "Edge",
+    "Entity",
+    "EntityDetail",
+    "Graph",
     "GuardArmed",
     "GuardConsumed",
     "JudgeVerdict",
     "McpServerSpec",
     "McpTransport",
+    "Meeting",
+    "MeetingDetail",
     "Message",
     "MessageCreated",
     "ModelCall",
@@ -77,6 +108,7 @@ __all__ = [
     "ModelDone",
     "ModelSpec",
     "ModelUsage",
+    "Note",
     "Plan",
     "PlanCreated",
     "PlanStep",
@@ -102,8 +134,11 @@ __all__ = [
     "RunStarted",
     "RunStatus",
     "RunWaitingUser",
+    "Schedule",
+    "ScheduleFire",
     "ServerEvent",
     "Settings",
+    "Skill",
     "Subscribe",
     "ThinkLevel",
     "ToolCall",
@@ -115,6 +150,8 @@ __all__ = [
     "ToolResultEvent",
     "ToolResultKind",
     "ToolSpec",
+    "TriageSettings",
+    "TriageState",
     "Unsubscribe",
     "new_id",
     "parse_client_message",

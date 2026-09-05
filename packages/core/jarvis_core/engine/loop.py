@@ -14,6 +14,9 @@ from jarvis_core.engine.bus import EventBus
 from jarvis_core.engine.context import ContextAssembler
 from jarvis_core.engine.control import RunCancelledError, RunControl
 from jarvis_core.engine.supervision import Emit, RunWatch, StepRecord, Supervisor, args_hash
+from jarvis_core.features.knowledge import KnowledgeLearner
+from jarvis_core.features.planner import PLAN_TOOLS, Planner
+from jarvis_core.features.skills import SkillDetector
 from jarvis_core.models.base import (
     ModelAdapter,
     ModelCancelled,
@@ -22,6 +25,7 @@ from jarvis_core.models.base import (
     ModelToolCallsChunk,
 )
 from jarvis_core.tools import ToolRegistry
+from jarvis_core.tools.facades import ExposurePolicy
 from jarvis_proto import (
     Message,
     ModelUsage,
@@ -36,12 +40,16 @@ from jarvis_proto import (
     ToolSpec,
 )
 from jarvis_proto.events import (
+    ContextSkills,
     GuardArmed,
     GuardConsumed,
     MessageCreated,
     ModelCall,
     ModelDelta,
     ModelDone,
+    PlanCreated,
+    PlanStepDone,
+    PlanStepStarted,
     RunDone,
     RunResumed,
     RunStarted,
@@ -51,11 +59,13 @@ from jarvis_proto.events import (
     ToolConfirmResolved,
     ToolResultEvent,
 )
+from jarvis_proto.runs import PlanStepStatus
 from jarvis_proto.settings import RoleName
 
 log = logging.getLogger(__name__)
 
 _UNATTENDED = {RunKind.SCHEDULED, RunKind.TRIAGE, RunKind.MEETING, RunKind.SYSTEM}
+_CONTEXT_KINDS = {RunKind.CHAT, RunKind.COLLAB, RunKind.SCHEDULED}
 _TOOL_TIMEOUT_S = 120.0
 
 
@@ -75,6 +85,11 @@ class AgentLoop:
         context: ContextAssembler,
         supervisor: Supervisor,
         settings: Callable[[], Settings],
+        *,
+        policy: ExposurePolicy | None = None,
+        planner: Planner | None = None,
+        skills: SkillDetector | None = None,
+        learner: KnowledgeLearner | None = None,
     ) -> None:
         self._store = store
         self._bus = bus
@@ -83,6 +98,19 @@ class AgentLoop:
         self._context = context
         self._supervisor = supervisor
         self._settings = settings
+        self._policy = policy or ExposurePolicy(mode="flat")
+        self._planner = planner
+        self._skills = skills
+        self._learner = learner
+
+    def _exposed_tools(self, plan_active: bool) -> list[ToolSpec]:
+        s = self._settings()
+        self._policy.mode = s.tool_exposure
+        self._policy.threshold = s.facade_threshold
+        tools = self._policy.expose(self._registry.specs())
+        if plan_active:
+            tools = [*tools, *PLAN_TOOLS]
+        return tools
 
     # --- entry ---------------------------------------------------------------------
 
@@ -98,8 +126,34 @@ class AgentLoop:
         else:
             await emit(RunStarted(run_id="", conversation_id=""))
 
-        messages = await self._context.assemble(run)
-        tools = self._registry.specs()
+        # Pre-flight: skills (structural triggers, else one cheap call) and the plan decision.
+        skill_names: list[str] = []
+        if self._skills is not None and run.kind in _CONTEXT_KINDS and not ctl.resumed:
+            skill_names = await self._skills.detect(run.input_text)
+            if skill_names:
+                await emit(ContextSkills(run_id="", conversation_id="", names=skill_names))
+        if (
+            self._planner is not None
+            and run.plan is None
+            and not ctl.resumed
+            and run.kind in _CONTEXT_KINDS
+            and self._settings().planning_enabled
+        ):
+            pre = await self._planner.preflight(run.input_text)
+            run.usage = run.usage.add(pre.usage)
+            if pre.tier == "multi_step":
+                namespaces = sorted({t.namespace for t in self._registry.specs()})
+                plan, usage = await self._planner.make_plan(run.input_text, namespaces)
+                run.usage = run.usage.add(usage)
+                if plan is not None:
+                    run.plan = plan
+                    plan.steps[0].status = PlanStepStatus.IN_PROGRESS
+                    await self._store.save_run(run)
+                    await emit(PlanCreated(run_id="", conversation_id="", plan=plan))
+                    await emit(PlanStepStarted(run_id="", conversation_id="", index=0, title=plan.steps[0].title))
+
+        messages = await self._context.assemble(run, skill_names=skill_names, plan=run.plan)
+        tools = self._exposed_tools(run.plan is not None)
 
         # Resume: an assistant message with tool calls that never got their results.
         run_messages = await self._store.list_run_messages(run.id)
@@ -115,6 +169,8 @@ class AgentLoop:
                 await self._finish(run, ctl, messages, summary=reason)
                 return
 
+            # The system message carries plan progress and context; rebuild it each step.
+            messages[0] = await self._context.system_message(run, skill_names=skill_names, plan=run.plan)
             run.steps_used += 1
             adapter = self._adapters(RoleName.CHAT, think=run.think, think_level=run.think_level)
             await emit(
@@ -130,7 +186,8 @@ class AgentLoop:
                     think_level=adapter.spec.think_level,
                 )
             )
-            text, reasoning, calls, usage, finish = await self._stream(adapter, messages, tools, run, ctl)
+            text, reasoning, raw_calls, usage, finish = await self._stream(adapter, messages, tools, run, ctl)
+            calls = [self._policy.resolve(c) for c in raw_calls]  # facade op → canonical namespace.op
             run.usage = run.usage.add(usage)
             await emit(
                 ModelDone(run_id="", conversation_id="", usage=usage, finish_reason=finish, tool_call_count=len(calls))
@@ -156,7 +213,32 @@ class AgentLoop:
             await self._store.save_run(run)
 
             if not calls:
+                if run.plan is not None and run.plan.current_index is not None and not watch.plan_nudged:
+                    # Final answer with open plan steps: one nudge (never a loop), then accept.
+                    watch.plan_nudged = True
+                    await emit(
+                        GuardArmed(run_id="", conversation_id="", guard="open_plan", detail="answered with open steps")
+                    )
+                    open_steps = ", ".join(
+                        s.title
+                        for s in run.plan.steps
+                        if s.status is PlanStepStatus.PENDING or s.status is PlanStepStatus.IN_PROGRESS
+                    )
+                    messages.append(
+                        await self._persist(
+                            run,
+                            Message.user(
+                                f"[supervisor] The plan still has open steps: {open_steps}. Finish them and mark each "
+                                "with jarvis.plan_step_done, or skip them explicitly, then answer.",
+                                name="supervisor",
+                            ),
+                        )
+                    )
+                    await emit(GuardConsumed(run_id="", conversation_id="", guard="open_plan", detail="nudged"))
+                    continue
                 await self._done(run, ctl, message_id=assistant.id)
+                if self._learner is not None and run.kind in _CONTEXT_KINDS and self._settings().kg_learning:
+                    self._learner.schedule(run.conversation_id, run.input_text, text, assistant.id)
                 return
 
             results = await self._execute_tool_calls(run, assistant, calls, ctl, watch)
@@ -236,6 +318,9 @@ class AgentLoop:
         results: list[Message] = []
         for call in calls:
             self._check_cancel(ctl)
+            if call.name in {"jarvis.plan_step_done", "jarvis.replan"}:
+                results.append(await self._plan_tool(run, call, emit))
+                continue
             spec = self._registry.get(call.name)
             read_only = spec.read_only if spec else False
             key = f"{run.id}:{call.id}"
@@ -362,6 +447,56 @@ class AgentLoop:
             if ev.get("type") == "tool.confirm_resolved" and ev.get("call_id") == call_id:
                 decision = (bool(ev.get("approved")), ev.get("note"))
         return decision
+
+    async def _plan_tool(self, run: Run, call: ToolCall, emit: Emit) -> Message:
+        """Engine-owned tools: the model advances or replaces its own plan."""
+        await emit(
+            ToolCallEvent(
+                run_id="",
+                conversation_id="",
+                call_id=call.id,
+                name=call.name,
+                arguments=call.arguments,
+                read_only=True,
+                idempotency_key=f"{run.id}:{call.id}",
+            )
+        )
+        plan = run.plan
+        if call.name == "jarvis.replan":
+            steps = [str(s).strip() for s in call.arguments.get("steps", []) if str(s).strip()]
+            if not 2 <= len(steps) <= 8:
+                result = ToolResult.failure("replan needs 2-8 steps")
+            else:
+                from jarvis_proto import Plan, PlanStep
+
+                run.plan = Plan(
+                    goal=str(call.arguments.get("goal", "")).strip() or (plan.goal if plan else ""),
+                    steps=[PlanStep(title=s) for s in steps],
+                )
+                run.plan.steps[0].status = PlanStepStatus.IN_PROGRESS
+                await self._store.save_run(run)
+                await emit(PlanCreated(run_id="", conversation_id="", plan=run.plan))
+                await emit(PlanStepStarted(run_id="", conversation_id="", index=0, title=steps[0]))
+                result = ToolResult.data(f"Plan replaced with {len(steps)} steps; current step 1: {steps[0]}")
+        elif plan is None:
+            result = ToolResult.failure("there is no plan for this run")
+        else:
+            idx = int(call.arguments.get("index", 0)) - 1
+            if not 0 <= idx < len(plan.steps):
+                result = ToolResult.failure(f"step index must be 1..{len(plan.steps)}")
+            else:
+                plan.steps[idx].status = PlanStepStatus.DONE
+                plan.steps[idx].note = str(call.arguments.get("note", "") or "")[:300] or None
+                await emit(PlanStepDone(run_id="", conversation_id="", index=idx))
+                nxt = plan.current_index
+                if nxt is not None:
+                    plan.steps[nxt].status = PlanStepStatus.IN_PROGRESS
+                    await emit(PlanStepStarted(run_id="", conversation_id="", index=nxt, title=plan.steps[nxt].title))
+                    result = ToolResult.data(f"Step {idx + 1} done. Current step {nxt + 1}: {plan.steps[nxt].title}")
+                else:
+                    result = ToolResult.data(f"Step {idx + 1} done. All steps complete — give the final answer.")
+                await self._store.save_run(run)
+        return await self._tool_message(run, call, result, 0, emit)
 
     # --- finishing -----------------------------------------------------------------
 

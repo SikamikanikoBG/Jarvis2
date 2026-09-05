@@ -72,6 +72,7 @@ class RunEngine:
         self._heap: list[tuple[int, str, str]] = []  # (priority, created_at iso, run_id)
         self._queued: dict[str, Run] = {}
         self._active: dict[str, tuple[asyncio.Task[None], RunControl]] = {}
+        self._tasks: set[asyncio.Task[None]] = set()  # every run task until it is truly finished
         self._wake = asyncio.Event()
         self._dispatcher: asyncio.Task[None] | None = None
         self._stopping = False
@@ -94,6 +95,9 @@ class RunEngine:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
             log.info("run %s interrupted by shutdown", run_id)
+        # Tasks in their final bookkeeping must finish before the DB closes under them.
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
 
     async def _resume_on_boot(self) -> None:
         for run in await self._store.runs_with_status(RunStatus.RUNNING, RunStatus.CANCELLING):
@@ -236,6 +240,8 @@ class RunEngine:
                 ctl = RunControl(emitter=RunEmitter(run, self._store, self._bus), resumed=resumed)
                 task = asyncio.create_task(self._execute(run, ctl), name=f"run-{run.id}")
                 self._active[run.id] = (task, ctl)
+                self._tasks.add(task)
+                task.add_done_callback(self._tasks.discard)
 
     async def _execute(self, run: Run, ctl: RunControl) -> None:
         emitter = ctl.emitter

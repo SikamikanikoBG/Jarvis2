@@ -14,10 +14,12 @@ from jarvis_proto import Conversation, ConversationKind, Message, Run, Settings,
 from jarvis_proto.events import ConversationDeleted, ConversationUpdated
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
+open_router = APIRouter(prefix="/api")
 
 
-@router.get("/health")
+@open_router.get("/health")
 async def health() -> dict[str, Any]:
+    """Open on purpose: the UI and Docker use it to tell 'down' from 'wrong token'."""
     return {"ok": True, "version": __version__}
 
 

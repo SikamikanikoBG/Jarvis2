@@ -34,9 +34,10 @@ def _h() -> dict[str, str]:
 
 
 def test_token_is_required(client: TestClient):
-    assert client.get("/api/health").status_code == 401
-    assert client.get("/api/health", headers=_h()).status_code == 200
-    assert client.get("/api/health?token=secret").status_code == 200
+    assert client.get("/api/health").status_code == 200  # open on purpose (down vs wrong token)
+    assert client.get("/api/settings").status_code == 401
+    assert client.get("/api/settings", headers=_h()).status_code == 200
+    assert client.get("/api/settings?token=secret").status_code == 200
 
 
 def test_conversation_crud_and_settings(client: TestClient):

@@ -334,6 +334,8 @@ dependencies = [
     { name = "mcp" },
     { name = "mcp-server-fetch" },
     { name = "python-dotenv" },
+    { name = "python-multipart" },
+    { name = "pyyaml" },
     { name = "tzdata" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -349,6 +351,8 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.2" },
     { name = "mcp-server-fetch", specifier = ">=2026.8.18" },
     { name = "python-dotenv", specifier = ">=1.0" },
+    { name = "python-multipart", specifier = ">=0.0.9" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "tzdata", specifier = ">=2024.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]
@@ -361,8 +365,11 @@ dependencies = [
     { name = "httpx" },
     { name = "jarvis-proto" },
     { name = "mcp" },
+    { name = "mss", marker = "sys_platform == 'win32'" },
     { name = "pyaudiowpatch", marker = "sys_platform == 'win32'" },
     { name = "pywin32", marker = "sys_platform == 'win32'" },
+    { name = "starlette" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata]
@@ -370,8 +377,11 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "jarvis-proto", editable = "packages/proto" },
     { name = "mcp", specifier = ">=1.2" },
+    { name = "mss", marker = "sys_platform == 'win32'", specifier = ">=9" },
     { name = "pyaudiowpatch", marker = "sys_platform == 'win32'", specifier = "==0.2.12.8" },
     { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=306" },
+    { name = "starlette", specifier = ">=0.40" },
+    { name = "uvicorn", specifier = ">=0.30" },
 ]
 
 [[package]]
@@ -521,6 +531,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ba/6c/db2e93b243c74c06c2b939af7fc2349df6048754073a1f4966ddfb065286/mcp_server_fetch-2026.8.18.tar.gz", hash = "sha256:da12533c8218c7a4ee2eb9d789170a317cf758c07cb2cc0211a91bdb0d4b7254", size = 90020, upload-time = "2026-08-18T16:06:17.339Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5a/2d/c8d2e50796d6e3c77fa1932b9b010df36168edb5f5387c98a524ef77f110/mcp_server_fetch-2026.8.18-py3-none-any.whl", hash = "sha256:6642df733a1032e7f37d0f13849af8a944d46c02420d2c070cc14e0948f8fcc2", size = 9067, upload-time = "2026-08-18T16:06:16.072Z" },
+]
+
+[[package]]
+name = "mss"
+version = "10.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e5/5d/eee782a6d674f562c946ae6a026f4c595ea2b7b031f290bf9fbf60da09b5/mss-10.2.0.tar.gz", hash = "sha256:ab271860775545e62f29d7b11f82f279ac1048f5bbdd26cfad84830208dbd393", size = 200317, upload-time = "2026-04-23T10:44:57.305Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f2/c3/313e14f245c79b4c05bd0f3a84a4813aa26fa10f8993aebd91d04c5fad3f/mss-10.2.0-py3-none-any.whl", hash = "sha256:e79f428899280e7e64e38365b5bfed683851ebea807eeaeadaf06eb8e0d67197", size = 67106, upload-time = "2026-04-23T10:44:56.266Z" },
 ]
 
 [[package]]

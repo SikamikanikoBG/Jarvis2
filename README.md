@@ -36,8 +36,38 @@ Dev loop: `uv run jarvis-core` in one terminal, `cd web && npm run dev` in anoth
 
 ## Everyday running (Arsen's setup)
 
-The **core lives on ardi** in Docker with `--restart unless-stopped`, so it comes back on its
-own after an ardi reboot. Nothing to do there.
+```
+  phone / laptop browser
+          |  https (Tailscale Serve, valid cert)
+          v
+  ardi  ── jarvis2-core (Docker, restart unless-stopped)  ← the brain: DB, memory, boards,
+          |   |                                              knowledge, schedules, settings,
+          |   |                                              the agent loop. Always on.
+          |   +--> vader  vLLM qwen3.8-27b                 ← the models
+          |   +--> ardi   homelab MCP, WhisperX (STT)
+          |   +--> laptop jarvis-host (MCP)                ← Outlook, files, shell, screen
+          |                                                   ONLY this needs the laptop
+          +-- V1 jarvis-server still on :9010, untouched
+```
+
+Jarvis itself does not live on the laptop. With the laptop off, chat, boards, knowledge,
+schedules, homelab and web all keep working; only the `workocholic` tools (mail, calendar,
+local files/shell/screen) go red — visibly, not silently.
+
+**Phone / anywhere on the tailnet (https — needed for the microphone and the PWA):**
+
+    https://ardi.tail185cf0.ts.net:8444/?token=<JARVIS_TOKEN>
+
+Get a scannable QR for it: `uv run python scripts/pair.py --base http://100.97.120.53:9020
+--token <token>`. The https URL comes from `settings.public_url`; it is served by
+`tailscale serve --bg --https=8444 http://127.0.0.1:9020` on ardi (config survives reboots;
+`tailscale set --operator=ardi` was run once so this needs no sudo any more).
+
+**STT:** ardi's Whisper is the WhisperX ASR web service, so `stt_kind` must be `asr`
+(`/asr`), not `openai` (`/v1/audio/transcriptions` → 404 there). The reply names the upstream
+that actually answered, so a proxy fail-over is visible instead of silent.
+
+**Direct http (LAN/tailnet, no mic):**
 
     http://100.97.120.53:9020/?token=<JARVIS_TOKEN>
 

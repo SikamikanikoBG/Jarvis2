@@ -44,3 +44,28 @@ harness — library vs. own is an open question to settle in the design.
 - 2026-09-05 — Audits: web UI = 11.6k vanilla JS, 213 globals, 275 inline handlers, 29 real
   browser tests (email only) → rebuild, salvage CSS. Agent core = 3,175-line `run_agent()`
   around LangGraph, 89 threads, tools 37k LOC at repo root → own the harness.
+- 2026-09-05 — Phase 1 core green: 44 tests (cancel during stream/tool/queue, restart during
+  read-only tool → resumes, restart during mutating tool → waits for Arsen, confirmation that
+  survives a restart, budgets, judge stop/nudge/unavailable, error streak, idempotency, WS
+  round-trip, token auth). pyright strict clean. Five harness bugs found by the tests on day
+  one: `run.queued` published before the WS subscribed to a new conversation; `run.updated`
+  carried a mutable Run; `last_seq` lagged the events table so a resume collided; a run parked
+  in `waiting_user` was marked interrupted on shutdown; messages written in the same
+  millisecond sorted randomly.
+- 2026-09-05 — Real model (vader vLLM `qwen3.8-27b`): endpoint probe 276 ms; plain reply TTFT
+  651 ms with 45 reasoning deltas (thinking via `chat_template_kwargs.enable_thinking`); the
+  model chose `jarvis.time` on its own and answered with the correct Sofia time; Stop landed
+  in 30 ms, partial text kept; run events persisted without deltas. `scripts/smoke.py`.
+- 2026-09-05 — Repo pushed: github.com/SikamikanikoBG/Jarvis2 (private).
+- 2026-09-05 — Arsen: "exactly the direction" + two asks: tools wired, thinking on/off with
+  level. Done the same day: `McpProvider` (stdio + streamable HTTP, one session per server,
+  annotations → policy), defaults `fetch` + ardi homelab MCP (20 tools); `think_level` per role
+  (Ollama string levels / vLLM `reasoning_effort`) and per-message override on `run.create`.
+  53 tests. Live vs vader vLLM: model chose `homelab.get_host` (accurate GPU report) and
+  `fetch.fetch` ("Example Domain") out of 22 flat tools. Cost signal: 22 tool schemas ≈ +6k
+  prompt tokens per call (9,479 vs ~600) — derived facades (DESIGN §6) are the Phase 3 answer.
+- 2026-09-05 — Paused (Arsen closing the laptop). SPA agent's second pass (thinking chip,
+  MCP-server editor, tools on Status) still running at pause; `web/` committed as it stood.
+  Core left running locally on :9020 (token `smoke`, data in ./data), pointed at vader vLLM.
+  Resume: `uv run jarvis-core` + `cd web && npm run build`; next = finish SPA pass, derived
+  facades (§6), OpenAI-compatible `/v1/chat/completions` façade, then Phase 2 (boards/KG/skills).

@@ -1,0 +1,175 @@
+/*
+ * Design tokens — ported from V1 `web_client.html` (:root / :root.light-theme) and trimmed:
+ * no gradients, no glass; colour is reserved for state. Both palettes pass WCAG AA for
+ * body text on their surfaces (see README → Theme).
+ *
+ * Theme resolution: `html[data-theme]` (user toggle) wins; otherwise `prefers-color-scheme`.
+ */
+
+:root {
+  /* Surfaces — deep navy, subtle elevation steps */
+  --bg: #0a0e1a;
+  --bg-surface: #121829;
+  --bg-elevated: #1b2440;
+  --bg-inset: #070b15;
+  --border: #232f4d;
+  --border-strong: #34426a;
+
+  /* Ink */
+  --fg: #eaf0fb;
+  --fg-2: #aab4cc;
+  --fg-muted: #8893ad;
+  --fg-dim: #5f6b87; /* decorative only — below AA for body text */
+
+  /* Brand accent — cyan, dark ink on filled controls */
+  --accent: #25d8ff;
+  --accent-fill: #25d8ff;
+  --accent-ink: #06121a;
+  --accent-soft: rgba(37, 216, 255, 0.12);
+  --focus: #7fe6ff;
+
+  /* State */
+  --ok: #4ade80;
+  --danger: #ff5470;
+  --warn: #ffb347;
+  --info: #5ab0ff;
+  --ok-soft: rgba(74, 222, 128, 0.14);
+  --danger-soft: rgba(255, 84, 112, 0.14);
+  --warn-soft: rgba(255, 179, 71, 0.14);
+  --info-soft: rgba(90, 176, 255, 0.14);
+  --reasoning: #e0b34a;
+  --reasoning-soft: rgba(224, 179, 74, 0.08);
+
+  /* Chat */
+  --msg-user: #16315a;
+  --msg-bot: #18233f;
+  --code-bg: #0b1020;
+
+  --overlay: rgba(5, 8, 16, 0.62);
+  --shadow-1: 0 1px 3px rgba(0, 0, 0, 0.25);
+  --shadow-2: 0 6px 18px rgba(0, 0, 0, 0.35);
+  --shadow-3: 0 16px 44px rgba(0, 0, 0, 0.5);
+
+  /* Shape */
+  --radius-xs: 6px;
+  --radius-sm: 10px;
+  --radius: 14px;
+  --radius-lg: 20px;
+  --radius-pill: 999px;
+
+  /* Space */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --pad-x: 16px;
+
+  /* Type */
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --mono: ui-monospace, 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
+  --fs-xs: 0.72rem;
+  --fs-sm: 0.82rem;
+  --fs-md: 0.95rem;
+  --fs-lg: 1.05rem;
+  --fs-xl: 1.25rem;
+  --lh: 1.5;
+
+  /* Layout */
+  --sidebar-w: 292px;
+  --inspector-w: 400px;
+  --header-h: 52px;
+  --nav-h: 56px;
+  --composer-max: 820px;
+
+  --dur: 0.15s;
+  --dur-slow: 0.25s;
+
+  color-scheme: dark;
+}
+
+/* Light — explicit toggle or system preference */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    --bg: #eef1f7;
+    --bg-surface: #ffffff;
+    --bg-elevated: #e6ecf5;
+    --bg-inset: #e3e8f1;
+    --border: #d4dae6;
+    --border-strong: #b9c2d6;
+    --fg: #141a2b;
+    --fg-2: #485066;
+    --fg-muted: #626b80;
+    --fg-dim: #97a0b5;
+    --accent: #0a7fb0;
+    --accent-fill: #066b94;
+    --accent-ink: #ffffff;
+    --accent-soft: rgba(10, 147, 199, 0.12);
+    --focus: #0a93c7;
+    --ok: #15803d;
+    --danger: #dc2626;
+    --warn: #b45309;
+    --info: #2563eb;
+    --ok-soft: rgba(22, 163, 74, 0.12);
+    --danger-soft: rgba(220, 38, 38, 0.1);
+    --warn-soft: rgba(217, 119, 6, 0.12);
+    --info-soft: rgba(37, 99, 235, 0.1);
+    --reasoning: #92400e;
+    --reasoning-soft: rgba(146, 64, 14, 0.07);
+    --msg-user: #d6e8fb;
+    --msg-bot: #ffffff;
+    --code-bg: #f1f4f9;
+    --overlay: rgba(0, 0, 0, 0.3);
+    --shadow-1: 0 1px 3px rgba(0, 0, 0, 0.08);
+    --shadow-2: 0 6px 18px rgba(0, 0, 0, 0.1);
+    --shadow-3: 0 16px 44px rgba(0, 0, 0, 0.16);
+    color-scheme: light;
+  }
+}
+
+:root[data-theme='light'] {
+  --bg: #eef1f7;
+  --bg-surface: #ffffff;
+  --bg-elevated: #e6ecf5;
+  --bg-inset: #e3e8f1;
+  --border: #d4dae6;
+  --border-strong: #b9c2d6;
+  --fg: #141a2b;
+  --fg-2: #485066;
+  --fg-muted: #626b80;
+  --fg-dim: #97a0b5;
+  --accent: #0a7fb0;
+  --accent-fill: #066b94;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(10, 147, 199, 0.12);
+  --focus: #0a93c7;
+  --ok: #15803d;
+  --danger: #dc2626;
+  --warn: #b45309;
+  --info: #2563eb;
+  --ok-soft: rgba(22, 163, 74, 0.12);
+  --danger-soft: rgba(220, 38, 38, 0.1);
+  --warn-soft: rgba(217, 119, 6, 0.12);
+  --info-soft: rgba(37, 99, 235, 0.1);
+  --reasoning: #92400e;
+  --reasoning-soft: rgba(146, 64, 14, 0.07);
+  --msg-user: #d6e8fb;
+  --msg-bot: #ffffff;
+  --code-bg: #f1f4f9;
+  --overlay: rgba(0, 0, 0, 0.3);
+  --shadow-1: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --shadow-2: 0 6px 18px rgba(0, 0, 0, 0.1);
+  --shadow-3: 0 16px 44px rgba(0, 0, 0, 0.16);
+  color-scheme: light;
+}
+
+/* Browser side panel: tighter everything */
+:root[data-mode='panel'] {
+  --pad-x: 10px;
+  --s-4: 12px;
+  --s-5: 14px;
+  --s-6: 16px;
+  --composer-max: none;
+}

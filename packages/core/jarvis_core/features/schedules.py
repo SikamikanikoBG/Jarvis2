@@ -364,8 +364,12 @@ class ScheduleTools(BuiltinProvider):
 
     @tool(
         "schedule.create",
-        description="Create a scheduled prompt (recurring cron or one-shot at). Use for reminders too.",
+        description=(
+            "Create a NEW scheduled prompt (recurring cron or one-shot at) when Arsen asks for a future or "
+            "recurring reminder/job. Never call it from inside a scheduled run - that run already IS the schedule."
+        ),
         args=_CreateArgs,
+        destructive=True,
     )
     async def _create(self, name: str, prompt: str, cron: str | None = None, at: str | None = None) -> ToolResult:
         try:
@@ -377,7 +381,7 @@ class ScheduleTools(BuiltinProvider):
             f"Scheduled {s.name!r} ({s.id}); next fire {s.next_fire.isoformat() if s.next_fire else 'never'}."
         )
 
-    @tool("schedule.delete", description="Delete a scheduled prompt by id.", args=_IdArgs)
+    @tool("schedule.delete", description="Delete a scheduled prompt by id.", args=_IdArgs, destructive=True)
     async def _delete(self, id: str) -> ToolResult:
         if await self.store.get(id) is None:
             return ToolResult.failure(f"no schedule {id!r}")

@@ -259,6 +259,9 @@ class Settings(BaseModel):
     # Used for pairing/QR; without it the URL is derived from the request. The phone's mic and
     # the PWA need a secure context, so this is normally an https:// URL.
     public_url: str | None = None
+    # The push channel for reminders and scheduled-run summaries (notify.discord). Secret:
+    # never echoed in logs or the UI beyond "configured".
+    discord_webhook_url: str | None = None
     stt_url: str | None = None
     stt_kind: Literal["openai", "asr"] = "openai"  # OpenAI-compatible /v1/audio/transcriptions or WhisperX /asr
     stt_model: str = "large-v3"

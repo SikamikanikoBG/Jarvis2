@@ -111,7 +111,13 @@ async def main() -> int:
     mode = "DRY RUN (destructive steps rejected)" if args.dry_run else "LIVE"
     print(f"=== {s['name'][:70]}  [{s['cron']}]  {mode}")
     if args.dry_run:
-        rep = await drive(args.token, run_id=None, conversation_id=None, prompt=s["prompt"], timeout=args.timeout)
+        framed = (
+            f"[Scheduled prompt '{s['name'][:60]}' firing now - DRY RUN. Do the task in this run; do not create "
+            f"or edit any schedule for it. Your reply is the report Arsen reads.]
+
+{s['prompt']}"
+        )
+        rep = await drive(args.token, run_id=None, conversation_id=None, prompt=framed, timeout=args.timeout)
     else:
         fired = api(f"/api/schedules/{s['id']}/run", args.token, "POST", {})
         rep = await drive(

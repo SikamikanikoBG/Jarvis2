@@ -26,6 +26,7 @@ from jarvis_core.features.collab import CollabAuthMiddleware, CollabKeys, build_
 from jarvis_core.features.compaction import Compactor
 from jarvis_core.features.knowledge import KnowledgeLearner, KnowledgeStore, KnowledgeTools
 from jarvis_core.features.meetings import MeetingService
+from jarvis_core.features.notify import NotifyTools
 from jarvis_core.features.planner import Planner
 from jarvis_core.features.schedules import Scheduler, ScheduleStore, ScheduleTools
 from jarvis_core.features.skills import SkillDetector, SkillsTools, SkillStore
@@ -64,6 +65,7 @@ class Core:
         self.learner = KnowledgeLearner(self.knowledge, lambda: self.adapters.for_role(RoleName.CLASSIFIER))
         self.schedules = ScheduleStore(self.db, self.bus)
         self.browser = WsProvider()
+        self.notify = NotifyTools(settings)
         self.collab_keys = CollabKeys(self.db)
         self.transcriber = Transcriber(settings)
         self.mcp_server = build_mcp_server(self)
@@ -143,6 +145,7 @@ class Core:
         for provider in self.mcp:
             await provider.stop()
         await self.transcriber.aclose()
+        await self.notify.aclose()
         await self.db.close()
 
     def apply_settings(self, settings: Settings) -> None:
@@ -165,6 +168,7 @@ class Core:
                 KnowledgeTools(self.knowledge),
                 SkillsTools(self.skills),
                 ScheduleTools(self.schedules, tz=lambda: self.settings.timezone),
+                self.notify,
                 self.browser,
                 *self.mcp,
             ]

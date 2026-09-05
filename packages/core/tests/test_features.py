@@ -293,8 +293,13 @@ async def test_schedule_tool_creates_from_chat(harness: Harness):
     )
     conv = await core.store.create_conversation()
     sub = harness.subscribe(conv.id)
-    await core.engine.create_run(text="every weekday at 8:30 prep my standup notes", conversation_id=conv.id)
-    seen = await harness.wait_for(sub, "run.done")
+    run, _ = await core.engine.create_run(text="every weekday at 8:30 prep my standup notes", conversation_id=conv.id)
+    # Creating a standing automation asks first (it is destructive); Arsen approves.
+    seen = await harness.wait_for(sub, "run.waiting_user")
+    req = next(e for e in seen if e.type == "tool.confirm_requested")
+    assert req.name == "schedule.create"
+    await core.engine.confirm(run.id, req.call_id, True)
+    seen += await harness.wait_for(sub, "run.done")
     assert any(e.type == "schedule.changed" for e in seen)
     items = await core.schedules.list()
     assert [s.name for s in items] == ["Standup"] and items[0].cron == "30 8 * * 1-5" and items[0].next_fire is not None
@@ -424,3 +429,95 @@ async def test_unapproved_recipient_becomes_a_draft(harness: Harness):
     await harness.core.engine.create_run(text="mail the boss", conversation_id=conv.id, kind=RunKind.SCHEDULED)
     await harness.wait_for(sub, "run.done", timeout=10)
     assert host.sent[-1] == {"to": "boss@bank.bg", "cc": "", "draft": False}
+
+
+# --- scheduled-run framing + notify -----------------------------------------------------------
+
+
+async def test_scheduled_run_knows_it_is_the_reminder(harness: Harness):
+    """Firing 'Remind Arsen to ...' must not create a second schedule: the system prompt tells
+    the model it IS the scheduled prompt, running now."""
+    core = harness.core
+    harness.chat.push(FakeTurn(text="Reminder: go approve the Jira items."))
+    from datetime import UTC, datetime, timedelta
+
+    sched = await core.schedules.create(
+        name="Daily Approvals",
+        prompt="Remind Arsen to approve Jira items",
+        at=datetime.now(UTC) - timedelta(minutes=1),
+        tz="UTC",
+    )
+    assert await core.scheduler.tick() == 1
+    fires = await core.schedules.fires(sched.id)
+    conv = await core.store.get_conversation(fires[0].conversation_id)  # type: ignore[arg-type]
+    assert conv is not None
+    # wait for the run to finish
+    async with asyncio.timeout(10):
+        while (await core.store.get_run(fires[0].run_id)).status is not RunStatus.DONE:  # type: ignore[union-attr, arg-type]
+            await asyncio.sleep(0.05)
+    system = harness.chat.calls[-1][0][0].content
+    assert "## This run" in system and "Daily Approvals" in system and "firing NOW" in system
+    assert "Do not create, edit or re-schedule" in system
+    # A plain chat run gets no such framing.
+    harness.chat.push(FakeTurn(text="hi"))
+    c2 = await core.store.create_conversation()
+    sub = harness.subscribe(c2.id)
+    await core.engine.create_run(text="hello", conversation_id=c2.id)
+    await harness.wait_for(sub, "run.done")
+    assert "## This run" not in harness.chat.calls[-1][0][0].content
+
+
+async def test_schedule_create_asks_for_confirmation_in_chat(harness: Harness):
+    """Creating a standing automation is consequential: interactive runs must confirm it."""
+    harness.chat.push(
+        FakeTurn(
+            tool_calls=[
+                ToolCall(
+                    id="c1", name="schedule.create", arguments={"name": "X", "prompt": "do x", "cron": "0 9 * * *"}
+                )
+            ]
+        ),
+        FakeTurn(text="ok, not created"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    run, _ = await harness.core.engine.create_run(text="remind me daily", conversation_id=conv.id)
+    seen = await harness.wait_for(sub, "run.waiting_user")
+    req = next(e for e in seen if e.type == "tool.confirm_requested")
+    assert req.name == "schedule.create"
+    await harness.core.engine.confirm(run.id, req.call_id, False, "no")
+    await harness.wait_for(sub, "run.done")
+    assert [s.name for s in await harness.core.schedules.list()] == []
+
+
+async def test_notify_discord_posts_and_reports_honestly(harness: Harness):
+    import httpx
+
+    from jarvis_core.features.notify import NotifyTools, _split
+
+    posted: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posted.append(__import__("json").loads(request.read()))
+        return httpx.Response(204)
+
+    tools = NotifyTools(lambda: harness.core.settings, client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    # Unconfigured → a clear error, not a fake success.
+    res = await tools.call("notify.discord", {"text": "hi"}, cancel=asyncio.Event(), idempotency_key="k", timeout_s=5)
+    assert res.kind.value == "error" and "no Discord webhook" in res.text
+    harness.enable(discord_webhook_url="https://discord.com/api/webhooks/1/abc")
+    res = await tools.call(
+        "notify.discord", {"text": "Approve the Jira items"}, cancel=asyncio.Event(), idempotency_key="k", timeout_s=5
+    )
+    assert res.kind.value == "data" and posted == [{"content": "Approve the Jira items"}]
+    # Long text is split on line boundaries under Discord's limit.
+    parts = _split("line\n" * 1000, 1900)
+    assert len(parts) >= 3 and all(len(p) <= 1900 for p in parts)
+
+    # A failing webhook is reported with the status, never swallowed.
+    def bad(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text="rate limited")
+
+    tools2 = NotifyTools(lambda: harness.core.settings, client=httpx.AsyncClient(transport=httpx.MockTransport(bad)))
+    res = await tools2.call("notify.discord", {"text": "x"}, cancel=asyncio.Event(), idempotency_key="k", timeout_s=5)
+    assert res.kind.value == "error" and "429" in res.text

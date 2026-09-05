@@ -83,6 +83,18 @@ class ContextAssembler:
                 block = None
             if block:
                 parts.append(block)
+        if run.kind is RunKind.SCHEDULED:
+            # The model must know it IS the reminder. Without this, "Remind Arsen to ..." firing
+            # at 08:45 was read as "set up a reminder" and it created a second schedule.
+            conv = await self._store.get_conversation(run.conversation_id)
+            name = conv.folder_label if conv and conv.folder_label else "scheduled prompt"
+            parts.append(
+                f"## This run\nYou are executing the scheduled prompt '{name}' which is firing NOW. "
+                "Do what it says immediately, in this run. Do not create, edit or re-schedule any "
+                "schedule for it - it already exists and is what triggered you. Your final reply IS "
+                "the reminder/report; Arsen reads it in the Scheduled folder, so write it for him. "
+                "Nobody is present to answer questions: decide, act within the prompt's limits, and report."
+            )
         if plan is not None:
             from jarvis_core.features.planner import plan_block
 

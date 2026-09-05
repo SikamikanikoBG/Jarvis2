@@ -1106,11 +1106,16 @@ class OutlookBackend:
         return cal
 
     def _event(self, item: Any) -> dict[str, Any]:
+        # Listing shape is what the model reads once per event; keep it lean. Five names
+        # plus a count tells it who is in the room without 20 strings per event x 49 events.
         attendees: list[str] = []
+        total_attendees = 0
         for r in _iter_com(_prop(item, "Recipients")):
-            attendees.append(_text(_prop(r, "Name", "")))
-            if len(attendees) >= 20:
-                break
+            total_attendees += 1
+            if len(attendees) < 5:
+                attendees.append(_text(_prop(r, "Name", "")))
+        if total_attendees > len(attendees):
+            attendees.append(f"+{total_attendees - len(attendees)} more")
         return {
             "entry_id": _text(_prop(item, "EntryID", "")),
             "subject": _text(_prop(item, "Subject", "")),

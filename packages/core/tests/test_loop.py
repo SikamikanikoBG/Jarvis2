@@ -288,3 +288,36 @@ async def test_mutating_call_gets_an_idempotency_key(harness: Harness):
     call = next(e for e in seen if e.type == "tool.call")
     assert call.idempotency_key == f"{run.id}:c1" and call.read_only is False
     assert await harness.core.store.idempotent_result(call.idempotency_key) is not None
+
+
+async def test_old_tool_results_are_truncated_in_context_but_kept_in_db(harness: Harness):
+    """A 5k-char tool result is whole for the step that must read it, a head afterwards."""
+    tools = await with_tools(harness)
+    big = "row " * 1500  # ~6k chars
+
+    async def big_echo(text: str = "") -> ToolResult:
+        return ToolResult.data(big)
+
+    tools._entries["test.echo"].fn = big_echo
+    harness.chat.push(
+        FakeTurn(tool_calls=[ToolCall(id="c1", name="test.echo", arguments={"text": "a"})]),
+        FakeTurn(tool_calls=[ToolCall(id="c2", name="test.echo", arguments={"text": "b"})]),
+        FakeTurn(text="done"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="two big reads", conversation_id=conv.id)
+    await harness.wait_for(sub, "run.done", timeout=10)
+    # Call 2 (answering the first tool result) saw it in full.
+    second_call_msgs = harness.chat.calls[1][0]
+    first_result_at_call2 = next(m for m in second_call_msgs if m.role.value == "tool" and m.tool_call_id == "c1")
+    assert len(first_result_at_call2.content) > 5000
+    # Call 3 saw the first result truncated and the second (fresh) result whole.
+    third_call_msgs = harness.chat.calls[2][0]
+    first_at_call3 = next(m for m in third_call_msgs if m.role.value == "tool" and m.tool_call_id == "c1")
+    second_at_call3 = next(m for m in third_call_msgs if m.role.value == "tool" and m.tool_call_id == "c2")
+    assert "[truncated:" in first_at_call3.content and len(first_at_call3.content) < 900
+    assert len(second_at_call3.content) > 5000
+    # The database keeps the full text.
+    stored = [m for m in await harness.core.store.list_messages(conv.id) if m.role.value == "tool"]
+    assert all(len(m.content) > 5000 and "[truncated" not in m.content for m in stored)

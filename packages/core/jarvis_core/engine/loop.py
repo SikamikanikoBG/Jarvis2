@@ -175,6 +175,10 @@ class AgentLoop:
 
             # The system message carries plan progress and context; rebuild it each step.
             messages[0] = await self._context.system_message(run, skill_names=skill_names, plan=run.plan)
+            # Tool results from earlier steps have been acted on; keep their head only. The DB
+            # keeps the full text. Without this a 49-event calendar_list rode along in every one
+            # of 8 model calls and a single scheduled run cost 217k prompt tokens (2026-09-05).
+            _compress_old_tool_results(messages)
             run.steps_used += 1
             adapter = self._adapters(RoleName.CHAT, think=run.think, think_level=run.think_level)
             await emit(
@@ -558,6 +562,32 @@ class AgentLoop:
     def _check_cancel(ctl: RunControl) -> None:
         if ctl.cancel.is_set():
             raise RunCancelledError(None)
+
+
+_OLD_TOOL_RESULT_HEAD = 700
+_OLD_TOOL_RESULT_MIN = 1_200
+
+
+def _compress_old_tool_results(messages: list[Message]) -> None:
+    """Truncate tool results that belong to steps before the most recent one (in memory only).
+
+    The most recent step's results stay whole: the model has not answered them yet. Everything
+    older it has already read and reasoned about; the plan block, its own notes and its
+    following messages carry what mattered. V1's `_compress_old_tool_messages`, kept because
+    it worked.
+    """
+    last_assistant = max((i for i, m in enumerate(messages) if m.role is Role.ASSISTANT), default=-1)
+    if last_assistant < 0:
+        return
+    for i, m in enumerate(messages[:last_assistant]):
+        if m.role is Role.TOOL and len(m.content) > _OLD_TOOL_RESULT_MIN and "[truncated" not in m.content[-80:]:
+            total = len(m.content)
+            head = m.content[:_OLD_TOOL_RESULT_HEAD].rstrip()
+            # Replace, never mutate: the same Message object is referenced by the persisted
+            # history and by anything that snapshotted an earlier context.
+            messages[i] = m.model_copy(
+                update={"content": f"{head}\n[truncated: {total:,} chars in full; already acted on]"}
+            )
 
 
 def _pending_tool_calls(run_messages: list[Message]) -> tuple[Message, list[ToolCall]] | None:

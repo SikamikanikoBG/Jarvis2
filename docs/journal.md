@@ -116,3 +116,37 @@ harness — library vs. own is an open question to settle in the design.
   tool call, 2 steps, "Готово, звукът е на 33%" — and the machine really is at 33%.
   Note: unattended runs (scheduled/triage/meeting/system) never asked for confirmation even
   before this — scheduled prompts were never blocked by it.
+- 2026-09-05 (evening) — Schedule audit, one by one, from Arsen's 13 live V1 schedules. Method
+  after the Burnout incident: `scripts/run_schedule.py --dry-run` (interactive run with the
+  scheduled budget; every destructive step asks and is rejected) before any live fire.
+  Results and what each one taught:
+  * Wakeup / Sleeping sound — work (volume_set/volume_get; read-back proves the level).
+  * Burnout Prevention — LIVE run stacked 32 placeholder blocks on a calendar that already
+    held V1's 26. All 32 deleted by entry_id. Fixes: calendar_create refuses busy slots
+    (structural), calendar_delete, planner gets tool names (it had planned a "recolour
+    categories" step no tool could do and reached for shell_run), prompt rewritten to check
+    before creating. Dry-run now proposes 1 DECOMPRESS + 1 FOCUS per day; 217k -> 150k tokens.
+  * Daily Approvals — "Remind Arsen..." created a SECOND schedule: nothing told the model it
+    WAS the schedule. Fix: "## This run" framing for scheduled runs; schedule.create/delete
+    are destructive (ask); notify.discord so a reminder reaches the phone. Dry-run: 2 calls,
+    23k tokens, Discord ping sent.
+  * Jira summary — first blanket tool-result truncation made it re-read mails until the
+    supervisor stopped it; truncation is now budget-based (oldest first, 40k tokens). Prompt
+    rewritten for V2 tools (previews first, outlook_read max_chars=4000). Works.
+  * Weekly Workload — every tool call was cut at 120 s; the report script takes 853 s.
+    Core honours the tool's own timeout_s up to tool_timeout_max_s (1200); host fs roots
+    now include R:\Documents\SharedFolderAI. Prompt passes timeout_s=1000. Re-test pending.
+  * World news / AI Newsletter — fetch respects robots.txt (Google News, Reuters, Register
+    blocked); V1 searched via SearXNG through curl. Added web.search (SearXNG on ardi:8085).
+    Both then work; the newsletter legitimately needs ~650k tokens -> scheduled budget 1.2M.
+  * Weekly priorities digest — guessed folder names (4 errors, judge nudged), 683k tokens.
+    Prompt now: outlook_folders once, one bounded search per priority.
+  * Context Enrichment — V1's manage_project is gone; rewritten to kg.remember/notes.add.
+    Its dry-run failed only because the host was being restarted at that moment.
+  * email_triage_audit, OneNote, homelab-monitor GitHub — depend on V1 tools that do not
+    exist (manage_email_triage, OneNote COM, gh) or post publicly; left disabled for Arsen.
+  Cross-cutting: TTFT 18 s on 34k tokens = zero prefix-cache benefit although vLLM reports
+  84% hits server-wide. Cause: KG/skills blocks changed per message inside the system prompt.
+  Restructured: stable system prefix; per-turn context persisted as a user message named
+  "context" after the input; plan progress as an ephemeral trailer. Measurement pending
+  (tailnet relay flapping from the laptop tonight).

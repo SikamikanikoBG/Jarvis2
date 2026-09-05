@@ -13,7 +13,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field, TypeAdapter
 
 from jarvis_proto.messages import Message, ToolResult
-from jarvis_proto.runs import Conversation, ModelUsage, Plan, Run, RunKind
+from jarvis_proto.runs import Conversation, ModelUsage, Plan, Run, RunKind, ThinkLevel
 
 
 class _Base(BaseModel):
@@ -105,6 +105,7 @@ class ModelCall(RunEvent):
     message_count: int
     tool_count: int
     think: bool
+    think_level: ThinkLevel | None = None
 
 
 class ModelDelta(RunEvent):
@@ -249,6 +250,9 @@ class RunCreateRequest(BaseModel):
     text: str
     kind: RunKind = RunKind.CHAT
     client_ref: str | None = None  # echoed in run.queued so the UI can correlate
+    # Per-message thinking override; None = the chat role's configured setting.
+    think: bool | None = None
+    think_level: ThinkLevel | None = None
 
 
 class RunCancelRequest(BaseModel):

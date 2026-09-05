@@ -45,6 +45,7 @@ async def status(request: Request) -> dict[str, Any]:
     return {
         "version": __version__,
         "endpoints": list(endpoints),
+        "tools": core.registry.provider_health(),
         "runs": {"running": len(core.engine.active_run_ids()), "queued": core.engine.queued_count()},
     }
 
@@ -153,7 +154,16 @@ async def patch_settings(request: Request, body: dict[str, Any]) -> Settings:
         ) from exc
     await core.store.save_settings(new, only_keys=set(body))
     core.apply_settings(new)
+    if "mcp_servers" in body:
+        await core.reload_tools()
     return new
+
+
+@router.post("/tools/reload", response_model=list[ToolSpec])
+async def reload_tools(request: Request) -> list[ToolSpec]:
+    core = core_of(request)
+    await core.reload_tools()
+    return core.registry.specs()
 
 
 @router.get("/tools", response_model=list[ToolSpec])

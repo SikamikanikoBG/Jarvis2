@@ -73,7 +73,13 @@ async def websocket(ws: WebSocket) -> None:
                     core.bus.publish(ConversationUpdated(conversation=conv))
                     conversation_id = conv.id
                 sub.conversations.add(conversation_id)
-                await core.engine.create_run(text=msg.text, conversation_id=conversation_id, kind=msg.kind)
+                await core.engine.create_run(
+                    text=msg.text,
+                    conversation_id=conversation_id,
+                    kind=msg.kind,
+                    think=msg.think,
+                    think_level=msg.think_level,
+                )
             elif isinstance(msg, RunCancelRequest):
                 await core.engine.cancel(msg.run_id)
             elif isinstance(msg, ToolConfirmRequest):

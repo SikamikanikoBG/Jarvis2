@@ -6,7 +6,7 @@ from jarvis_core.models.base import ModelAdapter
 from jarvis_core.models.fake import FakeAdapter
 from jarvis_core.models.ollama import OllamaAdapter
 from jarvis_core.models.openai_compat import OpenAICompatAdapter
-from jarvis_proto import ModelSpec, Provider, RoleName, Settings
+from jarvis_proto import ModelSpec, Provider, RoleName, Settings, ThinkLevel
 
 
 class AdapterFactory:
@@ -22,10 +22,19 @@ class AdapterFactory:
     def spec_for(self, role: RoleName) -> ModelSpec:
         return self._settings.roles[role]
 
-    def for_role(self, role: RoleName) -> ModelAdapter:
+    def for_role(
+        self, role: RoleName, *, think: bool | None = None, think_level: ThinkLevel | None = None
+    ) -> ModelAdapter:
+        """The adapter for a role, optionally with a per-run thinking override.
+
+        Overrides produce a sibling adapter (cached by spec) that shares the endpoint's
+        semaphore, so concurrency limits still hold per GPU box.
+        """
         if role in self.fakes:
-            return self.fakes[role]
-        spec = self.spec_for(role)
+            fake = self.fakes[role]
+            fake.spec = fake.spec.with_thinking(think, think_level)
+            return fake
+        spec = self.spec_for(role).with_thinking(think, think_level)
         key = spec.model_dump_json()
         adapter = self._cache.get(key)
         if adapter is None:

@@ -54,8 +54,9 @@ from jarvis_proto.runs import (
     RunBudget,
     RunKind,
     RunStatus,
+    ThinkLevel,
 )
-from jarvis_proto.settings import ModelSpec, Provider, RoleName, Settings
+from jarvis_proto.settings import McpServerSpec, McpTransport, ModelSpec, Provider, RoleName, Settings
 from jarvis_proto.tools import ToolSpec
 
 __all__ = [
@@ -67,6 +68,8 @@ __all__ = [
     "GuardArmed",
     "GuardConsumed",
     "JudgeVerdict",
+    "McpServerSpec",
+    "McpTransport",
     "Message",
     "MessageCreated",
     "ModelCall",
@@ -102,6 +105,7 @@ __all__ = [
     "ServerEvent",
     "Settings",
     "Subscribe",
+    "ThinkLevel",
     "ToolCall",
     "ToolCallEvent",
     "ToolConfirmRequest",

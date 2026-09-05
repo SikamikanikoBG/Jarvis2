@@ -10,7 +10,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field, model_validator
 
-from jarvis_proto.runs import RunBudget, RunKind
+from jarvis_proto.runs import RunBudget, RunKind, ThinkLevel
 
 
 class Provider(StrEnum):
@@ -32,16 +32,64 @@ class ModelSpec(BaseModel):
     base_url: str = "http://localhost:11434"
     model: str = ""
     think: bool = False
+    # Only meaningful when ``think`` is on. Ollama: sent as the string level for models that
+    # support levels (gpt-oss); vLLM: ``reasoning_effort``. None = the model's default depth.
+    think_level: ThinkLevel | None = None
     num_ctx: int | None = None
     temperature: float = 0.7
     max_tokens: int | None = None
     timeout_s: int = 180
     keep_alive: str | None = None  # Ollama only, e.g. "30m"
 
+    @model_validator(mode="after")
+    def _level_needs_think(self) -> ModelSpec:
+        if not self.think and self.think_level is not None:
+            object.__setattr__(self, "think_level", None)
+        return self
+
     @property
     def endpoint_key(self) -> str:
         """Concurrency is per endpoint, not per role."""
         return f"{self.provider}@{self.base_url}"
+
+    def with_thinking(self, think: bool | None, level: ThinkLevel | None) -> ModelSpec:
+        """A copy with a per-run override applied; ``None`` keeps the configured value."""
+        if think is None and level is None:
+            return self
+        on = self.think if think is None else think
+        lvl = level if level is not None else self.think_level
+        return self.model_copy(update={"think": on, "think_level": lvl if on else None})
+
+
+class McpTransport(StrEnum):
+    STDIO = "stdio"
+    STREAMABLE_HTTP = "streamable_http"
+
+
+class McpServerSpec(BaseModel):
+    """An external MCP server whose tools appear as ``<name>.<tool>``.
+
+    ``command`` may be the literal ``{python}``, resolved to the core's own interpreter at
+    spawn time, so the default ``fetch`` server works on any machine and inside Docker.
+    """
+
+    name: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,31}$")
+    transport: McpTransport = McpTransport.STDIO
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    url: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+    enabled: bool = True
+    timeout_s: int = 60
+
+    @model_validator(mode="after")
+    def _transport_fields(self) -> McpServerSpec:
+        if self.transport is McpTransport.STDIO and not self.command:
+            raise ValueError(f"mcp server {self.name!r}: stdio transport needs a command")
+        if self.transport is McpTransport.STREAMABLE_HTTP and not self.url:
+            raise ValueError(f"mcp server {self.name!r}: streamable_http transport needs a url")
+        return self
 
 
 def _default_roles() -> dict[RoleName, ModelSpec]:
@@ -67,6 +115,13 @@ def _default_budgets() -> dict[RunKind, RunBudget]:
     }
 
 
+def _default_mcp_servers() -> list[McpServerSpec]:
+    return [
+        McpServerSpec(name="fetch", transport=McpTransport.STDIO, command="{python}", args=["-m", "mcp_server_fetch"]),
+        McpServerSpec(name="homelab", transport=McpTransport.STREAMABLE_HTTP, url="http://ardi:9810/mcp"),
+    ]
+
+
 class Settings(BaseModel):
     assistant_name: str = "Jarvis"
     user_name: str = "Arsen"
@@ -74,6 +129,7 @@ class Settings(BaseModel):
     language_hint: str = "Reply in the language the user wrote in (Bulgarian or English)."
     roles: dict[RoleName, ModelSpec] = Field(default_factory=_default_roles)
     budgets: dict[RunKind, RunBudget] = Field(default_factory=_default_budgets)
+    mcp_servers: list[McpServerSpec] = Field(default_factory=_default_mcp_servers)
     max_concurrent_runs_per_endpoint: int = 1
     repeated_call_threshold: int = 3
     stt_url: str | None = None
@@ -87,4 +143,9 @@ class Settings(BaseModel):
                     f"role {role.value!r} may not think: classifiers, planners and judges with "
                     "thinking on spend their whole budget thinking (V1 lesson, three times)."
                 )
+        names = [s.name for s in self.mcp_servers]
+        if len(names) != len(set(names)):
+            raise ValueError("mcp server names must be unique")
+        if "jarvis" in names:
+            raise ValueError("'jarvis' is reserved for built-in tools")
         return self

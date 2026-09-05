@@ -68,12 +68,16 @@ class OllamaAdapter:
             options["num_ctx"] = self.spec.num_ctx
         if self.spec.max_tokens:
             options["num_predict"] = self.spec.max_tokens
+        # Ollama takes a bool, or a level string for models that support levels (gpt-oss).
+        think: bool | str = self.spec.think
+        if self.spec.think and self.spec.think_level:
+            think = self.spec.think_level
         payload: dict[str, Any] = {
             "model": self.spec.model,
             "messages": to_ollama_messages(messages),
             "stream": True,
             "options": options,
-            "think": self.spec.think,
+            "think": think,
         }
         if tools:
             payload["tools"] = to_ollama_tools(tools)
@@ -114,9 +118,11 @@ class OllamaAdapter:
                         usage.completion_tokens = int(chunk.get("eval_count") or 0)
             except ModelError as exc:
                 if exc.status == 400 and "think" in str(exc).lower() and payload.get("think"):
-                    # The model cannot think; say so loudly, do not silently degrade.
+                    # The model cannot think (or cannot take a level); say so loudly, never degrade silently.
+                    what = "thinking levels" if isinstance(payload["think"], str) else "thinking"
                     raise ModelError(
-                        f"model {self.spec.model!r} does not support thinking; set think=false for this role ({exc})",
+                        f"model {self.spec.model!r} does not support {what}; adjust the role's "
+                        f"think/think_level setting ({exc})",
                         status=400,
                     ) from exc
                 raise

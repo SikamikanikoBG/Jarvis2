@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+ThinkLevel = Literal["low", "medium", "high"]
 
 
 class RunKind(StrEnum):
@@ -98,6 +101,9 @@ class Run(BaseModel):
     last_seq: int = 0
     error: str | None = None
     waiting_reason: str | None = None
+    # Per-run thinking override (None = use the role's setting).
+    think: bool | None = None
+    think_level: ThinkLevel | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     started_at: datetime | None = None
     finished_at: datetime | None = None

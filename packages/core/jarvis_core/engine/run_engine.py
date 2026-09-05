@@ -20,7 +20,17 @@ from jarvis_core.engine.control import RunCancelledError, RunControl
 from jarvis_core.engine.emit import RunEmitter
 from jarvis_core.engine.loop import AgentLoop
 from jarvis_core.models.base import ModelError
-from jarvis_proto import Conversation, ConversationKind, Message, Run, RunKind, RunStatus, Settings, new_id
+from jarvis_proto import (
+    Conversation,
+    ConversationKind,
+    Message,
+    Run,
+    RunKind,
+    RunStatus,
+    Settings,
+    ThinkLevel,
+    new_id,
+)
 from jarvis_proto.events import (
     ConversationUpdated,
     MessageCreated,
@@ -109,6 +119,8 @@ class RunEngine:
         folder_key: str | None = None,
         folder_label: str | None = None,
         title: str | None = None,
+        think: bool | None = None,
+        think_level: ThinkLevel | None = None,
     ) -> tuple[Run, Conversation]:
         conv: Conversation | None = None
         if conversation_id:
@@ -136,6 +148,8 @@ class RunEngine:
             input_text=text,
             budget=settings.budgets.get(kind, Run(id="", conversation_id="", kind=kind).budget),
             priority=_PRIORITY[kind],
+            think=think,
+            think_level=think_level,
         )
         await self._store.create_run(run)
         # run_id must be set on the user message so resume can find the run's messages.

@@ -41,17 +41,32 @@ class ToolRegistry:
     def add(self, provider: ToolProvider) -> None:
         self._providers.append(provider)
 
+    def set_providers(self, providers: list[ToolProvider]) -> None:
+        self._providers = list(providers)
+
     async def refresh(self) -> None:
         index: dict[str, tuple[ToolProvider, ToolSpec]] = {}
+        self._errors: dict[str, str] = {}
         for provider in self._providers:
             try:
                 for spec in await provider.list_tools():
                     if spec.name in index:
                         log.warning("tool %s from %s shadows an earlier provider", spec.name, provider.name)
                     index[spec.name] = (provider, spec)
-            except Exception:
-                log.exception("provider %s failed to list tools", provider.name)
+            except Exception as exc:
+                self._errors[provider.name] = getattr(provider, "error", None) or f"{type(exc).__name__}: {exc}"
+                log.warning("provider %s failed to list tools: %s", provider.name, self._errors[provider.name])
         self._index = index
+
+    def provider_health(self) -> list[dict[str, Any]]:
+        """Per provider: how many tools it contributes and why it failed, if it did."""
+        errors = getattr(self, "_errors", {})
+        out: list[dict[str, Any]] = []
+        for provider in self._providers:
+            count = sum(1 for p, _ in self._index.values() if p is provider)
+            error = errors.get(provider.name) or (getattr(provider, "error", None) if count == 0 else None)
+            out.append({"name": provider.name, "tools": count, "ok": error is None, "error": error})
+        return out
 
     def specs(self) -> list[ToolSpec]:
         return [spec for _, spec in self._index.values()]

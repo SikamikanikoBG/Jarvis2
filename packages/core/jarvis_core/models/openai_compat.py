@@ -81,6 +81,8 @@ class OpenAICompatAdapter:
             "temperature": self.spec.temperature,
             "chat_template_kwargs": {"enable_thinking": self.spec.think},
         }
+        if self.spec.think and self.spec.think_level:
+            payload["reasoning_effort"] = self.spec.think_level
         if self.spec.max_tokens:
             payload["max_tokens"] = self.spec.max_tokens
         if tools:

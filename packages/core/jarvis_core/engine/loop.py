@@ -7,6 +7,7 @@ import logging
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Protocol
 
 from jarvis_core.db import Store
 from jarvis_core.engine.bus import EventBus
@@ -29,6 +30,7 @@ from jarvis_proto import (
     RunKind,
     RunStatus,
     Settings,
+    ThinkLevel,
     ToolCall,
     ToolResult,
     ToolSpec,
@@ -57,12 +59,18 @@ _UNATTENDED = {RunKind.SCHEDULED, RunKind.TRIAGE, RunKind.MEETING, RunKind.SYSTE
 _TOOL_TIMEOUT_S = 120.0
 
 
+class AdapterGetter(Protocol):
+    def __call__(
+        self, role: RoleName, *, think: bool | None = None, think_level: ThinkLevel | None = None
+    ) -> ModelAdapter: ...
+
+
 class AgentLoop:
     def __init__(
         self,
         store: Store,
         bus: EventBus,
-        adapters: Callable[[RoleName], ModelAdapter],
+        adapters: AdapterGetter,
         registry: ToolRegistry,
         context: ContextAssembler,
         supervisor: Supervisor,
@@ -108,7 +116,7 @@ class AgentLoop:
                 return
 
             run.steps_used += 1
-            adapter = self._adapters(RoleName.CHAT)
+            adapter = self._adapters(RoleName.CHAT, think=run.think, think_level=run.think_level)
             await emit(
                 ModelCall(
                     run_id="",
@@ -119,6 +127,7 @@ class AgentLoop:
                     message_count=len(messages),
                     tool_count=len(tools),
                     think=adapter.spec.think,
+                    think_level=adapter.spec.think_level,
                 )
             )
             text, reasoning, calls, usage, finish = await self._stream(adapter, messages, tools, run, ctl)

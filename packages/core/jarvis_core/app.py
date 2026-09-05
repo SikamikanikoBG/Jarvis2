@@ -22,6 +22,7 @@ from jarvis_core.engine.loop import AgentLoop
 from jarvis_core.engine.supervision import Supervisor
 from jarvis_core.models import AdapterFactory
 from jarvis_core.tools import BuiltinProvider, ToolRegistry
+from jarvis_core.tools.mcp_provider import McpProvider
 from jarvis_proto import Settings
 from jarvis_proto.settings import RoleName
 
@@ -36,7 +37,9 @@ class Core:
         self.bus = EventBus()
         self.settings = Settings()
         self.adapters = AdapterFactory(self.settings)
-        self.registry = ToolRegistry([BuiltinProvider()])
+        self.builtin = BuiltinProvider()
+        self.mcp: list[McpProvider] = []
+        self.registry = ToolRegistry([self.builtin])
         self.context = ContextAssembler(self.store, lambda: self.settings)
         self.supervisor = Supervisor(lambda: self.settings, lambda: self.adapters.for_role(RoleName.JUDGE))
         self.loop = AgentLoop(
@@ -55,17 +58,29 @@ class Core:
     async def start(self) -> None:
         await self.db.open()
         self.apply_settings(await self.store.load_settings())
-        await self.registry.refresh()
+        await self.reload_tools()
         await self.engine.start()
         log.info("jarvis-core %s ready (db=%s, tools=%d)", __version__, self.db.path, len(self.registry.specs()))
 
     async def stop(self) -> None:
         await self.engine.stop()
+        for provider in self.mcp:
+            await provider.stop()
         await self.db.close()
 
     def apply_settings(self, settings: Settings) -> None:
         self.settings = settings
         self.adapters.update_settings(settings)
+
+    async def reload_tools(self) -> None:
+        """(Re)connect every enabled MCP server from settings and rebuild the tool index."""
+        for provider in self.mcp:
+            await provider.stop()
+        self.mcp = [McpProvider(spec) for spec in self.settings.mcp_servers if spec.enabled]
+        for provider in self.mcp:
+            await provider.start()
+        self.registry.set_providers([self.builtin, *self.mcp])
+        await self.registry.refresh()
 
 
 def create_app(config: CoreConfig | None = None, *, core: Core | None = None) -> FastAPI:

@@ -166,14 +166,14 @@ class Store:
         return message
 
     async def list_messages(self, conversation_id: str, *, limit: int | None = None) -> list[Message]:
-        sql = "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at, id"
+        sql = "SELECT * FROM messages WHERE conversation_id = ? ORDER BY rowid"
         rows = await self.db.fetchall(sql, (conversation_id,))
         if limit is not None:
             rows = rows[-limit:]
         return [self._message(r) for r in rows]
 
     async def list_run_messages(self, run_id: str) -> list[Message]:
-        rows = await self.db.fetchall("SELECT * FROM messages WHERE run_id = ? ORDER BY created_at, id", (run_id,))
+        rows = await self.db.fetchall("SELECT * FROM messages WHERE run_id = ? ORDER BY rowid", (run_id,))
         return [self._message(r) for r in rows]
 
     # --- runs -----------------------------------------------------------------------

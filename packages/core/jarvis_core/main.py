@@ -24,6 +24,11 @@ def main() -> None:
         port=config.port,
         log_level=config.log_level.lower(),
         ws_max_size=8 * 1024 * 1024,  # browser screenshots ride the WS as base64
+        # Behind Tailscale Serve the proxy is the Docker gateway, not 127.0.0.1, so the default
+        # allow-list would drop X-Forwarded-Proto and every generated URL would say http://.
+        # Safe here: the port is only reachable through the host's own mapping.
+        proxy_headers=True,
+        forwarded_allow_ips="*",
     )
 
 

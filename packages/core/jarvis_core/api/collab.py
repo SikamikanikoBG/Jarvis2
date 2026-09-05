@@ -85,9 +85,11 @@ async def pair(request: Request) -> dict[str, str]:
     import qrcode.image.svg
 
     core = core_of(request)
-    base = str(request.base_url).rstrip("/")
+    # settings.public_url wins: behind a reverse proxy (Tailscale Serve) the request's own
+    # scheme/host may be the internal one, and a phone needs https for the mic and the PWA.
+    base = (core.settings.public_url or str(request.base_url)).rstrip("/")
     url = f"{base}/?token={core.config.token}" if core.config.token else f"{base}/"
     img = qrcode.make(url, image_factory=qrcode.image.svg.SvgPathImage, box_size=8, border=2)
     buf = io.BytesIO()
     img.save(buf)
-    return {"url": url, "qr_svg": buf.getvalue().decode("utf-8")}
+    return {"url": url, "qr_svg": buf.getvalue().decode("utf-8"), "secure": str(url.startswith("https://")).lower()}

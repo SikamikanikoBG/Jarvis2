@@ -133,11 +133,26 @@ class TriageSettings(BaseModel):
     categories: list[dict[str, str]] = Field(default_factory=list)  # {name, folder, rule}
 
 
+class Personality(BaseModel):
+    """How Jarvis speaks. Tone only — it may never change what he is willing to say."""
+
+    enabled: bool = True
+    formality: Literal["formal", "balanced", "casual"] = "casual"
+    humor: Literal["none", "light", "witty"] = "witty"
+    verbosity: Literal["terse", "concise", "detailed"] = "concise"
+    address_style: Literal["name", "sir", "neutral"] = "name"
+    persona: str = (
+        "Dry, quick and unimpressed by hype. You have opinions and you state them in one line. "
+        "You never pad, never flatter, and never explain what Arsen already knows."
+    )
+
+
 class Settings(BaseModel):
     assistant_name: str = "Jarvis"
     user_name: str = "Arsen"
     timezone: str = "Europe/Sofia"
     language_hint: str = "Reply in the language the user wrote in (Bulgarian or English)."
+    personality: Personality = Field(default_factory=Personality)
     roles: dict[RoleName, ModelSpec] = Field(default_factory=_default_roles)
     budgets: dict[RunKind, RunBudget] = Field(default_factory=_default_budgets)
     mcp_servers: list[McpServerSpec] = Field(default_factory=_default_mcp_servers)
@@ -155,6 +170,10 @@ class Settings(BaseModel):
     planning_enabled: bool = True
     kg_learning: bool = True
     triage: TriageSettings = Field(default_factory=TriageSettings)
+    # The address people actually reach this core on (e.g. the Tailscale Serve HTTPS URL).
+    # Used for pairing/QR; without it the URL is derived from the request. The phone's mic and
+    # the PWA need a secure context, so this is normally an https:// URL.
+    public_url: str | None = None
     stt_url: str | None = None
     stt_kind: Literal["openai", "asr"] = "openai"  # OpenAI-compatible /v1/audio/transcriptions or WhisperX /asr
     stt_model: str = "large-v3"

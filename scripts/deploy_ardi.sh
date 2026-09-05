@@ -46,6 +46,7 @@ fi
 $SSH "docker rm -f $NAME >/dev/null 2>&1 || true; \
   docker run -d --name $NAME --restart unless-stopped \
     -p $BIND:$PORT:9020 \
+    -p 127.0.0.1:$PORT:9020 \
     -v jarvis2-data:/data \
     -e JARVIS_TOKEN=$TOKEN \
     -e TZ=Europe/Sofia \

@@ -14,6 +14,7 @@ from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from jarvis_core.db import Store
+from jarvis_core.features.personality import personality_block
 from jarvis_proto import Message, Plan, Role, Run, RunKind, Settings
 
 # One numbered list behind a precedence block. Count, not length, is what degrades the
@@ -71,6 +72,10 @@ class ContextAssembler:
         parts = [
             SYSTEM_RULES.format(assistant_name=s.assistant_name, user_name=s.user_name, language_hint=s.language_hint)
         ]
+        # Personality sits right after the rules and before the per-message blocks: it is as
+        # stable as the rules, so it stays inside the prompt-cache prefix.
+        if (voice := personality_block(s.personality, s.user_name, s.assistant_name)) is not None:
+            parts.append(voice)
         for provider in self._providers:
             try:
                 block = await provider.context_block(run, skill_names=skill_names)

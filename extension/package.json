@@ -1,0 +1,19 @@
+{
+  "name": "jarvis-extension",
+  "private": true,
+  "version": "2.0.0",
+  "description": "Jarvis Side Panel — Chromium MV3 extension; browser tool provider for the Jarvis V2 core",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "test": "node --test test/kernel.test.mjs test/transport.test.mjs",
+    "check": "node --check background.js && node --check kernel.js && node --check sidepanel.js && node --check options.js && node --check content.js",
+    "mock-core": "node test/mock-core.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0",
+    "ws": "^8.21.3"
+  }
+}

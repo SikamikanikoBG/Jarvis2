@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Jarvis side panel — settings</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+         max-width: 560px; margin: 32px auto; padding: 0 20px; line-height: 1.5; }
+  label { display: block; margin: 18px 0 5px; font-weight: 600; }
+  input[type=text], input[type=password] {
+    width: 100%; padding: 8px 10px; border-radius: 7px; box-sizing: border-box;
+    border: 1px solid #999a; background: transparent; color: inherit; font: inherit;
+  }
+  .hint { font-size: 12.5px; opacity: .72; margin-top: 5px; }
+  .row { display: flex; align-items: center; gap: 12px; margin-top: 22px; flex-wrap: wrap; }
+  button { padding: 8px 18px; border-radius: 8px; cursor: pointer; font: inherit;
+           border: 1px solid #7b6cff; background: #7b6cff; color: #fff; }
+  button.secondary { background: transparent; color: inherit; border-color: #999a; }
+  #saved { color: #46c98b; font-size: 13px; }
+  #result { margin-top: 14px; font-size: 13px; padding: 8px 10px; border-radius: 7px;
+            background: rgba(127,127,127,.12); white-space: pre-wrap; }
+  #result.ok { color: #2f9e6a; }
+  #result.bad { color: #d05353; }
+  code { background: rgba(127,127,127,.18); padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+  <h2>Jarvis side panel</h2>
+
+  <label for="url">Jarvis core URL</label>
+  <input type="text" id="url" placeholder="http://localhost:9020" autocomplete="off" spellcheck="false">
+  <div class="hint">Where the Jarvis V2 core serves its web app and <code>/ws</code>. Use the
+    Tailscale name or LAN IP if it runs on another machine.</div>
+
+  <label for="token">Access token</label>
+  <input type="password" id="token" placeholder="the core's bearer token" autocomplete="off">
+  <div class="hint">The token the core was started with. Leave empty if the core runs without one.</div>
+
+  <div class="row">
+    <button id="save">Save</button>
+    <button id="test" class="secondary">Test connection</button>
+    <span id="saved" hidden>Saved — reconnecting</span>
+  </div>
+  <div id="result" hidden></div>
+
+  <p class="hint" style="margin-top:28px">Jarvis acts in your tabs through this extension only when the core
+    asks it to; which tools it may use is decided by the core's tool policy, not here.</p>
+  <script src="options.js"></script>
+</body>
+</html>

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Jarvis</title>
+<style>
+  :root { color-scheme: light dark; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column;
+    font: 12px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0f1117; color: #e6e8ef;
+  }
+  @media (prefers-color-scheme: light) {
+    body { background: #f5f6fa; color: #1a1c23; }
+    .bar { background: #ffffff; border-bottom-color: #e2e4ec; }
+    .btn { border-color: #d7dae5; color: #4a4f60; }
+    .url { color: #6b7080; }
+  }
+  .bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 8px; background: #151823;
+    border-bottom: 1px solid #232739; flex: 0 0 auto;
+    white-space: nowrap; overflow: hidden;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #d05353; flex: 0 0 auto; }
+  .dot.on { background: #46c98b; }
+  .dot.wait { background: #e0a83a; }
+  .state { font-weight: 600; letter-spacing: .2px; flex: 0 0 auto; }
+  .url { color: #9aa1b8; overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; min-width: 0; }
+  .btn {
+    background: transparent; border: 1px solid #2c3145; color: #9aa1b8;
+    border-radius: 999px; padding: 2px 8px; cursor: pointer; font-size: 12px; flex: 0 0 auto;
+  }
+  .btn:hover { border-color: #7b6cff; color: #b6aeff; }
+  iframe { flex: 1; width: 100%; border: 0; }
+  .setup { padding: 24px 18px; line-height: 1.55; font-size: 13px; }
+  .setup h3 { margin: 0 0 8px; }
+  .setup code { background: rgba(127,127,127,.18); padding: 1px 5px; border-radius: 4px; }
+  .err { color: #d05353; font-size: 12px; padding: 6px 10px; border-bottom: 1px solid #232739; }
+</style>
+</head>
+<body>
+  <div class="bar" id="bar" title="Connection to the Jarvis core">
+    <span class="dot" id="dot"></span>
+    <span class="state" id="state">Jarvis</span>
+    <span class="url" id="url"></span>
+    <button class="btn" id="gear" title="Extension settings">&#9881;</button>
+  </div>
+  <div class="err" id="err" hidden></div>
+  <div class="setup" id="setup" hidden>
+    <h3>Connect to Jarvis</h3>
+    <p>Set the Jarvis core URL and access token, then reopen this panel.</p>
+    <p>The token is the one the core was started with (<code>JARVIS_TOKEN</code>);
+       leave it empty if the core runs without one.</p>
+    <p><button class="btn" id="openOpts">Open settings</button></p>
+  </div>
+  <iframe id="frame" hidden allow="clipboard-write; microphone"></iframe>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

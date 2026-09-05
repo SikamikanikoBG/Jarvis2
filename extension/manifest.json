@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Jarvis Side Panel",
+  "version": "2.0.0",
+  "description": "Jarvis in the browser sidebar — reads and acts on the page you are on, as a tool provider for the Jarvis V2 core.",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "sidePanel",
+    "tabs",
+    "scripting",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Open Jarvis side panel"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

@@ -103,3 +103,16 @@ harness — library vs. own is an open question to settle in the design.
 - 2026-09-05 — Proof the imported context reaches the model: "Who is Rumen?" answered
   correctly with ZERO tool calls (knowledge graph injected), "What is on my to-do board?"
   read the real notes via notes.list.
+- 2026-09-05 — Real failure from Arsen's own use: "сложи звукът на 33%" made the model improvise
+  PowerShell `Add-Type` p/invoke, fail, and retry the same broken script six times, each one
+  stopping for a confirmation, until the supervisor stopped the run. Three separate defects:
+  (1) no volume tool existed, so the model had only `shell_run`; (2) V1's `audio_devices` skill
+  covers switching devices, not setting a level; (3) every attempt asked for confirmation, which
+  turned a failure into six interruptions. The supervisor itself worked exactly as designed.
+  Fixes: ported V1's Core Audio volume control into the host as `volume_get`/`volume_set`
+  (mutating, not destructive — trivially reversible, so it does not stop an interactive run),
+  declared the `comtypes` dependency it needs, and added `Settings.confirmations`
+  (mode destructive|off, always_allow / always_ask patterns). Re-ran the same sentence: one
+  tool call, 2 steps, "Готово, звукът е на 33%" — and the machine really is at 33%.
+  Note: unattended runs (scheduled/triage/meeting/system) never asked for confirmation even
+  before this — scheduled prompts were never blocked by it.

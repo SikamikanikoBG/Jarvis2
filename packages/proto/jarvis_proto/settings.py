@@ -133,6 +133,44 @@ class TriageSettings(BaseModel):
     categories: list[dict[str, str]] = Field(default_factory=list)  # {name, folder, rule}
 
 
+class Confirmations(BaseModel):
+    """When Jarvis stops to ask before running a tool.
+
+    ``destructive`` (default) asks before anything a tool declares destructive — sending mail,
+    creating calendar entries, writing files, running a shell command. ``off`` never asks: full
+    autonomy, and the supervisor plus per-run budgets are what keep a bad idea bounded.
+
+    Unattended runs (scheduled, triage, meeting, system) never ask regardless — a schedule that
+    fires at 06:30 has nobody to answer it.
+    """
+
+    mode: Literal["destructive", "off"] = "destructive"
+    # Tool names or `namespace.*` patterns that never ask, whatever the mode. Use it to free the
+    # tools you trust (e.g. "workocholic.shell_run") while mail still stops for a look.
+    always_allow: list[str] = Field(default_factory=list)
+    # Names that ALWAYS ask, even with mode="off". The last line before something irreversible.
+    always_ask: list[str] = Field(default_factory=lambda: ["*.outlook_send"])
+
+    @staticmethod
+    def _matches(name: str, pattern: str) -> bool:
+        if pattern in (name, "*"):
+            return True
+        if pattern.endswith(".*"):
+            return name.startswith(pattern[:-1])
+        if pattern.startswith("*."):
+            return name.split(".", 1)[-1] == pattern[2:]
+        return False
+
+    def needs_confirmation(self, name: str, *, destructive: bool, unattended: bool) -> bool:
+        if any(self._matches(name, p) for p in self.always_ask):
+            return not unattended
+        if unattended or self.mode == "off":
+            return False
+        if any(self._matches(name, p) for p in self.always_allow):
+            return False
+        return destructive
+
+
 class Personality(BaseModel):
     """How Jarvis speaks. Tone only — it may never change what he is willing to say."""
 
@@ -153,6 +191,7 @@ class Settings(BaseModel):
     timezone: str = "Europe/Sofia"
     language_hint: str = "Reply in the language the user wrote in (Bulgarian or English)."
     personality: Personality = Field(default_factory=Personality)
+    confirmations: Confirmations = Field(default_factory=Confirmations)
     roles: dict[RoleName, ModelSpec] = Field(default_factory=_default_roles)
     budgets: dict[RunKind, RunBudget] = Field(default_factory=_default_budgets)
     mcp_servers: list[McpServerSpec] = Field(default_factory=_default_mcp_servers)

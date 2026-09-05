@@ -30,6 +30,7 @@ from starlette.routing import Mount, Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from jarvis_host import __version__
+from jarvis_host.audio import Audio
 from jarvis_host.com import ComWorker
 from jarvis_host.config import HostConfig
 from jarvis_host.files import Files
@@ -65,6 +66,7 @@ class Deps:
     files: Files
     shell: Shell
     screen: Screen
+    audio: Audio
     status: Status
 
 
@@ -78,7 +80,7 @@ def make_deps(
     files = Files(roots)
     shell = Shell(allowed=config.shell_allow, default_cwd=files.roots[0])
     screen = Screen(enabled=config.screen_enabled)
-    return Deps(config, worker, outlook, files, shell, screen, Status(config, worker, outlook))
+    return Deps(config, worker, outlook, files, shell, screen, Audio(), Status(config, worker, outlook))
 
 
 def json_text(obj: Any) -> str:
@@ -250,6 +252,21 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
         """Run a command in PowerShell (pwsh if installed) with a deadline; returns exit_code, stdout, stderr (each capped at 20k chars). A timeout is an error, not a result."""
         return json_text(
             await _run("shell_run", lambda: asyncio.to_thread(deps.shell.run, command, cwd, float(timeout_s)))
+        )
+
+    @tool("volume_get", READ)
+    async def volume_get() -> str:
+        """Current system volume (0-100) and mute state of the default playback device."""
+        return json_text(await _run("volume_get", lambda: deps.worker.acall(deps.audio.get, label="volume_get")))
+
+    @tool("volume_set", MUTATING_IDEMPOTENT)
+    async def volume_set(volume: int | None = None, muted: bool | None = None) -> str:
+        """Set the system volume to an absolute percentage (0-100) and/or mute state, then read it back. Setting a volume above 0 unmutes. Use this instead of writing PowerShell: the media keys can only step the volume, so an absolute level cannot be reached by pressing them."""
+        return json_text(
+            await _run(
+                "volume_set",
+                lambda: deps.worker.acall(deps.audio.set, volume, muted, label="volume_set"),
+            )
         )
 
     @tool("screen_grab", READ)

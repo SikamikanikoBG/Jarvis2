@@ -365,7 +365,9 @@ class AgentLoop:
                 )
                 continue
 
-            if spec is not None and spec.destructive and run.kind not in _UNATTENDED:
+            if self._settings().confirmations.needs_confirmation(
+                call.name, destructive=bool(spec and spec.destructive), unattended=run.kind in _UNATTENDED
+            ):
                 decision = await self._recorded_decision(run, call.id)
                 if decision is None:
                     await self._wait_for_confirmation(run, ctl, call, reason="this action cannot be undone")

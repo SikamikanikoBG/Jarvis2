@@ -72,6 +72,7 @@ from jarvis_proto.runs import (
     ThinkLevel,
 )
 from jarvis_proto.settings import (
+    Confirmations,
     McpServerSpec,
     McpTransport,
     ModelSpec,
@@ -87,6 +88,7 @@ __all__ = [
     "Board",
     "ClientMessage",
     "CollabKey",
+    "Confirmations",
     "Conversation",
     "ConversationDeleted",
     "ConversationKind",

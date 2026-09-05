@@ -298,3 +298,46 @@ async def test_schedule_tool_creates_from_chat(harness: Harness):
     assert any(e.type == "schedule.changed" for e in seen)
     items = await core.schedules.list()
     assert [s.name for s in items] == ["Standup"] and items[0].cron == "30 8 * * 1-5" and items[0].next_fire is not None
+
+
+# --- confirmations ---------------------------------------------------------------------------
+
+
+def test_confirmation_policy():
+    """Arsen asked to be able to switch the human confirmation off; unattended runs never ask,
+    and outlook_send keeps asking unless it is unattended."""
+    from jarvis_proto.settings import Confirmations
+
+    default = Confirmations()
+    assert default.needs_confirmation("workocholic.shell_run", destructive=True, unattended=False)
+    assert not default.needs_confirmation("workocholic.outlook_list", destructive=False, unattended=False)
+    # A schedule firing at 06:30 has nobody to answer it.
+    assert not default.needs_confirmation("workocholic.shell_run", destructive=True, unattended=True)
+
+    off = Confirmations(mode="off")
+    assert not off.needs_confirmation("workocholic.shell_run", destructive=True, unattended=False)
+    # ...but the always_ask floor still holds for sending mail.
+    assert off.needs_confirmation("workocholic.outlook_send", destructive=True, unattended=False)
+    assert not off.needs_confirmation("workocholic.outlook_send", destructive=True, unattended=True)
+
+    selective = Confirmations(always_allow=["workocholic.shell_run", "fs.*"])
+    assert not selective.needs_confirmation("workocholic.shell_run", destructive=True, unattended=False)
+    assert not selective.needs_confirmation("fs.write", destructive=True, unattended=False)
+    assert selective.needs_confirmation("workocholic.calendar_create", destructive=True, unattended=False)
+
+
+async def test_confirmations_off_runs_a_destructive_tool_without_asking(harness: Harness):
+    from tests.test_loop import with_tools
+
+    tools = await with_tools(harness)
+    harness.enable(confirmations=__import__("jarvis_proto").Confirmations(mode="off"))
+    harness.chat.push(
+        FakeTurn(tool_calls=[ToolCall(id="c1", name="test.send", arguments={})]),
+        FakeTurn(text="done, no questions asked"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="send it", conversation_id=conv.id)
+    seen = await harness.wait_for(sub, "run.done", timeout=10)
+    assert tools.calls == ["send"]
+    assert not any(e.type == "tool.confirm_requested" for e in seen)

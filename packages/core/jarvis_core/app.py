@@ -6,6 +6,7 @@ import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -188,6 +189,9 @@ def create_app(config: CoreConfig | None = None, *, core: Core | None = None) ->
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # A mounted sub-app only matches "/mcp/..."; MCP clients POST to "/mcp". Normalise before
+    # routing so the exact path is not swallowed (405) by the SPA catch-all route.
+    app.add_middleware(_TrailingSlashMiddleware, paths=("/mcp",))
     app.include_router(rest.open_router)
     app.include_router(rest.router)
     app.include_router(features.router)
@@ -199,6 +203,17 @@ def create_app(config: CoreConfig | None = None, *, core: Core | None = None) ->
     app.mount("/mcp", CollabAuthMiddleware(the_core.mcp_server.streamable_http_app(), the_core))
     _mount_spa(app, cfg.resolve_web_dist())
     return app
+
+
+class _TrailingSlashMiddleware:
+    def __init__(self, app: Any, paths: tuple[str, ...]) -> None:
+        self.app = app
+        self.paths = paths
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] == "http" and scope.get("path") in self.paths:
+            scope = {**scope, "path": scope["path"] + "/", "raw_path": (scope["path"] + "/").encode()}
+        await self.app(scope, receive, send)
 
 
 def _mount_spa(app: FastAPI, dist: Path | None) -> None:

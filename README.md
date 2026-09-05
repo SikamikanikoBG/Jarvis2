@@ -34,9 +34,40 @@ nothing falls back silently.
 Dev loop: `uv run jarvis-core` in one terminal, `cd web && npm run dev` in another
 (Vite proxies `/api` and `/ws` to :9020).
 
+## Everyday running (Arsen's setup)
+
+The **core lives on ardi** in Docker with `--restart unless-stopped`, so it comes back on its
+own after an ardi reboot. Nothing to do there.
+
+    http://100.97.120.53:9020/?token=<JARVIS_TOKEN>
+
+The **laptop** only runs `jarvis-host` — the daemon that gives Jarvis this machine's Outlook,
+files, shell and screen. After a Windows restart it starts itself 40 s after logon (a per-user
+Task Scheduler job, no admin, no service):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1     # register (once)
+Start-ScheduledTask -TaskName JarvisHost                                   # start it now
+Get-ScheduledTask -TaskName JarvisHost                                     # is it registered?
+powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1 -Remove   # undo
+```
+
+Start it by hand instead: `uv run jarvis-host` (or `powershell -File scripts\start-host.ps1`,
+which is a no-op if it is already up). Check it: `curl http://127.0.0.1:9030/healthz`; its log
+is `data/host.log`. When the laptop is off, the core's Status screen shows `workocholic` red
+and every other tool keeps working — that is by design, not a failure.
+
+If the core does not see the host after a restart, press **Reload tools** on Status
+(`POST /api/tools/reload`); MCP servers reconnect on the next call anyway.
+
+Keep the `.ps1` files pure ASCII: `powershell.exe` (5.1) reads a BOM-less script as ANSI, and
+one em-dash makes the whole file a parse error.
+
 ## Run it (Docker, e.g. on ardi)
 
 ```bash
+bash scripts/deploy_ardi.sh          # builds ON ardi from a source tarball, SPA included
+# or by hand:
 docker build -t jarvis2-core .
 docker run -d --name jarvis2 -p 9020:9020 -v jarvis2-data:/data -e JARVIS_TOKEN=... jarvis2-core
 ```

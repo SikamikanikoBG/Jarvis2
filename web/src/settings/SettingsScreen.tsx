@@ -209,7 +209,7 @@ export function SettingsScreen() {
                         <NumberInput value={b.max_steps} min={1} onChange={(v) => patchBudget(kind, 'max_steps', v ?? 1)} label={`${kind} max steps`} />
                       </td>
                       <td>
-                        <NumberInput value={b.max_tokens} min={1} step={1000} onChange={(v) => patchBudget(kind, 'max_tokens', v ?? 1)} label={`${kind} max tokens`} />
+                        <NumberInput value={b.max_tokens} min={1} onChange={(v) => patchBudget(kind, 'max_tokens', v ?? 1)} label={`${kind} max tokens`} />
                       </td>
                       <td>
                         <NumberInput value={b.max_seconds} min={1} onChange={(v) => patchBudget(kind, 'max_seconds', v ?? 1)} label={`${kind} max seconds`} />
@@ -256,12 +256,12 @@ function Field({ label, hint, error, className, children }: { label: string; hin
   );
 }
 
+/** `step="any"` on purpose: a fixed step makes the browser block submit for values like num_ctx=8192. */
 function NumberInput({
   value,
   onChange,
   min,
   max,
-  step,
   placeholder,
   nullable,
   label,
@@ -271,7 +271,6 @@ function NumberInput({
   onChange: (v: number | null) => void;
   min?: number;
   max?: number;
-  step?: number;
   placeholder?: string;
   nullable?: boolean;
   label?: string;
@@ -285,7 +284,7 @@ function NumberInput({
       value={value ?? ''}
       min={min}
       max={max}
-      step={step ?? 'any'}
+      step="any"
       placeholder={placeholder}
       aria-label={label}
       disabled={disabled}
@@ -328,10 +327,10 @@ function RoleCard({ role, spec, onChange }: { role: RoleName; spec: ModelSpec; o
           <input className="input" value={spec.model} onChange={(e) => onChange({ model: e.target.value })} placeholder="qwen3.8-27b" />
         </Field>
         <Field label="Context (num_ctx)" hint="Allocates VRAM. Empty = model default.">
-          <NumberInput value={spec.num_ctx} min={512} step={1024} nullable onChange={(v) => onChange({ num_ctx: v })} placeholder="default" />
+          <NumberInput value={spec.num_ctx} min={512} nullable onChange={(v) => onChange({ num_ctx: v })} placeholder="default" />
         </Field>
         <Field label="Temperature">
-          <NumberInput value={spec.temperature} min={0} max={2} step={0.05} onChange={(v) => onChange({ temperature: v ?? 0 })} />
+          <NumberInput value={spec.temperature} min={0} max={2} onChange={(v) => onChange({ temperature: v ?? 0 })} />
         </Field>
         <Field label="Max tokens" hint="Per reply. Empty = unlimited.">
           <NumberInput value={spec.max_tokens} min={1} nullable onChange={(v) => onChange({ max_tokens: v })} placeholder="unlimited" />

@@ -106,28 +106,40 @@ await session('desktop-dark', desktop, 'dark', async (page, shot) => {
   await page.click('.nav-link >> text=Settings');
   await page.waitForSelector('.role-card');
   await shot('13-settings');
-  // the think switch is disabled for non-chat roles by design, so provoke the 422 with a bad number
-  await page.fill('input[type=number] >> nth=0', '0');
+  await page.evaluate(() => document.querySelector('.think-row')?.scrollIntoView({ block: 'start' }));
+  await page.waitForTimeout(200);
+  await shot('13b-settings-think-mcp');
+  await page.click('.mcp-row >> nth=0 >> .icon-btn >> nth=0');
+  await page.waitForTimeout(200);
+  await page.evaluate(() => document.querySelector('.mcp-form')?.scrollIntoView({ block: 'center' }));
+  await shot('13c-settings-mcp-edit');
+  await page.click('.mcp-form .btn-ghost');
+  // native min/max validation stops obviously bad numbers client-side; a bad timezone reaches the server → 422
+  await page.fill('input[placeholder="Europe/Sofia"]', 'Mars');
   await page.waitForTimeout(200);
   const saveResponse = page.waitForResponse((r) => r.url().includes('/api/settings') && r.request().method() === 'PATCH');
   await page.click('.savebar .btn-primary');
   const res = await saveResponse;
   console.log('settings PATCH →', res.status(), (await res.text()).slice(0, 200));
   await page.waitForTimeout(300);
-  await page.evaluate(() => document.querySelector('.savebar')?.scrollIntoView());
+  await page.evaluate(() => document.querySelector('.field-error')?.scrollIntoView({ block: 'center' }));
   await shot('14-settings-422');
   // status
   await page.click('.nav-link >> text=Status');
   await page.waitForSelector('.ep');
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(400);
   await shot('15-status');
+  await page.click('.tools-list > summary');
+  await page.waitForTimeout(200);
+  await page.evaluate(() => document.querySelector('.tools-list')?.scrollIntoView({ block: 'start' }));
+  await shot('16-status-tools');
 });
 
 await session('desktop-light', desktop, 'light', async (page, shot) => {
   await page.goto(base);
   await page.waitForSelector('.conv');
-  await page.click('.conv:has-text("Deck numbers")');
-  await page.waitForSelector('.msg-bot');
+  await page.click('.conv:has-text("Deck numbers")'); // an empty conversation
+  await page.waitForSelector('textarea:not([disabled])');
   await page.fill('textarea', 'tools please');
   await page.keyboard.press('Enter');
   await page.waitForSelector('.runchip:not(:has(.chip-accent))', { timeout: 40000 });

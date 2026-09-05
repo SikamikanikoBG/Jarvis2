@@ -411,6 +411,7 @@ const server = createServer(async (req, res) => {
           if (s.transport === 'streamable_http' && !s.url) errors.push({ loc: ['body', 'mcp_servers', i], msg: `Value error, mcp server '${s.name}': streamable_http transport needs a url`, type: 'value_error' });
         });
         if (typeof next.max_concurrent_runs_per_endpoint !== 'number' || next.max_concurrent_runs_per_endpoint < 1) errors.push({ loc: ['body', 'max_concurrent_runs_per_endpoint'], msg: 'Input should be greater than or equal to 1', type: 'greater_than_equal' });
+        if (typeof next.timezone !== 'string' || !next.timezone.includes('/')) errors.push({ loc: ['body', 'timezone'], msg: `Value error, unknown IANA timezone '${next.timezone}'`, type: 'value_error' });
         if (errors.length) return json(res, 422, { detail: errors });
         settings = next;
         return json(res, 200, settings);

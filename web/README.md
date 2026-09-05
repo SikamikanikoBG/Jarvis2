@@ -55,7 +55,7 @@ src/
   styles/          tokens.css (palette, radii, spacing, type) · base.css (reset + primitives) · layout.css ·
                    chat.css · panels.css
 mock/server.mjs    scripted mock core for development
-scripts/           gen-icons.mjs (PNG icons, no deps), shots.mjs (visual smoke run), probe-scroll.mjs
+scripts/           gen-icons.mjs (PNG icons, no deps), shots.mjs (visual smoke run → scripts/shots/, git-ignored)
 e2e/               playwright specs (run against the real core)
 ```
 

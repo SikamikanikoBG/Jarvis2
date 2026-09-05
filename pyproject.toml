@@ -29,7 +29,7 @@ src = ["packages/proto", "packages/core", "packages/host"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "RUF", "SIM", "PL"]
-ignore = ["PLR0913", "PLR2004", "RUF012", "PLR0912", "PLR0915", "PLR0911", "PLR0917", "PLC0415", "ASYNC109", "ASYNC240", "E501", "RUF002", "RUF003"]
+ignore = ["PLR0913", "PLR2004", "RUF012", "PLR0912", "PLR0915", "PLR0911", "PLR0917", "PLC0415", "ASYNC109", "ASYNC240", "E501", "RUF002", "RUF003", "B008"]
 
 [tool.pyright]
 pythonVersion = "3.12"

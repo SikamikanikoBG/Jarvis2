@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from jarvis_core import __version__
-from jarvis_core.api import features, rest, ws
+from jarvis_core.api import collab, features, media, openai_compat, rest, ws
 from jarvis_core.config import CoreConfig
 from jarvis_core.db import Database, Store
 from jarvis_core.engine import EventBus, RunEngine
@@ -21,13 +21,15 @@ from jarvis_core.engine.context import BoardsBlock, BrowserBlock, ContextAssembl
 from jarvis_core.engine.loop import AgentLoop
 from jarvis_core.engine.supervision import Supervisor
 from jarvis_core.features.boards import BoardStore, NotesTools
+from jarvis_core.features.collab import CollabAuthMiddleware, CollabKeys, build_mcp_server
 from jarvis_core.features.compaction import Compactor
 from jarvis_core.features.knowledge import KnowledgeLearner, KnowledgeStore, KnowledgeTools
 from jarvis_core.features.planner import Planner
 from jarvis_core.features.schedules import Scheduler, ScheduleStore, ScheduleTools
 from jarvis_core.features.skills import SkillDetector, SkillsTools, SkillStore
+from jarvis_core.features.stt import Transcriber
 from jarvis_core.models import AdapterFactory
-from jarvis_core.tools import BuiltinProvider, ToolRegistry
+from jarvis_core.tools import CoreTools, ToolRegistry
 from jarvis_core.tools.facades import ExposurePolicy
 from jarvis_core.tools.mcp_provider import McpProvider
 from jarvis_core.tools.ws_provider import WsProvider
@@ -59,9 +61,12 @@ class Core:
         self.learner = KnowledgeLearner(self.knowledge, lambda: self.adapters.for_role(RoleName.CLASSIFIER))
         self.schedules = ScheduleStore(self.db, self.bus)
         self.browser = WsProvider()
+        self.collab_keys = CollabKeys(self.db)
+        self.transcriber = Transcriber(settings)
+        self.mcp_server = build_mcp_server(self)
 
         # Tools.
-        self.builtin = BuiltinProvider()
+        self.builtin = CoreTools()
         self.mcp: list[McpProvider] = []
         self.policy = ExposurePolicy(self.settings.tool_exposure, self.settings.facade_threshold)
         self.registry = ToolRegistry([self.builtin])
@@ -129,6 +134,7 @@ class Core:
         await self.learner.wait()
         for provider in self.mcp:
             await provider.stop()
+        await self.transcriber.aclose()
         await self.db.close()
 
     def apply_settings(self, settings: Settings) -> None:
@@ -166,7 +172,8 @@ def create_app(config: CoreConfig | None = None, *, core: Core | None = None) ->
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         await the_core.start()
         try:
-            yield
+            async with the_core.mcp_server.session_manager.run():
+                yield
         finally:
             await the_core.stop()
 
@@ -184,7 +191,12 @@ def create_app(config: CoreConfig | None = None, *, core: Core | None = None) ->
     app.include_router(rest.open_router)
     app.include_router(rest.router)
     app.include_router(features.router)
+    app.include_router(collab.owner_router)
+    app.include_router(collab.router)
+    app.include_router(media.router)
+    app.include_router(openai_compat.router)
     app.include_router(ws.router)
+    app.mount("/mcp", CollabAuthMiddleware(the_core.mcp_server.streamable_http_app(), the_core))
     _mount_spa(app, cfg.resolve_web_dist())
     return app
 

@@ -69,3 +69,11 @@ harness — library vs. own is an open question to settle in the design.
   Core left running locally on :9020 (token `smoke`, data in ./data), pointed at vader vLLM.
   Resume: `uv run jarvis-core` + `cd web && npm run build`; next = finish SPA pass, derived
   facades (§6), OpenAI-compatible `/v1/chat/completions` façade, then Phase 2 (boards/KG/skills).
+- 2026-09-05 (later) — Arsen: "continue all phases". API contracts written (docs/API.md); three
+  subagents in parallel: host daemon (Outlook COM MCP server), extension port, SPA third pass.
+  Core: Phase 2 (boards, KG + background learner, skills, compaction, planner with engine-owned
+  plan tools), Phase 4 engine side (schedules with UNIQUE slot claim), browser WsProvider,
+  derived facades. Rate limit killed all three subagents mid-flight; resumed from transcripts.
+- 2026-09-05 — Facades measured with qwen3.8-27b: flat = 1 call / 9.5k prompt tokens; facade
+  (20-op homelab) = 7 calls / 12.1k tokens, model flailed on op+args. Default set to flat,
+  facades kept as a setting. `fetch` and `notes.add` correct either way.

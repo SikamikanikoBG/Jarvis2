@@ -15,6 +15,7 @@ dependencies = [
     "croniter>=3.0",
     "pyyaml>=6.0",
     "python-multipart>=0.0.9",
+    "qrcode>=7.4",
     "python-dotenv>=1.0",
     "tzdata>=2024.1",
 ]

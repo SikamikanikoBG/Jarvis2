@@ -94,10 +94,16 @@ class BuiltinProvider:
             kwargs["cancel"] = cancel
         return await entry.fn(**kwargs)
 
-    # --- Phase 1 tools -----------------------------------------------------------------
 
-    class _TimeArgs(BaseModel):
-        timezone: str = Field(default="Europe/Sofia", description="IANA timezone name")
+class _TimeArgs(BaseModel):
+    timezone: str = Field(default="Europe/Sofia", description="IANA timezone name")
+
+
+class CoreTools(BuiltinProvider):
+    """Core-owned tools in the ``jarvis`` namespace — kept off the base class so feature
+    providers that subclass BuiltinProvider do not each re-register them."""
+
+    name = "builtin"
 
     @tool(
         "jarvis.time",

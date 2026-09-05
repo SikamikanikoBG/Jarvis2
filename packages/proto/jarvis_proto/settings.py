@@ -145,8 +145,10 @@ class Settings(BaseModel):
     repeated_call_threshold: int = 3
     # Tool exposure: "facade" = one tool per namespace with an op enum (derived from the live
     # list); "flat" = every tool; "auto" = facades once more than facade_threshold tools exist.
-    tool_exposure: Literal["auto", "flat", "facade"] = "auto"
-    facade_threshold: int = 12
+    # Measured 2026-09-05 with qwen3.8-27b: flat won (1 call / 9.5k tokens vs 7 calls / 12.1k
+    # with a 20-op facade). Keep "flat" until a larger sample says otherwise.
+    tool_exposure: Literal["auto", "flat", "facade"] = "flat"
+    facade_threshold: int = 24
     history_token_budget: int = 24_000
     boards_context_chars: int = 6_000
     skill_max_chars: int = 6_000
@@ -154,6 +156,8 @@ class Settings(BaseModel):
     kg_learning: bool = True
     triage: TriageSettings = Field(default_factory=TriageSettings)
     stt_url: str | None = None
+    stt_kind: Literal["openai", "asr"] = "openai"  # OpenAI-compatible /v1/audio/transcriptions or WhisperX /asr
+    stt_model: str = "large-v3"
     stt_languages: list[str] = Field(default_factory=lambda: ["bg", "en"])
 
     @model_validator(mode="after")

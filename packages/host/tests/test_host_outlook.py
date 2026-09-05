@@ -85,6 +85,24 @@ def test_folder_resolution_by_path_and_id(backend: OutlookBackend, world: World)
         backend._folder(store, "inbox/Nope")
 
 
+def test_folder_create_adds_only_the_missing_tail(backend: OutlookBackend, world: World):
+    """Triage files DM-9999 before anyone made its folder: create the tail, never a new top-level tree."""
+    store = world.exchange
+    before = [f.Name for f in world.demands._subfolders]
+    made = backend._folder(store, "Demands/DM-9999", create=True)
+    assert made.Name == "DM-9999" and made.parent is world.demands
+    assert [f.Name for f in world.demands._subfolders] == [*before, "DM-9999"]
+    # Idempotent: resolving again returns the same folder, no duplicate.
+    assert backend._folder(store, "Demands/DM-9999", create=True) is made
+    assert backend._folder(store, "Входящи/Demands/DM-9999") is made
+    # An unknown FIRST segment is still an error even with create=True (a typo must not grow a tree).
+    with pytest.raises(NotFound):
+        backend._folder(store, "Demnads/DM-1", create=True)
+    # Without create the old behaviour holds.
+    with pytest.raises(NotFound):
+        backend._folder(store, "Demands/DM-7777")
+
+
 def test_folders_tree_paths_and_roles(backend: OutlookBackend, world: World):
     tree = backend.folders("")
     assert tree["account"] == "aapostolov@postbank.bg"
@@ -251,6 +269,102 @@ def test_calendar_list_sorts_then_includes_recurrences_then_restricts(backend: O
     assert calls.index("Sort([Start])") < calls.index("Restrict") and "Restrict-before-IncludeRecurrences" not in calls
     with pytest.raises(NotFound, match="has no calendar"):
         backend.calendar_list("gmail")
+
+
+def _appt(
+    subject: str,
+    hour: int,
+    minutes: int = 30,
+    *,
+    days: int = 1,
+    status: int = 0,
+    response: int = 0,
+    organizer: str = "",
+    busy: int = 2,
+) -> Appointment:
+    """An appointment `days` ahead at `hour`:00 (weekday-shifted so work-hour logic applies)."""
+    start = datetime.now().astimezone().replace(hour=hour, minute=0, second=0, microsecond=0) + timedelta(days=days)
+    while start.weekday() >= 5:
+        start += timedelta(days=1)
+    a = Appointment(subject, start, start + timedelta(minutes=minutes))
+    a.MeetingStatus, a.ResponseStatus, a.BusyStatus = status, response, busy
+    a.organizer_address = organizer
+    a.Organizer = organizer.split("@", maxsplit=1)[0].removeprefix("x500:") or "me"
+    return a
+
+
+def test_calendar_invites_lists_unanswered_with_committed_conflicts_only(backend: OutlookBackend, world: World):
+    committed = _appt("Sprint review", 10, 60, status=3, response=3)  # received + accepted → committed
+    invite = _appt("Budget sync", 10, 30, status=3, response=5, organizer="x500:maria@postbank.bg")
+    other_pending = _appt("Maybe lunch", 10, 30, status=3, response=2, organizer="pete@postbank.bg")
+    free_invite = _appt("1:1", 15, 30, status=3, response=5, organizer="boss@postbank.bg")
+    series_dup = _appt("Budget sync", 10, 30, days=8, status=3, response=5, organizer="x500:maria@postbank.bg")
+    own = _appt("Focus", 14, 60)  # own appointment: committed
+    for a in (committed, invite, other_pending, free_invite, series_dup, own):
+        world.calendar.add(a)
+    res = backend.calendar_invites("", 14)
+    assert [(i["subject"], i["response_status"]) for i in res["invites"]] == [
+        ("Budget sync", "not_responded"),
+        ("Maybe lunch", "tentative"),
+        ("1:1", "not_responded"),
+    ]
+    budget, lunch, one = res["invites"]
+    # Exchange-only organizer resolved through GetExchangeUser; plain SMTP taken as is.
+    assert budget["organizer_address"] == "maria@postbank.bg" and lunch["organizer_address"] == "pete@postbank.bg"
+    # Only the ACCEPTED meeting clashes - not the other unanswered invite, not the invite itself.
+    assert [c["subject"] for c in budget["conflicts"]] == ["Sprint review"]
+    assert [c["subject"] for c in lunch["conflicts"]] == ["Sprint review"]
+    assert one["conflicts"] == [] and one["recurring"] is False
+    assert res["items_checked"] >= 6
+
+
+def test_calendar_respond_sends_and_a_decline_removes_the_appointment(backend: OutlookBackend, world: World):
+    from jarvis_host.outlook import OutlookError
+
+    invite = _appt("Budget sync", 10, 30, status=3, response=5, organizer="maria@postbank.bg")
+    clash = _appt("Clash", 11, 30, status=3, response=5, organizer="pete@postbank.bg")
+    world.calendar.add(invite)
+    world.calendar.add(clash)
+    res = backend.calendar_respond(invite.EntryID, "accept", "", "")
+    assert res["sent"] is True and res["decision"] == "accept" and res["subject"] == "Budget sync"
+    assert invite.ResponseStatus == 3 and invite.responses[-1].sent and not invite.deleted
+    res = backend.calendar_respond(clash.EntryID, "decline", "Свободен съм утре 9:00", "")
+    assert res["sent"] is True and clash.deleted and clash.responses[-1].Body.startswith("Свободен съм")
+    with pytest.raises(OutlookError, match=r"accept \| tentative \| decline"):
+        backend.calendar_respond(invite.EntryID, "maybe", "", "")
+
+
+def test_calendar_free_slots_ignores_pending_invites_and_keeps_work_hours(backend: OutlookBackend, world: World):
+    day = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+
+    def at(h: int, m: int = 0) -> datetime:
+        return day.replace(hour=h, minute=m)
+
+    committed = Appointment("Committed", at(9), at(10))
+    committed.MeetingStatus, committed.ResponseStatus = 3, 3
+    pending = Appointment("Pending", at(10), at(10, 30))
+    pending.MeetingStatus, pending.ResponseStatus = 3, 5
+    own = Appointment("Own", at(11), at(12))
+    for a in (committed, pending, own):
+        world.calendar.add(a)
+    res = backend.calendar_free_slots("", day.isoformat(), 1, 60, 9, 13, 5)
+    # 09 busy; 10-11 free (an unanswered invite does not block); 11 busy; 12-13 free; 13 = end of day.
+    assert [s["start"][11:16] for s in res["slots"]] == ["10:00", "12:00"]
+    assert res["busy_considered"] == 2 and res["duration_min"] == 60
+
+
+def test_calendar_remove_canceled_deletes_only_cancelled_meetings(backend: OutlookBackend, world: World):
+    keep = _appt("Keep", 9, 30, status=3, response=3)
+    gone1 = _appt("Cancelled by organizer", 10, 30, status=7)
+    gone2 = _appt("Own cancelled", 11, 30, status=5)
+    for a in (keep, gone1, gone2):
+        world.calendar.add(a)
+    res = backend.calendar_remove_canceled("", 1, 60)
+    assert res["removed"] == 2 and gone1.deleted and gone2.deleted and not keep.deleted
+    assert [i["subject"] for i in res["items"]] == ["Cancelled by organizer", "Own cancelled"]
+    assert res["failures"] == []
 
 
 def test_calendar_create_saves_without_sending_unless_asked(backend: OutlookBackend, world: World):

@@ -147,11 +147,19 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
 
     @tool("outlook_list", READ)
     async def outlook_list(
-        account: str = "", folder: str = "inbox", since: str | None = None, cursor: str | None = None, limit: int = 25
+        account: str = "",
+        folder: str = "inbox",
+        since: str | None = None,
+        cursor: str | None = None,
+        limit: int = 25,
+        preview_chars: int = 400,
     ) -> str:
-        """List messages in a folder, newest first, read in one GetTable pass. `since` = ISO-8601 lower bound on received time (a triage cursor). `cursor` continues a previous page (never skips or repeats). Returns {items, cursor, total}; `cursor` is null when nothing remains. Item ids are session-scoped: use outlook_read/move/flag for the durable id."""
+        """List messages in a folder, newest first, read in one GetTable pass. `since` = ISO-8601 lower bound on received time (a triage cursor). `cursor` continues a previous page (never skips or repeats). Each item carries sender, to/cc and a body `preview` of `preview_chars` (max 4000). Returns {items, cursor, total}; `cursor` is null when nothing remains. Item ids are session-scoped: use outlook_read/move/flag for the durable id."""
         return json_text(
-            await _run("outlook_list", lambda: outlook().call("list_items", account, folder, since, cursor, limit))
+            await _run(
+                "outlook_list",
+                lambda: outlook().call("list_items", account, folder, since, cursor, limit, preview_chars),
+            )
         )
 
     @tool("outlook_read", READ)
@@ -177,9 +185,11 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
         )
 
     @tool("outlook_move", MUTATING)
-    async def outlook_move(entry_id: str, folder: str, account: str = "") -> str:
-        """Move a message into `folder` (role, id or path) of its account. Re-resolves the id first; returns the message's new durable entry_id and the target folder path."""
-        return json_text(await _run("outlook_move", lambda: outlook().call("move", entry_id, folder, account)))
+    async def outlook_move(entry_id: str, folder: str, account: str = "", create: bool = False) -> str:
+        """Move a message into `folder` (role, id or path) of its account. Re-resolves the id first; returns the message's new durable entry_id and the target folder path. `create=true` adds a missing subfolder at the end of an existing path (e.g. a new `Demands/DM-2300`); an unknown top-level folder is still an error."""
+        return json_text(
+            await _run("outlook_move", lambda: outlook().call("move", entry_id, folder, account, create))
+        )
 
     @tool("outlook_flag", MUTATING_IDEMPOTENT)
     async def outlook_flag(entry_id: str, flag: bool = True, account: str = "") -> str:
@@ -247,6 +257,50 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
     async def calendar_delete(entry_id: str, account: str = "") -> str:
         """Delete one appointment by the entry_id returned by calendar_list/calendar_create. Only appointments; returns what was deleted."""
         return json_text(await _run("calendar_delete", lambda: outlook().call("calendar_delete", entry_id, account)))
+
+    @tool("calendar_invites", READ)
+    async def calendar_invites(account: str = "", days: int = 14) -> str:
+        """Meeting invites still unanswered in the next `days` days, one per organizer+subject: organizer address, slot, and the COMMITTED meetings that clash with it (other tentative or unanswered invites never count as clashes)."""
+        return json_text(await _run("calendar_invites", lambda: outlook().call("calendar_invites", account, days)))
+
+    @tool("calendar_respond", MUTATING)
+    async def calendar_respond(entry_id: str, decision: str = "accept", comment: str = "", account: str = "") -> str:
+        """Answer an invite and SEND the response to the organizer: decision accept | tentative | decline; `comment` is plain text put at the top of the response."""
+        return json_text(
+            await _run(
+                "calendar_respond", lambda: outlook().call("calendar_respond", entry_id, decision, comment, account)
+            )
+        )
+
+    @tool("calendar_free_slots", READ)
+    async def calendar_free_slots(
+        account: str = "",
+        start: str | None = None,
+        days: int = 5,
+        duration_min: int = 30,
+        work_start_hour: int = 9,
+        work_end_hour: int = 18,
+        limit: int = 3,
+    ) -> str:
+        """Up to `limit` free slots of `duration_min` minutes on weekdays inside the work hours, from `start` (ISO; default now) for `days` days, judged against COMMITTED meetings only."""
+        return json_text(
+            await _run(
+                "calendar_free_slots",
+                lambda: outlook().call(
+                    "calendar_free_slots", account, start, days, duration_min, work_start_hour, work_end_hour, limit
+                ),
+            )
+        )
+
+    @tool("calendar_remove_canceled", DESTRUCTIVE)
+    async def calendar_remove_canceled(account: str = "", days_back: int = 1, days_ahead: int = 60) -> str:
+        """Delete meetings the organizer has CANCELLED from the calendar (they linger as crossed-out items). Nothing is sent; returns what was removed."""
+        return json_text(
+            await _run(
+                "calendar_remove_canceled",
+                lambda: outlook().call("calendar_remove_canceled", account, days_back, days_ahead),
+            )
+        )
 
     # --- files ---------------------------------------------------------------------------
 

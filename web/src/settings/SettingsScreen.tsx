@@ -8,6 +8,7 @@ import { CollabSection } from './CollabSection';
 import { McpServersSection } from './McpServersSection';
 import { PersonalitySection } from './PersonalitySection';
 import { ConfirmationsSection, EmailSection } from './SafetySections';
+import { RsvpSection } from './RsvpSection';
 import { TriageSection } from './TriageSection';
 
 const PROVIDERS: Provider[] = ['ollama', 'vllm'];
@@ -243,6 +244,8 @@ export function SettingsScreen() {
         <McpServersSection servers={draft.mcp_servers} onChange={(list) => patch('mcp_servers', list)} error={errors.mcp_servers} />
 
         <TriageSection value={draft.triage} hosts={draft.mcp_servers.map((s) => s.name)} onChange={(t) => patch('triage', t)} error={errors.triage} />
+
+        <RsvpSection value={draft.rsvp} hosts={draft.mcp_servers.map((s) => s.name)} onChange={(r) => patch('rsvp', r)} error={errors.rsvp} />
 
         <CollabSection />
 

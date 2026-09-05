@@ -35,6 +35,11 @@ EXPECTED_ANNOTATIONS = {
     "calendar_list": ("read", True),
     "calendar_create": ("destructive", False),
     "calendar_delete": ("destructive", False),
+    "calendar_invites": ("read", True),
+    # Sends a response to the organizer: mutating, repeatable in effect but not idempotent.
+    "calendar_respond": ("mutating", False),
+    "calendar_free_slots": ("read", True),
+    "calendar_remove_canceled": ("destructive", False),
     "fs_list": ("read", True),
     "fs_read": ("read", True),
     "fs_write": ("destructive", False),

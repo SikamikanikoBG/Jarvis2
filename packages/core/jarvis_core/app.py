@@ -28,6 +28,7 @@ from jarvis_core.features.knowledge import KnowledgeLearner, KnowledgeStore, Kno
 from jarvis_core.features.meetings import MeetingService
 from jarvis_core.features.notify import NotifyTools
 from jarvis_core.features.planner import Planner
+from jarvis_core.features.rsvp import RsvpJob
 from jarvis_core.features.schedules import Scheduler, ScheduleStore, ScheduleTools
 from jarvis_core.features.skills import SkillDetector, SkillsTools, SkillStore
 from jarvis_core.features.stt import Transcriber
@@ -72,6 +73,7 @@ class Core:
         self.transcriber = Transcriber(settings)
         self.mcp_server = build_mcp_server(self)
         self.triage = TriageJob(self)
+        self.rsvp = RsvpJob(self)
         self.meetings = MeetingService(self)
 
         # Tools.
@@ -136,10 +138,12 @@ class Core:
         await self.engine.start()
         await self.scheduler.start()
         await self.triage.start()
+        await self.rsvp.start()
         log.info("jarvis-core %s ready (db=%s, tools=%d)", __version__, self.db.path, len(self.registry.specs()))
 
     async def stop(self) -> None:
         await self.triage.stop()
+        await self.rsvp.stop()
         await self.meetings.stop_all()
         await self.scheduler.stop()
         await self.engine.stop()

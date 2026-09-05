@@ -59,6 +59,31 @@ export function TriageSection({ value, hosts, onChange, error }: Props) {
           <label>Accounts (one per line)</label>
           <textarea className="textarea mono" rows={2} value={value.accounts.join('\n')} onChange={(e) => patch({ accounts: lines(e.target.value) })} placeholder="aapostolov@postbank.bg" />
         </div>
+        <div className="field span-2">
+          <label>Instructions for the classifier</label>
+          <textarea
+            className="textarea"
+            rows={6}
+            value={value.instructions ?? ''}
+            onChange={(e) => patch({ instructions: e.target.value })}
+            placeholder="Who the owner is, what Cc-only means, the VIP list, hard exclusions, priority order between categories."
+          />
+          <span className="field-hint">Read before the category list on every mail. Plain text; Bulgarian or English.</span>
+        </div>
+        <div className="field">
+          <label>When nothing fits</label>
+          <select className="select" value={value.fallback_category ?? ''} onChange={(e) => patch({ fallback_category: e.target.value })}>
+            <option value="">leave in Inbox</option>
+            {cats
+              .filter((c) => c.name)
+              .map((c) => (
+                <option key={c.name} value={c.name}>
+                  move to “{c.name}”
+                </option>
+              ))}
+          </select>
+          <span className="field-hint">Pick the catch-all for inbox zero.</span>
+        </div>
       </div>
       <div className="field">
         <label>Categories</label>

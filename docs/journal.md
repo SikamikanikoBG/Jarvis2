@@ -150,3 +150,32 @@ harness — library vs. own is an open question to settle in the design.
   Restructured: stable system prefix; per-turn context persisted as a user message named
   "context" after the input; plan progress as an ephemeral trailer. Measurement pending
   (tailnet relay flapping from the laptop tonight).
+- 2026-09-06 (night) — Prefix cache measured on vader: cold 12.9k tok / 4.9 s, then 16.2k /
+  0.64 s and 20.1k / 0.45 s in the same conversation (`scripts/cache_probe.py`). Weekly
+  Workload live (273 s, 7 calls, the 853-s script ran under timeout_s=1000) and the priorities
+  digest dry-run (219 s, 0 errors, would send to Arsen only) both clean; 10 V1 schedules enabled.
+  Triage against the REAL mailbox, dry-run only (`?dry_run=true`, plus `folder=` sampling of
+  already-sorted folders — the accuracy check). Three rounds, 100 → 90 mails each:
+  * Round 1: 33% agreement with V1's folders. Real defects: the classifier saw display names,
+    not addresses (VIP list is addresses); "none" left mail in the inbox; Jira digests naming
+    many DM-ids were filed under the first one; automated mail went to Reference instead of its
+    topical folder. Also V1's own errors surfaced: auto-replies and "Accepted:" in Bosses,
+    hAIper daily summaries in Quarantine (185/month — the #1 folder in the workload report).
+  * Fixes: `From: name <smtp>` (new table column PR_SENDER_SMTP — `SenderEmailAddress` is an
+    X500 DN for internal senders), To/Cc columns, `fallback_category`, `instructions` block
+    ported from V1's classification_instruction, topical-first rule for system mail, digest rule
+    (subject wins; body-only match must name ONE demand — and the body is READ for that, the
+    table preview is too short), `outlook_move(create=true)` for a first mail about a demand.
+  * Round 3: Reference 90%, AI 80%, RPA 70% (from 10%), Bosses 3/15 where 7 of the 12 misses
+    are V1 breaking Arsen's own rules and 5 are VIP threads with Arsen in Cc. To-Do 5/20 is the
+    open judgement call (V1 filed 4,337 mails there against a "be very selective" rule) — the
+    20 samples are in the report for Arsen to calibrate. Left `enabled: false`: it moves mail.
+  Restart lesson: Stop-ScheduledTask never ended the detached daemon, so two "host restarts"
+  changed nothing and one evaluation ran without To/Cc — `scripts/restart-host.ps1` stops the
+  ONE pid on :9030 after proving it is jarvis-host.
+  Meeting auto-RSVP (story 08) built and dry-run against the real calendar: 9 pending invites
+  in 14 days, 3 in the 5-day window → ExCo weekly from a VIP clashes with 3 blocks → accept +
+  flag; CIR Forum clashes → decline with 3 alternatives; BNT coordination free → accept. Host
+  gained calendar_invites / calendar_respond / calendar_free_slots / calendar_remove_canceled
+  (committed-only conflicts: tentative and unanswered invites never block). Left
+  `enabled: false`: it sends responses to colleagues.

@@ -184,3 +184,29 @@ class TriageState(BaseModel):
     routed_today: int = 0
     last_run_at: datetime | None = None
     last_error: str | None = None
+
+
+# --- meeting auto-RSVP --------------------------------------------------------------------
+
+
+class RsvpState(BaseModel):
+    account: str
+    last_run_at: datetime | None = None
+    last_error: str | None = None
+    answered_total: int = 0
+    removed_canceled_total: int = 0
+
+
+class RsvpDecision(BaseModel):
+    """What the RSVP job did (or, on a dry run, would do) with one invite occurrence."""
+
+    account: str
+    subject: str
+    organizer: str
+    organizer_address: str = ""
+    start: str
+    end: str = ""
+    decision: str  # accept | decline | accept_vip_conflict | left_external | failed
+    detail: str = ""
+    conflicts: list[str] = Field(default_factory=list)
+    proposals: list[str] = Field(default_factory=list)

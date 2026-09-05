@@ -127,12 +127,50 @@ async def triage_state(request: Request) -> list[TriageState]:
 
 
 @router.post("/triage/run")
-async def triage_run(request: Request) -> dict[str, Any]:
-    report = await core_of(request).triage.run_once()
+async def triage_run(
+    request: Request, dry_run: bool = False, folder: str | None = None, limit: int | None = None
+) -> dict[str, Any]:
+    """Run one triage pass now. ``?dry_run=true`` classifies and reports the moves it would
+    make without moving, recording or advancing anything; add ``folder=`` (dry run only) to
+    sample an already-sorted folder and compare the proposal with where the mail lives."""
+    if folder and not dry_run:
+        raise HTTPException(422, "folder sampling is only allowed with dry_run=true")
+    report = await core_of(request).triage.run_once(dry_run=dry_run, folder=folder, limit=limit)
     return {
         "run_id": None,
+        "dry_run": report.dry_run,
         "processed": report.processed,
         "routed": report.routed,
         "accounts": report.accounts,
         "errors": report.errors,
+        "proposed": report.proposed,
+    }
+
+
+# --- meeting auto-RSVP ------------------------------------------------------------------------
+
+
+@router.get("/rsvp/state")
+async def rsvp_state(request: Request) -> dict[str, Any]:
+    core = core_of(request)
+    state = await core.rsvp.state()
+    return {
+        "enabled": core.settings.rsvp.enabled,
+        "state": state.model_dump(mode="json") if state else None,
+        "recent": await core.rsvp.decisions(limit=50),
+    }
+
+
+@router.post("/rsvp/run")
+async def rsvp_run(request: Request, dry_run: bool = False) -> dict[str, Any]:
+    """Run one RSVP pass now. ``?dry_run=true`` reports what would be answered and how, sending
+    nothing and recording nothing."""
+    report = await core_of(request).rsvp.run_once(dry_run=dry_run)
+    return {
+        "dry_run": report.dry_run,
+        "account": report.account,
+        "pending": report.pending,
+        "removed_canceled": report.removed_canceled,
+        "errors": report.errors,
+        "decisions": [d.model_dump(mode="json") for d in report.decisions],
     }

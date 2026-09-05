@@ -151,12 +151,50 @@ Built-in system schedule (`triage`, every `settings.triage.interval_min`) → ru
 (a `DM-1234` literally present → `Demands/DM-1234`), model for the rest; `outlook_move`.
 
 ```
-GET  /api/triage/state   → [{account, cursor, last_run_at, processed_today, routed_today, errors}]
-POST /api/triage/run     → {run_id}
+GET  /api/triage/state                         → [{account, cursor, last_run_at, processed_today, routed_today, errors}]
+POST /api/triage/run                           → {processed, routed, accounts, errors, proposed: []}
+POST /api/triage/run?dry_run=true              → same shape; nothing moved/recorded/advanced,
+                                                 proposed: [{account, sender, subject, category, folder, current_folder}]
+POST /api/triage/run?dry_run=true&folder=F&limit=N
+                                               → samples the newest N mails of an ALREADY-SORTED
+                                                 folder: proposal vs current_folder = accuracy check
+                                                 (422 without dry_run)
 ```
 Settings: `triage {enabled, interval_min, host, accounts: string[], demand_root: "Demands",
-demand_prefixes: ["DM-"], categories: [{name, folder, rule}]}`. Decisions persisted in
+demand_prefixes: ["DM-"], categories: [{name, folder, rule}], instructions: str,
+fallback_category: str}`. `instructions` is free text the classifier reads before the categories
+(owner, what Cc-only means, VIP list, hard exclusions); `fallback_category` is where "none"
+lands (set it to the catch-all for inbox zero). The classifier sees `From: name <smtp>`, `To`,
+`Cc`, subject and a 500-char preview; the host list is asked for `preview_chars=1500` so the
+demand rule can tell a digest from a thread. Demand routing: an id in the SUBJECT wins; a
+body-only match counts only when the body names exactly one distinct demand. `outlook_move` is
+called with `create=true` so a first mail about `DM-2300` makes its folder. Decisions persisted in
 `triage_decisions(entry_id, account, category, action, run_id, at)` so a crash re-does nothing.
+`scripts/triage_eval.py` drives the dry runs and prints agreement per folder.
+
+## Meeting auto-RSVP (docs/stories/08)
+
+Background job (`rsvp`, every `settings.rsvp.interval_min`) over the host's calendar tools:
+`calendar_remove_canceled` → `calendar_invites` (pending, each with its COMMITTED clashes) →
+per occurrence not in the ledger: outside `allowed_domains` and not VIP → left; free → accept;
+VIP + clash → accept and say so; clash → decline with up to `propose_slots` alternatives from
+`calendar_free_slots` (spread ≥ 2 h apart). Ledger key `organizer|subject|start`
+(`rsvp_decisions`), so a re-surfaced recurring occurrence is answered once. Every pass with
+decisions appends one line each to the day's "Calendar RSVP" conversation.
+
+```
+GET  /api/rsvp/state              → {enabled, state: {account, last_run_at, last_error, answered_total,
+                                     removed_canceled_total} | null, recent: [decisions]}
+POST /api/rsvp/run                → {pending, removed_canceled, errors, decisions: [RsvpDecision]}
+POST /api/rsvp/run?dry_run=true   → same decisions, nothing sent, nothing recorded
+```
+Settings: `rsvp {enabled, interval_min, host, account, lookahead_days, allowed_domains: string[],
+vip: string[] (addresses or domains), remove_canceled, propose_slots, work_start_hour,
+work_end_hour}`. An empty `allowed_domains` answers nobody (fail closed).
+
+Host tools behind it: `calendar_invites(account, days)`, `calendar_respond(entry_id, decision,
+comment, account)`, `calendar_free_slots(account, start, days, duration_min, work_start_hour,
+work_end_hour, limit)`, `calendar_remove_canceled(account, days_back, days_ahead)`.
 
 ## STT (Phase 6)
 

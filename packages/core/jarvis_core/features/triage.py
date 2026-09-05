@@ -30,12 +30,16 @@ log = logging.getLogger(__name__)
 
 _DEMAND = re.compile(r"(?<![A-Z0-9])(DM-\d{3,7})(?!\d)")
 
-_CLASSIFY = """Classify this email for filing. Categories (name: rule):
+_CLASSIFY = """Classify this email for filing.
+{instructions}
+Categories (name: rule):
 {categories}
 - none: nothing above applies
 
 Email:
 From: {sender}
+To: {to}
+Cc: {cc}
 Subject: {subject}
 Preview: {preview}
 
@@ -48,6 +52,9 @@ class TriageReport:
     routed: int = 0
     errors: list[str] = field(default_factory=list)
     accounts: list[str] = field(default_factory=list)
+    dry_run: bool = False
+    # dry run: what WOULD happen, per mail: {account, sender, subject, category, folder}
+    proposed: list[dict[str, str]] = field(default_factory=list)
 
 
 class TriageJob:
@@ -132,13 +139,25 @@ class TriageJob:
 
     # --- the job -------------------------------------------------------------------------
 
-    async def run_once(self) -> TriageReport:
+    async def run_once(
+        self, *, dry_run: bool = False, folder: str | None = None, limit: int | None = None
+    ) -> TriageReport:
         async with self._lock:
-            return await self._run()
+            return await self._run(dry_run=dry_run, folder=folder, limit=limit)
 
-    async def _run(self) -> TriageReport:
+    async def _run(
+        self, *, dry_run: bool = False, folder: str | None = None, limit: int | None = None
+    ) -> TriageReport:
+        """One pass. ``dry_run`` classifies and reports the moves it would make - nothing is
+        moved, recorded, advanced or written to the triage conversation. With ``folder`` the dry
+        run samples the newest ``limit`` messages of an ALREADY-SORTED folder instead of the
+        inbox, so the proposal can be compared with where they actually live: that is the
+        accuracy check for a new category set before it goes live."""
         cfg = self.core.settings.triage
-        report = TriageReport()
+        report = TriageReport(dry_run=dry_run)
+        if folder and not dry_run:
+            report.errors.append("a folder sample is only allowed as a dry run")
+            return report
         if not cfg.host:
             report.errors.append("triage.host is not set (name of the jarvis-host MCP server)")
             return report
@@ -150,7 +169,10 @@ class TriageJob:
             if state.day != today:
                 state.day, state.processed_today, state.routed_today = today, 0, 0
             try:
-                items, cursor = await self._list(cfg.host, account, state.cursor)
+                if folder:
+                    items, cursor = await self._list(cfg.host, account, None, folder=folder, limit=limit or 30)
+                else:
+                    items, cursor = await self._list(cfg.host, account, state.cursor, limit=limit or 50)
             except Exception as exc:
                 state.last_error = f"list failed: {exc}"
                 report.errors.append(f"{account}: {state.last_error}")
@@ -159,21 +181,36 @@ class TriageJob:
             lines: list[str] = []
             for item in items:
                 entry_id = str(item.get("entry_id") or "")
-                if not entry_id or await self._decided(entry_id, account):
+                if not entry_id or (not dry_run and await self._decided(entry_id, account)):
                     continue
-                category, folder = await self._route(item, cfg)
+                category, target = await self._route(item, cfg, account)
+                if dry_run:
+                    report.processed += 1
+                    if target:
+                        report.routed += 1
+                    report.proposed.append(
+                        {
+                            "account": account,
+                            "sender": self._sender(item),
+                            "subject": str(item.get("subject") or "")[:90],
+                            "category": category or "",
+                            "folder": target or "(leave in Inbox)",
+                            "current_folder": folder or "Inbox",
+                        }
+                    )
+                    continue
                 action = "left"
-                if folder:
-                    await self._record(entry_id, account, category, f"move:{folder}")
+                if target:
+                    await self._record(entry_id, account, category, f"move:{target}")
                     try:
                         res = await self.core.registry.call(
                             f"{cfg.host}.outlook_move",
-                            {"entry_id": entry_id, "folder": folder},
+                            {"entry_id": entry_id, "folder": target, "account": account, "create": True},
                             cancel=asyncio.Event(),
                             idempotency_key=f"triage:{account}:{entry_id}",
                             timeout_s=60,
                         )
-                        action = f"moved → {folder}" if res.kind.value != "error" else f"move failed: {res.text[:80]}"
+                        action = f"moved → {target}" if res.kind.value != "error" else f"move failed: {res.text[:80]}"
                         if res.kind.value != "error":
                             state.routed_today += 1
                     except Exception as exc:
@@ -183,6 +220,8 @@ class TriageJob:
                 state.processed_today += 1
                 report.processed += 1
                 lines.append(f"- {self._sender(item) or '?'} — {str(item.get('subject') or '')[:70]} → {action}")
+            if dry_run:
+                continue  # nothing is persisted on a dry run
             report.routed = state.routed_today
             if cursor:
                 state.cursor = cursor
@@ -209,8 +248,11 @@ class TriageJob:
                 out.append(str(name))
         return out
 
-    async def _list(self, host: str, account: str, cursor: str | None) -> tuple[list[dict[str, Any]], str | None]:
-        args: dict[str, Any] = {"account": account, "folder": "Inbox", "limit": 50}
+    async def _list(
+        self, host: str, account: str, cursor: str | None, *, folder: str = "Inbox", limit: int = 50
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        # A long preview so the demand rule can tell a digest (many DM ids) from a thread (one).
+        args: dict[str, Any] = {"account": account, "folder": folder, "limit": limit, "preview_chars": 1500}
         if cursor:
             args["since"] = cursor
         res = await self.core.registry.call(
@@ -244,19 +286,63 @@ class TriageJob:
             return str(frm.get("name") or frm.get("address") or "")
         return str(frm or "")
 
-    async def _route(self, item: dict[str, Any], cfg: Any) -> tuple[str | None, str | None]:
+    @staticmethod
+    def _sender_address(item: dict[str, Any]) -> str:
+        addr = item.get("sender_address")
+        if isinstance(addr, str) and addr.strip():
+            return addr.strip()
+        frm = item.get("from")
+        if isinstance(frm, dict):
+            return str(frm.get("address") or "")
+        return ""
+
+    async def _body(self, host: str, account: str, entry_id: str, max_chars: int = 4000) -> str | None:
+        """First ``max_chars`` of the real body, or None when it cannot be read."""
+        try:
+            res = await self.core.registry.call(
+                f"{host}.outlook_read",
+                {"entry_id": entry_id, "account": account, "max_chars": max_chars},
+                cancel=asyncio.Event(),
+                idempotency_key=f"triage:read:{account}:{entry_id}",
+                timeout_s=60,
+            )
+        except Exception as exc:
+            log.warning("triage body read failed: %s", exc)
+            return None
+        if res.kind.value == "error":
+            return None
+        data = _json(res.text)
+        if isinstance(data, dict):
+            return str(data.get("body") or data.get("text") or "")
+        return res.text
+
+    async def _route(self, item: dict[str, Any], cfg: Any, account: str = "") -> tuple[str | None, str | None]:
         subject = str(item.get("subject") or "")
         preview = str(item.get("preview") or item.get("body_preview") or item.get("snippet") or "")
-        for prefix in cfg.demand_prefixes:
-            pattern = re.compile(r"(?<![A-Z0-9])(" + re.escape(prefix) + r"\d{3,7})(?!\d)")
-            m = pattern.search(subject) or pattern.search(preview)
-            if m:
-                return "demand", f"{cfg.demand_root}/{m.group(1)}"
+        if demand_ids(subject, cfg.demand_prefixes):
+            return "demand", demand_folder(subject, "", prefixes=cfg.demand_prefixes, root=cfg.demand_root)
+        if demand_ids(preview, cfg.demand_prefixes):
+            # A demand named only in the body: the table preview is too short to tell a thread
+            # (one demand) from a digest (many), so read the body the way V1 did (4,000 chars).
+            entry_id = str(item.get("entry_id") or "")
+            body = await self._body(cfg.host, account, entry_id) if entry_id else None
+            demand = demand_folder(subject, body or preview, prefixes=cfg.demand_prefixes, root=cfg.demand_root)
+            if demand:
+                return "demand", demand
         if not cfg.categories:
             return None, None
         cats = "\n".join(f"- {c.get('name')}: {c.get('rule', '')}" for c in cfg.categories if c.get("name"))
+        instructions = str(getattr(cfg, "instructions", "") or "").strip()
+        address = self._sender_address(item)
+        sender = f"{self._sender(item)} <{address}>" if address else self._sender(item)
         prompt = _CLASSIFY.format(
-            categories=cats, sender=self._sender(item), subject=subject[:200], preview=preview[:500]
+            instructions=f"\nRules:\n{instructions}\n" if instructions else "",
+            categories=cats,
+            sender=sender,
+            to=str(item.get("to") or "")[:300],
+            cc=str(item.get("cc") or "")[:300],
+            subject=subject[:200],
+            preview=preview[:500],
         )
         try:
             from jarvis_proto.settings import RoleName
@@ -274,6 +360,11 @@ class TriageJob:
         for c in cfg.categories:
             if c.get("name") == name and c.get("folder"):
                 return name, str(c["folder"])
+        # "none" or an unknown name: the configured catch-all, if there is one (inbox zero).
+        fallback = str(getattr(cfg, "fallback_category", "") or "")
+        for c in cfg.categories:
+            if fallback and c.get("name") == fallback and c.get("folder"):
+                return fallback, str(c["folder"])
         return None, None
 
     async def _append_summary(self, account: str, day: str, lines: list[str]) -> None:
@@ -296,6 +387,36 @@ class TriageJob:
         conv = await store.get_conversation(conv.id)
         if conv:
             self.core.bus.publish(ConversationUpdated(conversation=conv))
+
+
+def _demand_pattern(prefix: str) -> re.Pattern[str]:
+    return re.compile(r"(?<![A-Z0-9])(" + re.escape(prefix) + r"\d{3,7})(?!\d)", re.IGNORECASE)
+
+
+def demand_ids(text: str, prefixes: list[str]) -> set[str]:
+    """Distinct demand ids literally present in ``text`` (upper-cased), e.g. {"DM-1234"}."""
+    out: set[str] = set()
+    for prefix in prefixes:
+        out.update(x.upper() for x in _demand_pattern(prefix).findall(text or ""))
+    return out
+
+
+def demand_folder(subject: str, body: str, *, prefixes: list[str], root: str) -> str | None:
+    """Deterministic demand routing (V1's rules, kept because they were tuned on real mail).
+
+    A demand id literally in the SUBJECT wins (the first one). A body-only match counts only when
+    the body names exactly ONE distinct demand: a body naming several with none in the subject is
+    a digest ("Jira Email Summary", "your demands this week") and must not be filed under the
+    first id it happens to mention. Returns ``root/PREFIX-1234`` or None.
+    """
+    for prefix in prefixes:
+        m = _demand_pattern(prefix).search(subject or "")
+        if m:
+            return f"{root}/{m.group(1).upper()}"
+    found = demand_ids(body, prefixes)
+    if len(found) == 1:
+        return f"{root}/{found.pop()}"
+    return None
 
 
 def _json(text: str) -> Any:

@@ -182,6 +182,29 @@ export interface TriageSettings {
   demand_prefixes: string[];
   /** {name, folder, rule} */
   categories: Record<string, string>[];
+  /** Free-text rules the classifier reads before the categories (owner, Cc-only, VIPs, exclusions). */
+  instructions: string;
+  /** Category used when the classifier answers "none"; empty = leave the mail in the inbox. */
+  fallback_category: string;
+}
+
+/** Meeting auto-RSVP through the host's calendar (docs/stories/08). */
+export interface MeetingRsvpSettings {
+  enabled: boolean;
+  interval_min: number;
+  /** Name of the MCP server (jarvis-host) that owns the calendar. */
+  host: string;
+  /** Outlook account (store) whose invites are answered; "" = default. */
+  account: string;
+  lookahead_days: number;
+  /** Organizer domains that get an automatic answer; empty = nobody (fail closed). */
+  allowed_domains: string[];
+  /** Addresses or domains that are never declined. */
+  vip: string[];
+  remove_canceled: boolean;
+  propose_slots: number;
+  work_start_hour: number;
+  work_end_hour: number;
 }
 
 export type ToolExposure = 'auto' | 'flat' | 'facade';
@@ -247,6 +270,7 @@ export interface Settings {
   planning_enabled: boolean;
   kg_learning: boolean;
   triage: TriageSettings;
+  rsvp: MeetingRsvpSettings;
   /** The address people reach this core on; used for pairing/QR. Normally https. */
   public_url: string | null;
   stt_url: string | null;

@@ -165,15 +165,75 @@ class Appointment:
         self.Categories = ""
         self.Recipients = Collection([Recipient("Ana"), Recipient("Boris")])
         self.MeetingStatus = 0
+        self.ResponseStatus = 0
         self.Body = ""
         self.saved = 0
         self.sent = False
+        self.deleted = False
+        self.organizer_address = ""  # what GetOrganizer() resolves to ("" = unresolvable)
+        self.responses: list[MeetingResponse] = []
 
     def Save(self) -> None:
         self.saved += 1
 
     def Send(self) -> None:
         self.sent = True
+
+    def Delete(self) -> None:
+        self.deleted = True
+
+    def GetOrganizer(self) -> AddressEntry | None:
+        return AddressEntry(self.organizer_address) if self.organizer_address else None
+
+    @property
+    def PropertyAccessor(self) -> PropertyAccessor:
+        return PropertyAccessor({})
+
+    def Respond(self, code: int, no_ui: bool = False) -> MeetingResponse:
+        # olMeetingAccepted=3 / olMeetingTentative=2 / olMeetingDeclined=4 → ResponseStatus
+        # olResponseAccepted=3 / olResponseTentative=2 / olResponseDeclined=4 (same numbers).
+        self.ResponseStatus = code
+        resp = MeetingResponse(self, code)
+        self.responses.append(resp)
+        return resp
+
+
+class MeetingResponse:
+    def __init__(self, appt: Appointment, code: int) -> None:
+        self.appt = appt
+        self.code = code
+        self.Body = ""
+        self.sent = False
+
+    def Send(self) -> None:
+        self.sent = True
+        if self.code == 4:  # a decline removes the appointment from the calendar
+            self.appt.deleted = True
+
+
+class ExchangeUser:
+    def __init__(self, smtp: str) -> None:
+        self.PrimarySmtpAddress = smtp
+
+
+class AddressEntry:
+    def __init__(self, address: str) -> None:
+        # "x500:" marks an Exchange-only entry whose SMTP is reachable via GetExchangeUser.
+        self.Address = address if "@" in address and not address.startswith("x500:") else "/o=Exchange/cn=Recipients"
+        self._smtp = address[5:] if address.startswith("x500:") else address
+
+    def GetExchangeUser(self) -> ExchangeUser | None:
+        return ExchangeUser(self._smtp) if "@" in self._smtp else None
+
+
+class PropertyAccessor:
+    def __init__(self, props: dict[str, Any]) -> None:
+        self._props = props
+
+    def GetProperty(self, name: str) -> Any:
+        if name not in self._props:
+            raise FakeComError(-2147221233, "The property does not exist.")
+        return self._props[name]
 
 
 class Items:
@@ -315,6 +375,20 @@ class Table:
         return tuple(tuple(self._value(m, c) for c in self.columns) for m in chunk)
 
 
+class FolderCollection(Collection):
+    """``Folder.Folders``: iterable like any collection, and ``Add(name)`` creates a real subfolder."""
+
+    def __init__(self, folder: Folder) -> None:
+        super().__init__(folder._subfolders)
+        self._folder = folder
+        self._items = folder._subfolders  # live view, not a copy
+
+    def Add(self, value: Any) -> Any:
+        if any(f.Name.lower() == str(value).lower() for f in self._folder._subfolders):
+            raise FakeComError(-2147352567, "Cannot create the folder. A folder with this name already exists.")
+        return self._folder.sub(str(value))
+
+
 class Folder:
     def __init__(self, name: str, store: Store, *, default_item_type: int = 0, items: Iterable[Any] = ()) -> None:
         self.Name = name
@@ -343,8 +417,8 @@ class Folder:
         return f
 
     @property
-    def Folders(self) -> Collection:
-        return Collection(self._subfolders)
+    def Folders(self) -> FolderCollection:
+        return FolderCollection(self)
 
     @property
     def FolderPath(self) -> str:

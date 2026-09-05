@@ -87,6 +87,18 @@ OL_APPOINTMENT_CLASS = 26
 OL_MARK_NO_DATE = 0
 OL_RECIPIENT_REQUIRED = 1
 OL_MEETING = 1
+# AppointmentItem.MeetingStatus
+OL_MEETING_RECEIVED = 3
+OL_MEETING_CANCELED = 5
+OL_MEETING_RECEIVED_AND_CANCELED = 7
+# MeetingItem (a request still in the inbox)
+OL_MEETING_REQUEST_CLASS = 53
+# AppointmentItem.ResponseStatus, and the codes AppointmentItem.Respond() takes (same numbers)
+OL_RESPONSE_ORGANIZED = 1
+OL_RESPONSE_TENTATIVE = 2
+OL_RESPONSE_ACCEPTED = 3
+OL_RESPONSE_DECLINED = 4
+OL_RESPONSE_NOT_RESPONDED = 5
 
 PR_HASATTACH = "http://schemas.microsoft.com/mapi/proptag/0x0E1B000B"
 PR_CONVERSATION_ID = "http://schemas.microsoft.com/mapi/proptag/0x30130102"
@@ -97,6 +109,13 @@ DASL_FROMNAME = '"urn:schemas:httpmail:fromname"'
 DASL_FROMEMAIL = '"urn:schemas:httpmail:fromemail"'
 
 DASL_BODY = "urn:schemas:httpmail:textdescription"
+# Display names of the To / Cc lines. Triage needs them for the "am I addressed or only
+# copied?" judgement, and reading them here costs nothing compared with a COM read per item.
+DASL_TO = "urn:schemas:httpmail:displayto"
+DASL_CC = "urn:schemas:httpmail:displaycc"
+# PR_SENDER_SMTP (defined above) is also a table column: `SenderEmailAddress` is an X500
+# distinguished name for internal Exchange senders ("/O=EXCHANGELABS/.../CN=..."), useless for a
+# VIP list of SMTP addresses; the tag carries the SMTP form when Exchange provides it.
 
 TABLE_COLUMNS: tuple[str, ...] = (
     "EntryID",
@@ -113,6 +132,9 @@ TABLE_COLUMNS: tuple[str, ...] = (
     # A body preview straight from the table: verified on the real mailbox 2026-09-05. It is
     # what makes triage one fast call per batch instead of a COM read per message.
     DASL_BODY,
+    DASL_TO,
+    DASL_CC,
+    PR_SENDER_SMTP,
 )
 
 PREVIEW_CHARS = 400
@@ -453,6 +475,8 @@ class Row:
     has_attachments: bool | None
     conversation_id: str
     preview: str = ""
+    to: str = ""
+    cc: str = ""
 
     def as_item(self, store_id: str) -> dict[str, Any]:
         item: dict[str, Any] = {
@@ -464,6 +488,8 @@ class Row:
             "sender": self.sender_name or self.sender_addr,
             "sender_address": self.sender_addr,
             "preview": self.preview,
+            "to": self.to,
+            "cc": self.cc,
             "received": iso_local(self.received),
             "unread": self.unread,
             "flagged": self.flag_status == 2,
@@ -478,7 +504,7 @@ class Row:
         return item
 
 
-def parse_row(row: Sequence[Any], columns: Sequence[str]) -> Row:
+def parse_row(row: Sequence[Any], columns: Sequence[str], preview_chars: int = PREVIEW_CHARS) -> Row:
     values = dict(zip(columns, row, strict=False))
     size_raw = values.get("Size")
     try:
@@ -497,11 +523,13 @@ def parse_row(row: Sequence[Any], columns: Sequence[str]) -> Row:
     conv = values.get(PR_CONVERSATION_ID)
     if isinstance(conv, bytes | bytearray | memoryview):
         conv = bytes(conv).hex().upper()
+    smtp = _text(values.get(PR_SENDER_SMTP))
+    sender_addr = smtp if "@" in smtp else _text(values.get("SenderEmailAddress"))
     return Row(
         entry_id=_text(values.get("EntryID")),
         subject=_text(values.get("Subject")),
         sender_name=_text(values.get("SenderName")),
-        sender_addr=_text(values.get("SenderEmailAddress")),
+        sender_addr=sender_addr,
         received=_to_dt(values.get("ReceivedTime")),
         unread=str(values.get("UnRead", "")).strip().lower() in ("true", "1"),
         flag_status=flag_status,
@@ -509,7 +537,9 @@ def parse_row(row: Sequence[Any], columns: Sequence[str]) -> Row:
         size=size,
         has_attachments=has_attach,
         conversation_id=_text(conv),
-        preview=" ".join(_text(values.get(DASL_BODY)).split())[:PREVIEW_CHARS],
+        preview=" ".join(_text(values.get(DASL_BODY)).split())[: max(0, int(preview_chars))],
+        to=_text(values.get(DASL_TO))[:500],
+        cc=_text(values.get(DASL_CC))[:500],
     )
 
 
@@ -666,8 +696,14 @@ class OutlookBackend:
     def _children_names(self, folder: Any) -> list[str]:
         return [_text(_prop(sub, "Name", "")) for sub in _iter_com(_prop(folder, "Folders"))][:40]
 
-    def _folder(self, store: Any, spec: str) -> Any:
-        """Resolve a folder by well-known role, EntryID, or ``/``-separated path (localised names)."""
+    def _folder(self, store: Any, spec: str, *, create: bool = False) -> Any:
+        """Resolve a folder by well-known role, EntryID, or ``/``-separated path (localised names).
+
+        ``create=True`` adds the missing tail of a path (``Demands/DM-2300`` when only ``Demands``
+        exists) instead of raising - what triage needs for a demand nobody has mailed about yet.
+        A path whose FIRST segment is unknown is still an error: creating a new top-level tree
+        because of a typo is not something a background job should do.
+        """
         spec = (spec or "inbox").strip()
         key = spec.lower().replace(" ", "").replace("_", "")
         if key in WELL_KNOWN_FOLDERS:
@@ -696,7 +732,15 @@ class OutlookBackend:
             child = self._child(node, part)
             if child is None and idx == 0:
                 inbox = self._default_folder(store, FOLDER_INBOX)
-                child = self._child(inbox, part) if inbox is not None else None
+                if inbox is not None:
+                    child = self._child(inbox, part)
+                    if child is not None:
+                        node = inbox
+            if child is None and create and idx > 0:
+                try:
+                    child = node.Folders.Add(part.strip())
+                except Exception as exc:
+                    raise OutlookError(f"folder {spec!r}: creating {part!r} failed: {describe_com_error(exc)}") from exc
             if child is None:
                 raise NotFound(
                     f"folder {spec!r}: no {part!r} under {_text(_prop(node, 'FolderPath', '')) or 'root'}; children: {self._children_names(node)}"
@@ -746,7 +790,7 @@ class OutlookBackend:
     # -- listing (GetTable) -------------------------------------------------------------------
 
     def _table_rows(
-        self, folder: Any, filt: str | None, limit: int, skip: set[str]
+        self, folder: Any, filt: str | None, limit: int, skip: set[str], preview_chars: int = PREVIEW_CHARS
     ) -> tuple[list[Row], bool, int | None]:
         try:
             tbl = folder.GetTable(filt) if filt else folder.GetTable()
@@ -782,7 +826,7 @@ class OutlookBackend:
             if not chunk:
                 break
             for i, raw in enumerate(chunk):
-                row = parse_row(raw, columns)
+                row = parse_row(raw, columns, preview_chars)
                 if not row.entry_id or row.entry_id in skip:
                     continue
                 rows.append(row)
@@ -812,13 +856,17 @@ class OutlookBackend:
         since: str | None = None,
         cursor: str | None = None,
         limit: int = 25,
+        preview_chars: int = PREVIEW_CHARS,
     ) -> dict[str, Any]:
         limit = max(1, min(int(limit or 25), MAX_LIST_LIMIT))
+        # 400 chars is what a model needs to know what a mail is about; triage asks for more so a
+        # digest naming several demands is recognisable as a digest (V1 scanned 4,000 body chars).
+        preview_chars = max(0, min(int(preview_chars or PREVIEW_CHARS), 4000))
         store = self._store(account)
         target = self._folder(store, folder)
         lower = parse_when(since) if since else None
         upper, skip = decode_cursor(cursor) if cursor else (None, set())
-        rows, more, total = self._table_rows(target, received_filter(lower, upper), limit, skip)
+        rows, more, total = self._table_rows(target, received_filter(lower, upper), limit, skip, preview_chars)
         store_id = _text(_prop(store, "StoreID", ""))
         result: dict[str, Any] = {
             "account": _text(_prop(store, "DisplayName", "")),
@@ -962,9 +1010,9 @@ class OutlookBackend:
             "body_truncated": truncated,
         }
 
-    def move(self, entry_id: str, folder: str, account: str = "") -> dict[str, Any]:
+    def move(self, entry_id: str, folder: str, account: str = "", create: bool = False) -> dict[str, Any]:
         item, store = self._item(entry_id, account)
-        target = self._folder(store, folder)
+        target = self._folder(store, folder, create=create)
         subject = _text(_prop(item, "Subject", ""))
         try:
             moved = item.Move(target)
@@ -1184,8 +1232,15 @@ class OutlookBackend:
             "source": source,
         }
 
-    def _overlapping(self, cal: Any, s: datetime, e: datetime) -> list[dict[str, Any]]:
-        """Existing busy appointments that overlap [s, e). All-day and 'free' items do not count."""
+    def _overlapping(
+        self, cal: Any, s: datetime, e: datetime, *, committed_only: bool = False, exclude_entry_id: str = ""
+    ) -> list[dict[str, Any]]:
+        """Existing busy appointments that overlap [s, e). All-day and 'free' items do not count.
+
+        ``committed_only`` additionally drops other tentative / unanswered invites - for an
+        auto-RSVP only meetings Arsen is really committed to (organised, accepted, or his own
+        appointments) may make a slot "taken". ``exclude_entry_id`` leaves out the invite itself.
+        """
         items = cal.Items
         items.Sort("[Start]")
         items.IncludeRecurrences = True
@@ -1205,19 +1260,255 @@ class OutlookBackend:
                 continue
             if bool(_prop(item, "AllDayEvent", False)) or int(_prop(item, "BusyStatus", 2) or 0) == 0:
                 continue
+            entry_id = _text(_prop(item, "EntryID", ""))
+            if exclude_entry_id and entry_id == exclude_entry_id:
+                continue
+            if committed_only and int(_prop(item, "ResponseStatus", 0) or 0) in (
+                OL_RESPONSE_TENTATIVE,
+                OL_RESPONSE_NOT_RESPONDED,
+            ):
+                continue
             i_start, i_end = _to_dt(_prop(item, "Start")), _to_dt(_prop(item, "End"))
             if i_start is None or i_end is None:
                 continue
             if i_start < e and i_end > s:
                 hits.append(
                     {
-                        "entry_id": _text(_prop(item, "EntryID", "")),
+                        "entry_id": entry_id,
                         "subject": _text(_prop(item, "Subject", "")),
                         "start": iso_local(i_start),
                         "end": iso_local(i_end),
                     }
                 )
         return hits
+
+    # --- meeting invites (auto-RSVP, docs/stories/08) ---------------------------------------------
+
+    def _organizer_address(self, item: Any) -> str:
+        """Organizer SMTP: AddressEntry → Exchange user → PrimarySmtpAddress, else the plain
+        Address, else the PR_SENT_REPRESENTING / PR_SENDER SMTP tags (V1 saw the Exchange
+        properties blank on auto-processed invites). Lower-cased; "" when nothing resolves."""
+        try:
+            ae = item.GetOrganizer()
+        except Exception:
+            ae = None
+        if ae is not None:
+            addr = ""
+            try:
+                ex = ae.GetExchangeUser()
+                addr = _text(_prop(ex, "PrimarySmtpAddress", "")) if ex is not None else ""
+            except Exception:
+                addr = ""
+            if "@" not in addr:
+                plain = _text(_prop(ae, "Address", ""))
+                addr = plain if "@" in plain else addr
+            if "@" in addr:
+                return addr.strip().lower()
+        for tag in ("0x5D02001F", "0x5D01001F"):
+            try:
+                v = _text(item.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/" + tag))
+            except Exception:
+                v = ""
+            if "@" in v:
+                return v.strip().lower()
+        return ""
+
+    def calendar_invites(self, account: str = "", days: int = 14) -> dict[str, Any]:
+        """Received invites still unanswered (MeetingStatus received + ResponseStatus tentative or
+        none) starting within ``days``, one per organizer+subject (a series → its earliest
+        upcoming occurrence), each with the COMMITTED meetings that clash with its slot."""
+        store = self._store(account)
+        cal = self._calendar(store)
+        now = datetime.now().astimezone().replace(second=0, microsecond=0)
+        end_dt = now + timedelta(days=max(1, min(int(days or 14), 60)))
+        items = cal.Items
+        items.Sort("[Start]")
+        items.IncludeRecurrences = True
+        restriction = f"[Start] >= '{jet_date(now)}' AND [Start] <= '{jet_date(end_dt)}'"
+        try:
+            restricted = items.Restrict(restriction)
+        except Exception as exc:
+            raise OutlookError(f"calendar Restrict failed ({restriction}): {describe_com_error(exc)}") from exc
+        out: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        checked = 0
+        for item in _iter_items(restricted):
+            checked += 1
+            if checked > CALENDAR_SCAN_CAP:
+                break
+            if int(_prop(item, "Class", 0) or 0) != OL_APPOINTMENT_CLASS:
+                continue
+            status = int(_prop(item, "MeetingStatus", 0) or 0)
+            response = int(_prop(item, "ResponseStatus", 0) or 0)
+            if status != OL_MEETING_RECEIVED or response not in (OL_RESPONSE_TENTATIVE, OL_RESPONSE_NOT_RESPONDED):
+                continue
+            subject = _text(_prop(item, "Subject", ""))
+            organizer = _text(_prop(item, "Organizer", ""))
+            key = (organizer.lower(), subject.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            s, e = _to_dt(_prop(item, "Start")), _to_dt(_prop(item, "End"))
+            if s is None or e is None:
+                continue
+            entry_id = _text(_prop(item, "EntryID", ""))
+            out.append(
+                {
+                    "entry_id": entry_id,
+                    "subject": subject,
+                    "organizer": organizer,
+                    "organizer_address": self._organizer_address(item),
+                    "start": iso_local(s),
+                    "end": iso_local(e),
+                    "location": _text(_prop(item, "Location", "")),
+                    "response_status": "tentative" if response == OL_RESPONSE_TENTATIVE else "not_responded",
+                    "recurring": bool(_prop(item, "IsRecurring", False)),
+                    "conflicts": self._overlapping(cal, s, e, committed_only=True, exclude_entry_id=entry_id),
+                }
+            )
+        return {
+            "account": _text(_prop(store, "DisplayName", "")),
+            "from": iso_local(now),
+            "to": iso_local(end_dt),
+            "invites": out,
+            "items_checked": checked,
+        }
+
+    def calendar_respond(
+        self, entry_id: str, decision: str = "accept", comment: str = "", account: str = ""
+    ) -> dict[str, Any]:
+        """Accept / tentatively accept / decline an invite and SEND the response. Works on the
+        calendar's appointment or on the request still in the inbox (Class 53)."""
+        codes = {"accept": OL_RESPONSE_ACCEPTED, "tentative": OL_RESPONSE_TENTATIVE, "decline": OL_RESPONSE_DECLINED}
+        code = codes.get(str(decision).strip().lower())
+        if code is None:
+            raise OutlookError(f"decision must be accept | tentative | decline, not {decision!r}")
+        item, _ = self._item(entry_id, account)
+        # Read everything now: after a decline Outlook removes the appointment and every
+        # property read raises "item has been moved or deleted".
+        subject = _text(_prop(item, "Subject", ""))
+        start = iso_local(_to_dt(_prop(item, "Start")))
+        organizer = _text(_prop(item, "Organizer", ""))
+        appt = item
+        if int(_prop(item, "Class", 0) or 0) == OL_MEETING_REQUEST_CLASS:
+            try:
+                appt = item.GetAssociatedAppointment(True)
+            except Exception as exc:
+                raise OutlookError(f"GetAssociatedAppointment failed: {describe_com_error(exc)}") from exc
+        try:
+            response = appt.Respond(code, True)  # fNoUI
+        except Exception as exc:
+            raise OutlookError(f"Respond({decision}) failed: {describe_com_error(exc)}") from exc
+        if response is None:
+            raise OutlookError("Outlook returned no response item; nothing was sent")
+        note = ""
+        if comment.strip():
+            try:
+                response.Body = comment.strip() + "\n\n" + _text(_prop(response, "Body", ""))
+            except Exception as exc:  # the response itself is what matters; say the body was lost
+                note = f"comment not attached: {describe_com_error(exc)}"
+        try:
+            response.Send()
+        except Exception as exc:
+            raise OutlookError(f"sending the {decision} failed: {describe_com_error(exc)}") from exc
+        out = {"decision": decision, "sent": True, "subject": subject, "start": start, "organizer": organizer}
+        if note:
+            out["note"] = note
+        return out
+
+    def calendar_free_slots(
+        self,
+        account: str = "",
+        start: str | None = None,
+        days: int = 5,
+        duration_min: int = 30,
+        work_start_hour: int = 9,
+        work_end_hour: int = 18,
+        limit: int = 3,
+    ) -> dict[str, Any]:
+        """Up to ``limit`` free slots of ``duration_min`` on weekdays within work hours, from
+        ``start`` (default now) for ``days`` days, against COMMITTED meetings only."""
+        store = self._store(account)
+        cal = self._calendar(store)
+        s0 = parse_when(start) if start else datetime.now().astimezone()
+        s0 = s0.replace(second=0, microsecond=0)
+        window_end = s0 + timedelta(days=max(1, min(int(days or 5), 60)))
+        dur = timedelta(minutes=max(15, int(duration_min or 30)))
+        busy: list[tuple[datetime, datetime]] = []
+        for hit in self._overlapping(cal, s0, window_end, committed_only=True):
+            try:
+                busy.append((datetime.fromisoformat(hit["start"]), datetime.fromisoformat(hit["end"])))
+            except (KeyError, ValueError):
+                continue
+        slots: list[dict[str, str]] = []
+        day = s0.replace(hour=0, minute=0)
+        while day < window_end and len(slots) < max(1, int(limit or 3)):
+            if day.weekday() < 5:
+                cursor = day.replace(hour=int(work_start_hour), minute=0)
+                if cursor < s0:
+                    # First day: start at the next half hour after `start`.
+                    minute = 30 if s0.minute > 0 and s0.minute <= 30 else 0
+                    cursor = s0.replace(minute=minute) + (timedelta(hours=1) if s0.minute > 30 else timedelta())
+                    cursor = max(cursor, day.replace(hour=int(work_start_hour), minute=0))
+                day_end = day.replace(hour=int(work_end_hour), minute=0)
+                while cursor + dur <= day_end and len(slots) < max(1, int(limit or 3)):
+                    slot_end = cursor + dur
+                    if not any(b_s < slot_end and b_e > cursor for b_s, b_e in busy):
+                        slots.append({"start": iso_local(cursor) or "", "end": iso_local(slot_end) or ""})
+                        cursor = slot_end
+                    else:
+                        cursor += timedelta(minutes=30)
+            day += timedelta(days=1)
+        return {
+            "account": _text(_prop(store, "DisplayName", "")),
+            "from": iso_local(s0),
+            "to": iso_local(window_end),
+            "duration_min": int(dur.total_seconds() // 60),
+            "slots": slots,
+            "busy_considered": len(busy),
+        }
+
+    def calendar_remove_canceled(self, account: str = "", days_back: int = 1, days_ahead: int = 60) -> dict[str, Any]:
+        """Delete meetings the organizer has cancelled (MeetingStatus canceled / received-and-
+        cancelled). Local only, nothing is sent. Ids are collected first, then deleted:
+        deleting while iterating a COM collection is unsafe."""
+        store = self._store(account)
+        cal = self._calendar(store)
+        now = datetime.now().astimezone()
+        start_dt = now - timedelta(days=max(0, int(days_back)))
+        end_dt = now + timedelta(days=max(1, int(days_ahead)))
+        items = cal.Items
+        items.Sort("[Start]")
+        items.IncludeRecurrences = False  # stored items, not exploded occurrences
+        restriction = f"[Start] >= '{jet_date(start_dt)}' AND [Start] <= '{jet_date(end_dt)}'"
+        try:
+            restricted = items.Restrict(restriction)
+        except Exception as exc:
+            raise OutlookError(f"calendar Restrict failed ({restriction}): {describe_com_error(exc)}") from exc
+        doomed: list[tuple[str, str, str]] = []
+        checked = 0
+        for item in _iter_items(restricted):
+            checked += 1
+            if checked > CALENDAR_SCAN_CAP:
+                break
+            if int(_prop(item, "Class", 0) or 0) != OL_APPOINTMENT_CLASS:
+                continue
+            if int(_prop(item, "MeetingStatus", 0) or 0) in (OL_MEETING_CANCELED, OL_MEETING_RECEIVED_AND_CANCELED):
+                entry_id = _text(_prop(item, "EntryID", ""))
+                if entry_id:
+                    doomed.append(
+                        (entry_id, _text(_prop(item, "Subject", "")), iso_local(_to_dt(_prop(item, "Start"))) or "")
+                    )
+        removed: list[dict[str, str]] = []
+        failures: list[str] = []
+        for entry_id, subject, start in doomed:
+            try:
+                item, _ = self._item(entry_id, account)
+                item.Delete()
+                removed.append({"subject": subject, "start": start})
+            except Exception as exc:
+                failures.append(f"{subject!r}: {describe_com_error(exc)}")
+        return {"removed": len(removed), "items": removed, "failures": failures, "items_checked": checked}
 
     def calendar_create(
         self,
@@ -1330,8 +1621,22 @@ class OutlookService:
         "send": 60,
         "calendar_list": 60,
         "calendar_create": 45,
+        "calendar_invites": 90,
+        "calendar_respond": 45,
+        "calendar_free_slots": 60,
+        "calendar_remove_canceled": 120,
     }
-    READ_ONLY = {"ping", "accounts", "folders", "list_items", "search", "read", "calendar_list"}
+    READ_ONLY = {
+        "ping",
+        "accounts",
+        "folders",
+        "list_items",
+        "search",
+        "read",
+        "calendar_list",
+        "calendar_invites",
+        "calendar_free_slots",
+    }
 
     def __init__(self, backend: OutlookBackend, worker: ComWorker) -> None:
         self.backend = backend

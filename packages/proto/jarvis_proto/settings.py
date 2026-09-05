@@ -132,6 +132,50 @@ class TriageSettings(BaseModel):
     demand_root: str = "Demands"
     demand_prefixes: list[str] = Field(default_factory=lambda: ["DM-"])
     categories: list[dict[str, str]] = Field(default_factory=list)  # {name, folder, rule}
+    # Free-text rules the classifier reads before the category list: who the owner is, what
+    # "CC-only" means for them, hard exclusions. Ported from V1's classification_instruction.
+    instructions: str = ""
+    # Category used when the classifier answers "none" (or nonsense). Empty = leave the mail in
+    # the inbox; set it to the catch-all (e.g. "reference") for inbox zero.
+    fallback_category: str = ""
+
+
+class MeetingRsvpSettings(BaseModel):
+    """Answer meeting invites automatically through the host's calendar (docs/stories/08).
+
+    Free slot → accept. Clash with a committed meeting → decline and propose free alternatives.
+    A VIP is never declined (accept + tell Arsen). Outside ``allowed_domains`` nothing is
+    answered — an empty list therefore answers nobody, which is the safe default.
+    """
+
+    enabled: bool = False
+    interval_min: int = 3
+    host: str = ""  # jarvis-host MCP server that owns the calendar
+    account: str = ""  # Outlook account (store) whose invites are answered; "" = default
+    lookahead_days: int = 5
+    allowed_domains: list[str] = Field(default_factory=list)  # e.g. ["postbank.bg"]
+    vip: list[str] = Field(default_factory=list)  # addresses or domains, never declined
+    remove_canceled: bool = True
+    propose_slots: int = 3
+    work_start_hour: int = 9
+    work_end_hour: int = 18
+
+    @staticmethod
+    def _domain(address: str) -> str:
+        address = address.strip().lower()
+        return address.rsplit("@", 1)[-1] if "@" in address else ""
+
+    def is_vip(self, address: str) -> bool:
+        a = address.strip().lower()
+        d = self._domain(a)
+        vips = {v.strip().lower().lstrip("@") for v in self.vip if v.strip()}
+        return bool(a) and (a in vips or (bool(d) and d in vips))
+
+    def is_allowed(self, address: str) -> bool:
+        """Organizer inside the organisation (or a VIP). Unknown/empty address → not allowed."""
+        d = self._domain(address)
+        allowed = {x.strip().lower().lstrip("@") for x in self.allowed_domains if x.strip()}
+        return self.is_vip(address) or (bool(d) and d in allowed)
 
 
 class EmailPolicy(BaseModel):
@@ -263,6 +307,7 @@ class Settings(BaseModel):
     planning_enabled: bool = True
     kg_learning: bool = True
     triage: TriageSettings = Field(default_factory=TriageSettings)
+    rsvp: MeetingRsvpSettings = Field(default_factory=MeetingRsvpSettings)
     # The address people actually reach this core on (e.g. the Tailscale Serve HTTPS URL).
     # Used for pairing/QR; without it the URL is derived from the request. The phone's mic and
     # the PWA need a secure context, so this is normally an https:// URL.

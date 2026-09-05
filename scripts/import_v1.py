@@ -159,27 +159,36 @@ class Importer:
 
     # --- schedules -----------------------------------------------------------------------
 
-    async def schedules(self, tz: str) -> list[str]:
+    async def schedules(self, tz: str, *, enable: bool = False) -> tuple[list[str], list[str]]:
+        """Returns (unmapped, was_enabled_in_v1). Schedules are imported DISABLED unless
+        ``enable`` — importing 14 live automations that start firing at Arsen unattended is
+        not something a data migration should decide."""
         unmapped: list[str] = []
+        live: list[str] = []
         if not self.has("scheduler_jobs"):
-            return unmapped
+            return unmapped, live
         store = ScheduleStore(self.db)
         for j in self.v1.execute("SELECT * FROM scheduler_jobs"):
             if await self.mapped("schedule", j["id"]):
                 continue
             data: dict[str, Any] = json.loads(j["data"] or "{}")
-            name = str(data.get("name") or data.get("title") or data.get("label") or j["id"])
-            prompt = str(data.get("prompt") or data.get("message") or data.get("text") or data.get("task") or "")
-            cron = _cron_from(data)
-            if not prompt or not cron:
-                unmapped.append(f"{name}: {json.dumps(data)[:160]}")
+            name = str(data.get("name") or j["id"]).strip()
+            prompt = str(data.get("message") or data.get("prompt") or data.get("text") or "").strip()
+            cron, at = _when(data)
+            if not prompt or not (cron or at):
+                unmapped.append(f"{name}: {json.dumps(data, ensure_ascii=False)[:150]}")
                 continue
+            was_enabled = bool(j["enabled"]) and str(data.get("enabled", "True")).lower() != "false"
+            if was_enabled:
+                live.append(f"{name} — {cron or ('once ' + at.isoformat() if at else '?')}")
             self.bump("schedules")
             if self.dry:
                 continue
-            s = await store.create(name=name, prompt=prompt, cron=cron, tz=tz, enabled=bool(j["enabled"]))
+            s = await store.create(
+                name=name[:80], prompt=prompt, cron=cron, at=at, tz=tz, enabled=bool(enable and was_enabled)
+            )
             await self.remember("schedule", j["id"], s.id)
-        return unmapped
+        return unmapped, live
 
     # --- conversations -------------------------------------------------------------------
 
@@ -229,25 +238,40 @@ class Importer:
             await self.remember("conversation", c["id"], conv_id)
 
 
-def _cron_from(data: dict[str, Any]) -> str | None:
+def _when(data: dict[str, Any]) -> tuple[str | None, datetime | None]:
+    """V1 job → (cron, at). V1 shape: type=daily|interval|once, daily_time 'HH:MM',
+    days_of_week as Python weekdays (Mon=0), interval_minutes, once → schedule=ISO."""
     if data.get("cron"):
-        return str(data["cron"])
-    time_ = str(data.get("time") or data.get("at") or "")
-    m = re.match(r"^(\d{1,2}):(\d{2})$", time_)
-    kind = str(data.get("schedule") or data.get("repeat") or data.get("frequency") or "").lower()
-    if m:
-        hh, mm = int(m.group(1)), int(m.group(2))
-        if kind in {"daily", "every day", ""}:
-            return f"{mm} {hh} * * *"
-        if kind in {"weekdays", "workdays"}:
-            return f"{mm} {hh} * * 1-5"
-        if kind.startswith("weekly"):
-            dow = data.get("weekday") or data.get("day_of_week")
-            return f"{mm} {hh} * * {dow}" if dow is not None else f"{mm} {hh} * * 1"
-    interval = data.get("interval_minutes") or data.get("every_minutes")
-    if interval:
-        return f"*/{int(interval)} * * * *"
-    return None
+        return str(data["cron"]), None
+    kind = str(data.get("type") or "").strip().lower()
+    if kind == "once" or (not kind and str(data.get("schedule", "")).count("-") >= 2):
+        raw = str(data.get("schedule") or data.get("at") or "").strip()
+        try:
+            return None, datetime.fromisoformat(raw)
+        except ValueError:
+            return None, None
+    if kind == "interval" or data.get("interval_minutes"):
+        try:
+            minutes = int(data.get("interval_minutes") or data.get("schedule") or 0)
+        except (TypeError, ValueError):
+            return None, None
+        if minutes <= 0:
+            return None, None
+        if minutes % 60 == 0 and minutes < 24 * 60:
+            return f"0 */{minutes // 60} * * *", None
+        return f"*/{max(1, min(minutes, 59))} * * * *", None
+    raw_time = str(data.get("daily_time") or data.get("schedule") or data.get("time") or "").strip()
+    m = re.match(r"^(\d{1,2}):(\d{2})$", raw_time)
+    if not m:
+        return None, None
+    hh, mm = int(m.group(1)), int(m.group(2))
+    days = data.get("days_of_week")
+    if isinstance(days, list) and days:
+        # Python weekday (Mon=0 … Sun=6) → cron day-of-week (Sun=0 … Sat=6).
+        cron_days = sorted({(int(d) + 1) % 7 for d in days if isinstance(d, int | str) and str(d).isdigit()})
+        if cron_days and len(cron_days) < 7:
+            return f"{mm} {hh} * * {','.join(str(d) for d in cron_days)}", None
+    return f"{mm} {hh} * * *", None
 
 
 async def main() -> None:
@@ -258,6 +282,11 @@ async def main() -> None:
     ap.add_argument("--tz", default="Europe/Sofia")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-conversations", action="store_true")
+    ap.add_argument(
+        "--enable-schedules",
+        action="store_true",
+        help="import schedules already enabled (default: import them disabled so nothing fires unattended)",
+    )
     args = ap.parse_args()
 
     v1 = sqlite3.connect(f"file:{Path(args.db).resolve().as_posix()}?mode=ro", uri=True)
@@ -270,16 +299,21 @@ async def main() -> None:
         await imp.boards()
         await imp.knowledge()
         await imp.skills(Path(args.skills) if args.skills else None, home)
-        unmapped = await imp.schedules(args.tz)
+        unmapped, live = await imp.schedules(args.tz, enable=args.enable_schedules)
         if not args.no_conversations:
             await imp.conversations()
     finally:
         await db.close()
         v1.close()
     mode = "DRY RUN — nothing written" if args.dry_run else "imported"
-    print(f"{mode}: " + ", ".join(f"{k}={v}" for k, v in sorted(imp.counts.items())) or "nothing to import")
+    print(f"{mode}: " + (", ".join(f"{k}={v}" for k, v in sorted(imp.counts.items())) or "nothing to import"))
+    if live:
+        state = "ENABLED" if args.enable_schedules else "imported DISABLED (pass --enable-schedules to keep them on)"
+        print(f"\n{len(live)} schedule(s) were live in V1 — {state}:")
+        for line in live:
+            print("  -", line)
     if unmapped:
-        print(f"\n{len(unmapped)} scheduler job(s) could not be mapped to cron — recreate them as scheduled prompts:")
+        print(f"\n{len(unmapped)} scheduler job(s) could not be mapped — recreate them by hand if you still want them:")
         for line in unmapped:
             print("  -", line)
 

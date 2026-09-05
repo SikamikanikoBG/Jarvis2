@@ -89,3 +89,17 @@ harness — library vs. own is an open question to settle in the design.
   `workocholic.outlook_list` → correct 2 messages; "meetings in the next 3 days" →
   `workocholic.calendar_list` → correct, including a canceled meeting and a Bulgarian title.
   ~10k prompt tokens per call at 52 tools.
+- 2026-09-05 — Phase 7: deployed to ardi (`scripts/deploy_ardi.sh`, container `jarvis2-core`
+  on 100.97.120.53:9020, V1's jarvis-server on 9010 untouched). Configured for vader vLLM,
+  the ardi homelab MCP and this laptop's jarvis-host over Tailscale — 52 tools, all green
+  except the browser extension (Arsen loads that by hand). Fixed a 421 that blocked every
+  remote core: the MCP SDK's DNS-rebinding guard trusts localhost only and matches no bare "*".
+- 2026-09-05 — V1 import into ardi (core stopped, one-off container on the same volume):
+  10 boards / 19 notes, 1,723 entities + 1,261 edges + 5,000 mentions, 40 skills, 49 of 50
+  schedules (the 50th is malformed V1 data — reported, not guessed), 20 conversations / 578
+  messages under an "Archive (V1)" folder. Schedules imported DISABLED on purpose: 13 were
+  live in V1 and a data migration should not start firing automations unattended.
+  V1's `days_of_week` is Python's Mon=0; cron's is Sun=0 — converted.
+- 2026-09-05 — Proof the imported context reaches the model: "Who is Rumen?" answered
+  correctly with ZERO tool calls (knowledge graph injected), "What is on my to-do board?"
+  read the real notes via notes.list.

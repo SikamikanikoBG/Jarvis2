@@ -18,7 +18,13 @@ def main() -> None:
         level=config.log_level.upper(),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    uvicorn.run(create_app(config), host=config.host, port=config.port, log_level=config.log_level.lower())
+    uvicorn.run(
+        create_app(config),
+        host=config.host,
+        port=config.port,
+        log_level=config.log_level.lower(),
+        ws_max_size=8 * 1024 * 1024,  # browser screenshots ride the WS as base64
+    )
 
 
 if __name__ == "__main__":

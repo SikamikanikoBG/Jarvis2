@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -25,10 +25,12 @@ from jarvis_core.features.boards import BoardStore, NotesTools
 from jarvis_core.features.collab import CollabAuthMiddleware, CollabKeys, build_mcp_server
 from jarvis_core.features.compaction import Compactor
 from jarvis_core.features.knowledge import KnowledgeLearner, KnowledgeStore, KnowledgeTools
+from jarvis_core.features.meetings import MeetingService
 from jarvis_core.features.planner import Planner
 from jarvis_core.features.schedules import Scheduler, ScheduleStore, ScheduleTools
 from jarvis_core.features.skills import SkillDetector, SkillsTools, SkillStore
 from jarvis_core.features.stt import Transcriber
+from jarvis_core.features.triage import TriageJob
 from jarvis_core.models import AdapterFactory
 from jarvis_core.tools import CoreTools, ToolRegistry
 from jarvis_core.tools.facades import ExposurePolicy
@@ -65,6 +67,8 @@ class Core:
         self.collab_keys = CollabKeys(self.db)
         self.transcriber = Transcriber(settings)
         self.mcp_server = build_mcp_server(self)
+        self.triage = TriageJob(self)
+        self.meetings = MeetingService(self)
 
         # Tools.
         self.builtin = CoreTools()
@@ -127,9 +131,12 @@ class Core:
         await self.reload_tools()
         await self.engine.start()
         await self.scheduler.start()
+        await self.triage.start()
         log.info("jarvis-core %s ready (db=%s, tools=%d)", __version__, self.db.path, len(self.registry.specs()))
 
     async def stop(self) -> None:
+        await self.triage.stop()
+        await self.meetings.stop_all()
         await self.scheduler.stop()
         await self.engine.stop()
         await self.learner.wait()
@@ -231,8 +238,15 @@ def _mount_spa(app: FastAPI, dist: Path | None) -> None:
         app.mount("/assets", StaticFiles(directory=assets), name="assets")
 
     @app.get("/{path:path}", include_in_schema=False)
-    async def spa(path: str) -> FileResponse:
+    async def spa(path: str, request: Request) -> FileResponse:
         candidate = (dist / path).resolve()
         if path and candidate.is_file() and dist.resolve() in candidate.parents:
             return FileResponse(candidate)
-        return FileResponse(index, headers={"Cache-Control": "no-cache"})
+        response = FileResponse(index, headers={"Cache-Control": "no-cache"})
+        # Opening the app with ?token=… also sets the cookie, so plain <img>/<a> requests
+        # (meeting frames, downloads) authenticate without a header.
+        core = request.app.state.core
+        token = request.query_params.get("token")
+        if token and core.config.token and token == core.config.token:
+            response.set_cookie("jarvis_token", token, httponly=True, samesite="lax", max_age=365 * 24 * 3600)
+        return response

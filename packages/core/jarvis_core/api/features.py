@@ -55,7 +55,10 @@ async def create_board(request: Request, body: BoardCreate) -> Board:
 
 @router.patch("/boards/{board_id}", response_model=Board)
 async def patch_board(request: Request, board_id: str, body: BoardPatch) -> Board:
-    board = await core_of(request).boards.update_board(board_id, name=body.name, position=body.position)
+    store = core_of(request).boards
+    board = await store.update_board(board_id, name=body.name)
+    if board is not None and body.position is not None:
+        board = await store.reorder_board(board_id, body.position)
     if board is None:
         raise HTTPException(404, "board not found")
     return board

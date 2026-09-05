@@ -93,26 +93,42 @@ async def main() -> None:
         # 1. plain reply
         rep = await ws_run(args.base, args.token, "Reply with exactly one short sentence: what can you help me with?")
         check(rep["final"]["type"] == "run.done", "plain reply completes", json.dumps(rep["final"])[:200])
-        check(rep["deltas"] > 0 and rep["text"].strip() != "", "text streamed", f"{rep['deltas']} deltas, ttfb {rep['ttfb_ms']} ms")
+        check(
+            rep["deltas"] > 0 and rep["text"].strip() != "",
+            "text streamed",
+            f"{rep['deltas']} deltas, ttfb {rep['ttfb_ms']} ms",
+        )
         u = rep.get("usage", {})
-        print(f"      usage: prompt={u.get('prompt_tokens')} completion={u.get('completion_tokens')} "
-              f"ttft={u.get('ttft_ms')} ms dur={u.get('duration_ms')} ms reasoning_deltas={rep['reasoning']}")
+        print(
+            f"      usage: prompt={u.get('prompt_tokens')} completion={u.get('completion_tokens')} "
+            f"ttft={u.get('ttft_ms')} ms dur={u.get('duration_ms')} ms reasoning_deltas={rep['reasoning']}"
+        )
         print(f"      reply: {rep['text'].strip()[:200]!r}")
 
         # 2. tool call
-        rep = await ws_run(args.base, args.token, "What is the exact current time in Sofia right now? Use your tool, then answer in one line.")
+        rep = await ws_run(
+            args.base,
+            args.token,
+            "What is the exact current time in Sofia right now? Use your tool, then answer in one line.",
+        )
         check(rep["final"]["type"] == "run.done", "tool run completes", json.dumps(rep["final"])[:200])
         check("jarvis.time" in rep["tools"], "model called jarvis.time", f"tools={rep['tools']}")
         print(f"      reply: {rep['text'].strip()[:200]!r}")
         events = (await http.get(f"/api/runs/{rep['run_id']}/events")).json()
         types = [e["type"] for e in events]
-        check("tool.call" in types and "tool.result" in types and "model.delta" not in types,
-              "run events persisted without deltas", f"{len(events)} events")
+        check(
+            "tool.call" in types and "tool.result" in types and "model.delta" not in types,
+            "run events persisted without deltas",
+            f"{len(events)} events",
+        )
 
         # 3. stop mid-stream
-        rep = await ws_run(args.base, args.token,
-                           "Write a long, detailed 800-word essay about the history of Sofia. Do not use tools.",
-                           cancel_after_tokens=8)
+        rep = await ws_run(
+            args.base,
+            args.token,
+            "Write a long, detailed 800-word essay about the history of Sofia. Do not use tools.",
+            cancel_after_tokens=8,
+        )
         check(rep["final"]["type"] == "run.cancelled", "stop cancels the run", json.dumps(rep["final"])[:200])
         check(rep.get("cancel_latency_ms", 10**9) < 3000, "stop latency", f"{rep.get('cancel_latency_ms')} ms")
         msgs = (await http.get(f"/api/conversations/{rep['conversation_id']}/messages")).json()

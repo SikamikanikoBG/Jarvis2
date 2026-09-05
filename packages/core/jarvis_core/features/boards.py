@@ -80,6 +80,20 @@ class BoardStore:
             self._changed(board_id)
         return await self.get_board(board_id)
 
+    async def reorder_board(self, board_id: str, position: int) -> Board | None:
+        """Move a board to a target index and renumber the rest (what the UI sends)."""
+        boards = await self.list_boards()
+        ids = [b.id for b in boards]
+        if board_id not in ids:
+            return None
+        ids.remove(board_id)
+        ids.insert(max(0, min(position, len(ids))), board_id)
+        now = _now()
+        for idx, bid in enumerate(ids):
+            await self.db.execute("UPDATE boards SET position = ?, updated_at = ? WHERE id = ?", (idx, now, bid))
+        self._changed(None)
+        return await self.get_board(board_id)
+
     async def delete_board(self, board_id: str) -> None:
         await self.db.execute("DELETE FROM boards WHERE id = ?", (board_id,))
         self._changed(None)

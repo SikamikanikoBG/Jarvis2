@@ -35,6 +35,11 @@ class HostConfig:
     fs_roots: tuple[Path, ...] = ()
     shell_allow: bool = True
     screen_enabled: bool = True
+    # Host headers the MCP transport accepts. The SDK's DNS-rebinding guard trusts localhost
+    # only, so a core on another machine (ardi reaching this laptop over Tailscale) gets a
+    # 421 Misdirected Request until its address is listed here. "*" trusts any Host header —
+    # the bearer token is still required, and the daemon should not be exposed beyond a tailnet.
+    allowed_hosts: tuple[str, ...] = ("*",)
     path: Path | None = field(default=None, compare=False)
 
     @property

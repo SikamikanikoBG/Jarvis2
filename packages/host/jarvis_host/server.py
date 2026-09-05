@@ -21,6 +21,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.utilities.types import Image
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -102,8 +103,25 @@ async def _run(name: str, fn: Callable[[], Awaitable[Any]]) -> Any:
     return result
 
 
-def build_mcp(deps: Deps) -> FastMCP:
-    mcp = FastMCP("jarvis-host", instructions=INSTRUCTIONS)
+def transport_security(config: HostConfig | None) -> TransportSecuritySettings:
+    """DNS-rebinding protection for the MCP transport.
+
+    The SDK trusts localhost only, so a core on another machine (ardi reaching this laptop over
+    Tailscale) gets `421 Misdirected Request` until its address is listed. The guard defends
+    browsers against rebinding; the daemon's own defence is the bearer token, so ``["*"]``
+    (the default) turns it off rather than pretending a wildcard host list works — the SDK
+    matches exact hosts and ``host:*`` port patterns only.
+    """
+    allowed = list(config.allowed_hosts) if config else ["*"]
+    if "*" in allowed:
+        return TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True, allowed_hosts=allowed, allowed_origins=allowed
+    )
+
+
+def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
+    mcp = FastMCP("jarvis-host", instructions=INSTRUCTIONS, transport_security=transport_security(config))
 
     def outlook() -> OutlookService:
         if deps.outlook is None:
@@ -278,7 +296,7 @@ class BearerAuth:
 
 def build_app(config: HostConfig, deps: Deps | None = None) -> BearerAuth:
     deps = deps or make_deps(config)
-    mcp = build_mcp(deps)
+    mcp = build_mcp(deps, config)
     inner = mcp.streamable_http_app()  # creates the session manager; its lifespan is driven below
 
     @asynccontextmanager

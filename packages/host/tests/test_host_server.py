@@ -159,3 +159,17 @@ async def test_tools_annotations_and_calls(server: tuple[str, BearerAuth], world
 
     deps = app.app.state.deps
     assert deps.worker.status().completed >= 4
+
+
+def test_transport_security_wildcard_disables_the_guard_and_a_list_enables_it():
+    """The SDK matches exact hosts and `host:*` only, so "*" must turn the guard off, not
+    be passed through as an allow-list entry that never matches (a live 421 from ardi)."""
+    from jarvis_host.config import HostConfig
+    from jarvis_host.server import transport_security
+
+    wild = transport_security(HostConfig(name="t", token="x"))
+    assert wild.enable_dns_rebinding_protection is False
+
+    listed = transport_security(HostConfig(name="t", token="x", allowed_hosts=("100.75.37.17:9030", "localhost:*")))
+    assert listed.enable_dns_rebinding_protection is True
+    assert "100.75.37.17:9030" in listed.allowed_hosts and "localhost:*" in listed.allowed_hosts

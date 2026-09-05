@@ -276,6 +276,47 @@ await session('features-mobile', mobile, 'dark', async (page, shot) => {
   await shot('03-knowledge-detail');
 });
 
+await session('settings4', desktop, 'dark', async (page, shot) => {
+  await page.goto(`${base}/settings`);
+  await page.waitForSelector('.tone-grid');
+  await page.evaluate(() => [...document.querySelectorAll('h2')].find((h) => h.textContent?.startsWith('Personality'))?.scrollIntoView({ block: 'start' }));
+  await page.waitForTimeout(200);
+  await shot('01-personality');
+  await page.evaluate(() => [...document.querySelectorAll('h2')].find((h) => h.textContent === 'Confirmations')?.scrollIntoView({ block: 'start' }));
+  await page.waitForTimeout(200);
+  await shot('02-confirmations-email');
+  await page.click('.radio-card >> nth=1'); // full autonomy
+  await page.click('button[aria-label="Allow any recipient"]');
+  await page.evaluate(() => [...document.querySelectorAll('h2')].find((h) => h.textContent?.startsWith('Confirmations'))?.scrollIntoView({ block: 'start' }));
+  await page.waitForTimeout(200);
+  await shot('03-autonomy-on');
+  // an invalid recipient reaches the server → 422
+  await page.click('.radio-card >> nth=0');
+  await page.click('button[aria-label="Allow any recipient"]');
+  await page.fill('#approved-send', 'rumen@postbank.bg\nnot-an-address');
+  const saveResponse = page.waitForResponse((r) => r.url().includes('/api/settings') && r.request().method() === 'PATCH');
+  await page.click('.savebar .btn-primary');
+  console.log('settings PATCH →', (await saveResponse).status());
+  await page.waitForTimeout(300);
+  await page.evaluate(() => document.querySelector('.field-error')?.scrollIntoView({ block: 'center' }));
+  await shot('04-email-422');
+});
+
+await session('tps', desktop, 'dark', async (page, shot) => {
+  await page.goto(base);
+  await page.waitForSelector('.conv');
+  await page.click('.conv:has-text("Morning planning")');
+  await page.waitForSelector('.msg-bot');
+  await page.fill('textarea', 'tools please');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('.runchip:not(:has(.chip-accent)) >> nth=-1', { timeout: 40000 });
+  await page.waitForTimeout(400);
+  const chips = await page.$$eval('.runchip', (els) => els.map((e) => e.textContent?.replace(/\s+/g, ' ').trim()));
+  console.log('run chips:', JSON.stringify(chips));
+  await page.evaluate(() => document.querySelector('.runchip:last-of-type')?.scrollIntoView({ block: 'center' }));
+  await shot('01-run-chip-tps');
+});
+
 await session('panel', { width: 420, height: 760 }, 'dark', async (page, shot) => {
   await page.goto(`${base}/?mode=panel`);
   await page.waitForSelector('textarea');

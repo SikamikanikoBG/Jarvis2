@@ -252,6 +252,14 @@ async def create_schedule(request: Request, body: ScheduleBody) -> Schedule:
         raise HTTPException(422, str(exc)) from exc
 
 
+@router.get("/schedules/{schedule_id}", response_model=Schedule)
+async def get_schedule(request: Request, schedule_id: str) -> Schedule:
+    schedule = await core_of(request).schedules.get(schedule_id)
+    if schedule is None:
+        raise HTTPException(404, "schedule not found")
+    return schedule
+
+
 @router.patch("/schedules/{schedule_id}", response_model=Schedule)
 async def patch_schedule(request: Request, schedule_id: str, body: ScheduleBody) -> Schedule:
     try:

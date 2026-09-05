@@ -122,6 +122,9 @@ let settings = {
   user_name: 'Arsen',
   timezone: 'Europe/Sofia',
   language_hint: 'Reply in the language the user wrote in (Bulgarian or English).',
+  personality: { enabled: true, formality: 'casual', humor: 'witty', verbosity: 'concise', address_style: 'name', persona: 'Dry, quick and unimpressed by hype. You have opinions and you state them in one line. You never pad, never flatter, and never explain what Arsen already knows.' },
+  confirmations: { mode: 'destructive', always_allow: [], always_ask: ['*.outlook_send'] },
+  email: { approved_direct_send: ['rumen@postbank.bg', '@postbank.bg'], allow_any_recipient: false },
   roles: Object.fromEntries(
     ['chat', 'planner', 'classifier', 'judge', 'triage'].map((r) => [
       r,
@@ -143,15 +146,18 @@ let settings = {
   },
   max_concurrent_runs_per_endpoint: 1,
   repeated_call_threshold: 3,
-  tool_exposure: 'auto',
-  facade_threshold: 12,
+  tool_exposure: 'flat',
+  facade_threshold: 24,
   history_token_budget: 24000,
   boards_context_chars: 6000,
   skill_max_chars: 6000,
   planning_enabled: true,
   kg_learning: true,
   triage: { enabled: false, interval_min: 15, host: 'outlook', accounts: ['aapostolov@postbank.bg'], demand_root: 'Demands', demand_prefixes: ['DM-'], categories: [{ name: 'Newsletters', folder: 'Newsletters', rule: 'bulk mail, digests, marketing' }, { name: 'HR', folder: 'HR', rule: 'people, training, leave' }] },
+  public_url: null,
   stt_url: 'http://ardi:9110',
+  stt_kind: 'openai',
+  stt_model: 'large-v3',
   stt_languages: ['bg', 'en'],
 };
 
@@ -471,6 +477,9 @@ const server = createServer(async (req, res) => {
         });
         if (typeof next.max_concurrent_runs_per_endpoint !== 'number' || next.max_concurrent_runs_per_endpoint < 1) errors.push({ loc: ['body', 'max_concurrent_runs_per_endpoint'], msg: 'Input should be greater than or equal to 1', type: 'greater_than_equal' });
         if (typeof next.timezone !== 'string' || !next.timezone.includes('/')) errors.push({ loc: ['body', 'timezone'], msg: `Value error, unknown IANA timezone '${next.timezone}'`, type: 'value_error' });
+        for (const [i, entry] of (next.email?.approved_direct_send ?? []).entries()) {
+          if (!entry.startsWith('@') && !entry.includes('@')) errors.push({ loc: ['body', 'email', 'approved_direct_send', i], msg: `Value error, '${entry}' is neither an address nor an @domain`, type: 'value_error' });
+        }
         if (errors.length) return json(res, 422, { detail: errors });
         settings = next;
         return json(res, 200, settings);

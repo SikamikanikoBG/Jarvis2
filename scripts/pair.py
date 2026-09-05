@@ -35,7 +35,7 @@ def main() -> int:
     else:
         try:
             url = fetch_pair(args.base, args.token)["url"]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             print(f"could not reach {args.base}/api/pair: {exc}", file=sys.stderr)
             return 1
 

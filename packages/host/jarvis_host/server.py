@@ -220,16 +220,32 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
         attendees: str = "",
         send_invites: bool = False,
         all_day: bool = False,
+        allow_overlap: bool = False,
     ) -> str:
-        """Create an appointment (`start`/`end` ISO-8601 local; `end` defaults to +1h). Attendees (comma-separated addresses) make it a meeting; invites go out only when send_invites is true."""
+        """Create an appointment (`start`/`end` ISO-8601 local; `end` defaults to +1h). REFUSES a slot that already holds a busy appointment - read calendar_list first and pick a free slot; pass allow_overlap=true only when overlapping is the intent. Attendees (comma-separated addresses) make it a meeting; invites go out only when send_invites is true."""
         return json_text(
             await _run(
                 "calendar_create",
                 lambda: outlook().call(
-                    "calendar_create", account, subject, start, end, location, body, attendees, send_invites, all_day
+                    "calendar_create",
+                    account,
+                    subject,
+                    start,
+                    end,
+                    location,
+                    body,
+                    attendees,
+                    send_invites,
+                    all_day,
+                    allow_overlap,
                 ),
             )
         )
+
+    @tool("calendar_delete", DESTRUCTIVE)
+    async def calendar_delete(entry_id: str, account: str = "") -> str:
+        """Delete one appointment by the entry_id returned by calendar_list/calendar_create. Only appointments; returns what was deleted."""
+        return json_text(await _run("calendar_delete", lambda: outlook().call("calendar_delete", entry_id, account)))
 
     # --- files ---------------------------------------------------------------------------
 

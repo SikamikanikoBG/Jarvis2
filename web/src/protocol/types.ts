@@ -186,11 +186,54 @@ export interface TriageSettings {
 
 export type ToolExposure = 'auto' | 'flat' | 'facade';
 
+export type Formality = 'formal' | 'balanced' | 'casual';
+export type Humor = 'none' | 'light' | 'witty';
+export type Verbosity = 'terse' | 'concise' | 'detailed';
+export type AddressStyle = 'name' | 'sir' | 'neutral';
+
+export const FORMALITY: readonly Formality[] = ['formal', 'balanced', 'casual'];
+export const HUMOR: readonly Humor[] = ['none', 'light', 'witty'];
+export const VERBOSITY: readonly Verbosity[] = ['terse', 'concise', 'detailed'];
+export const ADDRESS_STYLE: readonly AddressStyle[] = ['name', 'sir', 'neutral'];
+
+/** How Jarvis speaks. Tone only — never what he is willing to say. */
+export interface Personality {
+  enabled: boolean;
+  formality: Formality;
+  humor: Humor;
+  verbosity: Verbosity;
+  address_style: AddressStyle;
+  persona: string;
+}
+
+export type ConfirmationMode = 'destructive' | 'off';
+
+/** When Jarvis stops to ask before running a tool. Unattended runs never ask. */
+export interface Confirmations {
+  mode: ConfirmationMode;
+  /** Tool names or `namespace.*` / `*.tool` patterns that never ask. */
+  always_allow: string[];
+  /** Names that always ask, even with mode "off". */
+  always_ask: string[];
+}
+
+/** Who Jarvis may write to directly; everyone else gets a draft in Outlook. */
+export interface EmailPolicy {
+  /** Full addresses (`rumen@bank.bg`) or whole domains (`@bank.bg`). */
+  approved_direct_send: string[];
+  allow_any_recipient: boolean;
+}
+
+export type SttKind = 'openai' | 'asr';
+
 export interface Settings {
   assistant_name: string;
   user_name: string;
   timezone: string;
   language_hint: string;
+  personality: Personality;
+  confirmations: Confirmations;
+  email: EmailPolicy;
   roles: Record<RoleName, ModelSpec>;
   budgets: Record<RunKind, RunBudget>;
   mcp_servers: McpServerSpec[];
@@ -204,7 +247,11 @@ export interface Settings {
   planning_enabled: boolean;
   kg_learning: boolean;
   triage: TriageSettings;
+  /** The address people reach this core on; used for pairing/QR. Normally https. */
+  public_url: string | null;
   stt_url: string | null;
+  stt_kind: SttKind;
+  stt_model: string;
   stt_languages: string[];
 }
 

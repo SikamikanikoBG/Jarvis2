@@ -1179,6 +1179,41 @@ class OutlookBackend:
             "source": source,
         }
 
+    def _overlapping(self, cal: Any, s: datetime, e: datetime) -> list[dict[str, Any]]:
+        """Existing busy appointments that overlap [s, e). All-day and 'free' items do not count."""
+        items = cal.Items
+        items.Sort("[Start]")
+        items.IncludeRecurrences = True
+        # Anything starting up to a day before could still run into our slot; end bound is ours.
+        restriction = f"[Start] >= '{jet_date(s - timedelta(days=1))}' AND [Start] < '{jet_date(e)}'"
+        try:
+            candidates = items.Restrict(restriction)
+        except Exception as exc:
+            raise OutlookError(f"calendar Restrict failed ({restriction}): {describe_com_error(exc)}") from exc
+        hits: list[dict[str, Any]] = []
+        checked = 0
+        for item in _iter_items(candidates):
+            checked += 1
+            if checked > CALENDAR_SCAN_CAP:
+                break
+            if int(_prop(item, "Class", 0) or 0) != OL_APPOINTMENT_CLASS:
+                continue
+            if bool(_prop(item, "AllDayEvent", False)) or int(_prop(item, "BusyStatus", 2) or 0) == 0:
+                continue
+            i_start, i_end = _to_dt(_prop(item, "Start")), _to_dt(_prop(item, "End"))
+            if i_start is None or i_end is None:
+                continue
+            if i_start < e and i_end > s:
+                hits.append(
+                    {
+                        "entry_id": _text(_prop(item, "EntryID", "")),
+                        "subject": _text(_prop(item, "Subject", "")),
+                        "start": iso_local(i_start),
+                        "end": iso_local(i_end),
+                    }
+                )
+        return hits
+
     def calendar_create(
         self,
         account: str,
@@ -1190,6 +1225,7 @@ class OutlookBackend:
         attendees: str = "",
         send_invites: bool = False,
         all_day: bool = False,
+        allow_overlap: bool = False,
     ) -> dict[str, Any]:
         if not subject.strip():
             raise OutlookError("subject is empty")
@@ -1199,6 +1235,18 @@ class OutlookBackend:
             raise OutlookError(f"end {end!r} is not after start {start!r}")
         store = self._store(account)
         cal = self._calendar(store)
+        if not all_day and not allow_overlap:
+            # Structural, like a unique index: a slot that already holds a busy appointment is
+            # not free. On 2026-09-05 a scheduled run stacked 32 placeholder blocks on top of
+            # the placeholders V1 had already placed; the model saw them in calendar_list and
+            # created anyway. The tool refusing is what a prompt could not guarantee.
+            clashes = self._overlapping(cal, s, e)
+            if clashes:
+                names = "; ".join(f"{c['subject']!r} {c['start'][11:16]}-{c['end'][11:16]}" for c in clashes[:5])
+                raise OutlookError(
+                    f"slot {s:%Y-%m-%d %H:%M}-{e:%H:%M} already holds {len(clashes)} appointment(s): {names}. "
+                    "Nothing was created. Pick a free slot, or pass allow_overlap=true if the overlap is intended."
+                )
         try:
             appt = cal.Items.Add(OL_APPOINTMENT_ITEM)
         except Exception as exc:
@@ -1239,6 +1287,24 @@ class OutlookBackend:
             "attendees": names,
             "invites_sent": invites_sent,
         }
+
+    def calendar_delete(self, entry_id: str, account: str = "") -> dict[str, Any]:
+        """Delete one appointment by its durable id. Refuses anything that is not an appointment."""
+        item, _ = self._item(entry_id, account)
+        if int(_prop(item, "Class", 0) or 0) != OL_APPOINTMENT_CLASS:
+            raise OutlookError(f"{entry_id[:24]}… is not an appointment (Class={_prop(item, 'Class', '?')})")
+        summary = {
+            "deleted": True,
+            "subject": _text(_prop(item, "Subject", "")),
+            "start": iso_local(_to_dt(_prop(item, "Start"))),
+            "end": iso_local(_to_dt(_prop(item, "End"))),
+            "was_meeting": int(_prop(item, "MeetingStatus", 0) or 0) != 0,
+        }
+        try:
+            item.Delete()
+        except Exception as exc:
+            raise OutlookError(f"Delete failed: {describe_com_error(exc)}") from exc
+        return summary
 
 
 # --- async facade over the COM worker -----------------------------------------------------------

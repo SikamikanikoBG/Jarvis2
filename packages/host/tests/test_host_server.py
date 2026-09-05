@@ -34,6 +34,7 @@ EXPECTED_ANNOTATIONS = {
     "outlook_send": ("destructive", False),
     "calendar_list": ("read", True),
     "calendar_create": ("destructive", False),
+    "calendar_delete": ("destructive", False),
     "fs_list": ("read", True),
     "fs_read": ("read", True),
     "fs_write": ("destructive", False),

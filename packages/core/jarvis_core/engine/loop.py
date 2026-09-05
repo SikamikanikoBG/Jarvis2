@@ -143,8 +143,11 @@ class AgentLoop:
             pre = await self._planner.preflight(run.input_text)
             run.usage = run.usage.add(pre.usage)
             if pre.tier == "multi_step":
-                namespaces = sorted({t.namespace for t in self._registry.specs()})
-                plan, usage = await self._planner.make_plan(run.input_text, namespaces)
+                # Tool NAMES, not namespaces: given only "workocholic" the planner invented a
+                # "recolour calendar categories" step no tool could do, and the model then reached
+                # for shell_run to poke Outlook COM by hand (2026-09-05 Burnout run).
+                tool_names = sorted(t.name for t in self._registry.specs())
+                plan, usage = await self._planner.make_plan(run.input_text, tool_names)
                 run.usage = run.usage.add(usage)
                 if plan is not None:
                     run.plan = plan

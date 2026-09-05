@@ -20,10 +20,15 @@ tier: "simple" if it can be answered or done in one or two tool calls; "multi_st
 several dependent steps (research then write, check several sources, multi-part deliverable).
 Answer JSON only: {{"tier": "simple" | "multi_step"}}"""
 
-_PLAN = """Write a short execution plan for this request. Available tool groups: {tools}.
+_PLAN = """Write a short execution plan for this request.
+The ONLY tools that exist: {tools}
 Request: {message}
 
-Rules: 2 to 6 concrete steps, each one action with a verifiable outcome; no step for "reply".
+Rules: 2 to 6 concrete steps, each one action with a verifiable outcome; every step must be
+doable with the tools listed above - do not plan a step no tool can perform, and never plan to
+work around a missing tool with a shell command; no step for "reply". When the request changes
+existing data (calendar, mail, files), the first step reads what is already there so nothing is
+created twice.
 Answer JSON only: {{"goal": "<one line>", "steps": ["<step 1>", "<step 2>", ...]}}"""
 
 

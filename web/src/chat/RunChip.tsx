@@ -1,7 +1,7 @@
 import { Icon } from '../components/Icon';
 import { useTicker } from '../components/useTicker';
 import { formatDuration, formatTokens } from '../lib/format';
-import { STATUS_LABEL, runDurationMs, statusChipClass } from '../lib/runs';
+import { STATUS_LABEL, formatTokensPerSecond, runDurationMs, runTokensPerSecond, statusChipClass } from '../lib/runs';
 import { describeThink } from '../lib/think';
 import { isTerminal } from '../protocol/types';
 import { useStore } from '../store/store';
@@ -10,6 +10,7 @@ import { PlanChecklist } from './PlanChecklist';
 /** Small per-turn chip: status · steps · tokens · duration. Opens the Run Inspector. */
 export function RunChip({ runId }: { runId: string }) {
   const run = useStore((s) => s.runs[runId]);
+  const events = useStore((s) => s.runEvents[runId]);
   const stopping = useStore((s) => s.cancelRequested[runId] === true);
   const openInspector = useStore((s) => s.openInspector);
   const active = run ? !isTerminal(run.status) : false;
@@ -17,6 +18,7 @@ export function RunChip({ runId }: { runId: string }) {
   if (!run) return null;
   const dur = runDurationMs(run, now);
   const tokens = run.usage.prompt_tokens + run.usage.completion_tokens;
+  const tps = runTokensPerSecond(run, events);
   const statusText = stopping && active ? 'stopping' : STATUS_LABEL[run.status];
   const think = describeThink(run.think, run.think_level);
   return (
@@ -38,6 +40,12 @@ export function RunChip({ runId }: { runId: string }) {
           <>
             <span className="sep">·</span>
             <span>{formatDuration(dur)}</span>
+          </>
+        )}
+        {tps !== null && (
+          <>
+            <span className="sep">·</span>
+            <span title="Generation throughput across this run's model calls">{formatTokensPerSecond(tps)}</span>
           </>
         )}
       </button>

@@ -2,10 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { ApiError, api, describeError, fieldErrors } from '../api/client';
 import { Switch } from '../components/primitives';
 import type { ThemePref } from '../lib/theme';
-import { ROLE_NAMES, RUN_KINDS, THINK_LEVELS, type ModelSpec, type Provider, type RoleName, type RunKind, type Settings, type ThinkLevel, type ToolExposure } from '../protocol/types';
+import { ROLE_NAMES, RUN_KINDS, THINK_LEVELS, type ModelSpec, type Provider, type RoleName, type RunKind, type Settings, type SttKind, type ThinkLevel, type ToolExposure } from '../protocol/types';
 import { useStore } from '../store/store';
 import { CollabSection } from './CollabSection';
 import { McpServersSection } from './McpServersSection';
+import { PersonalitySection } from './PersonalitySection';
+import { ConfirmationsSection, EmailSection } from './SafetySections';
 import { TriageSection } from './TriageSection';
 
 const PROVIDERS: Provider[] = ['ollama', 'vllm'];
@@ -141,8 +143,20 @@ export function SettingsScreen() {
             <Field label="Timezone" error={errors.timezone}>
               <input className="input" value={draft.timezone} onChange={(e) => patch('timezone', e.target.value)} placeholder="Europe/Sofia" />
             </Field>
+            <Field label="Public URL" error={errors.public_url} hint="How the phone reaches this core (pairing/QR). https for mic + PWA.">
+              <input className="input" value={draft.public_url ?? ''} onChange={(e) => patch('public_url', e.target.value || null)} placeholder="https://jarvis.tailnet.ts.net" />
+            </Field>
             <Field label="STT URL" error={errors.stt_url} hint="Whisper endpoint; empty disables voice input.">
               <input className="input" value={draft.stt_url ?? ''} onChange={(e) => patch('stt_url', e.target.value || null)} placeholder="http://…" />
+            </Field>
+            <Field label="STT API" error={errors.stt_kind} hint="openai = /v1/audio/transcriptions; asr = WhisperX /asr.">
+              <select className="select" value={draft.stt_kind} onChange={(e) => patch('stt_kind', e.target.value as SttKind)}>
+                <option value="openai">openai</option>
+                <option value="asr">asr</option>
+              </select>
+            </Field>
+            <Field label="STT model" error={errors.stt_model}>
+              <input className="input" value={draft.stt_model} onChange={(e) => patch('stt_model', e.target.value)} placeholder="large-v3" />
             </Field>
             <Field label="STT languages" error={errors.stt_languages} hint="Comma-separated, e.g. bg, en">
               <input
@@ -170,6 +184,12 @@ export function SettingsScreen() {
             </Field>
           </div>
         </section>
+
+        <PersonalitySection value={draft.personality} onChange={(p) => patch('personality', p)} error={errors.personality} />
+
+        <ConfirmationsSection value={draft.confirmations} onChange={(c) => patch('confirmations', c)} error={errors.confirmations} />
+
+        <EmailSection value={draft.email} onChange={(e) => patch('email', e)} error={errors.email} />
 
         <section className="card role-card">
           <div className="section-head">

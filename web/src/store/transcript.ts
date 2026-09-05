@@ -6,6 +6,7 @@
  * every source that knows about the call: the assistant message's `tool_calls`, the tool-role
  * message, and the `tool.call` / `tool.result` / `tool.confirm_*` events when they are loaded.
  */
+import { isInjectedUserMessage } from '../lib/injected';
 import type { ConversationSummary, Plan, Run, RunScopedEvent, ToolResult } from '../protocol/types';
 import { isTerminal } from '../protocol/types';
 import type { ChatState, LocalMessage } from './state';
@@ -51,7 +52,9 @@ export type TranscriptItem =
     }
   | { kind: 'stream'; key: string; runId: string }
   | { kind: 'run'; key: string; runId: string }
-  | { kind: 'summary'; key: string; text: string };
+  | { kind: 'summary'; key: string; text: string }
+  /** A user-role message the core injected (context, plan, supervisor…): a collapsed note, never Arsen's bubble. */
+  | { kind: 'injected'; key: string; name: string | null; text: string };
 
 interface Block {
   order: number;
@@ -125,11 +128,12 @@ function buildBlock(src: TranscriptSource, block: Block): TranscriptItem[] {
   const cards = collectCards(runId, block.messages, events);
   const emitted = new Set<string>();
 
-  const users = block.messages.filter((m) => m.role === 'user');
+  // Arsen's own words open the block; injected user-role messages take their timestamped place.
+  const users = block.messages.filter((m) => m.role === 'user' && !isInjectedUserMessage(m));
   for (const m of users) items.push({ kind: 'message', key: msgKey(m), message: m });
 
   const timed: Timed[] = [
-    ...block.messages.filter((m) => m.role !== 'user').map((m) => ({ ts: Date.parse(m.created_at), msg: m })),
+    ...block.messages.filter((m) => m.role !== 'user' || isInjectedUserMessage(m)).map((m) => ({ ts: Date.parse(m.created_at), msg: m })),
     ...events.map((ev) => ({ ts: Date.parse(ev.ts), ev })),
   ].sort((a, z) => a.ts - z.ts);
 
@@ -151,6 +155,10 @@ function buildBlock(src: TranscriptSource, block: Block): TranscriptItem[] {
     if (t.msg) {
       const m = t.msg;
       if (m.role === 'tool') continue; // merged into its card
+      if (m.role === 'user') {
+        items.push({ kind: 'injected', key: msgKey(m), name: m.name, text: m.content });
+        continue;
+      }
       if (m.role === 'system') {
         items.push({
           kind: 'note',

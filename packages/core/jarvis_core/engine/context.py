@@ -67,18 +67,25 @@ class ContextAssembler:
     def budget_chars(self) -> int:
         return int(self._settings().history_token_budget * _CHARS_PER_TOKEN)
 
-    async def system_message(self, run: Run, *, skill_names: list[str], plan: Plan | None) -> Message:
+    async def system_message(self, run: Run) -> Message:
+        """The STABLE prefix: identical for every turn of a conversation (and every step of a run).
+
+        Only things that change rarely live here - rules, personality, boards, the scheduled-run
+        framing (constant within a run), today's date. Anything per-message goes into
+        :meth:`turn_context` instead: with vLLM's prefix cache on, a system prompt that changed
+        every turn re-prefilled the whole history each time (TTFT 18 s on 34k tokens, 2026-09-05).
+        """
         s = self._settings()
         parts = [
             SYSTEM_RULES.format(assistant_name=s.assistant_name, user_name=s.user_name, language_hint=s.language_hint)
         ]
-        # Personality sits right after the rules and before the per-message blocks: it is as
-        # stable as the rules, so it stays inside the prompt-cache prefix.
         if (voice := personality_block(s.personality, s.user_name, s.assistant_name)) is not None:
             parts.append(voice)
         for provider in self._providers:
+            if not getattr(provider, "stable", False):
+                continue
             try:
-                block = await provider.context_block(run, skill_names=skill_names)
+                block = await provider.context_block(run, skill_names=[])
             except Exception:
                 block = None
             if block:
@@ -95,12 +102,46 @@ class ContextAssembler:
                 "the reminder/report; Arsen reads it in the Scheduled folder, so write it for him. "
                 "Nobody is present to answer questions: decide, act within the prompt's limits, and report."
             )
-        if plan is not None:
-            from jarvis_core.features.planner import plan_block
-
-            parts.append(plan_block(plan))
         parts.append(self._date_line(s))
         return Message.system("\n\n".join(parts))
+
+    async def turn_context(self, run: Run, *, skill_names: list[str]) -> str | None:
+        """Per-turn context (skills, knowledge, browser page) - constant within a run.
+
+        It is persisted as a user message named "context" right after the run's input, so every
+        later turn replays the exact same tokens at the same position and the prefix cache holds.
+        """
+        parts: list[str] = []
+        for provider in self._providers:
+            if getattr(provider, "stable", False):
+                continue
+            try:
+                block = await provider.context_block(run, skill_names=skill_names)
+            except Exception:
+                block = None
+            if block:
+                parts.append(block)
+        return "[Context for the request above]\n\n" + "\n\n".join(parts) if parts else None
+
+    @staticmethod
+    def plan_message(plan: Plan) -> Message:
+        """Ephemeral trailer: plan progress changes every step, so it goes LAST, after all the
+        cached tool results, instead of invalidating them from the system prompt."""
+        from jarvis_core.features.planner import plan_block
+
+        return Message.user(plan_block(plan), name="plan")
+
+    async def context_message(self, run: Run, *, skill_names: list[str]) -> Message | None:
+        """Persist (once) and return this run's context message, or None when there is nothing."""
+        existing = [m for m in await self._store.list_run_messages(run.id) if m.name == "context"]
+        if existing:
+            return existing[0]
+        text = await self.turn_context(run, skill_names=skill_names)
+        if text is None:
+            return None
+        msg = Message.user(text, name="context", conversation_id=run.conversation_id, run_id=run.id)
+        await self._store.add_message(msg)
+        return msg
 
     def system_prompt(self) -> Message:
         """Static prompt only (used by tests and by callers without a run)."""
@@ -116,13 +157,13 @@ class ContextAssembler:
         now = self._clock() if self._clock else datetime.now(tz)
         return f"Current date: {now.astimezone(tz).strftime('%A %Y-%m-%d')} ({s.timezone})."
 
-    async def assemble(
-        self, run: Run, *, skill_names: list[str] | None = None, plan: Plan | None = None
-    ) -> list[Message]:
+    async def assemble(self, run: Run, *, skill_names: list[str] | None = None) -> list[Message]:
+        """[stable system] [history incl. earlier turns' context messages] [input] [this run's context]."""
+        await self.context_message(run, skill_names=skill_names or [])  # persisted; comes back in history
         history = await self._store.list_messages(run.conversation_id)
         if self._compactor is not None and run.kind is not RunKind.TRIAGE:
             history = await self._compactor.prepare(run.conversation_id, history, self.budget_chars)  # type: ignore[attr-defined]
-        system = await self.system_message(run, skill_names=skill_names or [], plan=plan)
+        system = await self.system_message(run)
         return [system, *self.trim(history)]
 
     def trim(self, history: list[Message]) -> list[Message]:
@@ -150,6 +191,8 @@ class ContextAssembler:
 
 
 class BoardsBlock:
+    stable = True  # changes only when Arsen pins a note: lives in the cached system prefix
+
     def __init__(self, boards: object, settings: Callable[[], Settings]) -> None:
         self._boards = boards
         self._settings = settings

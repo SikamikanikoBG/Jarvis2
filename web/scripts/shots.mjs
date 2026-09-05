@@ -317,6 +317,26 @@ await session('tps', desktop, 'dark', async (page, shot) => {
   await shot('01-run-chip-tps');
 });
 
+await session('injected', desktop, 'dark', async (page, shot) => {
+  await page.goto(base);
+  await page.waitForSelector('.conv');
+  await page.click('.sidebar-head .icon-btn'); // fresh chat
+  await page.fill('textarea', 'What is on my plate today?');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('.runchip:not(:has(.chip-accent))', { timeout: 40000 });
+  await page.waitForTimeout(400);
+  const bubbles = await page.$$eval('.msg-user', (els) => els.map((e) => e.textContent?.trim()));
+  const notes = await page.$$eval('.note-injected summary', (els) => els.map((e) => e.textContent?.replace(/\s+/g, ' ').trim()));
+  const preview = await page.$eval('.conv.active .conv-preview', (e) => e.textContent?.trim()).catch(() => '(none)');
+  console.log('user bubbles:', JSON.stringify(bubbles));
+  console.log('injected notes:', JSON.stringify(notes));
+  console.log('sidebar preview:', JSON.stringify(preview));
+  await shot('01-collapsed');
+  await page.click('.note-injected summary');
+  await page.waitForTimeout(200);
+  await shot('02-expanded');
+});
+
 await session('panel', { width: 420, height: 760 }, 'dark', async (page, shot) => {
   await page.goto(`${base}/?mode=panel`);
   await page.waitForSelector('textarea');

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { Icon } from '../components/Icon';
 import type { TranscriptItem } from '../store/transcript';
 import { ConfirmCard } from './ConfirmCard';
+import { InjectedNote } from './InjectedNote';
 import { MessageItem } from './MessageItem';
 import { Note } from './Note';
 import { RunChip } from './RunChip';
@@ -118,6 +119,8 @@ export function Transcript({ items }: Props) {
                 return <RunChip key={it.key} runId={it.runId} />;
               case 'summary':
                 return <SummaryDivider key={it.key} text={it.text} />;
+              case 'injected':
+                return <InjectedNote key={it.key} name={it.name} text={it.text} />;
             }
           })}
         </div>

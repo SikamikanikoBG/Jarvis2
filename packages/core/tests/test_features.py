@@ -141,7 +141,16 @@ async def test_skills_detection_structural_then_model_and_injection(harness: Har
     seen = await harness.wait_for(sub, "run.done")
     names = next(e for e in seen if e.type == "context.skills").names
     assert names == ["weekly_status"]
-    assert "three sections" in harness.chat.calls[-1][0][0].content
+    # The skill body rides in the persisted per-turn context message (after the input), not in
+    # the system prompt - so the stable prefix stays cacheable across turns.
+    msgs = harness.chat.calls[-1][0]
+    assert "three sections" not in msgs[0].content
+    ctx = [m for m in msgs if m.role.value == "user" and m.name == "context"]
+    assert len(ctx) == 1 and "three sections" in ctx[0].content and ctx[0].content.startswith("[Context")
+    # It is persisted, so the next turn replays the same tokens at the same place.
+    stored = await core.store.list_messages(conv.id)
+    assert [m.name for m in stored if m.role.value == "user"] == [None, "context"]
+    assert (await core.store.get_conversation(conv.id)).preview != ctx[0].content[:160]  # type: ignore[union-attr]
     # Disabled skills are never detected.
     await core.skills.set_enabled("weekly_status", False)
     assert [s.enabled for s in await core.skills.list() if s.name == "weekly_status"] == [False]
@@ -206,8 +215,13 @@ async def test_multi_step_request_gets_a_plan_and_steps_advance(harness: Harness
     assert any(e.type == "guard.armed" and e.guard == "open_plan" for e in seen)
     done = await core.store.get_run(run.id)
     assert done is not None and done.plan is not None and all(s.status.value == "done" for s in done.plan.steps)
-    # The plan block was in the system prompt of the model calls.
-    assert any("## Plan" in call[0][0].content for call in harness.chat.calls[2:])
+    # The plan block is the LAST message (ephemeral trailer), never in the system prompt, so the
+    # cached tool results before it stay valid step after step.
+    plan_calls = harness.chat.calls[2:]
+    assert all("## Plan" not in call[0][0].content for call in plan_calls)
+    assert any(call[0][-1].name == "plan" and "## Plan" in call[0][-1].content for call in plan_calls)
+    # The trailer is not persisted.
+    assert not any(m.name == "plan" for m in await core.store.list_messages(conv.id))
     # Plan tools were exposed only because a plan exists.
     assert any(t.name == "jarvis.plan_step_done" for t in harness.chat.calls[2][1])
 

@@ -161,7 +161,9 @@ class Store:
                 message.created_at.isoformat(),
             ),
         )
-        preview = message.content if message.role in {Role.USER, Role.ASSISTANT} else None
+        # Named user messages (context, supervisor, summary, transcript) are system notes, not
+        # something Arsen typed: they must not become the sidebar preview.
+        preview = message.content if message.role in {Role.USER, Role.ASSISTANT} and not message.name else None
         await self.touch_conversation(message.conversation_id, preview)
         return message
 

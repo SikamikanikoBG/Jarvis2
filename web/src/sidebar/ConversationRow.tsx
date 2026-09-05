@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { IconButton, InlineConfirm, Menu, RelativeTime } from '../components/primitives';
 import { stripMarkdown } from '../lib/format';
+import { previewFor } from '../lib/injected';
 import type { Conversation } from '../protocol/types';
 import { useStore } from '../store/store';
 
@@ -11,6 +12,7 @@ interface Props {
 
 export function ConversationRow({ conversation: c, active }: Props) {
   const open = useStore((s) => s.openConversation);
+  const preview = useStore((s) => previewFor(c, s.messages[c.id]));
   const rename = useStore((s) => s.renameConversation);
   const archive = useStore((s) => s.archiveConversation);
   const remove = useStore((s) => s.deleteConversation);
@@ -61,7 +63,7 @@ export function ConversationRow({ conversation: c, active }: Props) {
               {c.unread && <span className="unread-dot" aria-label="Unread" />}
               <span className="truncate">{c.title}</span>
             </div>
-            {c.preview && <div className="conv-preview">{stripMarkdown(c.preview)}</div>}
+            {preview && <div className="conv-preview">{stripMarkdown(preview)}</div>}
           </button>
           <span className="conv-time">
             <RelativeTime ts={c.updated_at} />

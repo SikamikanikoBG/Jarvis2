@@ -63,7 +63,9 @@ function msg(convId, partial) {
   messages.get(convId).push(m);
   const c = conversations.get(convId);
   c.message_count += 1;
-  c.preview = m.role === 'tool' ? c.preview : m.content.slice(0, 80) || c.preview;
+  // Injected user-role messages (context, plan, …) never become the sidebar preview.
+  const injected = m.role === 'user' && m.name !== null;
+  c.preview = m.role === 'tool' || injected ? c.preview : m.content.slice(0, 80) || c.preview;
   c.updated_at = m.created_at;
   return m;
 }
@@ -277,6 +279,14 @@ function createRun(c, text, kind = 'chat', opts = {}) {
   user.run_id = run.id;
   emitRun(run, { type: 'run.queued', kind: run.kind, input_preview: text.slice(0, 80), user_message_id: user.id });
   broadcast({ type: 'message.created', ts: now(), message: user }, c.id);
+  // The per-turn context block the core persists right after the input (prompt-cache stability).
+  const context = msg(c.id, {
+    role: 'user',
+    name: 'context',
+    run_id: run.id,
+    content: `[Context for the request above]\n\n## Skills\n- email-triage: classify and file inbound mail\n\n## Knowledge\n- Rumen Petrov (person) — owns DM-1234, expects the Q3 figures\n- Q3 deck (project) — numbers missing on slides 5 and 7\n\n## Boards\n- Work: Q3 deck numbers from Finance; Rumen owes the DM-1234 reply\n`,
+  });
+  broadcast({ type: 'message.created', ts: now(), message: context }, c.id);
   broadcast({ type: 'run.updated', ts: now(), run });
   touchConversation(c);
   executeRun(run, text).catch((e) => finish(run, 'failed', { error: String(e) }));

@@ -109,7 +109,8 @@ def _default_budgets() -> dict[RunKind, RunBudget]:
     return {
         RunKind.CHAT: RunBudget(max_steps=25, max_tokens=200_000, max_seconds=600),
         RunKind.COLLAB: RunBudget(max_steps=25, max_tokens=200_000, max_seconds=600),
-        RunKind.SCHEDULED: RunBudget(max_steps=60, max_tokens=600_000, max_seconds=1800),
+        # The AI Newsletter (14 mails + 8 searches + 13 pages) legitimately needs ~650k tokens.
+        RunKind.SCHEDULED: RunBudget(max_steps=90, max_tokens=1_200_000, max_seconds=3600),
         RunKind.TRIAGE: RunBudget(max_steps=300, max_tokens=1_000_000, max_seconds=1800),
         RunKind.MEETING: RunBudget(max_steps=30, max_tokens=400_000, max_seconds=900),
         RunKind.SYSTEM: RunBudget(max_steps=10, max_tokens=50_000, max_seconds=120),
@@ -256,7 +257,7 @@ class Settings(BaseModel):
     tool_context_token_budget: int = 40_000
     # Ceiling for a single tool call. A tool that asks for its own timeout_s (shell_run running a
     # long report) is honoured up to this; everything else gets the 120 s default.
-    tool_timeout_max_s: int = 600
+    tool_timeout_max_s: int = 1200  # Arsen's Outlook workload report takes ~14 min
     boards_context_chars: int = 6_000
     skill_max_chars: int = 6_000
     planning_enabled: bool = True

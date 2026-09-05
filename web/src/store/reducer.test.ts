@@ -390,6 +390,31 @@ describe('buildTranscript — tool cards', () => {
     expect(buildTranscript(s, CONV).some((i) => i.kind === 'note')).toBe(false);
   });
 
+  it('renders injected user-role messages (context, plan, supervisor) as notes, never as Arsen’s bubble', () => {
+    let s = applyServerEvents(withOpen(CONV), [queued, started], T0);
+    const ctx = '[Context for the request above]\n\nSkills: email-triage\nKnowledge: Rumen owns DM-1234';
+    s = applyServerEvents(
+      s,
+      [
+        { type: 'message.created', ts: iso(1), message: msg({ id: 'm_u1', role: 'user', content: 'hi', created_at: iso(1) }) },
+        { type: 'message.created', ts: iso(2), message: msg({ id: 'm_c1', role: 'user', name: 'context', content: ctx, created_at: iso(2) }) },
+        { type: 'message.created', ts: iso(3), message: msg({ id: 'm_a1', role: 'assistant', content: 'hello', created_at: iso(3) }) },
+        { type: 'message.created', ts: iso(4), message: msg({ id: 'm_s1', role: 'user', name: 'supervisor', content: 'Stay on task.', created_at: iso(4) }) },
+        { type: 'message.created', ts: iso(5), message: msg({ id: 'm_p1', role: 'user', name: 'plan', content: 'step 1…', created_at: iso(5) }) },
+      ],
+      T0,
+    );
+    const items = buildTranscript(s, CONV);
+    const shape = items.map((i) => (i.kind === 'message' ? `${i.kind}:${i.message.role}:${i.message.id}` : i.kind === 'injected' ? `injected:${i.name ?? ''}` : i.kind));
+    expect(shape).toEqual(['message:user:m_u1', 'injected:context', 'message:assistant:m_a1', 'injected:supervisor', 'injected:plan', 'stream', 'run']);
+    const ctxItem = items.find((i) => i.kind === 'injected' && i.name === 'context');
+    expect(ctxItem?.kind === 'injected' && ctxItem.text).toBe(ctx);
+    // a context block that lost its name is still not Arsen's bubble
+    const unnamed = msg({ id: 'm_c2', role: 'user', content: ctx });
+    s = applyServerEvent(s, { type: 'message.created', ts: iso(6), message: unnamed }, T0);
+    expect(buildTranscript(s, CONV).filter((i) => i.kind === 'injected')).toHaveLength(4);
+  });
+
   it('renders a judge stop as an error note with its reason', () => {
     let s = applyServerEvents(withOpen(CONV), [queued, started], T0);
     s = applyServerEvent(s, runScoped({ type: 'judge.verdict', verdict: 'stop', reason: 'Looping on the same call' }, 100), T0);

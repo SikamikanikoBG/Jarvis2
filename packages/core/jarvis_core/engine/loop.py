@@ -156,8 +156,9 @@ class AgentLoop:
                     await emit(PlanCreated(run_id="", conversation_id="", plan=plan))
                     await emit(PlanStepStarted(run_id="", conversation_id="", index=0, title=plan.steps[0].title))
 
-        messages = await self._context.assemble(run, skill_names=skill_names, plan=run.plan)
+        messages = await self._context.assemble(run, skill_names=skill_names)
         tools = self._exposed_tools(run.plan is not None)
+        plan_trailer: Message | None = None  # ephemeral, always the last message
 
         # Resume: an assistant message with tool calls that never got their results.
         run_messages = await self._store.list_run_messages(run.id)
@@ -173,12 +174,17 @@ class AgentLoop:
                 await self._finish(run, ctl, messages, summary=reason)
                 return
 
-            # The system message carries plan progress and context; rebuild it each step.
-            messages[0] = await self._context.system_message(run, skill_names=skill_names, plan=run.plan)
+            # Plan progress is the one thing that changes every step; it rides as the LAST message
+            # so every cached token before it stays valid (the system prompt never changes).
+            if plan_trailer is not None and messages and messages[-1] is plan_trailer:
+                messages.pop()
+            plan_trailer = self._context.plan_message(run.plan) if run.plan is not None else None
             # Tool results from earlier steps have been acted on; keep their head only. The DB
             # keeps the full text. Without this a 49-event calendar_list rode along in every one
             # of 8 model calls and a single scheduled run cost 217k prompt tokens (2026-09-05).
             _compress_old_tool_results(messages, self._settings().tool_context_token_budget)
+            if plan_trailer is not None:
+                messages.append(plan_trailer)
             run.steps_used += 1
             adapter = self._adapters(RoleName.CHAT, think=run.think, think_level=run.think_level)
             await emit(

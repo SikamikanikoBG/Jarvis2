@@ -457,6 +457,46 @@
   margin: 4px 0 0;
   padding-left: 1.2em;
 }
+.note-injected {
+  display: block;
+  padding: 0;
+  overflow: hidden;
+}
+.note-injected > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  color: var(--fg-muted);
+}
+.note-injected > summary::-webkit-details-marker {
+  display: none;
+}
+.note-injected > summary .note-title {
+  color: var(--fg-2);
+  font-weight: 600;
+}
+.note-injected > summary .chev {
+  transition: transform var(--dur);
+}
+.note-injected[open] > summary .chev {
+  transform: rotate(90deg);
+}
+.injected-text {
+  margin: 0;
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow: auto;
+  color: var(--fg-2);
+}
 .note-plan li.done {
   color: var(--fg-muted);
   text-decoration: line-through;

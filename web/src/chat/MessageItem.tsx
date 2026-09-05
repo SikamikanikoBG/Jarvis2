@@ -1,11 +1,15 @@
 import { Icon } from '../components/Icon';
 import { Markdown } from '../components/Markdown';
+import { isInjectedUserMessage } from '../lib/injected';
 import type { LocalMessage } from '../store/state';
+import { InjectedNote } from './InjectedNote';
 import { PinButton } from './PinButton';
 import { ReasoningFold } from './ReasoningFold';
 
 export function MessageItem({ message }: { message: LocalMessage }) {
   if (message.role === 'user') {
+    // The transcript builder routes injected user-role messages to InjectedNote; this is a last line of defence.
+    if (isInjectedUserMessage(message)) return <InjectedNote name={message.name} text={message.content} />;
     return (
       <div className={`msg msg-user${message.optimistic ? ' optimistic' : ''}`} aria-label="You">
         {message.content}

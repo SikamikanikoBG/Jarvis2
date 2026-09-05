@@ -1,0 +1,52 @@
+[project]
+name = "jarvis2-workspace"
+version = "0.0.0"
+description = "Jarvis V2 workspace root (not a package)"
+requires-python = ">=3.12,<3.13"
+
+[tool.uv.workspace]
+members = ["packages/proto", "packages/core", "packages/host"]
+
+[tool.uv.sources]
+jarvis-proto = { workspace = true }
+jarvis-core = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-timeout>=2.3",
+    "pyright>=1.1.390",
+    "ruff>=0.8",
+    "httpx>=0.28",
+    "websockets>=17.1",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["packages/proto", "packages/core", "packages/host"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "RUF", "SIM", "PL"]
+ignore = ["PLR0913", "PLR2004", "RUF012", "PLR0912", "PLR0915", "PLR0911", "PLR0917", "PLC0415", "ASYNC109", "ASYNC240", "E501"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+include = ["packages"]
+exclude = ["**/tests/**", "**/__pycache__"]
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+reportUnknownParameterType = false
+reportMissingParameterType = false
+reportUnusedFunction = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["packages/proto/tests", "packages/core/tests", "packages/host/tests"]
+timeout = 60
+addopts = "-q"

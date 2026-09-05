@@ -310,6 +310,9 @@ class RunCreateRequest(BaseModel):
     # Per-message thinking override; None = the chat role's configured setting.
     think: bool | None = None
     think_level: ThinkLevel | None = None
+    # Budget of another kind for this run (e.g. dry-running a scheduled prompt interactively
+    # with the scheduled budget). None = the budget of `kind`.
+    budget_kind: RunKind | None = None
 
 
 class RunCancelRequest(BaseModel):

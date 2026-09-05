@@ -45,7 +45,11 @@ async def drive(
     t0 = time.perf_counter()
     async with websockets.connect(url, max_size=None) as ws:
         if prompt is not None:
-            await ws.send(json.dumps({"type": "run.create", "text": prompt, "kind": "chat"}))
+            # Interactive (so destructive steps ask and get rejected) but with the SCHEDULED
+            # budget: the chat budget cut off every long digest before its final reply.
+            await ws.send(
+                json.dumps({"type": "run.create", "text": prompt, "kind": "chat", "budget_kind": "scheduled"})
+            )
         else:
             await ws.send(json.dumps({"type": "subscribe", "conversation_id": conversation_id}))
         while True:

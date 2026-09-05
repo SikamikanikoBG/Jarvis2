@@ -88,6 +88,7 @@ async def _ui_leg(ws: WebSocket) -> None:
                     kind=msg.kind,
                     think=msg.think,
                     think_level=msg.think_level,
+                    budget_kind=msg.budget_kind,
                 )
             elif isinstance(msg, RunCancelRequest):
                 await core.engine.cancel(msg.run_id)

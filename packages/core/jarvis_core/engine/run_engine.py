@@ -125,6 +125,7 @@ class RunEngine:
         title: str | None = None,
         think: bool | None = None,
         think_level: ThinkLevel | None = None,
+        budget_kind: RunKind | None = None,
     ) -> tuple[Run, Conversation]:
         conv: Conversation | None = None
         if conversation_id:
@@ -150,7 +151,7 @@ class RunEngine:
             conversation_id=conv.id,
             kind=kind,
             input_text=text,
-            budget=settings.budgets.get(kind, Run(id="", conversation_id="", kind=kind).budget),
+            budget=settings.budgets.get(budget_kind or kind, Run(id="", conversation_id="", kind=kind).budget),
             priority=_PRIORITY[kind],
             think=think,
             think_level=think_level,

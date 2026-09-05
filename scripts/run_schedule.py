@@ -113,9 +113,7 @@ async def main() -> int:
     if args.dry_run:
         framed = (
             f"[Scheduled prompt '{s['name'][:60]}' firing now - DRY RUN. Do the task in this run; do not create "
-            f"or edit any schedule for it. Your reply is the report Arsen reads.]
-
-{s['prompt']}"
+            "or edit any schedule for it. Your reply is the report Arsen reads.]\n\n" + s["prompt"]
         )
         rep = await drive(args.token, run_id=None, conversation_id=None, prompt=framed, timeout=args.timeout)
     else:

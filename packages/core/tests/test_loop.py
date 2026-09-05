@@ -294,6 +294,8 @@ async def test_old_tool_results_are_truncated_in_context_but_kept_in_db(harness:
     """A 5k-char tool result is whole for the step that must read it, a head afterwards."""
     tools = await with_tools(harness)
     big = "row " * 1500  # ~6k chars
+    # Budget-based: two 6k results must exceed the budget for the older one to be truncated.
+    harness.enable(tool_context_token_budget=2_500)  # ~8k chars
 
     async def big_echo(text: str = "") -> ToolResult:
         return ToolResult.data(big)
@@ -316,8 +318,29 @@ async def test_old_tool_results_are_truncated_in_context_but_kept_in_db(harness:
     third_call_msgs = harness.chat.calls[2][0]
     first_at_call3 = next(m for m in third_call_msgs if m.role.value == "tool" and m.tool_call_id == "c1")
     second_at_call3 = next(m for m in third_call_msgs if m.role.value == "tool" and m.tool_call_id == "c2")
-    assert "[truncated:" in first_at_call3.content and len(first_at_call3.content) < 900
+    assert "[truncated to save context" in first_at_call3.content and len(first_at_call3.content) < 1000
     assert len(second_at_call3.content) > 5000
     # The database keeps the full text.
     stored = [m for m in await harness.core.store.list_messages(conv.id) if m.role.value == "tool"]
     assert all(len(m.content) > 5000 and "[truncated" not in m.content for m in stored)
+
+
+async def test_tool_results_under_budget_are_never_truncated(harness: Harness):
+    """The read-many workflow: while results fit the budget, every body stays whole."""
+    tools = await with_tools(harness)
+    body = "mail body " * 300  # ~3k chars each
+
+    async def read(text: str = "") -> ToolResult:
+        return ToolResult.data(f"{text}: {body}")
+
+    tools._entries["test.echo"].fn = read
+    for i in range(5):
+        harness.chat.push(FakeTurn(tool_calls=[ToolCall(id=f"c{i}", name="test.echo", arguments={"text": f"mail{i}"})]))
+    harness.chat.push(FakeTurn(text="summary of 5 mails"))
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="summarise the mails", conversation_id=conv.id)
+    await harness.wait_for(sub, "run.done", timeout=10)
+    last_call_msgs = harness.chat.calls[-1][0]
+    tool_msgs = [m for m in last_call_msgs if m.role.value == "tool"]
+    assert len(tool_msgs) == 5 and all("[truncated" not in m.content for m in tool_msgs)

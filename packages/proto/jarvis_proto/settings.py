@@ -250,6 +250,10 @@ class Settings(BaseModel):
     tool_exposure: Literal["auto", "flat", "facade"] = "flat"
     facade_threshold: int = 24
     history_token_budget: int = 24_000
+    # Tool results accumulated within ONE run may occupy this much before the oldest are
+    # truncated to a head. Large enough for "read 26 mails and summarise"; small enough that a
+    # 49-event calendar does not ride along whole in every one of 8 model calls.
+    tool_context_token_budget: int = 40_000
     boards_context_chars: int = 6_000
     skill_max_chars: int = 6_000
     planning_enabled: bool = True

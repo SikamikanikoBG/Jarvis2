@@ -178,7 +178,7 @@ class AgentLoop:
             # Tool results from earlier steps have been acted on; keep their head only. The DB
             # keeps the full text. Without this a 49-event calendar_list rode along in every one
             # of 8 model calls and a single scheduled run cost 217k prompt tokens (2026-09-05).
-            _compress_old_tool_results(messages)
+            _compress_old_tool_results(messages, self._settings().tool_context_token_budget)
             run.steps_used += 1
             adapter = self._adapters(RoleName.CHAT, think=run.think, think_level=run.think_level)
             await emit(
@@ -566,28 +566,42 @@ class AgentLoop:
 
 _OLD_TOOL_RESULT_HEAD = 700
 _OLD_TOOL_RESULT_MIN = 1_200
+_CHARS_PER_TOKEN = 3.2
 
 
-def _compress_old_tool_results(messages: list[Message]) -> None:
-    """Truncate tool results that belong to steps before the most recent one (in memory only).
+def _compress_old_tool_results(messages: list[Message], budget_tokens: int) -> None:
+    """Keep this run's tool results under a token budget by truncating the OLDEST first.
 
-    The most recent step's results stay whole: the model has not answered them yet. Everything
-    older it has already read and reasoned about; the plan block, its own notes and its
-    following messages carry what mattered. V1's `_compress_old_tool_messages`, kept because
-    it worked.
+    Nothing is touched while the results fit: a "read 26 mails and summarise" run must keep the
+    bodies it is aggregating (blanket truncation made the model re-read the same mails until the
+    supervisor stopped it, 2026-09-05). Once over budget, the oldest results shrink to a head,
+    never the most recent step's. The DB always keeps the full text; replacement by copy keeps
+    earlier context snapshots intact.
     """
     last_assistant = max((i for i, m in enumerate(messages) if m.role is Role.ASSISTANT), default=-1)
     if last_assistant < 0:
         return
-    for i, m in enumerate(messages[:last_assistant]):
-        if m.role is Role.TOOL and len(m.content) > _OLD_TOOL_RESULT_MIN and "[truncated" not in m.content[-80:]:
-            total = len(m.content)
-            head = m.content[:_OLD_TOOL_RESULT_HEAD].rstrip()
-            # Replace, never mutate: the same Message object is referenced by the persisted
-            # history and by anything that snapshotted an earlier context.
-            messages[i] = m.model_copy(
-                update={"content": f"{head}\n[truncated: {total:,} chars in full; already acted on]"}
-            )
+    budget = int(budget_tokens * _CHARS_PER_TOKEN)
+    tool_idx = [i for i, m in enumerate(messages) if m.role is Role.TOOL]
+    total = sum(len(messages[i].content) for i in tool_idx)
+    if total <= budget:
+        return
+    for i in tool_idx:
+        if i >= last_assistant:
+            break  # the current step's results are what the model is answering
+        m = messages[i]
+        if len(m.content) <= _OLD_TOOL_RESULT_MIN or "[truncated" in m.content[-160:]:
+            continue
+        full = len(m.content)
+        head = m.content[:_OLD_TOOL_RESULT_HEAD].rstrip()
+        marker = (
+            f"[truncated to save context: {full:,} chars in full. If you still need details "
+            "from it, note them down now or re-read it once - do not loop.]"
+        )
+        messages[i] = m.model_copy(update={"content": head + "\n" + marker})
+        total -= full - len(messages[i].content)
+        if total <= budget:
+            break
 
 
 def _pending_tool_calls(run_messages: list[Message]) -> tuple[Message, list[ToolCall]] | None:

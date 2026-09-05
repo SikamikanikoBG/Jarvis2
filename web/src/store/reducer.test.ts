@@ -3,7 +3,7 @@ import type { Conversation, Message, ModelUsage, Run, ServerEvent } from '../pro
 import { applyServerEvent, applyServerEvents } from './reducer';
 import { selectActiveRun, selectPendingConfirm, selectSidebar } from './selectors';
 import { initialChatState, type ChatState, type LocalMessage } from './state';
-import { buildTranscript } from './transcript';
+import { buildTranscript, buildTranscriptFrom, transcriptSource } from './transcript';
 
 const T0 = Date.parse('2026-09-05T10:00:00.000Z');
 const iso = (offsetMs: number) => new Date(T0 + offsetMs).toISOString();
@@ -347,6 +347,47 @@ describe('buildTranscript — tool cards', () => {
     const keys = buildTranscript(s, CONV).map((i) => i.key);
     expect(new Set(keys).size).toBe(keys.length);
     expect(keys.filter((k) => k.startsWith('tool:'))).toHaveLength(2);
+  });
+
+  it('shows which skills a run is using as a note', () => {
+    let s = applyServerEvents(withOpen(CONV), [queued, started], T0);
+    s = applyServerEvent(s, runScoped({ type: 'context.skills', names: ['email-triage', 'meeting-prep'] }, 5), T0);
+    const note = buildTranscript(s, CONV).find((i) => i.kind === 'note');
+    expect(note?.kind === 'note' && note.note.title).toBe('Using skills: email-triage, meeting-prep');
+  });
+
+  it('inserts the compaction divider right after up_to_message_id', () => {
+    let s = applyServerEvents(withOpen(CONV), [queued, started], T0);
+    s = applyServerEvents(
+      s,
+      [
+        { type: 'message.created', ts: iso(1), message: msg({ id: 'm_u1', role: 'user', content: 'hi', created_at: iso(1) }) },
+        { type: 'message.created', ts: iso(2), message: msg({ id: 'm_a1', role: 'assistant', content: 'hello', created_at: iso(2) }) },
+        runScoped({ type: 'run.done', message_id: 'm_a1', usage: usage(), steps_used: 1, summary: null }, 3),
+      ],
+      T0,
+    );
+    const src = { ...transcriptSource(s, CONV), summary: { up_to_message_id: 'm_a1', text: 'Earlier: greetings.' } };
+    const kinds = buildTranscriptFrom(src).map((i) => (i.kind === 'message' ? `${i.kind}:${i.message.id}` : i.kind));
+    expect(kinds).toEqual(['message:m_u1', 'message:m_a1', 'summary', 'run']);
+  });
+
+  it('keeps the run plan current from plan.* events', () => {
+    let s = applyServerEvents(withOpen(CONV), [queued, started], T0);
+    const plan = { goal: 'Ship it', steps: [{ title: 'a', status: 'pending' as const, note: null }, { title: 'b', status: 'pending' as const, note: null }] };
+    s = applyServerEvents(
+      s,
+      [
+        runScoped({ type: 'plan.created', plan }, 1),
+        runScoped({ type: 'plan.step_started', index: 0, title: 'a' }, 2),
+        runScoped({ type: 'plan.step_done', index: 0 }, 3),
+        runScoped({ type: 'plan.step_started', index: 1, title: 'b' }, 4),
+      ],
+      T0,
+    );
+    expect(s.runs[RUN]?.plan?.steps.map((st) => st.status)).toEqual(['done', 'in_progress']);
+    // plan events are not rendered as separate notes — the checklist under the run chip shows them
+    expect(buildTranscript(s, CONV).some((i) => i.kind === 'note')).toBe(false);
   });
 
   it('renders a judge stop as an error note with its reason', () => {

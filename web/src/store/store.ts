@@ -4,8 +4,9 @@ import { WsClient, type ConnectionState } from '../api/ws';
 import { navigate, parseLocation, rememberConversation, type View } from '../lib/router';
 import { applyThemePref, isPanelMode, readThemePref, type ThemePref } from '../lib/theme';
 import type { ThinkChoice } from '../lib/think';
-import type { Conversation, Message, Run, RunScopedEvent, ServerEvent } from '../protocol/types';
+import type { Conversation, ConversationSummary, Message, Run, RunScopedEvent, ServerEvent } from '../protocol/types';
 import { isRunScoped, isTerminal } from '../protocol/types';
+import { applyFeatureEvents, initialFeatureState, type FeatureState } from './features';
 import { applyServerEvents } from './reducer';
 import { selectActiveRun } from './selectors';
 import { NEW_CONVERSATION_KEY, initialChatState, omit, type ChatState, type LocalMessage } from './state';
@@ -33,6 +34,10 @@ export interface UiState {
   version: string | null;
   /** Per-conversation thinking override for new messages (absent = role default). */
   thinkChoice: Record<string, ThinkChoice | undefined>;
+  /** Compaction summary per conversation; `undefined` = not fetched, `null` = none. */
+  summaries: Record<string, ConversationSummary | null | undefined>;
+  /** Mobile "More" navigation sheet. */
+  moreOpen: boolean;
 }
 
 export interface Actions {
@@ -54,11 +59,12 @@ export interface Actions {
   setSidebarOpen: (open: boolean) => void;
   setTheme: (pref: ThemePref) => void;
   setThinkChoice: (choice: ThinkChoice) => void;
+  setMoreOpen: (open: boolean) => void;
   notify: (text: string, level?: Notice['level']) => void;
   dismissNotice: () => void;
 }
 
-export type AppState = ChatState & UiState & Actions;
+export type AppState = ChatState & FeatureState & UiState & Actions;
 
 let ws: WsClient | null = null;
 let noticeSeq = 0;
@@ -71,6 +77,7 @@ function errorText(e: unknown): string {
 
 export const useStore = create<AppState>()((set, get) => ({
   ...initialChatState(),
+  ...initialFeatureState(),
   view: 'chat',
   connection: 'connecting',
   connectionAttempt: 0,
@@ -85,6 +92,8 @@ export const useStore = create<AppState>()((set, get) => ({
   panelMode: isPanelMode(),
   version: null,
   thinkChoice: {},
+  summaries: {},
+  moreOpen: false,
 
   boot: () => {
     const route = parseLocation();
@@ -121,7 +130,7 @@ export const useStore = create<AppState>()((set, get) => ({
 
   applyEvents: (events) => {
     const before = get();
-    const after = applyServerEvents(before, events, Date.now());
+    const after = applyFeatureEvents(applyServerEvents(before, events, Date.now()), events) as AppState;
     set(after);
     // A conversation the server created for our null-conversation send: subscribe and route to it.
     if (after.openConversationId && after.openConversationId !== before.openConversationId) {
@@ -140,9 +149,11 @@ export const useStore = create<AppState>()((set, get) => ({
   },
 
   setView: (view) => {
-    set({ view, sidebarOpen: false });
+    set({ view, sidebarOpen: false, moreOpen: false });
     navigate(view, get().openConversationId);
   },
+
+  setMoreOpen: (open) => set({ moreOpen: open }),
 
   openConversation: async (id, opts = {}) => {
     const prev = get().openConversationId;
@@ -177,12 +188,13 @@ export const useStore = create<AppState>()((set, get) => ({
   refreshConversation: async (id) => {
     set({ loadingMessagesFor: id });
     try {
-      const [conv, serverMessages, serverRuns] = await Promise.all([
+      const [conv, serverMessages, serverRuns, summary] = await Promise.all([
         get().conversations[id] ? Promise.resolve(null) : api.conversations.get(id),
         api.conversations.messages(id),
         api.conversations.runs(id),
+        api.conversations.summary(id).catch(() => null),
       ]);
-      set((s) => mergeConversationData(s, id, conv, serverMessages, serverRuns));
+      set((s) => ({ ...mergeConversationData(s, id, conv, serverMessages, serverRuns), summaries: { ...s.summaries, [id]: summary } }));
       for (const run of serverRuns) {
         if (!isTerminal(run.status)) void get().loadRunEvents(run.id);
       }

@@ -16,6 +16,7 @@ export function ChatScreen() {
       runIds: s.runsByConversation[convKey] ?? EMPTY_IDS,
       runs: s.runs,
       runEvents: s.runEvents,
+      summary: s.summaries[convKey] ?? null,
       streamKeys: Object.keys(s.streams)
         .filter((k) => s.streams[k])
         .join(','),
@@ -28,6 +29,7 @@ export function ChatScreen() {
         runIds: src.runIds,
         runs: src.runs,
         runEvents: src.runEvents,
+        summary: src.summary,
         streamRunIds: new Set(src.streamKeys ? src.streamKeys.split(',') : []),
       }),
     [src],

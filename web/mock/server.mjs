@@ -8,6 +8,7 @@
  */
 import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
+import { createFeatures } from './features.mjs';
 
 const PORT = Number(process.env.PORT ?? 9021);
 const VERSION = '2.0.0-alpha.1+mock';
@@ -142,7 +143,15 @@ let settings = {
   },
   max_concurrent_runs_per_endpoint: 1,
   repeated_call_threshold: 3,
-  stt_url: null,
+  tool_exposure: 'auto',
+  facade_threshold: 12,
+  history_token_budget: 24000,
+  boards_context_chars: 6000,
+  skill_max_chars: 6000,
+  planning_enabled: true,
+  kg_learning: true,
+  triage: { enabled: false, interval_min: 15, host: 'outlook', accounts: ['aapostolov@postbank.bg'], demand_root: 'Demands', demand_prefixes: ['DM-'], categories: [{ name: 'Newsletters', folder: 'Newsletters', rule: 'bulk mail, digests, marketing' }, { name: 'HR', folder: 'HR', rule: 'people, training, leave' }] },
+  stt_url: 'http://ardi:9110',
   stt_languages: ['bg', 'en'],
 };
 
@@ -254,6 +263,20 @@ async function cancelled(run, turn) {
   await finish(run, 'cancelled', { partial_message_id: partialId });
 }
 
+/** Creates the user message + run for a conversation and starts the scripted execution. */
+function createRun(c, text, kind = 'chat', opts = {}) {
+  const user = msg(c.id, { role: 'user', content: text });
+  const run = { id: newId('run'), conversation_id: c.id, kind, status: 'queued', input_text: text, plan: null, budget: settings.budgets[kind] ?? settings.budgets.chat, priority: 0, steps_used: 0, usage: { prompt_tokens: 0, completion_tokens: 0, calls: 0, ttft_ms: null, duration_ms: 0 }, last_seq: 0, error: null, waiting_reason: null, think: opts.think ?? null, think_level: opts.think ? (opts.think_level ?? null) : null, created_at: now(), started_at: null, finished_at: null };
+  runs.set(run.id, run);
+  user.run_id = run.id;
+  emitRun(run, { type: 'run.queued', kind: run.kind, input_preview: text.slice(0, 80), user_message_id: user.id });
+  broadcast({ type: 'message.created', ts: now(), message: user }, c.id);
+  broadcast({ type: 'run.updated', ts: now(), run });
+  touchConversation(c);
+  executeRun(run, text).catch((e) => finish(run, 'failed', { error: String(e) }));
+  return run;
+}
+
 async function executeRun(run, text) {
   await sleep(250);
   if (cancelFlags.get(run.id)) return finish(run, 'cancelled');
@@ -262,6 +285,38 @@ async function executeRun(run, text) {
   emitRun(run, { type: 'run.started' });
   broadcast({ type: 'run.updated', ts: now(), run });
   const lower = text.toLowerCase();
+
+  if (run.kind !== 'chat' || lower.includes('tool') || lower.includes('triage') || lower.includes('meeting')) {
+    emitRun(run, { type: 'context.skills', names: run.kind === 'meeting' || lower.includes('meeting') ? ['meeting-prep'] : ['email-triage'] });
+  }
+
+  if (lower.includes('plan')) {
+    const steps = ['Collect the Q3 figures from Finance', 'Rebuild slides 5 and 7', 'Draft the cover note for the steering committee'];
+    run.plan = { goal: 'Finish the Q3 deck', steps: steps.map((title) => ({ title, status: 'pending', note: null })) };
+    emitRun(run, { type: 'plan.created', plan: run.plan });
+    broadcast({ type: 'run.updated', ts: now(), run });
+    for (let i = 0; i < steps.length; i++) {
+      run.plan.steps[i].status = 'in_progress';
+      emitRun(run, { type: 'plan.step_started', index: i, title: steps[i] });
+      const t = await modelTurn(run, { reasoning: `Step ${i + 1}: ${steps[i]}.`, text: `Step ${i + 1} done — ${steps[i].toLowerCase()}.` });
+      if (t?.cancelled) return cancelled(run, t);
+      run.plan.steps[i].status = 'done';
+      emitRun(run, { type: 'plan.step_done', index: i });
+      broadcast({ type: 'run.updated', ts: now(), run });
+    }
+    const t = await modelTurn(run, { text: 'All three steps are done. The deck is ready for a last look before the steering committee.' });
+    if (t?.cancelled) return cancelled(run, t);
+    return finish(run, 'done', { message_id: t.message.id });
+  }
+
+  if (run.kind === 'scheduled' || run.kind === 'triage' || run.kind === 'meeting') {
+    const t = await modelTurn(run, {
+      reasoning: `A ${run.kind} run. Keep it compact.`,
+      text: run.kind === 'triage' ? 'Triaged **3 mails**: two filed under Newsletters, one routed to `Demands/DM-1234`.' : run.kind === 'meeting' ? '## Summary\n\n- Q3 deck status reviewed; Finance export due Thursday.\n- **Decision:** the DM-1234 reply goes out today.\n\n**Action items**\n1. Arsen — draft the summary\n2. Rumen — confirm the figures' : `**${text}**\n\nTwo meetings today, one flagged mail from Rumen, nothing unusual on the card.`,
+    });
+    if (t?.cancelled) return cancelled(run, t);
+    return finish(run, 'done', { message_id: t.message.id });
+  }
 
   if (lower.includes('fail')) {
     const t = await modelTurn(run, { reasoning: 'Trying the endpoint.', text: 'Let me check that for you' });
@@ -358,12 +413,15 @@ async function readBody(req) {
   return raw ? JSON.parse(raw) : {};
 }
 
+const features = createFeatures({ json, readBody, broadcast, conv, conversations, messages, newId, now, sleep, createRun, runs });
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const parts = url.pathname.split('/').filter(Boolean);
   if (parts[0] !== 'api') return json(res, 404, { detail: 'Not found' });
   const [, resource, id, sub] = parts;
   try {
+    if (await features.handle(req, res, url, parts)) return;
     if (resource === 'health') return json(res, 200, { ok: true, version: VERSION });
     if (resource === 'status') {
       await sleep(300);
@@ -390,6 +448,7 @@ const server = createServer(async (req, res) => {
     if (resource === 'tools') {
       if (id === 'reload' && req.method === 'POST') {
         await sleep(600);
+        broadcast({ type: 'tools.changed', ts: now(), provider: null });
         return json(res, 200, TOOLS);
       }
       return json(res, 200, TOOLS);
@@ -458,9 +517,10 @@ const server = createServer(async (req, res) => {
       }
       return json(res, 200, run);
     }
-    return json(res, 404, { detail: 'Not found' });
+    if (!res.headersSent) return json(res, 404, { detail: 'Not found' });
   } catch (e) {
-    return json(res, 500, { detail: String(e) });
+    console.error(e);
+    if (!res.headersSent) return json(res, 500, { detail: String(e) });
   }
 });
 
@@ -501,15 +561,7 @@ wss.on('connection', (ws) => {
           subs.add(c.id); // the creating socket is auto-subscribed
           broadcast({ type: 'conversation.updated', ts: now(), conversation: c });
         }
-        const user = msg(c.id, { role: 'user', content: m.text });
-        const run = { id: newId('run'), conversation_id: c.id, kind: m.kind ?? 'chat', status: 'queued', input_text: m.text, plan: null, budget: settings.budgets.chat, priority: 0, steps_used: 0, usage: { prompt_tokens: 0, completion_tokens: 0, calls: 0, ttft_ms: null, duration_ms: 0 }, last_seq: 0, error: null, waiting_reason: null, think: m.think ?? null, think_level: m.think ? (m.think_level ?? null) : null, created_at: now(), started_at: null, finished_at: null };
-        runs.set(run.id, run);
-        user.run_id = run.id;
-        emitRun(run, { type: 'run.queued', kind: run.kind, input_preview: m.text.slice(0, 80), user_message_id: user.id });
-        broadcast({ type: 'message.created', ts: now(), message: user }, c.id);
-        broadcast({ type: 'run.updated', ts: now(), run });
-        touchConversation(c);
-        executeRun(run, m.text).catch((e) => finish(run, 'failed', { error: String(e) }));
+        createRun(c, m.text, m.kind ?? 'chat', { think: m.think, think_level: m.think_level });
         break;
       }
       case 'run.cancel': {

@@ -6,6 +6,7 @@ import { MessageItem } from './MessageItem';
 import { Note } from './Note';
 import { RunChip } from './RunChip';
 import { StreamBubble } from './StreamBubble';
+import { SummaryDivider } from './SummaryDivider';
 import { ToolCard } from './ToolCard';
 
 interface Props {
@@ -115,6 +116,8 @@ export function Transcript({ items }: Props) {
                 return <StreamBubble key={it.key} runId={it.runId} />;
               case 'run':
                 return <RunChip key={it.key} runId={it.runId} />;
+              case 'summary':
+                return <SummaryDivider key={it.key} text={it.text} />;
             }
           })}
         </div>

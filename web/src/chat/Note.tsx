@@ -12,6 +12,7 @@ const ICONS: Record<string, IconName> = {
   resumed: 'refresh',
   budget: 'clock',
   summary: 'info',
+  skill: 'book',
 };
 
 /** Compact system note in the transcript: supervisor verdicts, guards, plan steps, outcomes. */

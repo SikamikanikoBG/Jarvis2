@@ -5,6 +5,7 @@ import { STATUS_LABEL, runDurationMs, statusChipClass } from '../lib/runs';
 import { describeThink } from '../lib/think';
 import { isTerminal } from '../protocol/types';
 import { useStore } from '../store/store';
+import { PlanChecklist } from './PlanChecklist';
 
 /** Small per-turn chip: status · steps · tokens · duration. Opens the Run Inspector. */
 export function RunChip({ runId }: { runId: string }) {
@@ -40,6 +41,7 @@ export function RunChip({ runId }: { runId: string }) {
           </>
         )}
       </button>
+      {run.plan && run.plan.steps.length > 0 && <PlanChecklist plan={run.plan} active={active} />}
     </div>
   );
 }

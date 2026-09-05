@@ -1,12 +1,32 @@
 import type {
+  Board,
+  CollabKey,
+  CollabKeyCreated,
   Conversation,
+  ConversationSummary,
+  Entity,
+  EntityDetail,
+  Graph,
   HealthResponse,
+  Meeting,
+  MeetingDetail,
   Message,
+  Note,
+  NoteColor,
+  PairResponse,
   Run,
+  Schedule,
+  ScheduleFire,
+  ScheduleRunResponse,
   ServerEvent,
   Settings,
+  Skill,
+  SkillContent,
   StatusResponse,
+  SttResponse,
   ToolSpec,
+  TriageState,
+  Whoami,
 } from '../protocol/types';
 import { getToken } from '../lib/token';
 
@@ -25,11 +45,12 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const headers: Record<string, string> = { Accept: 'application/json' };
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const multipart = body instanceof FormData;
+  if (body !== undefined && !multipart) headers['Content-Type'] = 'application/json';
   const res = await fetch(path, {
     method,
     headers,
-    body: body === undefined ? null : JSON.stringify(body),
+    body: body === undefined ? null : multipart ? body : JSON.stringify(body),
     credentials: 'same-origin',
   });
   if (res.status === 204) return null as T;
@@ -104,7 +125,70 @@ export const api = {
     remove: (id: string) => request<null>('DELETE', `/api/conversations/${encodeURIComponent(id)}`),
     messages: (id: string) => request<Message[]>('GET', `/api/conversations/${encodeURIComponent(id)}/messages`),
     runs: (id: string) => request<Run[]>('GET', `/api/conversations/${encodeURIComponent(id)}/runs`),
+    summary: (id: string) => request<ConversationSummary | null>('GET', `/api/conversations/${encodeURIComponent(id)}/summary`),
   },
+  boards: {
+    list: () => request<Board[]>('GET', '/api/boards'),
+    create: (name: string) => request<Board>('POST', '/api/boards', { name }),
+    patch: (id: string, body: { name?: string; position?: number }) => request<Board>('PATCH', `/api/boards/${encodeURIComponent(id)}`, body),
+    remove: (id: string) => request<null>('DELETE', `/api/boards/${encodeURIComponent(id)}`),
+    notes: (id: string) => request<Note[]>('GET', `/api/boards/${encodeURIComponent(id)}/notes`),
+    addNote: (id: string, body: { text: string; color?: NoteColor; from_message_id?: string }) =>
+      request<Note>('POST', `/api/boards/${encodeURIComponent(id)}/notes`, body),
+  },
+  notes: {
+    patch: (id: string, body: { text?: string; color?: NoteColor; board_id?: string; position?: number }) =>
+      request<Note>('PATCH', `/api/notes/${encodeURIComponent(id)}`, body),
+    remove: (id: string) => request<null>('DELETE', `/api/notes/${encodeURIComponent(id)}`),
+  },
+  kg: {
+    entities: (q: string, limit = 50) => request<Entity[]>('GET', `/api/kg/entities?q=${encodeURIComponent(q)}&limit=${limit}`),
+    entity: (id: string) => request<EntityDetail>('GET', `/api/kg/entities/${encodeURIComponent(id)}`),
+    patch: (id: string, body: { name?: string; type?: Entity['type']; summary?: string }) =>
+      request<Entity>('PATCH', `/api/kg/entities/${encodeURIComponent(id)}`, body),
+    remove: (id: string) => request<null>('DELETE', `/api/kg/entities/${encodeURIComponent(id)}`),
+    merge: (id: string, into: string) => request<Entity>('POST', `/api/kg/entities/${encodeURIComponent(id)}/merge`, { into }),
+    graph: (center: string, depth = 1, limit = 80) =>
+      request<Graph>('GET', `/api/kg/graph?center=${encodeURIComponent(center)}&depth=${depth}&limit=${limit}`),
+  },
+  skills: {
+    list: () => request<Skill[]>('GET', '/api/skills'),
+    get: (name: string) => request<SkillContent>('GET', `/api/skills/${encodeURIComponent(name)}`),
+    put: (name: string, content: string) => request<Skill>('PUT', `/api/skills/${encodeURIComponent(name)}`, { content }),
+    patch: (name: string, enabled: boolean) => request<Skill>('PATCH', `/api/skills/${encodeURIComponent(name)}`, { enabled }),
+    remove: (name: string) => request<null>('DELETE', `/api/skills/${encodeURIComponent(name)}`),
+  },
+  schedules: {
+    list: () => request<Schedule[]>('GET', '/api/schedules'),
+    create: (body: Partial<Schedule>) => request<Schedule>('POST', '/api/schedules', body),
+    patch: (id: string, body: Partial<Schedule>) => request<Schedule>('PATCH', `/api/schedules/${encodeURIComponent(id)}`, body),
+    remove: (id: string) => request<null>('DELETE', `/api/schedules/${encodeURIComponent(id)}`),
+    run: (id: string) => request<ScheduleRunResponse>('POST', `/api/schedules/${encodeURIComponent(id)}/run`),
+    fires: (id: string, limit = 20) => request<ScheduleFire[]>('GET', `/api/schedules/${encodeURIComponent(id)}/fires?limit=${limit}`),
+  },
+  triage: {
+    state: () => request<TriageState[]>('GET', '/api/triage/state'),
+    run: () => request<{ run_id: string }>('POST', '/api/triage/run'),
+  },
+  stt: (audio: Blob, language?: string) => {
+    const form = new FormData();
+    form.append('audio', audio, 'speech.webm');
+    if (language) form.append('language', language);
+    return request<SttResponse>('POST', '/api/stt', form);
+  },
+  meetings: {
+    list: () => request<Meeting[]>('GET', '/api/meetings'),
+    get: (id: string) => request<MeetingDetail>('GET', `/api/meetings/${encodeURIComponent(id)}`),
+    create: (body: { title?: string; host: string }) => request<Meeting>('POST', '/api/meetings', body),
+    stop: (id: string) => request<Meeting>('POST', `/api/meetings/${encodeURIComponent(id)}/stop`),
+  },
+  collab: {
+    keys: () => request<CollabKey[]>('GET', '/api/collab/keys'),
+    createKey: (name: string) => request<CollabKeyCreated>('POST', '/api/collab/keys', { name }),
+    removeKey: (id: string) => request<null>('DELETE', `/api/collab/keys/${encodeURIComponent(id)}`),
+  },
+  pair: () => request<PairResponse>('GET', '/api/pair'),
+  whoami: () => request<Whoami>('GET', '/api/whoami'),
   runs: {
     get: (id: string) => request<Run>('GET', `/api/runs/${encodeURIComponent(id)}`),
     events: (id: string, after = 0) => request<ServerEvent[]>('GET', `/api/runs/${encodeURIComponent(id)}/events?after=${after}`),

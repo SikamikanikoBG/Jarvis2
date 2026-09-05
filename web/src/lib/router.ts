@@ -1,4 +1,6 @@
-export type View = 'chat' | 'runs' | 'settings' | 'status';
+export type View = 'chat' | 'runs' | 'settings' | 'status' | 'boards' | 'knowledge' | 'skills' | 'schedules' | 'meetings' | 'triage';
+
+export const VIEWS: readonly View[] = ['chat', 'runs', 'settings', 'status', 'boards', 'knowledge', 'skills', 'schedules', 'meetings', 'triage'];
 
 export interface Route {
   view: View;
@@ -7,11 +9,15 @@ export interface Route {
 
 const LAST_CONV_KEY = 'jarvis_last_conversation';
 
+function isView(s: string | undefined): s is Exclude<View, 'chat'> {
+  return s !== undefined && s !== 'chat' && (VIEWS as readonly string[]).includes(s);
+}
+
 export function parseLocation(pathname = window.location.pathname): Route {
   const parts = pathname.split('/').filter(Boolean);
   const head = parts[0];
   if (head === 'c' && parts[1]) return { view: 'chat', conversationId: decodeURIComponent(parts[1]) };
-  if (head === 'runs' || head === 'settings' || head === 'status') return { view: head, conversationId: rememberedConversation() };
+  if (isView(head)) return { view: head, conversationId: rememberedConversation() };
   return { view: 'chat', conversationId: null };
 }
 

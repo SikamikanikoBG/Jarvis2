@@ -190,6 +190,92 @@ await session('mobile-dark', mobile, 'dark', async (page, shot) => {
   await shot('09-settings');
 });
 
+await session('features', desktop, 'dark', async (page, shot) => {
+  await page.goto(`${base}/boards`);
+  await page.waitForSelector('.board-col');
+  await shot('01-boards');
+  await page.click('.note-card >> nth=0 >> .icon-btn >> nth=0');
+  await page.waitForTimeout(200);
+  await shot('02-boards-note-tools');
+  await page.goto(`${base}/knowledge`);
+  await page.waitForSelector('.kg-entity');
+  await page.click('.kg-entity >> nth=0');
+  await page.waitForSelector('.kg-graph');
+  await page.waitForTimeout(300);
+  await shot('03-knowledge');
+  await page.goto(`${base}/skills`);
+  await page.waitForSelector('.skill-row');
+  await page.click('.skill-row >> nth=0 >> .skill-main');
+  await page.waitForSelector('.skill-text');
+  await page.waitForTimeout(200);
+  await shot('04-skills-editor');
+  await page.goto(`${base}/schedules`);
+  await page.waitForSelector('.sched-row');
+  await page.click('.sched-row >> nth=0 >> .icon-btn >> nth=2'); // fires
+  await page.waitForTimeout(300);
+  await shot('05-schedules');
+  await page.click('text=New schedule');
+  await page.waitForSelector('.sched-form');
+  await shot('06-schedule-form');
+  await page.goto(`${base}/meetings`);
+  await page.waitForSelector('text=Start meeting');
+  await page.click('text=Start meeting');
+  await page.waitForSelector('.form-grid select');
+  await page.fill('.form-grid input', 'Steering committee');
+  await page.click('text=Start recording');
+  await page.waitForSelector('.mtg-seg', { timeout: 15000 });
+  await page.waitForTimeout(2800);
+  await shot('07-meeting-live');
+  await page.click('.kg-detail .btn-danger');
+  await page.waitForTimeout(600);
+  await shot('08-meeting-summarising');
+  await page.goto(`${base}/triage`);
+  await page.waitForSelector('.triage-table');
+  await shot('09-triage');
+  await page.goto(`${base}/status`);
+  await page.waitForSelector('.ep');
+  await page.click('text=Pair a phone');
+  await page.waitForSelector('.qr svg');
+  await shot('10-pairing');
+  await page.goto(`${base}/settings`);
+  await page.waitForSelector('.role-card');
+  await page.evaluate(() => [...document.querySelectorAll('h2')].find((h) => h.textContent === 'Triage')?.scrollIntoView({ block: 'start' }));
+  await page.waitForTimeout(200);
+  await shot('11-settings-triage-collab');
+  // chat: plan checklist + pin + summary divider
+  await page.goto(base);
+  await page.waitForSelector('.conv');
+  await page.click('.conv:has-text("Morning planning")');
+  await page.waitForSelector('.msg-bot');
+  await page.waitForTimeout(400);
+  await shot('12-chat-summary-divider');
+  await page.fill('textarea', 'Make a plan for the deck');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('.plan', { timeout: 15000 });
+  await page.waitForTimeout(2500);
+  await shot('13-chat-plan');
+  await page.waitForSelector('.runchip:not(:has(.chip-accent)) >> nth=-1', { timeout: 40000 });
+  await page.hover('.msg-bot >> nth=-1');
+  await page.click('.msg-bot >> nth=-1 >> .msg-action');
+  await page.waitForSelector('.menu');
+  await shot('14-chat-pin-picker');
+});
+
+await session('features-mobile', mobile, 'dark', async (page, shot) => {
+  await page.goto(`${base}/boards`);
+  await page.waitForSelector('.board-col');
+  await shot('01-boards');
+  await page.click('.bottomnav button >> nth=4');
+  await page.waitForSelector('.more-grid');
+  await shot('02-more');
+  await page.click('.more-item >> nth=1');
+  await page.waitForSelector('.kg-entity');
+  await page.click('.kg-entity >> nth=0');
+  await page.waitForSelector('.kg-graph');
+  await page.waitForTimeout(300);
+  await shot('03-knowledge-detail');
+});
+
 await session('panel', { width: 420, height: 760 }, 'dark', async (page, shot) => {
   await page.goto(`${base}/?mode=panel`);
   await page.waitForSelector('textarea');

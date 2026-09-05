@@ -5,6 +5,7 @@ import { IconButton } from '../components/primitives';
 import { formatDuration } from '../lib/format';
 import type { EndpointStatus, StatusResponse, ToolProviderStatus, ToolSpec } from '../protocol/types';
 import { useStore } from '../store/store';
+import { PairPanel } from './PairPanel';
 
 const REFRESH_MS = 30_000;
 
@@ -22,6 +23,7 @@ export function StatusScreen() {
   const connection = useStore((s) => s.connection);
   const attempt = useStore((s) => s.connectionAttempt);
   const version = useStore((s) => s.version);
+  const toolsVersion = useStore((s) => s.featureVersion.tools);
 
   // State updates only happen in the promise callbacks (asynchronously), never in the effect body itself.
   const load = useCallback(
@@ -66,6 +68,7 @@ export function StatusScreen() {
       .finally(() => setReloading(false));
   };
 
+  // `toolsVersion` bumps on `tools.changed`, which refetches both lists.
   useEffect(() => {
     void load();
     void loadTools();
@@ -73,7 +76,7 @@ export function StatusScreen() {
       if (document.visibilityState === 'visible') void load();
     }, REFRESH_MS);
     return () => clearInterval(id);
-  }, [load, loadTools]);
+  }, [load, loadTools, toolsVersion]);
 
   const connLabel = connection === 'open' ? 'connected' : connection === 'connecting' ? 'connecting' : connection === 'reconnecting' ? `reconnecting (try ${attempt})` : 'closed';
 
@@ -87,6 +90,8 @@ export function StatusScreen() {
             <IconButton icon="refresh" label="Refresh" onClick={refresh} disabled={busy} />
           </div>
         </div>
+
+        <PairPanel />
 
         <div className="status-row">
           <div className="stat">

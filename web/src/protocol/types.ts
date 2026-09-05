@@ -172,6 +172,20 @@ export interface McpServerSpec {
   timeout_s: number;
 }
 
+export interface TriageSettings {
+  enabled: boolean;
+  interval_min: number;
+  /** Name of the MCP server (jarvis-host) that owns Outlook. */
+  host: string;
+  accounts: string[];
+  demand_root: string;
+  demand_prefixes: string[];
+  /** {name, folder, rule} */
+  categories: Record<string, string>[];
+}
+
+export type ToolExposure = 'auto' | 'flat' | 'facade';
+
 export interface Settings {
   assistant_name: string;
   user_name: string;
@@ -182,8 +196,170 @@ export interface Settings {
   mcp_servers: McpServerSpec[];
   max_concurrent_runs_per_endpoint: number;
   repeated_call_threshold: number;
+  tool_exposure: ToolExposure;
+  facade_threshold: number;
+  history_token_budget: number;
+  boards_context_chars: number;
+  skill_max_chars: number;
+  planning_enabled: boolean;
+  kg_learning: boolean;
+  triage: TriageSettings;
   stt_url: string | null;
   stt_languages: string[];
+}
+
+// ---- features.py ---------------------------------------------------------------------
+
+export type NoteColor = 'yellow' | 'blue' | 'green' | 'pink' | 'grey';
+export const NOTE_COLORS: readonly NoteColor[] = ['yellow', 'blue', 'green', 'pink', 'grey'];
+
+export interface Board {
+  id: string;
+  name: string;
+  position: number;
+  note_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Note {
+  id: string;
+  board_id: string;
+  text: string;
+  color: NoteColor;
+  from_message_id: string | null;
+  position: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export type EntityType = 'person' | 'org' | 'project' | 'place' | 'thing' | 'topic';
+export const ENTITY_TYPES: readonly EntityType[] = ['person', 'org', 'project', 'place', 'thing', 'topic'];
+
+export interface Entity {
+  id: string;
+  name: string;
+  type: EntityType;
+  summary: string;
+  aliases: string[];
+  mention_count: number;
+  updated_at: string;
+}
+
+export interface Edge {
+  src: string;
+  dst: string;
+  relation: string;
+  weight: number;
+  evidence: string | null;
+}
+
+export interface Mention {
+  conversation_id: string | null;
+  message_id: string | null;
+  snippet: string | null;
+  at: string;
+}
+
+export interface EdgeWithOther extends Edge {
+  other: Entity;
+}
+
+export interface EntityDetail extends Entity {
+  edges: EdgeWithOther[];
+  mentions: Mention[];
+}
+
+export interface Graph {
+  nodes: Entity[];
+  edges: Edge[];
+}
+
+export interface Skill {
+  name: string;
+  description: string;
+  triggers: string[];
+  enabled: boolean;
+  size: number;
+  updated_at: string;
+}
+
+export type CatchUp = 'skip' | 'run_once';
+
+export interface Schedule {
+  id: string;
+  name: string;
+  prompt: string;
+  cron: string | null;
+  at: string | null;
+  tz: string;
+  enabled: boolean;
+  catch_up: CatchUp;
+  think: boolean | null;
+  think_level: ThinkLevel | null;
+  next_fire: string | null;
+  last_fired_for: string | null;
+  last_run_id: string | null;
+  last_status: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ScheduleFire {
+  schedule_id: string;
+  scheduled_for: string;
+  run_id: string | null;
+  conversation_id: string | null;
+  status: string | null;
+}
+
+export interface CollabKey {
+  id: string;
+  name: string;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+export type MeetingStatus = 'recording' | 'summarising' | 'done' | 'failed';
+
+export interface Meeting {
+  id: string;
+  conversation_id: string;
+  title: string;
+  host: string;
+  status: MeetingStatus;
+  started_at: string;
+  ended_at: string | null;
+  summary_run_id: string | null;
+}
+
+export interface MeetingSegmentModel {
+  seq: number;
+  t0: number;
+  t1: number;
+  text: string;
+}
+
+export interface MeetingFrameModel {
+  seq: number;
+  at: number;
+  url: string;
+  ocr: string | null;
+}
+
+export interface MeetingDetail extends Meeting {
+  segments: MeetingSegmentModel[];
+  frames: MeetingFrameModel[];
+}
+
+export interface TriageState {
+  account: string;
+  cursor: string | null;
+  day: string | null;
+  processed_today: number;
+  routed_today: number;
+  last_run_at: string | null;
+  last_error: string | null;
 }
 
 // ---- tools.py ------------------------------------------------------------------------
@@ -349,6 +525,49 @@ export interface Pong extends Base {
   type: 'pong';
 }
 
+// features (Phases 2–7)
+export interface ContextSkills extends RunEventBase {
+  type: 'context.skills';
+  names: string[];
+}
+export interface BoardChanged extends Base {
+  type: 'board.changed';
+  /** null = the board list itself changed. */
+  board_id: string | null;
+}
+export interface KgChanged extends Base {
+  type: 'kg.changed';
+  entity_ids: string[];
+}
+export interface SkillsChanged extends Base {
+  type: 'skills.changed';
+}
+export interface ScheduleChanged extends Base {
+  type: 'schedule.changed';
+  schedule_id: string | null;
+}
+export interface ToolsChanged extends Base {
+  type: 'tools.changed';
+  provider: string | null;
+}
+export interface MeetingSegment extends Base {
+  type: 'meeting.segment';
+  meeting_id: string;
+  conversation_id: string;
+  seq: number;
+  t0: number;
+  t1: number;
+  text: string;
+}
+export interface MeetingChanged extends Base {
+  type: 'meeting.changed';
+  meeting_id: string;
+  conversation_id: string;
+  status: string;
+}
+
+export type FeatureEvent = BoardChanged | KgChanged | SkillsChanged | ScheduleChanged | ToolsChanged | MeetingSegment | MeetingChanged;
+
 export type RunScopedEvent =
   | RunQueued
   | RunStarted
@@ -370,7 +589,8 @@ export type RunScopedEvent =
   | ToolConfirmResolved
   | GuardArmed
   | GuardConsumed
-  | JudgeVerdict;
+  | JudgeVerdict
+  | ContextSkills;
 
 export type ServerEvent =
   | RunScopedEvent
@@ -378,7 +598,8 @@ export type ServerEvent =
   | ConversationDeleted
   | MessageCreated
   | RunUpdated
-  | Pong;
+  | Pong
+  | FeatureEvent;
 
 export type ServerEventType = ServerEvent['type'];
 
@@ -462,4 +683,49 @@ export interface StatusResponse {
   endpoints: EndpointStatus[];
   runs: { running: number; queued: number };
   tools: ToolProviderStatus[];
+}
+
+/** `GET /api/skills/{name}` */
+export interface SkillContent {
+  name: string;
+  content: string;
+}
+
+/** `GET /api/conversations/{id}/summary` (null when nothing was compacted). */
+export interface ConversationSummary {
+  up_to_message_id: string;
+  text: string;
+}
+
+/** `POST /api/stt` */
+export interface SttResponse {
+  text: string;
+  language: string;
+  backend: string;
+  duration_ms: number;
+}
+
+/** `POST /api/schedules/{id}/run` */
+export interface ScheduleRunResponse {
+  run_id: string;
+  conversation_id: string;
+}
+
+/** `POST /api/collab/keys` — the key is shown once. */
+export interface CollabKeyCreated {
+  key: string;
+  id: string;
+  name: string;
+}
+
+/** `GET /api/pair` */
+export interface PairResponse {
+  url: string;
+  qr_svg: string;
+}
+
+/** `GET /api/whoami` */
+export interface Whoami {
+  owner: boolean;
+  key_name?: string;
 }

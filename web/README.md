@@ -24,7 +24,14 @@ JARVIS_BACKEND=http://127.0.0.1:9021 npm run dev
 node scripts/shots.mjs http://localhost:5173   # optional: screenshots of every flow → scripts/shots/
 ```
 
-Message keywords the mock reacts to: `tools`, `confirm`, `fail`, `judge`, `long`.
+Message keywords the mock reacts to: `tools`, `confirm`, `fail`, `judge`, `long`, `plan`. The mock
+also serves boards, knowledge, skills, schedules (run now creates a scheduled conversation), triage,
+STT (any recording ≥ 200 bytes transcribes; smaller → 502), meetings (live segments every 2.5 s),
+collab keys and pairing (`mock/features.mjs`).
+
+Feature screens refetch on the server's `*.changed` events: `store/features.ts` folds them into
+per-area version counters and `useLoader(loader, version)` re-runs the fetch when the version moves.
+`meeting.segment` is the one live payload kept in the store (merged with the REST detail by `seq`).
 
 Auth: the core's bearer token comes from `?token=…` on first load (stripped from the URL and
 kept in `localStorage.jarvis_token`), then sent as `Authorization: Bearer` on REST and
@@ -39,15 +46,24 @@ src/
   protocol/        types.ts — hand-written mirror of packages/proto/jarvis_proto (see below)
   api/             client.ts (REST, ApiError, 422 → field errors) · ws.ts (reconnect 1s→30s, per-frame batching)
   store/           state.ts (ChatState) · reducer.ts (pure applyServerEvent) · selectors.ts (sidebar, active run,
-                   pending confirm) · transcript.ts (messages + run events → transcript items) · store.ts (zustand,
-                   actions, routing side effects) · reducer.test.ts
+                   pending confirm) · transcript.ts (messages + run events → transcript items) · features.ts
+                   (pure fold of *.changed / meeting.segment into refetch versions) · store.ts (zustand, actions,
+                   routing side effects) · reducer.test.ts · features.test.ts
   chat/            ChatScreen, Transcript (autoscroll + jump pill), MessageItem, StreamBubble, ReasoningFold,
                    ToolCard, ConfirmCard, Note, RunChip, Composer
   sidebar/         Sidebar (Chats flat + folders by kind → folder_label ?? folder_key), ConversationRow (menu,
                    inline rename, inline delete confirm)
   runs/            RunInspector (timeline with Δt, model/tool pairs, tok/s, payload JSON), RunsScreen, timeline.ts
-  settings/        SettingsScreen — roles × ModelSpec, budgets per run kind, general; PATCHes only dirty keys
-  status/          StatusScreen — endpoint cards per role, running/queued, version, WS state; a red card stays red
+  settings/        SettingsScreen — roles × ModelSpec (think + level), context/behaviour, MCP servers editor,
+                   triage block, collaborator keys, budgets; PATCHes only dirty top-level keys
+  status/          StatusScreen — endpoint cards, tool providers + Reload, grouped Tools list, phone pairing (QR)
+  boards/          BoardsScreen — boards as columns, sticky notes (colour, move, inline edit), live via board.changed
+  knowledge/       KnowledgeScreen + GraphView — search, entity detail (aliases, edges, mentions), edit/merge/delete,
+                   SVG neighbourhood graph; live via kg.changed
+  skills/          SkillsScreen — list with enable toggles, monospace editor (PUT), new/delete; live via skills.changed
+  schedules/       SchedulesScreen — cron/one-shot form with human cron preview, run now, fires; live via schedule.changed
+  meetings/        MeetingsScreen — start on a host, live transcript from meeting.segment, frames, stop → summary
+  triage/          TriageScreen — per-account cursor table + Run now (settings live in Settings → Triage)
   shell/           App (layout, drawers, inspector column), TopBar + BottomNav, nav.ts, useMediaQuery
   components/      Icon (one inline SVG set), primitives (IconButton, Switch, Menu, InlineConfirm, Drawer,
                    RelativeTime), Markdown (marked + DOMPurify), Toast, useTicker

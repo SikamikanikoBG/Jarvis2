@@ -29,6 +29,14 @@ export function applyServerEvent<S extends ChatState>(state: S, event: ServerEve
       return runUpdated(state, event.run, now);
     case 'model.delta':
       return modelDelta(state, event, now);
+    case 'board.changed':
+    case 'kg.changed':
+    case 'skills.changed':
+    case 'schedule.changed':
+    case 'tools.changed':
+    case 'meeting.segment':
+    case 'meeting.changed':
+      return state; // feature screens react to these in the store (refetch), not in chat state
     default:
       return runScoped(state, event, now);
   }
@@ -316,14 +324,32 @@ function runScoped<S extends ChatState>(state: S, ev: Exclude<RunScopedEvent, Mo
     case 'tool.confirm_requested':
       setStream({ lastToolName: ev.name, modelActive: false });
       break;
+    case 'plan.created':
+      runs = patchRun(runs, ev.run_id, { plan: ev.plan });
+      setStream({});
+      break;
+    case 'plan.step_started':
+    case 'plan.step_done': {
+      const plan = runs[ev.run_id]?.plan;
+      if (plan) {
+        const steps = plan.steps.map((s, i) => {
+          if (ev.type === 'plan.step_started') {
+            if (i === ev.index) return { ...s, status: 'in_progress' as const };
+            return s.status === 'in_progress' ? { ...s, status: 'done' as const } : s;
+          }
+          return i === ev.index ? { ...s, status: 'done' as const } : s;
+        });
+        runs = patchRun(runs, ev.run_id, { plan: { ...plan, steps } });
+      }
+      setStream({});
+      break;
+    }
     case 'tool.result':
     case 'tool.confirm_resolved':
-    case 'plan.created':
-    case 'plan.step_started':
-    case 'plan.step_done':
     case 'guard.armed':
     case 'guard.consumed':
     case 'judge.verdict':
+    case 'context.skills':
       setStream({});
       break;
   }

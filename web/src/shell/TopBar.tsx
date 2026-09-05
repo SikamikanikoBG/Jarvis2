@@ -1,9 +1,9 @@
 import { Icon } from '../components/Icon';
-import { IconButton } from '../components/primitives';
+import { Drawer, IconButton } from '../components/primitives';
 import { effectiveTheme } from '../lib/theme';
 import { selectUnreadCount } from '../store/selectors';
 import { useStore } from '../store/store';
-import { NAV } from './nav';
+import { NAV_ALL, NAV_DESKTOP, NAV_MORE, NAV_PRIMARY } from './nav';
 
 export function TopBar({ desktop }: { desktop: boolean }) {
   const view = useStore((s) => s.view);
@@ -18,7 +18,7 @@ export function TopBar({ desktop }: { desktop: boolean }) {
   const activeRun = useStore((s) => (s.openConversationId ? (s.runsByConversation[s.openConversationId] ?? []).some((id) => s.streams[id]) : false));
 
   const theme = effectiveTheme(themePref);
-  const heading = view === 'chat' ? (title ?? 'New chat') : NAV.find((n) => n.view === view)?.label;
+  const heading = view === 'chat' ? (title ?? 'New chat') : NAV_ALL.find((n) => n.view === view)?.label;
 
   return (
     <header className="topbar">
@@ -30,7 +30,7 @@ export function TopBar({ desktop }: { desktop: boolean }) {
             {version && <span className="brand-version">{version}</span>}
           </div>
           <nav className="nav-desktop" aria-label="Primary">
-            {NAV.map((n) => (
+            {NAV_DESKTOP.map((n) => (
               <button key={n.view} type="button" className={`nav-link${view === n.view ? ' active' : ''}`} onClick={() => setView(n.view)} aria-current={view === n.view ? 'page' : undefined}>
                 <Icon name={n.icon} size={16} />
                 {n.label}
@@ -69,15 +69,40 @@ export function BottomNav() {
   const view = useStore((s) => s.view);
   const setView = useStore((s) => s.setView);
   const unread = useStore((s) => selectUnreadCount(s.conversations));
+  const setMoreOpen = useStore((s) => s.setMoreOpen);
+  const moreActive = NAV_MORE.some((n) => n.view === view);
   return (
     <nav className="bottomnav" aria-label="Primary">
-      {NAV.map((n) => (
+      {NAV_PRIMARY.map((n) => (
         <button key={n.view} type="button" className={view === n.view ? 'active' : ''} onClick={() => setView(n.view)} aria-current={view === n.view ? 'page' : undefined}>
           <Icon name={n.icon} />
           {n.label}
           {n.view === 'chat' && unread > 0 && view !== 'chat' && <span className="nav-badge" aria-label={`${unread} unread`} />}
         </button>
       ))}
+      <button type="button" className={moreActive ? 'active' : ''} onClick={() => setMoreOpen(true)} aria-haspopup="dialog">
+        <Icon name="more" />
+        More
+      </button>
     </nav>
+  );
+}
+
+/** Mobile sheet with the feature screens that do not fit the bottom bar. */
+export function MoreSheet() {
+  const view = useStore((s) => s.view);
+  const setView = useStore((s) => s.setView);
+  const setMoreOpen = useStore((s) => s.setMoreOpen);
+  return (
+    <Drawer side="sheet" label="More screens" onClose={() => setMoreOpen(false)}>
+      <div className="more-grid">
+        {NAV_MORE.map((n) => (
+          <button key={n.view} type="button" className={`more-item${view === n.view ? ' active' : ''}`} onClick={() => setView(n.view)}>
+            <Icon name={n.icon} size={22} />
+            <span>{n.label}</span>
+          </button>
+        ))}
+      </div>
+    </Drawer>
   );
 }

@@ -4,6 +4,7 @@ import { Menu } from '../components/primitives';
 import { THINK_CHOICES, THINK_DEFAULT, thinkChoiceKey } from '../lib/think';
 import { NEW_CONVERSATION_KEY } from '../store/state';
 import { useStore } from '../store/store';
+import { MicButton } from './MicButton';
 
 interface Props {
   runActive: boolean;
@@ -67,6 +68,7 @@ export function Composer({ runActive, stopping }: Props) {
           autoComplete="off"
           enterKeyHint={coarsePointer() ? 'enter' : 'send'}
         />
+        <MicButton disabled={runActive} onTranscript={(t) => setText((prev) => (prev.trim() ? `${prev.trimEnd()} ${t}` : t))} />
         {runActive ? (
           <button type="button" className="send-btn stop-btn" onClick={stop} aria-label="Stop" title="Stop" disabled={stopping}>
             <Icon name="stop" size={18} />

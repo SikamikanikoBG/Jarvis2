@@ -1,6 +1,7 @@
 import { Icon } from '../components/Icon';
 import { Markdown } from '../components/Markdown';
 import type { LocalMessage } from '../store/state';
+import { PinButton } from './PinButton';
 import { ReasoningFold } from './ReasoningFold';
 
 export function MessageItem({ message }: { message: LocalMessage }) {
@@ -14,7 +15,7 @@ export function MessageItem({ message }: { message: LocalMessage }) {
   if (!message.content && !message.reasoning) return null; // pure tool-call turn: the cards say it all
   if (!message.content && message.reasoning) return <ReasoningFold text={message.reasoning} />; // thought, then called tools
   return (
-    <div className="msg msg-bot" aria-label="Jarvis">
+    <div className="msg msg-bot has-actions" aria-label="Jarvis">
       {message.reasoning && <ReasoningFold text={message.reasoning} />}
       <Markdown text={message.content} />
       {message.partial && (
@@ -23,6 +24,11 @@ export function MessageItem({ message }: { message: LocalMessage }) {
             <Icon name="square" size={11} />
             partial — stopped before the reply finished
           </span>
+        </div>
+      )}
+      {message.id && (
+        <div className="msg-actions">
+          <PinButton messageId={message.id} text={message.content} />
         </div>
       )}
     </div>

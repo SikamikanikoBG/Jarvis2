@@ -6,7 +6,7 @@
  * every source that knows about the call: the assistant message's `tool_calls`, the tool-role
  * message, and the `tool.call` / `tool.result` / `tool.confirm_*` events when they are loaded.
  */
-import type { Plan, Run, RunScopedEvent, ToolResult } from '../protocol/types';
+import type { ConversationSummary, Plan, Run, RunScopedEvent, ToolResult } from '../protocol/types';
 import { isTerminal } from '../protocol/types';
 import type { ChatState, LocalMessage } from './state';
 
@@ -50,7 +50,8 @@ export type TranscriptItem =
       reason: string;
     }
   | { kind: 'stream'; key: string; runId: string }
-  | { kind: 'run'; key: string; runId: string };
+  | { kind: 'run'; key: string; runId: string }
+  | { kind: 'summary'; key: string; text: string };
 
 interface Block {
   order: number;
@@ -69,6 +70,8 @@ export interface TranscriptSource {
   runEvents: Record<string, RunScopedEvent[] | undefined>;
   /** Runs that currently have a live stream buffer. */
   streamRunIds: ReadonlySet<string>;
+  /** Compaction summary, inserted as a divider after `up_to_message_id`. */
+  summary?: ConversationSummary | null;
 }
 
 export function transcriptSource(state: ChatState, conversationId: string): TranscriptSource {
@@ -78,6 +81,7 @@ export function transcriptSource(state: ChatState, conversationId: string): Tran
     runs: state.runs,
     runEvents: state.runEvents,
     streamRunIds: new Set(Object.keys(state.streams).filter((k) => state.streams[k])),
+    summary: null,
   };
 }
 
@@ -101,6 +105,13 @@ export function buildTranscriptFrom(src: TranscriptSource): TranscriptItem[] {
   const out: TranscriptItem[] = [];
   for (const b of [...blocks.values()].sort((a, z) => a.order - z.order)) {
     out.push(...buildBlock(src, b));
+  }
+  if (src.summary) {
+    // Everything up to (and including) `up_to_message_id` was compacted: divider right after it,
+    // or at the very top when that message is not in the loaded list.
+    const item: TranscriptItem = { kind: 'summary', key: `summary:${src.summary.up_to_message_id}`, text: src.summary.text };
+    const idx = out.findIndex((i) => i.kind === 'message' && i.message.id === src.summary?.up_to_message_id);
+    out.splice(idx + 1, 0, item);
   }
   return out;
 }
@@ -283,11 +294,9 @@ function noteFor(ev: RunScopedEvent): NoteModel | null {
         detail: ev.reason,
       };
     case 'plan.created':
-      return { ...base, level: 'info', tag: 'plan', title: `Plan: ${ev.plan.goal}`, detail: null, plan: ev.plan };
     case 'plan.step_started':
-      return { ...base, level: 'info', tag: 'plan', title: `Step ${ev.index + 1}: ${ev.title}`, detail: null };
     case 'plan.step_done':
-      return { ...base, level: 'info', tag: 'plan', title: `Step ${ev.index + 1} done`, detail: null };
+      return null; // the live checklist under the run chip renders the plan
     case 'run.waiting_user':
       return { ...base, level: 'warn', tag: 'waiting', title: 'Waiting for you', detail: ev.reason };
     case 'run.failed':
@@ -300,6 +309,10 @@ function noteFor(ev: RunScopedEvent): NoteModel | null {
       return { ...base, level: 'info', tag: 'resumed', title: 'Resumed', detail: null };
     case 'run.done':
       return ev.summary ? { ...base, level: 'warn', tag: 'budget', title: 'Budget reached', detail: ev.summary } : null;
+    case 'context.skills':
+      return ev.names.length
+        ? { ...base, level: 'info', tag: 'skill', title: `Using skill${ev.names.length > 1 ? 's' : ''}: ${ev.names.join(', ')}`, detail: null }
+        : null;
     default:
       return null;
   }

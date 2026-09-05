@@ -2,9 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { ApiError, api, describeError, fieldErrors } from '../api/client';
 import { Switch } from '../components/primitives';
 import type { ThemePref } from '../lib/theme';
-import { ROLE_NAMES, RUN_KINDS, THINK_LEVELS, type ModelSpec, type Provider, type RoleName, type RunKind, type Settings, type ThinkLevel } from '../protocol/types';
+import { ROLE_NAMES, RUN_KINDS, THINK_LEVELS, type ModelSpec, type Provider, type RoleName, type RunKind, type Settings, type ThinkLevel, type ToolExposure } from '../protocol/types';
 import { useStore } from '../store/store';
+import { CollabSection } from './CollabSection';
 import { McpServersSection } from './McpServersSection';
+import { TriageSection } from './TriageSection';
 
 const PROVIDERS: Provider[] = ['ollama', 'vllm'];
 const THINK_HINT = 'Only chat may think. Planners, classifiers and judges with thinking on spend their whole budget thinking.';
@@ -169,6 +171,44 @@ export function SettingsScreen() {
           </div>
         </section>
 
+        <section className="card role-card">
+          <div className="section-head">
+            <h2>Context and behaviour</h2>
+            <p>What goes into the prompt, and how tools are exposed to the model.</p>
+          </div>
+          <div className="think-row">
+            <Switch checked={draft.planning_enabled} onChange={(v) => patch('planning_enabled', v)} label="Planning" />
+            <span className="small">Planning</span>
+            <span className="field-hint">Multi-step tasks get a plan the model advances step by step.</span>
+          </div>
+          <div className="think-row">
+            <Switch checked={draft.kg_learning} onChange={(v) => patch('kg_learning', v)} label="Knowledge learning" />
+            <span className="small">Knowledge learning</span>
+            <span className="field-hint">After each run the classifier extracts entities and relations into Knowledge.</span>
+          </div>
+          <div className="form-grid">
+            <Field label="Tool exposure" error={errors.tool_exposure} hint="facade = one tool per namespace; flat = every tool; auto switches at the threshold.">
+              <select className="select" value={draft.tool_exposure} onChange={(e) => patch('tool_exposure', e.target.value as ToolExposure)}>
+                <option value="auto">auto</option>
+                <option value="flat">flat</option>
+                <option value="facade">facade</option>
+              </select>
+            </Field>
+            <Field label="Facade threshold (tools)" error={errors.facade_threshold}>
+              <NumberInput value={draft.facade_threshold} min={1} onChange={(v) => patch('facade_threshold', v ?? 1)} />
+            </Field>
+            <Field label="History budget (tokens)" error={errors.history_token_budget}>
+              <NumberInput value={draft.history_token_budget} min={1000} onChange={(v) => patch('history_token_budget', v ?? 1000)} />
+            </Field>
+            <Field label="Boards in context (chars)" error={errors.boards_context_chars}>
+              <NumberInput value={draft.boards_context_chars} min={0} onChange={(v) => patch('boards_context_chars', v ?? 0)} />
+            </Field>
+            <Field label="Skill size limit (chars)" error={errors.skill_max_chars}>
+              <NumberInput value={draft.skill_max_chars} min={500} onChange={(v) => patch('skill_max_chars', v ?? 500)} />
+            </Field>
+          </div>
+        </section>
+
         <section style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div className="section-head">
             <h2>Model roles</h2>
@@ -181,6 +221,10 @@ export function SettingsScreen() {
         </section>
 
         <McpServersSection servers={draft.mcp_servers} onChange={(list) => patch('mcp_servers', list)} error={errors.mcp_servers} />
+
+        <TriageSection value={draft.triage} hosts={draft.mcp_servers.map((s) => s.name)} onChange={(t) => patch('triage', t)} error={errors.triage} />
+
+        <CollabSection />
 
         <section className="card role-card">
           <div className="section-head">

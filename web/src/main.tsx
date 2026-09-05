@@ -5,6 +5,7 @@ import './styles/base.css';
 import './styles/layout.css';
 import './styles/chat.css';
 import './styles/panels.css';
+import './styles/features.css';
 import { App } from './shell/App';
 import { useStore } from './store/store';
 

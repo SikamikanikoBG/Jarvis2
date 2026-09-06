@@ -78,7 +78,9 @@ class AttachmentStore:
 
         if mime in IMAGE_MIME or mime.startswith("image/"):
             kind = AttachmentKind.IMAGE
-            data, meta = _prepare_image(data, meta)
+            # Resizing can re-encode (a 4000 px RGBA screenshot comes back as JPEG), so the mime
+            # is whatever the BYTES are now — the name stays the one Arsen sent.
+            data, mime, meta = _prepare_image(data, mime, meta)
         else:
             kind = AttachmentKind.DOCUMENT
             text, meta = extract_text(data, name, mime, meta)
@@ -88,7 +90,7 @@ class AttachmentStore:
                     "and ask Jarvis to open it with the file tools instead."
                 )
 
-        path = self.root / f"{att_id}{Path(name).suffix.lower()}"
+        path = self.root / f"{att_id}{_suffix_for(name, mime)}"
         path.write_bytes(data)
         att = Attachment(id=att_id, kind=kind, name=name, mime=mime, bytes=len(data), text=text, meta=meta)
         await self._insert(att, conversation_id=conversation_id, path=path)
@@ -198,12 +200,12 @@ class AttachmentStore:
         cache = stored.path.with_suffix(".thumb.jpg")
         if cache.exists():
             return cache.read_bytes(), "image/jpeg"
-        data = _resize(stored.path.read_bytes(), THUMB_EDGE, jpeg=True)
-        if data is None:
+        thumb = _resize(stored.path.read_bytes(), THUMB_EDGE, jpeg=True)
+        if thumb is None:
             return stored.path.read_bytes(), stored.attachment.mime
         with contextlib.suppress(OSError):
-            cache.write_bytes(data)
-        return data, "image/jpeg"
+            cache.write_bytes(thumb[0])
+        return thumb[0], thumb[1]
 
     async def data_url(self, att_id: str) -> str | None:
         """The image as a data: URL for a model request, or None if it is not an image."""
@@ -239,8 +241,18 @@ def _trim(text: str, meta: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return text[:MAX_TEXT_CHARS] + f"\n\n[…{len(text) - MAX_TEXT_CHARS} more characters were not included]", meta
 
 
-def _resize(data: bytes, edge: int, *, jpeg: bool = False) -> bytes | None:
-    """Down-scale to ``edge`` on the long side. None when Pillow is missing or the file is not an image."""
+def _resize(data: bytes, edge: int, *, jpeg: bool = False) -> tuple[bytes, str] | None:
+    """Down-scale to ``edge`` on the long side, as (bytes, mime).
+
+    The mime comes back WITH the bytes because the two can disagree, and the caller must not
+    guess: re-encoding used to be silent, so a resized screenshot reached the model as
+    ``data:image/png;base64,<JPEG>`` — content a strict vision endpoint rejects outright.
+
+    The source format is kept when Pillow can write it (a PNG stays a PNG; only JPEG needs the
+    alpha flattened), so the common case neither changes mime nor pays JPEG's price on the flat
+    areas a screenshot is made of. None when Pillow is missing, the file is not an image, or it
+    is already inside ``edge``.
+    """
     try:
         import io
 
@@ -253,18 +265,37 @@ def _resize(data: bytes, edge: int, *, jpeg: bool = False) -> bytes | None:
             if max(img.size) <= edge and not jpeg:
                 return None
             img.thumbnail((edge, edge))
-            out = io.BytesIO()
-            if jpeg or img.mode in ("RGBA", "P", "LA"):
-                img.convert("RGB").save(out, format="JPEG", quality=85)
-            else:
-                img.save(out, format=img.format or "PNG")
-            return out.getvalue()
+            fmt = "JPEG" if jpeg else (img.format or "PNG").upper()
+            try:
+                return _encode(img, fmt)
+            except Exception:  # a format Pillow reads but cannot write back (rare): fall to JPEG
+                return _encode(img, "JPEG")
     except Exception as exc:
         log.warning("image resize failed: %s", exc)
         return None
 
 
-def _prepare_image(data: bytes, meta: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
+def _encode(img: Any, fmt: str) -> tuple[bytes, str]:
+    import io
+
+    from PIL import Image
+
+    out = io.BytesIO()
+    if fmt in {"JPEG", "JPG"}:
+        img.convert("RGB").save(out, format="JPEG", quality=85)  # JPEG cannot hold alpha
+        return out.getvalue(), "image/jpeg"
+    img.save(out, format=fmt)
+    return out.getvalue(), Image.MIME.get(fmt) or "image/png"
+
+
+def _prepare_image(data: bytes, mime: str, meta: dict[str, Any]) -> tuple[bytes, str, dict[str, Any]]:
+    """Size an image for the model. Pixels are the cost, not bytes.
+
+    ``_resize`` only answers when the long edge is over the limit, so whatever it returns is a
+    real down-scale and is always taken. Accepting it only when the file also got *smaller* (as
+    this used to) kept a 4000 px screenshot at full resolution whenever its PNG happened to beat
+    the resized encoding — which is most of them, and exactly the case the resize exists for.
+    """
     try:
         import io
 
@@ -273,13 +304,23 @@ def _prepare_image(data: bytes, meta: dict[str, Any]) -> tuple[bytes, dict[str, 
         with Image.open(io.BytesIO(data)) as img:
             meta["width"], meta["height"] = img.size
     except Exception:  # a file the decoder refuses is stored as-is and will fail loudly later
-        return data, meta
+        return data, mime, meta
     smaller = _resize(data, MAX_IMAGE_EDGE)
-    if smaller is not None and len(smaller) < len(data):
-        meta["resized_from"] = f"{meta.get('width')}x{meta.get('height')}"
-        meta["original_bytes"] = len(data)
-        return smaller, meta
-    return data, meta
+    if smaller is None:
+        return data, mime, meta
+    meta["resized_from"] = f"{meta.get('width')}x{meta.get('height')}"
+    meta["original_bytes"] = len(data)
+    if smaller[1] != mime:
+        meta["reencoded_from"] = mime
+    return smaller[0], smaller[1], meta
+
+
+def _suffix_for(name: str, mime: str) -> str:
+    """The stored file's suffix, taken from the mime so the bytes and the extension agree."""
+    guessed = mimetypes.guess_extension(mime) if mime else None
+    if guessed:
+        return ".jpg" if guessed == ".jpe" else guessed
+    return Path(name).suffix.lower()
 
 
 def extract_text(data: bytes, name: str, mime: str, meta: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:

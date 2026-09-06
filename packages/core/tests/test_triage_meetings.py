@@ -578,6 +578,28 @@ async def test_meeting_records_transcribes_and_summarises(harness: Harness, monk
     assert path is not None and path.exists()
 
 
+async def test_a_silent_meeting_says_so_instead_of_summarising_something_else(harness: Harness, monkeypatch: Any):
+    """The first real silent recording came back as a summary of an unrelated Teams call: with no
+    transcript, "summarise the transcript above" makes the model reach for whatever it remembers."""
+    core = harness.core
+    await _with_host(harness)
+
+    async def silent(audio: bytes, *, filename: str, mime: str, language: str | None = None) -> SttResult:
+        return SttResult(text="", language="en", backend="fake", duration_ms=5, segments=[])
+
+    monkeypatch.setattr(core.transcriber, "transcribe", silent)
+    meeting = await core.meetings.start(title="Quiet room", host="laptop")
+    await core.meetings._pull_once(meeting)
+    stopped = await core.meetings.stop(meeting.id)
+
+    assert stopped.status.value == "done" and stopped.summary_run_id is None
+    assert await core.store.list_runs(meeting.conversation_id) == []  # no model call at all
+    assert harness.chat.calls == []
+    msgs = await core.store.list_messages(meeting.conversation_id)
+    assert msgs[-1].name == "meeting" and "nothing to summarise" in msgs[-1].content
+    assert "microphone" in msgs[-1].content  # and it says what to check
+
+
 async def test_meeting_start_fails_loudly_when_host_cannot_capture(harness: Harness):
     class DeadHost(BuiltinProvider):
         name = "dead"

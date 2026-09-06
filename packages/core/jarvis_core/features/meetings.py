@@ -152,6 +152,14 @@ class MeetingService:
         )
         await self._pull_once(meeting)  # drain what the host still holds
         meeting = await self._set_status(meeting, MeetingStatus.SUMMARISING, ended_at=datetime.now(UTC))
+        row = await self.core.db.fetchone(
+            "SELECT COUNT(*) AS n FROM meeting_segments WHERE meeting_id = ?", (meeting.id,)
+        )
+        if not row or not int(row["n"]):
+            # Nothing was heard. Asking the model to "summarise the transcript above" with no
+            # transcript makes it summarise something else it remembers - the first silent
+            # recording came back as a summary of an unrelated Teams call from August.
+            return await self._nothing_recorded(meeting)
         run, _ = await self.core.engine.create_run(
             text=_SUMMARY_PROMPT.format(user=self.core.settings.user_name),
             conversation_id=meeting.conversation_id,
@@ -163,6 +171,22 @@ class MeetingService:
         self._watchers.add(watcher)
         watcher.add_done_callback(self._watchers.discard)
         return meeting
+
+    async def _nothing_recorded(self, meeting: Meeting) -> Meeting:
+        """Say so plainly instead of inventing a summary. No run, no model call."""
+        text = (
+            "No speech was captured, so there is nothing to summarise. The recording ran but every "
+            "chunk was silence — check that the right microphone is active and, for a call, that "
+            "system audio is being played through the speakers this machine captures."
+        )
+        msg = await self.core.store.add_message(
+            Message.assistant(text, conversation_id=meeting.conversation_id, name="meeting")
+        )
+        self.core.bus.publish(MessageCreated(message=msg))
+        conv = await self.core.store.get_conversation(meeting.conversation_id)
+        if conv:
+            self.core.bus.publish(ConversationUpdated(conversation=conv))
+        return await self._set_status(meeting, MeetingStatus.DONE)
 
     async def _finish_when_done(self, meeting: Meeting, run_id: str) -> None:
         try:

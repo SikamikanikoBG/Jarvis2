@@ -221,3 +221,25 @@ harness — library vs. own is an open question to settle in the design.
   domain, subject substring), so a VIP mail cannot be missed because a classifier had an opinion;
   filing is unchanged; one Discord push per pass, not per mail; the day's triage message marks the
   lines [ALERT name]; a dry run reports them and sends nothing.
+- 2026-09-06 (late) — Meeting notes: the cause was blunt. The core has called
+  <host>.meeting_start / meeting_pull / meeting_stop since phase 6 and the host implemented none
+  of them, so every host in the dropdown failed. Built the capture (mic + WASAPI loopback, mixed
+  to 16 kHz mono in the host with a carried resampler state), and the first live run exposed three
+  more defects, each now covered by a test:
+  * a burst under a second was drained from the device and thrown away — the opening words before
+    the first pull were lost;
+  * the core kept a stale tool index: a restarted host that gains tools stays invisible ("unknown
+    tool 'workocholic.meeting_start'") until a manual /api/tools/reload. Providers now re-list
+    themselves on every reconnect, and the core probes each MCP server every 30 s — checking
+    `connected` was not enough, because the client keeps a session the server has already
+    forgotten, so a failed probe now drops the dead session;
+  * Whisper answers silence with invented words: the first meeting transcribed a quiet room as two
+    segments of "Thank you.", and with ZERO segments the summary run cheerfully summarised an
+    unrelated Teams call from August. Silence is dropped before transcription (the clock keeps
+    running so later offsets stay true), and a meeting with no segments never starts a summary run
+    at all — it says what to check instead.
+  Also: `jarvis_host.__version__` was a second literal that had drifted five releases behind its
+  pyproject (the host reported 2.0.0a1 while running a6); both packages read their version from
+  the installed metadata now. `uv sync` cannot replace Scripts\jarvis-host.exe while the daemon
+  runs and leaves the venv without jarvis_core when it fails half-way — `restart-host.ps1 -Sync`
+  does it in the window where the host is down.

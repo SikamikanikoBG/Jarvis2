@@ -224,6 +224,20 @@ POST   /api/meetings/{id}/frames         (host → core) multipart PNG + at
 WS: `meeting.segment {meeting_id, t0, t1, text}`, `meeting.changed {meeting}`. The transcript
 lives in a `kind=meeting` conversation; the summary is a `meeting` run in it.
 
+`host` is the MCP server that owns the microphone — the laptop's `jarvis-host`, not the core.
+It provides:
+```
+meeting_start(meeting_id, sources="mic,system") → {sources: [...], unavailable: [...], rate}
+meeting_pull(meeting_id, after_seq)            → {chunks: [{seq, t0, t1, wav_base64}], silent_seconds}
+meeting_stop(meeting_id)                       → {chunks: [...], seconds, silent_seconds}
+```
+System audio needs its own WASAPI loopback stream; the microphone stream cannot see it. Both
+devices run at their own rate, so the host resamples to 16 kHz mono and carries the resampler
+state between chunks (a fresh state clicks at every boundary). Audio too short for a chunk is
+held, not dropped, and the stop drains it. A chunk below ~-48 dBFS is dropped without being
+transcribed — Whisper answers silence with invented words ("Thank you.") — while the clock still
+advances so later chunks keep their true offsets.
+
 ## Collab (Phase 7)
 
 Core as an MCP server at `/mcp` (streamable HTTP, bearer key per collaborator) with tools

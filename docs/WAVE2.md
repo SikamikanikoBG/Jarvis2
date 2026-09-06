@@ -39,6 +39,7 @@ remote_access/server.py routes, shared-brain tables). Status: **have** = in V2 n
 | word_read / excel_read / pptx_read, PDF | one host `doc_read(path)` → Markdown for docx/xlsx/pptx/pdf | wave 2 · slice 1 (same reader serves attachments) |
 | word_write / excel_write / pptx_write / doc_edit | host `doc_write(path, format, content)` | wave 2 · slice 2 |
 | onenote_read / onenote_write | host `onenote_tree/read/search/create/append/move` | **done** (2026-09-06, live-verified) |
+| meeting recorder (mic + system audio) | host `meeting_start/pull/stop` → core transcribes and summarises | **done** (2026-09-06, live-verified) |
 | markdown_parser, paste_content, read_clipboard | attachments + host `clipboard_read` | wave 2 · slice 1 |
 | **Images & vision** | | |
 | image upload (`/api/images/upload`, thumbs), vision status | **attachments**: image → multimodal content part (vader's qwen3.8-27b answers on images — probed 2026-09-06) | wave 2 · slice 1 |

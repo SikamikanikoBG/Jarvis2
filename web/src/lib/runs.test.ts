@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ModelUsage, Run, RunScopedEvent } from '../protocol/types';
 import { formatTokensPerSecond, runTokensPerSecond } from './runs';
 
-const usage = (completion: number, durationMs: number): ModelUsage => ({ prompt_tokens: 1000, completion_tokens: completion, calls: 1, ttft_ms: 300, duration_ms: durationMs });
+const usage = (completion: number, durationMs: number): ModelUsage => ({ prompt_tokens: 1000, completion_tokens: completion, calls: 1, ttft_ms: 300, duration_ms: durationMs, cached_tokens: 0 });
 
 const done = (completion: number, durationMs: number): RunScopedEvent => ({
   type: 'model.done',

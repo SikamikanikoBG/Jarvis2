@@ -1,5 +1,12 @@
 import { formatDuration, formatTokens, previewValue, tokPerSec } from '../lib/format';
-import type { RunScopedEvent } from '../protocol/types';
+import type { ModelUsage, RunScopedEvent } from '../protocol/types';
+
+/** "12.4k (94%)" — how much of the prompt the server's prefix cache already had. */
+export function cachedLabel(u: ModelUsage): string {
+  if (!u.prompt_tokens) return '—';
+  const pct = Math.round((u.cached_tokens / u.prompt_tokens) * 100);
+  return `${formatTokens(u.cached_tokens)} (${pct}%)`;
+}
 
 export type Category = 'model' | 'tool' | 'run' | 'guard' | 'plan' | 'judge';
 
@@ -112,6 +119,10 @@ export function buildTimeline(events: RunScopedEvent[]): TimelineRow[] {
           const tps = tokPerSec(u.completion_tokens, u.duration_ms, u.ttft_ms);
           row.metrics = [
             { label: 'prompt', value: formatTokens(u.prompt_tokens) },
+            // What the prefix cache served vs what this call had to read: TTFT is spent on the
+            // second number, so a low ratio on a big prompt is the whole explanation for a slow
+            // first token (docs/journal_ttft.md).
+            { label: 'cached', value: cachedLabel(u) },
             { label: 'completion', value: formatTokens(u.completion_tokens) },
             { label: 'TTFT', value: u.ttft_ms !== null ? formatDuration(u.ttft_ms) : '—' },
             { label: 'tok/s', value: tps !== null ? tps.toFixed(1) : '—' },

@@ -158,7 +158,7 @@ function stubRun(ev: RunScopedEvent, kind: RunKind, inputText: string): Run {
     budget: { max_steps: 0, max_tokens: 0, max_seconds: 0 },
     priority: 0,
     steps_used: 0,
-    usage: { prompt_tokens: 0, completion_tokens: 0, calls: 0, ttft_ms: null, duration_ms: 0 },
+    usage: { prompt_tokens: 0, completion_tokens: 0, calls: 0, ttft_ms: null, duration_ms: 0, cached_tokens: 0 },
     last_seq: 0,
     error: null,
     waiting_reason: null,

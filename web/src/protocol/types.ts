@@ -80,6 +80,8 @@ export interface ModelUsage {
   calls: number;
   ttft_ms: number | null;
   duration_ms: number;
+  /** Prompt tokens the server answered from its prefix cache; the rest is what TTFT pays for. */
+  cached_tokens: number;
 }
 
 export type PlanStepStatus = 'pending' | 'in_progress' | 'done' | 'skipped';

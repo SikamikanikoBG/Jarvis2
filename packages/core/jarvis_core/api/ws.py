@@ -153,6 +153,8 @@ async def _browser_leg(ws: WebSocket) -> None:
         if registered or provider.connected:
             # Synchronous on purpose: this may run inside a cancelled scope where awaits fail.
             provider.disconnect()
-            core.registry.forget(provider)
+            # The tools STAY in the prompt: closing a browser is not losing a capability, and
+            # dropping them here re-prefilled every conversation (docs/journal_ttft.md).
+            core.registry.mark_unavailable(provider)
             core.bus.publish(ToolsChanged(provider="browser"))
             log.info("browser extension disconnected")

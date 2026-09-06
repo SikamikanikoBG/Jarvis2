@@ -7,7 +7,7 @@ import { buildTranscript, buildTranscriptFrom, transcriptSource } from './transc
 
 const T0 = Date.parse('2026-09-05T10:00:00.000Z');
 const iso = (offsetMs: number) => new Date(T0 + offsetMs).toISOString();
-const usage = (p = 0, c = 0): ModelUsage => ({ prompt_tokens: p, completion_tokens: c, calls: 1, ttft_ms: 120, duration_ms: 900 });
+const usage = (p = 0, c = 0): ModelUsage => ({ prompt_tokens: p, completion_tokens: c, calls: 1, ttft_ms: 120, duration_ms: 900, cached_tokens: 0 });
 
 const RUN = 'run_1';
 const CONV = 'conv_a';

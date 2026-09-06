@@ -124,6 +124,11 @@ class OpenAICompatAdapter:
                     u = chunk["usage"]
                     usage.prompt_tokens = int(u.get("prompt_tokens") or 0)
                     usage.completion_tokens = int(u.get("completion_tokens") or 0)
+                    # vLLM reports what its prefix cache served. It is the only honest measure of
+                    # whether the prompt stayed append-only; everything else is inferred from
+                    # timings that vary with load.
+                    details = u.get("prompt_tokens_details") or {}
+                    usage.cached_tokens = int(details.get("cached_tokens") or 0)
                 for choice in chunk.get("choices") or []:
                     delta = choice.get("delta") or {}
                     reasoning = delta.get("reasoning") or delta.get("reasoning_content")

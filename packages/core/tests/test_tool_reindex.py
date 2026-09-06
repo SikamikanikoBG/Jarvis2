@@ -126,3 +126,74 @@ async def test_reindexing_a_provider_that_was_replaced_does_nothing():
     await registry.refresh()
     await old.reconnect()  # the dying provider reconnects once more
     assert sorted(s.name for s in registry.specs()) == ["laptop.meeting_start", "laptop.outlook_list"]
+
+
+async def test_the_exposed_tool_list_is_ordered_by_name_not_by_registration_history():
+    """The chat template renders this list into the system message, so its ORDER is part of the
+    prompt prefix. `reindex` re-appends a provider's tools at the end, so a reconnect alone used
+    to reorder the prompt and cost a full re-prefill of every cached conversation."""
+    a = FakeMcp("alpha", ["two", "one"])
+    b = FakeMcp("beta", ["four", "three"])
+    registry = ToolRegistry()
+    registry.set_providers([a, b])
+    await registry.refresh()
+    ordered = [s.name for s in registry.specs()]
+    assert ordered == sorted(ordered) == ["alpha.one", "alpha.two", "beta.four", "beta.three"]
+
+    # A reconnect of the FIRST provider must not move its tools behind the second one.
+    await a.reconnect()
+    assert [s.name for s in registry.specs()] == ordered
+    # Nor must a reconnect that genuinely adds a tool disturb the rest of the ordering.
+    a.tools = ["two", "one", "zero"]
+    await a.reconnect()
+    assert [s.name for s in registry.specs()] == ["alpha.one", "alpha.two", "alpha.zero", "beta.four", "beta.three"]
+
+
+async def test_a_disconnected_provider_keeps_its_tools_in_the_prompt():
+    """Closing a browser is not losing a capability.
+
+    WsProvider answers with an empty list the moment the extension disconnects, and the tools
+    left the system prompt — re-prefilling every conversation, measured at 17 s a turn. An empty
+    listing from a provider that is REPORTING an error is an outage, not a change.
+    """
+    host = FakeMcp("laptop", ["outlook_list", "outlook_send"])
+    registry = ToolRegistry([host])
+    await registry.refresh()
+    assert len(registry.specs()) == 2
+
+    host.tools = []                       # what a disconnected WsProvider returns
+    host.error = "browser extension not connected"
+    await registry.refresh()
+    assert [s.name for s in registry.specs()] == ["laptop.outlook_list", "laptop.outlook_send"]
+    health = {h["name"]: h for h in registry.provider_health()}
+    assert health["laptop"]["ok"] is False and "not connected" in health["laptop"]["error"]
+
+    # Reconnecting with the same set changes nothing at all, and clears the error.
+    host.tools, host.error = ["outlook_list", "outlook_send"], None
+    await registry.refresh()
+    assert [s.name for s in registry.specs()] == ["laptop.outlook_list", "laptop.outlook_send"]
+    assert registry.provider_health()[0]["ok"] is True
+
+    # A provider that really has no tools and no error contributes none: this is not a licence
+    # to remember forever.
+    host.tools = []
+    await registry.refresh()
+    assert registry.specs() == []
+
+    # And a provider removed from settings takes its memory with it.
+    host.tools, host.error = ["outlook_list"], None
+    await registry.refresh()
+    assert len(registry.specs()) == 1
+    registry.set_providers([])
+    await registry.refresh()
+    assert registry.specs() == []
+
+
+async def test_marking_a_provider_unavailable_keeps_the_tools_but_tells_the_truth():
+    host = FakeMcp("browser", ["tabs"])
+    registry = ToolRegistry([host])
+    await registry.refresh()
+    registry.mark_unavailable(host, "browser extension not connected")
+    assert [s.name for s in registry.specs()] == ["browser.tabs"]
+    health = registry.provider_health()[0]
+    assert health["ok"] is False and "not connected" in health["error"]

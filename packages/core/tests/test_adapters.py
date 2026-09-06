@@ -181,7 +181,16 @@ async def test_openai_compat_accumulates_tool_call_deltas_and_reasoning():
                         ]
                     }
                 ),
-                sse({"choices": [], "usage": {"prompt_tokens": 30, "completion_tokens": 9}}),
+                sse(
+                    {
+                        "choices": [],
+                        "usage": {
+                            "prompt_tokens": 30,
+                            "completion_tokens": 9,
+                            "prompt_tokens_details": {"cached_tokens": 24},
+                        },
+                    }
+                ),
                 "data: [DONE]",
             ]
         )
@@ -195,6 +204,9 @@ async def test_openai_compat_accumulates_tool_call_deltas_and_reasoning():
     assert calls[0].id == "call_1" and calls[0].name == "jarvis.time" and calls[0].arguments == {"timezone": "UTC"}
     done = chunks[-1]
     assert isinstance(done, ModelDoneChunk) and done.usage.prompt_tokens == 30 and done.finish_reason == "tool_calls"
+    # What the prefix cache served is the server's own number, and it is what TTFT is NOT spent
+    # on: 30 prompt tokens of which 24 cached leaves 6 to actually read.
+    assert done.usage.cached_tokens == 24 and done.usage.prefilled_tokens == 6
     payload = adapter._payload([Message.user("hi")], [])
     assert payload["chat_template_kwargs"] == {"enable_thinking": False}
     assert payload["stream_options"] == {"include_usage": True}

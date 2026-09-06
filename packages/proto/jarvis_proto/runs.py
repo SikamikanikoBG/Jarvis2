@@ -47,6 +47,11 @@ class ModelUsage(BaseModel):
     calls: int = 0
     ttft_ms: int | None = None
     duration_ms: int = 0
+    # How many prompt tokens the server answered from its prefix cache. Prefill is the whole of
+    # TTFT on a long conversation and runs at a fixed ~1,200 tok/s here, so the only lever is how
+    # much of the prompt has to be read again — and this is the server's own count of it, not an
+    # inference from timings. 0 with a large prompt means the prefix changed.
+    cached_tokens: int = 0
 
     def add(self, other: ModelUsage) -> ModelUsage:
         return ModelUsage(
@@ -55,11 +60,17 @@ class ModelUsage(BaseModel):
             calls=self.calls + other.calls,
             ttft_ms=self.ttft_ms if self.ttft_ms is not None else other.ttft_ms,
             duration_ms=self.duration_ms + other.duration_ms,
+            cached_tokens=self.cached_tokens + other.cached_tokens,
         )
 
     @property
     def total_tokens(self) -> int:
         return self.prompt_tokens + self.completion_tokens
+
+    @property
+    def prefilled_tokens(self) -> int:
+        """Prompt tokens that actually had to be read: what TTFT is spent on."""
+        return max(0, self.prompt_tokens - self.cached_tokens)
 
 
 class PlanStepStatus(StrEnum):

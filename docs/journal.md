@@ -243,3 +243,13 @@ harness — library vs. own is an open question to settle in the design.
   the installed metadata now. `uv sync` cannot replace Scripts\jarvis-host.exe while the daemon
   runs and leaves the venv without jarvis_core when it fails half-way — `restart-host.ps1 -Sync`
   does it in the window where the host is down.
+- 2026-09-06 (evening) — Why the meeting transcript was empty, chased to the bottom. The capture
+  opened both devices and delivered 1.5 MB of frames whose every sample was zero; a minimal
+  blocking read straight from pyaudiowpatch did the same; and the render endpoint's own peak meter
+  (IAudioMeterInformation) read 0.0 while Windows' voice spoke for three seconds. So nothing is
+  rendered or captured in this process context on this laptop — the recorder is innocent, and the
+  fix is diagnostics, not audio code: the host measures each source's peak, meeting_start listens
+  half a second before answering, and start/pull/stop carry `levels` + a plain-language `warning`
+  which the core writes into the meeting conversation at the start and repeats when a recording
+  ends with nothing. Verified live: both sources report level 0 with the warning naming each one.
+  Arsen still has to check Windows microphone access for the host and where his sound is going.

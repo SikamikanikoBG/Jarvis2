@@ -445,11 +445,19 @@ class MeetingService:
         return Path(row["path"]) if row else None
 
     async def stop_all(self) -> None:
-        for task in list(self._pollers.values()):
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        self._pollers.clear()
+        """Shutdown: every background task this service owns ends before the DB closes.
+
+        The transcribers used to be left running — they outlive the pollers by design, so
+        cancelling only the pollers left a worker mid-``ingest_chunk``, writing segments into a
+        database that was being closed under it.
+        """
+        for tasks in (self._pollers, self._transcribers):
+            for task in list(tasks.values()):
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+            tasks.clear()
+        self._queues.clear()
 
 
 def _mmss(seconds: float) -> str:

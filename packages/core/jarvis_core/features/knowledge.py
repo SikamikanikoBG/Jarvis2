@@ -121,10 +121,13 @@ class KnowledgeStore:
 
     async def graph(self, *, center: str | None = None, depth: int = 1, limit: int = 80) -> Graph:
         if center:
-            ids: set[str] = {center}
+            # Insertion-ordered, so trimming to `limit` drops the OUTSIDE of the neighbourhood.
+            # A set gave no order at all: a graph centred on an entity with more neighbours than
+            # `limit` usually did not contain that entity, and the UI drew a ring around nothing.
+            ids: dict[str, None] = {center: None}
             frontier = {center}
             for _ in range(max(1, depth)):
-                if not frontier:
+                if not frontier or len(ids) >= limit:
                     break
                 marks = ",".join("?" for _ in frontier)
                 rows = await self.db.fetchall(
@@ -132,10 +135,9 @@ class KnowledgeStore:
                     [*frontier, *frontier],
                 )
                 nxt = {r["src"] for r in rows} | {r["dst"] for r in rows}
-                frontier = nxt - ids
-                ids |= nxt
-                if len(ids) >= limit:
-                    break
+                frontier = nxt - ids.keys()
+                for eid in sorted(frontier):  # stable: the same query gives the same picture
+                    ids[eid] = None
             id_list = list(ids)[:limit]
         else:
             rows = await self.db.fetchall("SELECT id FROM kg_entities ORDER BY mention_count DESC LIMIT ?", (limit,))
@@ -481,6 +483,11 @@ class KnowledgeTools(BuiltinProvider):
     ) -> ToolResult:
         entity = await self.store.upsert(name, type=type, summary=summary, aliases=aliases or [])
         for rel in relations or []:
-            other = await self.store.upsert(str(rel.get("to", "")).strip() or "?", type="thing")
+            # A relation with no target used to create an entity literally called "?" and wire
+            # the fact to it. Skip it: half a relation is not knowledge.
+            to = str(rel.get("to", "")).strip()
+            if not to:
+                continue
+            other = await self.store.upsert(to, type="thing")
             await self.store.add_edge(entity.id, other.id, str(rel.get("relation", "related to")))
         return ToolResult.data(f"Remembered {entity.name} ({entity.type}).")

@@ -123,6 +123,54 @@ async def test_knowledge_context_uses_literal_matches_and_learner_upserts(harnes
     assert merged is not None and "Maria Ivanova" in merged.aliases
 
 
+async def test_a_centred_graph_always_contains_its_centre(harness: Harness):
+    """`graph(center=X)` is what the UI draws a ring around, so X has to be in it.
+
+    The node set was a plain `set` and the trim was `list(ids)[:limit]` — no order at all, so
+    for any entity with more neighbours than the limit the centre usually fell outside the slice
+    and the ring was drawn around nothing. Trimming now drops the outside of the neighbourhood.
+    """
+    core = harness.core
+    hub = await core.knowledge.upsert("ArDi", type="thing", summary="the always-on box")
+    for i in range(30):
+        other = await core.knowledge.upsert(f"Service {i:02d}", type="thing")
+        await core.knowledge.add_edge(hub.id, other.id, "runs")
+
+    for limit in (1, 5, 12, 80):
+        g = await core.knowledge.graph(center=hub.id, depth=1, limit=limit)
+        assert hub.id in {n.id for n in g.nodes}, f"centre dropped at limit={limit}"
+        assert len(g.nodes) <= limit
+        # Every edge drawn connects two nodes that were actually returned.
+        node_ids = {n.id for n in g.nodes}
+        assert all(e.src in node_ids and e.dst in node_ids for e in g.edges)
+    # Same question, same picture.
+    twice = [[n.id for n in (await core.knowledge.graph(center=hub.id, depth=1, limit=7)).nodes] for _ in range(3)]
+    assert twice[0] == twice[1] == twice[2]
+
+
+async def test_remembering_a_relation_with_no_target_stores_no_relation(harness: Harness):
+    """`kg.remember` used to upsert an entity literally named "?" for an empty `to` and wire the
+    fact to it — a node in Arsen's graph that means nothing, from a model that half-answered."""
+    core = harness.core
+    res = await core.registry.call(
+        "kg.remember",
+        {
+            "name": "Vader",
+            "summary": "The 3x3090 box",
+            "type": "thing",
+            "relations": [{"to": "", "relation": "hosts"}, {"to": "vLLM", "relation": "hosts"}],
+        },
+        cancel=asyncio.Event(),
+        idempotency_key="t1",
+    )
+    assert res.kind.value != "error"
+    assert await core.knowledge.find("?") is None
+    vader = await core.knowledge.find("Vader")
+    assert vader is not None
+    detail = await core.knowledge.detail(vader.id)
+    assert detail is not None and [(e.relation, e.other.name) for e in detail.edges] == [("hosts", "vLLM")]
+
+
 # --- skills -------------------------------------------------------------------------------
 
 

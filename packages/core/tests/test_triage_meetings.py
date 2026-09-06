@@ -788,6 +788,32 @@ async def test_no_chunk_is_lost_between_the_pulls_or_at_the_stop(harness: Harnes
     assert stopped.status.value == "summarising"
 
 
+async def test_shutdown_leaves_no_meeting_task_running(harness: Harness, monkeypatch: Any):
+    """Core.stop closes the database; nothing this service owns may still be writing to it.
+
+    stop_all cancelled the pollers only. A transcriber outlives its poller by design — that is
+    the whole point of the split — so one was always left running, mid-ingest_chunk, against a
+    connection being closed under it.
+    """
+    core = harness.core
+    await _with_host(harness)
+
+    async def slow(audio: bytes, *, filename: str, mime: str, language: str | None = None) -> SttResult:
+        await asyncio.sleep(30)  # still transcribing when the process goes down
+        raise AssertionError("should have been cancelled")
+
+    monkeypatch.setattr(core.transcriber, "transcribe", slow)
+    meeting = await core.meetings.start(title="Long one", host="laptop")
+    await core.meetings._pull_once(meeting)
+    await asyncio.sleep(0)  # let the transcriber pick the chunk up
+    tasks = [core.meetings._pollers[meeting.id], core.meetings._transcribers[meeting.id]]
+    assert [t.done() for t in tasks] == [False, False]
+
+    await core.meetings.stop_all()
+    assert all(t.done() for t in tasks), "a meeting task survived shutdown"
+    assert core.meetings._pollers == {} and core.meetings._transcribers == {}
+
+
 async def test_meeting_start_fails_loudly_when_host_cannot_capture(harness: Harness):
     class DeadHost(BuiltinProvider):
         name = "dead"

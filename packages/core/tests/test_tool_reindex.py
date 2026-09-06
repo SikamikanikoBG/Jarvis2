@@ -84,6 +84,38 @@ async def test_a_failed_relist_keeps_the_old_tools_and_records_why():
     assert health["laptop"]["ok"] is False and "connection reset" in health["laptop"]["error"]
 
 
+async def test_a_dead_session_is_dropped_so_the_next_probe_reconnects():
+    """The client only learns a server restarted when it uses the session. Holding on to it
+    means every later call fails against the same corpse."""
+    from jarvis_core.tools.mcp_provider import McpProvider
+    from jarvis_proto import McpServerSpec, McpTransport
+
+    spec = McpServerSpec(name="laptop", transport=McpTransport.STREAMABLE_HTTP, url="http://127.0.0.1:1/mcp")
+    provider = McpProvider(spec)
+    stopped: list[bool] = []
+
+    class DeadSession:
+        async def list_tools(self):  # type: ignore[no-untyped-def]
+            raise RuntimeError("Session not found")
+
+    provider._session = DeadSession()  # type: ignore[assignment]
+    original = provider.stop
+
+    async def spy() -> None:
+        stopped.append(True)
+        await original()
+
+    provider.stop = spy  # type: ignore[method-assign]
+    try:
+        await provider.list_tools()
+    except RuntimeError:
+        pass
+    else:  # pragma: no cover - the fake always raises
+        raise AssertionError("expected the dead session to raise")
+    assert stopped == [True] and provider.connected is False
+    assert provider.error and "Session not found" in provider.error
+
+
 async def test_reindexing_a_provider_that_was_replaced_does_nothing():
     old = FakeMcp("laptop", ["outlook_list"])
     new = FakeMcp("laptop", ["outlook_list", "meeting_start"])

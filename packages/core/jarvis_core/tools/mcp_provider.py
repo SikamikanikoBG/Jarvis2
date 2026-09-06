@@ -143,7 +143,15 @@ class McpProvider:
 
     async def list_tools(self) -> list[ToolSpec]:
         session = await self._ensure()
-        result = await session.list_tools()
+        try:
+            result = await session.list_tools()
+        except Exception as exc:
+            # A server that restarted leaves us holding a session it has forgotten; the object
+            # looks alive (the client only learns on use), so drop it or every later call fails
+            # against the same corpse.
+            self.error = _describe(exc)
+            await self.stop()
+            raise
         specs: list[ToolSpec] = []
         for tool in result.tools:
             ann = tool.annotations

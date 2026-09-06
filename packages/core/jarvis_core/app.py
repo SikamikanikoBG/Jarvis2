@@ -159,19 +159,20 @@ class Core:
         log.info("jarvis-core %s ready (db=%s, tools=%d)", __version__, self.db.path, len(self.registry.specs()))
 
     async def _watch_mcp(self) -> None:
-        """Bring a dropped MCP server back without waiting for a tool call to fail.
+        """Keep every MCP server's tool list true, without waiting for a tool call to fail.
 
-        A restarted jarvis-host is the normal case: its old session dies, and until something
-        reconnects, the core answers "unknown tool" for anything the new host added (2026-09-06:
-        meeting_start was invisible until a manual reload). Reconnecting re-lists the server, so
-        the tool set follows the host.
+        A restarted jarvis-host is the normal case, and it is invisible from the outside: the
+        client keeps a session object the server has already forgotten, so ``connected`` stays
+        True and the core answers "unknown tool" for anything the new host added (2026-09-06:
+        meeting_start needed a manual reload). Only a real request finds out, so this asks each
+        server for its tools; a failed ask drops the dead session and the next round reconnects
+        and re-lists.
         """
         while True:
             await asyncio.sleep(MCP_RECONNECT_S)
             for provider in list(self.mcp):
-                if not provider.connected:
-                    with contextlib.suppress(Exception):
-                        await self.registry.reindex(provider)
+                with contextlib.suppress(Exception):
+                    await self.registry.reindex(provider)
 
     async def stop(self) -> None:
         watch = getattr(self, "_mcp_watch", None)

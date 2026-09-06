@@ -10,14 +10,16 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from jarvis_core import __version__
 from jarvis_core.api import attachments as attachments_api
 from jarvis_core.api import collab, features, media, openai_compat, rest, ws
+from jarvis_core.api.deps import require_token, token_matches
 from jarvis_core.config import CoreConfig
 from jarvis_core.db import Database, Store
 from jarvis_core.engine import EventBus, RunEngine
@@ -240,9 +242,11 @@ def create_app(config: CoreConfig | None = None, *, core: Core | None = None) ->
         finally:
             await the_core.stop()
 
-    app = FastAPI(
-        title="Jarvis V2", version=__version__, lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json"
-    )
+    # The schema and Swagger UI are served by our own routes below so the owner token guards
+    # them: FastAPI's built-in docs_url/openapi_url take no dependencies, and this core is
+    # reachable over Tailscale (and /collab over a public tunnel), where the full API
+    # description — every route, parameter and model — was readable by anyone who found the port.
+    app = FastAPI(title="Jarvis V2", version=__version__, lifespan=lifespan, docs_url=None, openapi_url=None)
     app.state.core = the_core
     app.add_middleware(
         CORSMiddleware,
@@ -263,6 +267,16 @@ def create_app(config: CoreConfig | None = None, *, core: Core | None = None) ->
     app.include_router(attachments_api.router)
     app.include_router(openai_compat.router)
     app.include_router(ws.router)
+
+    @app.get("/api/openapi.json", include_in_schema=False, dependencies=[Depends(require_token)])
+    async def openapi_schema() -> dict[str, Any]:
+        return app.openapi()
+
+    @app.get("/api/docs", include_in_schema=False, dependencies=[Depends(require_token)])
+    async def swagger_ui() -> HTMLResponse:
+        # Same origin, so the jarvis_token cookie the SPA sets rides along with the fetch.
+        return get_swagger_ui_html(openapi_url="/api/openapi.json", title="Jarvis V2 API")
+
     app.mount("/mcp", CollabAuthMiddleware(the_core.mcp_server.streamable_http_app(), the_core))
     _mount_spa(app, cfg.resolve_web_dist())
     return app
@@ -303,6 +317,6 @@ def _mount_spa(app: FastAPI, dist: Path | None) -> None:
         # (meeting frames, downloads) authenticate without a header.
         core = request.app.state.core
         token = request.query_params.get("token")
-        if token and core.config.token and token == core.config.token:
+        if token and core.config.token and token_matches(token, core.config.token):
             response.set_cookie("jarvis_token", token, httponly=True, samesite="lax", max_age=365 * 24 * 3600)
         return response

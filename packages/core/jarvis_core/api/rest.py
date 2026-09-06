@@ -105,9 +105,11 @@ async def patch_conversation(request: Request, conversation_id: str, body: Conve
         fields["title"] = str(fields["title"]).strip()[:80] or "New chat"
         fields["title_auto"] = 0  # a human named it; the titler leaves it alone from now on
     if "instructions" in fields:
-        # Capped: this rides in every model call for this conversation, so it is a paragraph of
-        # standing guidance, not a document. Long context belongs in the messages.
-        fields["instructions"] = str(fields["instructions"]).strip()[:4000]
+        # Capped, but generously: a real persona is a document, not a sentence — the one V1 kept
+        # for the "Massimo Massa" chat is 8,861 characters. It sits in the stable part of the
+        # system message, so it is prefilled once and cached from then on; the cap is here to
+        # stop a book being pasted in, not to keep it short.
+        fields["instructions"] = str(fields["instructions"]).strip()[:16_000]
     conv = await core.store.update_conversation(conversation_id, **fields)
     if conv is None:
         raise HTTPException(404, "conversation not found")

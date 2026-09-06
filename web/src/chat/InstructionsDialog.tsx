@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Icon } from '../components/Icon';
 import type { Conversation } from '../protocol/types';
 
-const MAX = 4000;
+const MAX = 16000;
 
 interface Props {
   conversation: Conversation;
@@ -13,9 +13,9 @@ interface Props {
 /**
  * A persona or standing rule for ONE chat.
  *
- * It rides in the system message of every turn in this conversation, which is why it is capped
- * at a paragraph or two: standing guidance, not a document. Anything long belongs in the
- * messages, where it is said once.
+ * It rides in the system message of every turn in this conversation — in the stable part, so
+ * it is prefilled once and served from cache after that. Roomy enough for a real persona
+ * (V1's Massimo Massa one is 8,861 characters), capped only so a book cannot be pasted in.
  */
 export function InstructionsDialog({ conversation, onSave, onClose }: Props) {
   const [text, setText] = useState(conversation.instructions);

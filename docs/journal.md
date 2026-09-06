@@ -179,3 +179,15 @@ harness — library vs. own is an open question to settle in the design.
   gained calendar_invites / calendar_respond / calendar_free_slots / calendar_remove_canceled
   (committed-only conflicts: tentative and unanswered invites never block). Left
   `enabled: false`: it sends responses to colleagues.
+- 2026-09-06 (morning) — Arsen's second pass. "/ws did not open" was the container restart during a
+  deploy: probed afterwards, WS answers on the Tailscale IP in 125 ms and through the HTTPS serve
+  path in 688 ms (certificate valid to 2026-10-19). V1 conversations: the first import came from
+  the laptop's V1 db copy; the shared brain held one more with messages (Digital Safari). The
+  importer gained `--only-conversations`, a title-based dedup (V1 lived in several db copies) and
+  an exclude list; General + Background Tasks were removed at Arsen's request → 19 archived V1
+  conversations. Delete existed only in the sidebar row's ⋯ menu, invisible enough that Arsen
+  thought it was missing: a top-bar ConversationMenu (rename / archive / delete) sits next to the
+  title on desktop and phone. Vision probed on vader's qwen3.8-27b (a 2×2 red PNG → "Red"), so
+  attachments can carry images natively. docs/WAVE2.md maps V1's ~100 tools / 16 services /
+  158 routes onto V2's primitives with a status per line and four slices; slice 1 is
+  docs/stories/09_attachments.md. Chrome extension for a real-browser UI check was not connected.

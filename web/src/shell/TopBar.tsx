@@ -3,11 +3,13 @@ import { Drawer, IconButton } from '../components/primitives';
 import { effectiveTheme } from '../lib/theme';
 import { selectUnreadCount } from '../store/selectors';
 import { useStore } from '../store/store';
+import { ConversationMenu } from './ConversationMenu';
 import { NAV_ALL, NAV_DESKTOP, NAV_MORE, NAV_PRIMARY } from './nav';
 
 export function TopBar({ desktop }: { desktop: boolean }) {
   const view = useStore((s) => s.view);
   const setView = useStore((s) => s.setView);
+  const openId = useStore((s) => s.openConversationId);
   const title = useStore((s) => (s.openConversationId ? s.conversations[s.openConversationId]?.title : undefined));
   const connection = useStore((s) => s.connection);
   const version = useStore((s) => s.version);
@@ -43,6 +45,7 @@ export function TopBar({ desktop }: { desktop: boolean }) {
               <>
                 <span className="truncate">{heading}</span>
                 {activeRun && <span className="dot dot-accent dot-pulse" aria-label="Run in progress" />}
+                <ConversationMenu key={openId ?? 'none'} />
               </>
             )}
           </div>
@@ -54,6 +57,7 @@ export function TopBar({ desktop }: { desktop: boolean }) {
             <span className="truncate">{heading}</span>
             {view === 'chat' && activeRun && <span className="dot dot-accent dot-pulse" aria-label="Run in progress" />}
           </div>
+          {view === 'chat' && <ConversationMenu key={openId ?? 'none'} />}
         </>
       )}
       <div className="conn" title={`Event stream: ${connection}`}>

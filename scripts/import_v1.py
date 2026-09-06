@@ -192,17 +192,33 @@ class Importer:
 
     # --- conversations -------------------------------------------------------------------
 
-    async def conversations(self) -> None:
+    async def conversations(self, *, exclude_titles: set[str] = frozenset()) -> None:
+        """Import V1 conversations as an "Archive (V1)" folder.
+
+        Skips: already-mapped ids, empty conversations, titles in ``exclude_titles`` (Arsen does
+        not want "General" and "Background Tasks"), and titles that already exist in the archive
+        - V1 lived in more than one database copy over time, so the same conversation can arrive
+        with a different id; a second copy would only confuse.
+        """
         if not self.has("conversations") or not self.has("conversation_messages"):
             return
+        excluded = {t.strip().lower() for t in exclude_titles}
+        rows = await self.db.fetchall(
+            "SELECT title FROM conversations WHERE kind = ?", (ConversationKind.ARCHIVE.value,)
+        )
+        present = {str(r["title"]).strip().lower() for r in rows}
         for c in self.v1.execute("SELECT * FROM conversations ORDER BY created_at"):
             if await self.mapped("conversation", c["id"]):
+                continue
+            title = (c["name"] or "V1 conversation").strip()
+            if title.lower() in excluded or title.lower() in present:
                 continue
             msgs = self.v1.execute(
                 "SELECT * FROM conversation_messages WHERE conversation_id = ? ORDER BY timestamp, id", (c["id"],)
             ).fetchall()
             if not msgs:
                 continue
+            present.add(title.lower())
             self.bump("conversations")
             self.bump("messages", len(msgs))
             if self.dry:
@@ -283,6 +299,16 @@ async def main() -> None:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-conversations", action="store_true")
     ap.add_argument(
+        "--only-conversations",
+        action="store_true",
+        help="import conversations only (boards/KG/skills/schedules untouched) - for a later, different V1 db copy",
+    )
+    ap.add_argument(
+        "--exclude-titles",
+        default="General,Background Tasks",
+        help="comma-separated V1 conversation titles never imported",
+    )
+    ap.add_argument(
         "--enable-schedules",
         action="store_true",
         help="import schedules already enabled (default: import them disabled so nothing fires unattended)",
@@ -295,13 +321,17 @@ async def main() -> None:
     db = Database(home / "jarvis2.db")
     await db.open()
     imp = Importer(v1, db, dry_run=args.dry_run)
+    unmapped: list[str] = []
+    live: list[str] = []
+    exclude = {t for t in args.exclude_titles.split(",") if t.strip()}
     try:
-        await imp.boards()
-        await imp.knowledge()
-        await imp.skills(Path(args.skills) if args.skills else None, home)
-        unmapped, live = await imp.schedules(args.tz, enable=args.enable_schedules)
+        if not args.only_conversations:
+            await imp.boards()
+            await imp.knowledge()
+            await imp.skills(Path(args.skills) if args.skills else None, home)
+            unmapped, live = await imp.schedules(args.tz, enable=args.enable_schedules)
         if not args.no_conversations:
-            await imp.conversations()
+            await imp.conversations(exclude_titles=exclude)
     finally:
         await db.close()
         v1.close()

@@ -44,6 +44,7 @@ class FakeApp:
         self.updates: list[str] = []
         self.created: list[tuple[str, int]] = []
         self.searches: list[str] = []
+        self.merges: list[tuple[str, str]] = []
         self.fail_update = False
 
     def GetHierarchy(self, start_id: str, scope: int) -> str:
@@ -69,6 +70,10 @@ class FakeApp:
         if self.fail_update:
             raise RuntimeError("The object is in use")
         self.updates.append(xml)
+
+    def MergeToSection(self, source_id: str, section_id: str) -> None:
+        # This build has the TWO-argument form: the three-argument call must fall back, not fail.
+        self.merges.append((source_id, section_id))
 
 
 @pytest.fixture
@@ -143,6 +148,16 @@ def test_append_adds_to_an_existing_page_and_refuses_empty_content(backend: OneN
     assert "<one:Title>" not in app.updates[0]  # the title is left alone
     with pytest.raises(OneNoteError, match="nothing to append"):
         backend.append("{page-weekly}", "   ")
+
+
+def test_move_falls_back_to_the_two_argument_merge_and_refuses_a_page_target(backend: OneNoteBackend, app: FakeApp):
+    res = backend.move("Work/Meetings/Retro", "Work/Projects/Jarvis")
+    assert app.merges == [("{page-retro}", "{sec-jarvis}")]
+    assert res == {"page_id": "{page-retro}", "section": "Work/Projects/Jarvis", "moved": True}
+    with pytest.raises(OneNoteError, match="is a page, not a section"):
+        backend.move("{page-retro}", "Work/Meetings/Retro")
+    with pytest.raises(NotFound):
+        backend.move("{page-retro}", "Work/Nope")
 
 
 def test_a_com_failure_is_reported_and_the_session_is_dropped(backend: OneNoteBackend, app: FakeApp):

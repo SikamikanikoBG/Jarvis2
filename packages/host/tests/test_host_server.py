@@ -46,6 +46,7 @@ EXPECTED_ANNOTATIONS = {
     "onenote_search": ("read", True),
     "onenote_create": ("mutating", False),
     "onenote_append": ("mutating", False),
+    "onenote_move": ("mutating", False),
     "fs_list": ("read", True),
     "fs_read": ("read", True),
     "fs_write": ("destructive", False),

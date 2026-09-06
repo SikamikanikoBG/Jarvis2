@@ -349,6 +349,11 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
         """Append Markdown to an existing page (path or id). Existing content is never rewritten - the new blocks are added to the page."""
         return json_text(await _run("onenote_append", lambda: onenote().call("append", page, content)))
 
+    @tool("onenote_move", MUTATING)
+    async def onenote_move(page: str, section: str) -> str:
+        """Move a page into another section ('Notebook/Section' path). The page keeps its content and its id."""
+        return json_text(await _run("onenote_move", lambda: onenote().call("move", page, section)))
+
     # --- files ---------------------------------------------------------------------------
 
     @tool("fs_list", READ)

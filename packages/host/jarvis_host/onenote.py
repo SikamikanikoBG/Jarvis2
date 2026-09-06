@@ -344,6 +344,27 @@ class OneNoteBackend:
             self._update(f'<?xml version="1.0"?><one:Page xmlns:one="{ONE_NS}" ID="{page_id}">{_outline(part)}</one:Page>')
         return {"page_id": page_id, "appended_chars": len(content), "chunks": len(batches)}
 
+    def move(self, page: str, section: str) -> dict[str, Any]:
+        """Move a page into another section (MergeToSection). The page keeps its content and id."""
+        page_id = self._page_id(page)
+        found, target_page = self._resolve(section)
+        if found is None:
+            raise NotFound(f"section {section!r} not found (use onenote_tree to see the paths)")
+        if target_page is not None:
+            raise OneNoteError(f"{section!r} is a page, not a section; pass the section path")
+        app = self._session()
+        # MergeToSection gained a third argument (delete the source page) in later builds; call
+        # the long form first and fall back rather than guessing the installed version.
+        try:
+            try:
+                app.MergeToSection(page_id, found["id"], True)
+            except TypeError:
+                app.MergeToSection(page_id, found["id"])
+        except Exception as exc:
+            self.reset()
+            raise OneNoteError(f"moving the page failed: {exc}") from exc
+        return {"page_id": page_id, "section": found["path"], "moved": True}
+
     def _update(self, xml: str) -> None:
         try:
             self._session().UpdatePageContent(xml, 0)
@@ -370,7 +391,7 @@ def _outline(parts: list[str]) -> str:
 class OneNoteService:
     """``OneNoteBackend`` marshalled through the COM worker with per-call deadlines."""
 
-    TIMEOUTS: dict[str, float] = {"tree": 90, "read": 60, "search": 90, "create": 90, "append": 90}
+    TIMEOUTS: dict[str, float] = {"tree": 90, "read": 60, "search": 90, "create": 90, "append": 90, "move": 90}
 
     def __init__(self, backend: OneNoteBackend, worker: ComWorker) -> None:
         self.backend = backend

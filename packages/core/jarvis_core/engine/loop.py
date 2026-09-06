@@ -611,6 +611,13 @@ class AgentLoop:
 _OLD_TOOL_RESULT_HEAD = 700
 _OLD_TOOL_RESULT_MIN = 1_200
 _CHARS_PER_TOKEN = 3.2
+# Come back to this fraction of the budget, not merely under it. Rewriting a message the model
+# has already been sent is the one thing that costs a FULL re-prefill: everything after it has
+# to be read again, and prefill is a fixed ~1,200 tok/s. Measured on ardi 2026-09-06 — trimming
+# just enough put the run back over the line on the very next step, so it fired again and again:
+# 64 s, then 59 s, then 49 s inside a single run, each one re-reading ~78k tokens. Crossing the
+# line rarely and coming back well under it pays for the crossing.
+_COMPRESS_TO = 0.7
 
 
 def _compress_old_tool_results(messages: list[Message], budget_tokens: int) -> None:
@@ -619,7 +626,8 @@ def _compress_old_tool_results(messages: list[Message], budget_tokens: int) -> N
     Nothing is touched while the results fit: a "read 26 mails and summarise" run must keep the
     bodies it is aggregating (blanket truncation made the model re-read the same mails until the
     supervisor stopped it, 2026-09-05). Once over budget, the oldest results shrink to a head,
-    never the most recent step's. The DB always keeps the full text; replacement by copy keeps
+    never the most recent step's, and only down to ``_COMPRESS_TO`` of the budget so the next
+    step does not trip it again. The DB always keeps the full text; replacement by copy keeps
     earlier context snapshots intact.
     """
     last_assistant = max((i for i, m in enumerate(messages) if m.role is Role.ASSISTANT), default=-1)
@@ -630,6 +638,7 @@ def _compress_old_tool_results(messages: list[Message], budget_tokens: int) -> N
     total = sum(len(messages[i].content) for i in tool_idx)
     if total <= budget:
         return
+    target = int(budget * _COMPRESS_TO)
     for i in tool_idx:
         if i >= last_assistant:
             break  # the current step's results are what the model is answering
@@ -644,7 +653,7 @@ def _compress_old_tool_results(messages: list[Message], budget_tokens: int) -> N
         )
         messages[i] = m.model_copy(update={"content": head + "\n" + marker})
         total -= full - len(messages[i].content)
-        if total <= budget:
+        if total <= target:
             break
 
 

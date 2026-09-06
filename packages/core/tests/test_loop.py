@@ -355,6 +355,67 @@ async def test_old_tool_results_are_truncated_in_context_but_kept_in_db(harness:
     assert all(len(m.content) > 5000 and "[truncated" not in m.content for m in stored)
 
 
+def _history_rewrites(calls: list) -> list[int]:
+    """Which model calls changed a message the previous call had already sent.
+
+    That is exactly what costs a prefix-cache miss: the server can only reuse the prompt up to
+    the first byte that differs, so a rewrite anywhere means everything after it is prefilled
+    again. Appending is free; editing is not.
+    """
+    broke: list[int] = []
+    for n in range(1, len(calls)):
+        before = [(m.role.value, m.content) for m in calls[n - 1][0]]
+        now = [(m.role.value, m.content) for m in calls[n][0]]
+        common = 0
+        for a, b in zip(before, now, strict=False):
+            if a != b:
+                break
+            common += 1
+        if common < len(before):
+            broke.append(n)
+    return broke
+
+
+async def test_compressing_the_context_does_not_fire_on_every_step(harness: Harness):
+    """Trimming to just under the budget puts the next step straight back over it.
+
+    Measured on ardi 2026-09-06: inside one run the rewrite fired again and again — 64 s, 59 s,
+    49 s — each one re-reading ~78k tokens, because everything after a rewritten message has to
+    be prefilled again. Coming back well under the line instead of just under it means the
+    crossing happens rarely enough to pay for itself.
+    """
+    tools = await with_tools(harness)
+    big = "row " * 1500  # ~6k chars per result
+
+    async def big_echo(text: str = "") -> ToolResult:
+        return ToolResult.data(big)
+
+    tools._entries["test.echo"].fn = big_echo
+    harness.enable(tool_context_token_budget=6_000)  # ~19k chars: three results fit, four do not
+    harness.chat.push(
+        *[FakeTurn(tool_calls=[ToolCall(id=f"c{i}", name="test.echo", arguments={"text": str(i)})]) for i in range(6)],
+        FakeTurn(text="done"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="six big reads", conversation_id=conv.id)
+    await harness.wait_for(sub, "run.done", timeout=20)
+
+    calls = harness.chat.calls
+    assert len(calls) == 7
+    rewrites = _history_rewrites(calls)
+    # It must still do its job...
+    assert rewrites, "the context was never compressed; the budget was not reached"
+    truncated = [m for m in calls[-1][0] if m.role.value == "tool" and "[truncated" in m.content]
+    assert truncated, "nothing was truncated by the end of the run"
+    # ...but never twice in a row: a rewrite is followed by at least one step that only appends.
+    assert not any(b + 1 in rewrites for b in rewrites), f"compressed on consecutive steps: {rewrites}"
+    assert len(rewrites) <= len(calls) // 3, f"{len(rewrites)} rewrites in {len(calls)} calls: {rewrites}"
+    # And the freshest result is always whole, whatever else was cut.
+    newest = [m for m in calls[-1][0] if m.role.value == "tool"][-1]
+    assert len(newest.content) > 5_000
+
+
 async def test_tool_results_under_budget_are_never_truncated(harness: Harness):
     """The read-many workflow: while results fit the budget, every body stays whole."""
     tools = await with_tools(harness)

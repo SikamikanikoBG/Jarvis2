@@ -54,6 +54,7 @@ from jarvis_proto.events import (
     RunDone,
     RunResumed,
     RunStarted,
+    RunSteered,
     RunWaitingUser,
     ToolCallEvent,
     ToolConfirmRequested,
@@ -198,6 +199,14 @@ class AgentLoop:
             if reason := self._supervisor.budget_exceeded(run, watch):
                 await self._finish(run, ctl, messages, summary=reason)
                 return
+
+            # Anything Arsen said while this was running. It joins in HIS voice, as an ordinary
+            # user message, so the model treats it exactly like the one that started the run and
+            # it stays in the conversation afterwards. Appended, never inserted: the cached
+            # prefix in front of it survives.
+            for said in ctl.take_steers():
+                messages.append(await self._persist(run, Message.user(said)))
+                await emit(RunSteered(run_id="", conversation_id="", text=said[:400]))
 
             # Plan progress is the one thing that changes every step; it rides as the LAST message
             # so every cached token before it stays valid (the system prompt never changes).

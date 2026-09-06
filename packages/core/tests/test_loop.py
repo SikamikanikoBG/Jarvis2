@@ -22,6 +22,7 @@ class ToolsForTests(BuiltinProvider):
     def __init__(self) -> None:
         super().__init__()
         self.calls = []
+        self.gate = asyncio.Event()
 
     @tool("test.echo", description="echo", args=_EchoArgs, read_only=True)
     async def _echo(self, text: str) -> ToolResult:
@@ -36,6 +37,14 @@ class ToolsForTests(BuiltinProvider):
     async def _slow(self, cancel: asyncio.Event) -> ToolResult:
         await asyncio.wait_for(cancel.wait(), timeout=10)
         return ToolResult.data("never")
+
+    @tool("test.gate", description="blocks until the test opens it", read_only=True)
+    async def _gate(self) -> ToolResult:
+        """A tool that is genuinely in flight until the test says otherwise — without cancelling
+        the run, which is what makes it usable for testing anything mid-run."""
+        self.calls.append("gate")
+        await asyncio.wait_for(self.gate.wait(), timeout=10)
+        return ToolResult.data("gate opened")
 
     @tool("test.send", description="mutating", destructive=True)
     async def _send(self) -> ToolResult:
@@ -133,6 +142,57 @@ async def test_empty_reply_is_nudged_once_then_fails(harness: Harness):
     types = [e.type for e in seen]
     assert types.count("guard.armed") == 1 and types.count("guard.consumed") == 1
     assert "empty" in seen[-1].error
+
+
+async def test_a_message_sent_while_the_run_works_reaches_the_next_step(harness: Harness):
+    """Steering: seeing it head the wrong way and being able to say so, without a restart.
+
+    The message joins in Arsen's own voice, as an ordinary user message, so the model treats it
+    like the one that started the run — and it is still there in the conversation afterwards.
+    """
+    tools = await with_tools(harness)
+    harness.chat.push(
+        FakeTurn(tool_calls=[ToolCall(id="c1", name="test.gate", arguments={})]),  # held open below
+        FakeTurn(text="understood, doing it your way"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    run, _ = await harness.core.engine.create_run(text="do the thing", conversation_id=conv.id)
+
+    # Wait until it is genuinely working — the first tool is in flight — then talk to it.
+    async with asyncio.timeout(10):
+        while "gate" not in tools.calls:
+            await asyncio.sleep(0.01)
+    assert harness.core.engine.steer(run.id, "  actually, do it the other way  ") is True
+    tools.gate.set()  # let the tool finish; the run carries on rather than being cancelled
+
+    seen = await harness.wait_for(sub, "run.done", timeout=15)
+    steered = [e for e in seen if e.type == "run.steered"]
+    assert steered and steered[0].text == "actually, do it the other way"
+
+    # The model saw it, in Arsen's voice, on the step AFTER the one that was already running.
+    second_call = harness.chat.calls[1][0]
+    said = [m for m in second_call if m.role.value == "user" and not m.name]
+    assert any(m.content == "actually, do it the other way" for m in said)
+    # ...and it is part of the conversation from then on, not a one-off whisper.
+    stored = await harness.core.store.list_messages(conv.id)
+    mine = [m for m in stored if m.role.value == "user" and not m.name]
+    assert [m.content for m in mine] == ["do the thing", "actually, do it the other way"]
+    assert all(m.run_id == run.id for m in mine)
+
+
+async def test_steering_a_run_that_has_already_finished_is_refused_not_swallowed(harness: Harness):
+    """The caller turns a refusal into an ordinary new turn, so nothing Arsen typed is lost."""
+    harness.chat.push(FakeTurn(text="done"))
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    run, _ = await harness.core.engine.create_run(text="quick one", conversation_id=conv.id)
+    await harness.wait_for(sub, "run.done", timeout=10)
+
+    assert harness.core.engine.steer(run.id, "too late") is False
+    assert harness.core.engine.steer("run_never_existed", "hello") is False
+    # An empty steer is refused too, rather than appending a blank turn.
+    assert harness.core.engine.steer(run.id, "   ") is False
 
 
 async def test_the_token_budget_counts_work_not_the_conversation_resent_each_step(harness: Harness):

@@ -428,8 +428,10 @@ describe('buildTranscript — tool cards', () => {
 });
 
 describe('selectSendRefusal', () => {
-  const at = (state: ChatState, over: Partial<{ connection: string; hasText: boolean; conversationId: string | null }> = {}) =>
-    selectSendRefusal(state, { connection: 'open', hasText: true, conversationId: CONV, ...over });
+  const at = (
+    state: ChatState,
+    over: Partial<{ connection: string; hasText: boolean; hasAttachments: boolean; conversationId: string | null }> = {},
+  ) => selectSendRefusal(state, { connection: 'open', hasText: true, conversationId: CONV, ...over });
 
   it('lets a message through when there is text and the socket is open', () => {
     expect(at(withOpen(CONV))).toBeNull();
@@ -442,15 +444,26 @@ describe('selectSendRefusal', () => {
     }
   });
 
-  it('refuses a second message while a run is still going, and says so', () => {
-    // The store returned here without a word and the composer had already cleared the box,
-    // so the message vanished with no trace and no explanation.
+  it('lets Arsen talk to a run that is already working — that is the point of steering', () => {
+    // This used to be a refusal, and the composer had already cleared the box, so seeing it head
+    // the wrong way meant waiting for it to finish. The message is handed to the run instead.
     const running = applyServerEvents(withOpen(CONV), [queued, started], T0);
     expect(selectActiveRun(running, CONV)).not.toBeNull();
-    expect(at(running)).toContain('still working');
-    // ...but another conversation is free, and so is a brand-new chat.
+    expect(at(running)).toBeNull();
     expect(at(running, { conversationId: 'conv_b' })).toBeNull();
     expect(at(running, { conversationId: null })).toBeNull();
+  });
+
+  it('still refuses a PHOTO mid-run, because the run has already built its context', () => {
+    const running = applyServerEvents(withOpen(CONV), [queued, started], T0);
+    expect(at(running, { hasAttachments: true })).toContain('has to wait');
+    // Once it finishes, the same photo is fine.
+    const done = applyServerEvent(
+      running,
+      runScoped({ type: 'run.done', message_id: 'm', usage: usage(1, 1), steps_used: 1, summary: null }, 50),
+      T0,
+    );
+    expect(at(done, { hasAttachments: true })).toBeNull();
   });
 
   it('lets the next message through once the run is done', () => {

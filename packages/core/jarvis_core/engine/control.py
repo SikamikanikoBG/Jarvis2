@@ -20,6 +20,9 @@ class RunControl:
     cancel: asyncio.Event = field(default_factory=asyncio.Event)
     confirmations: dict[str, asyncio.Future[tuple[bool, str | None]]] = field(default_factory=dict)
     resumed: bool = False
+    # What Arsen has said to this run while it was already working. The loop reads them at its
+    # next step; nothing here interrupts a model call or a tool that is in flight.
+    steers: list[str] = field(default_factory=list)
 
     def resolve_confirmation(self, call_id: str, approved: bool, note: str | None) -> bool:
         fut = self.confirmations.get(call_id)
@@ -27,3 +30,8 @@ class RunControl:
             return False
         fut.set_result((approved, note))
         return True
+
+    def take_steers(self) -> list[str]:
+        """Everything said since the last step, and clear it — read exactly once."""
+        pending, self.steers[:] = list(self.steers), []
+        return pending

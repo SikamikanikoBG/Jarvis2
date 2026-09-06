@@ -125,10 +125,21 @@ export function selectUnreadCount(conversations: Record<string, Conversation>): 
  */
 export function selectSendRefusal(
   state: ChatState,
-  { connection, hasText, conversationId }: { connection: string; hasText: boolean; conversationId: string | null },
+  {
+    connection,
+    hasText,
+    hasAttachments = false,
+    conversationId,
+  }: { connection: string; hasText: boolean; hasAttachments?: boolean; conversationId: string | null },
 ): string | null {
   if (!hasText) return 'nothing to send';
   if (connection !== 'open') return 'Not connected — the message was not sent.';
-  if (selectActiveRun(state, conversationId)) return 'Jarvis is still working on the previous message.';
+  // A run already working is NOT a refusal any more: the message is handed to it and read at
+  // its next step. Watching it head the wrong way and having to wait was the worst moment in
+  // the loop. Words only, though — a run has already assembled its context, and a picture
+  // needs to be part of that from the start.
+  if (hasAttachments && selectActiveRun(state, conversationId)) {
+    return 'Jarvis is working — words reach him now, but a photo has to wait for the next message.';
+  }
   return null;
 }

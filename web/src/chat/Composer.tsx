@@ -47,6 +47,7 @@ export function Composer({ runActive, stopping }: Props) {
     selectSendRefusal(s, {
       connection: s.connection,
       hasText: text.trim().length > 0 || s.pendingAttachments.length > 0,
+      hasAttachments: s.pendingAttachments.length > 0,
       conversationId: s.openConversationId,
     }),
   );
@@ -82,7 +83,7 @@ export function Composer({ runActive, stopping }: Props) {
   // unconditionally, so a send refused for being offline (Enter bypasses the disabled button)
   // or for a run still in flight threw away what Arsen had just typed.
   const submit = () => {
-    if (runActive || (!text.trim() && pending.length === 0)) return;
+    if (!text.trim() && pending.length === 0) return;
     if (editing) void sendEdit(text).then((sent) => sent && setText(''));
     else if (send(text)) setText('');
   };
@@ -199,6 +200,7 @@ export function Composer({ runActive, stopping }: Props) {
           className="attach-btn"
           aria-haspopup="menu"
           aria-expanded={Boolean(attachMenu)}
+          // A run has already assembled its context, so a picture cannot join it mid-flight.
           disabled={runActive}
           onClick={(e) => setAttachMenu(attachMenu ? null : e.currentTarget)}
         />
@@ -219,19 +221,27 @@ export function Composer({ runActive, stopping }: Props) {
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKey}
           onPaste={onPaste}
-          placeholder={runActive ? 'Jarvis is working…' : 'Message Jarvis'}
+          placeholder={runActive ? 'Jarvis is working — say more and he will read it' : 'Message Jarvis'}
           aria-label="Message"
-          disabled={runActive}
           autoComplete="off"
           enterKeyHint={coarsePointer() ? 'enter' : 'send'}
         />
-        <MicButton disabled={runActive} onTranscript={(t) => setText((prev) => (prev.trim() ? `${prev.trimEnd()} ${t}` : t))} />
-        {runActive ? (
+        <MicButton disabled={false} onTranscript={(t) => setText((prev) => (prev.trim() ? `${prev.trimEnd()} ${t}` : t))} />
+        {/* While a run works BOTH are offered: say something more, or stop it. Only hiding Send
+            behind Stop is what made "it is going the wrong way" mean "wait until it finishes". */}
+        {runActive && (
           <button type="button" className="send-btn stop-btn" onClick={stop} aria-label="Stop" title="Stop" disabled={stopping}>
             <Icon name="stop" size={18} />
           </button>
-        ) : (
-          <button type="submit" className="send-btn" aria-label="Send" title="Send" disabled={!canSend}>
+        )}
+        {(!runActive || text.trim().length > 0) && (
+          <button
+            type="submit"
+            className="send-btn"
+            aria-label={runActive ? 'Send this to Jarvis while he works' : 'Send'}
+            title={runActive ? 'Send this to Jarvis while he works' : 'Send'}
+            disabled={!canSend}
+          >
             <Icon name="send" size={18} />
           </button>
         )}
@@ -241,7 +251,13 @@ export function Composer({ runActive, stopping }: Props) {
           <ThinkChip />
           <span>{connection === 'open' ? '' : connection === 'connecting' ? 'Connecting…' : 'Reconnecting…'}</span>
         </span>
-        <span className="desktop-only">{runActive ? (stopping ? 'Stopping…' : '') : 'Enter to send · Shift+Enter for a new line'}</span>
+        <span className="desktop-only">
+          {runActive
+            ? stopping
+              ? 'Stopping…'
+              : 'Enter sends this to Jarvis while he works'
+            : 'Enter to send · Shift+Enter for a new line'}
+        </span>
       </div>
     </div>
   );

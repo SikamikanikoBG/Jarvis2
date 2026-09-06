@@ -47,6 +47,18 @@ class RunResumed(RunEvent):
     from_seq: int
 
 
+class RunSteered(RunEvent):
+    """A message Arsen gave the run while it was working has been taken into the conversation.
+
+    The message itself arrives as an ordinary ``message.created``; this says WHEN the run
+    actually picked it up, so the transcript can show that it landed rather than leaving Arsen
+    wondering whether it was heard.
+    """
+
+    type: Literal["run.steered"] = "run.steered"
+    text: str
+
+
 class RunWaitingUser(RunEvent):
     type: Literal["run.waiting_user"] = "run.waiting_user"
     reason: str
@@ -257,6 +269,7 @@ ServerEvent = Annotated[
     RunQueued
     | RunStarted
     | RunResumed
+    | RunSteered
     | RunWaitingUser
     | RunDone
     | RunFailed
@@ -322,6 +335,20 @@ class RunCancelRequest(BaseModel):
     run_id: str
 
 
+class RunSteerRequest(BaseModel):
+    """Something Arsen says to a run that is ALREADY working.
+
+    Watching it head the wrong way and having to wait for it to finish is the worst moment in
+    the loop. This hands it another message, which it reads at its next step exactly like the
+    ones it started with — no restart, nothing thrown away.
+    """
+
+    type: Literal["run.steer"] = "run.steer"
+    run_id: str
+    text: str
+    client_ref: str | None = None  # echoed back so the UI can match its optimistic bubble
+
+
 class ToolConfirmRequest(BaseModel):
     type: Literal["tool.confirm"] = "tool.confirm"
     run_id: str
@@ -345,7 +372,7 @@ class Ping(BaseModel):
 
 
 ClientMessage = Annotated[
-    RunCreateRequest | RunCancelRequest | ToolConfirmRequest | Subscribe | Unsubscribe | Ping,
+    RunCreateRequest | RunCancelRequest | RunSteerRequest | ToolConfirmRequest | Subscribe | Unsubscribe | Ping,
     Field(discriminator="type"),
 ]
 

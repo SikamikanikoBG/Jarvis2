@@ -547,6 +547,11 @@ export interface RunCancelled extends RunEventBase {
 export interface RunInterrupted extends RunEventBase {
   type: 'run.interrupted';
 }
+/** The run picked up a message Arsen sent while it was working. */
+export interface RunSteered extends RunEventBase {
+  type: 'run.steered';
+  text: string;
+}
 
 export interface PlanCreated extends RunEventBase {
   type: 'plan.created';
@@ -702,6 +707,7 @@ export type RunScopedEvent =
   | RunFailed
   | RunCancelled
   | RunInterrupted
+  | RunSteered
   | PlanCreated
   | PlanStepStarted
   | PlanStepDone
@@ -750,6 +756,13 @@ export interface RunCancelRequest {
   type: 'run.cancel';
   run_id: string;
 }
+/** Something said to a run that is ALREADY working; it reads it at its next step. */
+export interface RunSteerRequest {
+  type: 'run.steer';
+  run_id: string;
+  text: string;
+  client_ref?: string | null;
+}
 export interface ToolConfirmRequest {
   type: 'tool.confirm';
   run_id: string;
@@ -772,6 +785,7 @@ export interface Ping {
 export type ClientMessage =
   | RunCreateRequest
   | RunCancelRequest
+  | RunSteerRequest
   | ToolConfirmRequest
   | Subscribe
   | Unsubscribe

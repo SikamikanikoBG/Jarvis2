@@ -255,6 +255,7 @@ export const useStore = create<AppState>()((set, get) => ({
     const refusal = selectSendRefusal(s, {
       connection: socket?.isOpen ? 'open' : 'closed', // the socket itself, not the last reported state
       hasText: Boolean(trimmed) || attachments.length > 0,
+      hasAttachments: attachments.length > 0,
       conversationId: open,
     });
     if (refusal !== null || !socket) {
@@ -283,6 +284,13 @@ export const useStore = create<AppState>()((set, get) => ({
       pendingNewConversation: open ? st.pendingNewConversation : { clientRef, text: trimmed },
       pendingAttachments: [],
     }));
+    // A run already working gets the message handed to it instead of a new turn being started:
+    // it reads it at its next step, keeping everything it has done so far. Attachments stay a
+    // new-turn thing — the run has already assembled its context.
+    const active = selectActiveRun(s, open);
+    if (active) {
+      return socket.send({ type: 'run.steer', run_id: active.id, text: trimmed, client_ref: clientRef });
+    }
     const choice = s.thinkChoice[key];
     return socket.send({
       type: 'run.create',

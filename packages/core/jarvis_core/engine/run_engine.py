@@ -215,6 +215,20 @@ class RunEngine:
         ctl.cancel.set()
         return True
 
+    def steer(self, run_id: str, text: str) -> bool:
+        """Hand a working run another message. False when it is not running any more.
+
+        Watching a run head the wrong way and having to wait for it to finish is the worst
+        moment in the loop. The message is picked up at the run's next step, so nothing in
+        flight is interrupted and nothing already done is thrown away. False is not a failure —
+        the caller starts an ordinary run instead, which is what "too late" should mean.
+        """
+        entry = self._active.get(run_id)
+        if entry is None or entry[1].emitter.run.status.terminal or not text.strip():
+            return False
+        entry[1].steers.append(text.strip())
+        return True
+
     async def confirm(self, run_id: str, call_id: str, approved: bool, note: str | None = None) -> bool:
         entry = self._active.get(run_id)
         if entry is not None and entry[1].resolve_confirmation(call_id, approved, note):

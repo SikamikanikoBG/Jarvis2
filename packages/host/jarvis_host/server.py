@@ -34,6 +34,7 @@ from jarvis_host.audio import Audio
 from jarvis_host.com import ComWorker
 from jarvis_host.config import HostConfig
 from jarvis_host.files import Files
+from jarvis_host.meetings import MeetingCapture
 from jarvis_host.onenote import OneNoteBackend, OneNoteError, OneNoteService, onenote_dispatch
 from jarvis_host.outlook import OutlookBackend, OutlookError, OutlookService, outlook_dispatch
 from jarvis_host.screen import Screen
@@ -70,6 +71,7 @@ class Deps:
     screen: Screen
     audio: Audio
     status: Status
+    meetings: MeetingCapture
 
 
 def make_deps(
@@ -87,7 +89,18 @@ def make_deps(
     files = Files(roots)
     shell = Shell(allowed=config.shell_allow, default_cwd=files.roots[0])
     screen = Screen(enabled=config.screen_enabled)
-    return Deps(config, worker, outlook, onenote, files, shell, screen, Audio(), Status(config, worker, outlook))
+    return Deps(
+        config,
+        worker,
+        outlook,
+        onenote,
+        files,
+        shell,
+        screen,
+        Audio(),
+        Status(config, worker, outlook),
+        MeetingCapture(),
+    )
 
 
 def json_text(obj: Any) -> str:
@@ -353,6 +366,25 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
     async def onenote_move(page: str, section: str) -> str:
         """Move a page into another section ('Notebook/Section' path). The page keeps its content and its id."""
         return json_text(await _run("onenote_move", lambda: onenote().call("move", page, section)))
+
+    # --- meetings ------------------------------------------------------------------------
+
+    @tool("meeting_start", MUTATING)
+    async def meeting_start(meeting_id: str, sources: str = "mic,system") -> str:
+        """Start capturing this machine's audio for a meeting: `sources` is 'mic', 'system' (what the speakers play) or both. Returns which sources opened and why any did not - one missing source does not stop the recording."""
+        return json_text(await _run("meeting_start", lambda: asyncio.to_thread(deps.meetings.start, meeting_id, sources)))
+
+    @tool("meeting_pull", READ)
+    async def meeting_pull(meeting_id: str, after_seq: int = 0) -> str:
+        """Audio captured since the last pull, as one 16 kHz mono WAV chunk (base64) with its offset from the start of the recording. Empty `chunks` means nothing new yet."""
+        return json_text(
+            await _run("meeting_pull", lambda: asyncio.to_thread(deps.meetings.pull, meeting_id, after_seq))
+        )
+
+    @tool("meeting_stop", MUTATING)
+    async def meeting_stop(meeting_id: str) -> str:
+        """Stop capturing and return the last chunk, so nothing recorded is lost between the final pull and the stop."""
+        return json_text(await _run("meeting_stop", lambda: asyncio.to_thread(deps.meetings.stop, meeting_id)))
 
     # --- files ---------------------------------------------------------------------------
 

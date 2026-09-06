@@ -1,0 +1,277 @@
+"""Meeting capture: microphone + system audio (WASAPI loopback), mixed to 16 kHz mono WAV.
+
+The core owns the meeting; the host only captures. It pulls with ``meeting_pull`` every few
+seconds, so this module hands out whatever has accumulated since the last pull as one WAV chunk
+with its offset from the start of the recording, and the core transcribes it.
+
+Facts that shaped it:
+
+* system audio needs its OWN WASAPI loopback stream (pyaudiowpatch); the microphone stream
+  cannot see it. Each device runs at its own rate (48 kHz stereo loopback, 44.1 kHz microphone
+  on this laptop), so both are resampled to 16 kHz mono here rather than by ffmpeg - the
+  resampler state is carried between chunks, otherwise every chunk boundary clicks.
+* one source failing is not the meeting failing: a laptop with no working loopback still records
+  the microphone, and the reply says which sources are live.
+* audio arrives on PyAudio's own thread; the buffers are drained under a lock.
+"""
+
+from __future__ import annotations
+
+import audioop  # deprecated in 3.12, removed in 3.13 — the host pins >=3.12,<3.13 (pyproject)
+import base64
+import io
+import logging
+import threading
+import wave
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any, Protocol
+
+log = logging.getLogger(__name__)
+
+TARGET_RATE = 16_000
+SAMPLE_WIDTH = 2  # int16
+MIN_CHUNK_S = 1.0  # below this a chunk is not worth an STT round trip
+MAX_BUFFER_S = 600  # if nobody pulls for ten minutes, drop the oldest audio rather than the host
+
+
+class MeetingError(RuntimeError):
+    """Anything that stops a capture, phrased for the model."""
+
+
+class AudioSource(Protocol):
+    """A live PCM source. ``read`` drains what has arrived since the last call."""
+
+    rate: int
+    channels: int
+
+    def read(self) -> bytes: ...
+    def close(self) -> None: ...
+
+
+class _Buffered:
+    """Collects int16 frames from a callback thread; ``read`` drains them."""
+
+    def __init__(self, rate: int, channels: int) -> None:
+        self.rate = rate
+        self.channels = channels
+        self._buf = bytearray()
+        self._lock = threading.Lock()
+
+    def feed(self, data: bytes) -> None:
+        limit = self.rate * self.channels * SAMPLE_WIDTH * MAX_BUFFER_S
+        with self._lock:
+            self._buf.extend(data)
+            if len(self._buf) > limit:
+                del self._buf[: len(self._buf) - limit]
+
+    def read(self) -> bytes:
+        with self._lock:
+            data = bytes(self._buf)
+            self._buf.clear()
+        return data
+
+    def close(self) -> None:  # pragma: no cover - overridden by the real source
+        return None
+
+
+class _PyAudioSource(_Buffered):
+    """One WASAPI stream (microphone or default-speaker loopback) in callback mode."""
+
+    def __init__(self, pa: Any, device: dict[str, Any]) -> None:
+        import pyaudiowpatch as pyaudio  # pyright: ignore[reportMissingImports]
+
+        rate = int(device["defaultSampleRate"])
+        channels = max(1, min(2, int(device["maxInputChannels"])))
+        super().__init__(rate, channels)
+        self._pa = pa
+
+        def callback(in_data: bytes, frame_count: int, time_info: Any, status: int) -> tuple[None, int]:
+            self.feed(in_data)
+            return (None, pyaudio.paContinue)
+
+        self._stream = pa.open(
+            format=pyaudio.paInt16,
+            channels=channels,
+            rate=rate,
+            input=True,
+            input_device_index=int(device["index"]),
+            frames_per_buffer=2048,
+            stream_callback=callback,
+        )
+
+    def close(self) -> None:
+        try:
+            self._stream.stop_stream()
+            self._stream.close()
+        except Exception as exc:  # pragma: no cover - a closing stream that argues
+            log.warning("meeting: closing an audio stream failed: %s", exc)
+
+
+def open_sources(sources: tuple[str, ...] = ("mic", "system")) -> tuple[dict[str, AudioSource], list[str]]:
+    """Open the requested live sources. Returns what opened and why the rest did not."""
+    import pyaudiowpatch as pyaudio  # pyright: ignore[reportMissingImports]
+
+    pa = pyaudio.PyAudio()
+    out: dict[str, AudioSource] = {}
+    problems: list[str] = []
+    for name in sources:
+        try:
+            device = pa.get_default_input_device_info() if name == "mic" else pa.get_default_wasapi_loopback()
+            out[name] = _PyAudioSource(pa, device)
+        except Exception as exc:
+            problems.append(f"{name}: {type(exc).__name__}: {exc}")
+    if not out:
+        pa.terminate()
+        raise MeetingError("no audio source could be opened — " + "; ".join(problems))
+    return out, problems
+
+
+@dataclass
+class _Resampler:
+    """Per-source conversion to 16 kHz mono, with the state that makes chunks seamless."""
+
+    rate: int
+    channels: int
+    state: Any = None
+    remainder: bytes = b""
+
+    def convert(self, pcm: bytes) -> bytes:
+        if not pcm:
+            return b""
+        frame = SAMPLE_WIDTH * self.channels
+        pcm = self.remainder + pcm
+        usable = len(pcm) - (len(pcm) % frame)  # a half-frame tail would shift every later sample
+        self.remainder, pcm = pcm[usable:], pcm[:usable]
+        if not pcm:
+            return b""
+        mono = audioop.tomono(pcm, SAMPLE_WIDTH, 0.5, 0.5) if self.channels == 2 else pcm
+        if self.rate == TARGET_RATE:
+            return mono
+        converted, self.state = audioop.ratecv(mono, SAMPLE_WIDTH, 1, self.rate, TARGET_RATE, self.state)
+        return converted
+
+
+@dataclass
+class Recording:
+    """One meeting being captured on this machine."""
+
+    meeting_id: str
+    sources: dict[str, AudioSource]
+    problems: list[str] = field(default_factory=list)
+    seq: int = 0
+    emitted_frames: int = 0  # 16 kHz frames already handed to the core = the next chunk's t0
+    stopped: bool = False
+    _resamplers: dict[str, _Resampler] = field(default_factory=dict)
+    # Mixed audio that was too short to be worth a chunk. Draining the sources and then throwing
+    # the result away would lose it: a 0.3 s burst before a pull must still reach the transcript.
+    _pending: bytes = b""
+
+    def _mix(self) -> bytes:
+        tracks: list[bytes] = []
+        for name, source in self.sources.items():
+            resampler = self._resamplers.setdefault(name, _Resampler(source.rate, source.channels))
+            track = resampler.convert(source.read())
+            if track:
+                tracks.append(track)
+        if not tracks:
+            return b""
+        longest = max(len(t) for t in tracks)
+        mixed = tracks[0].ljust(longest, b"\x00")
+        for track in tracks[1:]:
+            # Halve first: two full-scale sources added together clip, and a clipped meeting
+            # transcribes worse than a quiet one.
+            mixed = audioop.add(audioop.mul(mixed, SAMPLE_WIDTH, 0.7), audioop.mul(track.ljust(longest, b"\x00"), SAMPLE_WIDTH, 0.7), SAMPLE_WIDTH)
+        return mixed
+
+    def take_chunk(self, *, final: bool = False) -> dict[str, Any] | None:
+        """The audio since the last call as a WAV chunk, or None when there is too little."""
+        self._pending += self._mix()
+        frames = len(self._pending) // SAMPLE_WIDTH
+        if not frames or (not final and frames < MIN_CHUNK_S * TARGET_RATE):
+            return None
+        pcm, self._pending = self._pending, b""
+        t0 = self.emitted_frames / TARGET_RATE
+        self.emitted_frames += frames
+        self.seq += 1
+        return {
+            "seq": self.seq,
+            "t0": round(t0, 3),
+            "t1": round(self.emitted_frames / TARGET_RATE, 3),
+            "wav_base64": base64.b64encode(to_wav(pcm)).decode("ascii"),
+        }
+
+    def close(self) -> None:
+        self.stopped = True
+        for source in self.sources.values():
+            source.close()
+
+
+def to_wav(pcm: bytes, rate: int = TARGET_RATE) -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(SAMPLE_WIDTH)
+        wf.setframerate(rate)
+        wf.writeframes(pcm)
+    return buf.getvalue()
+
+
+class MeetingCapture:
+    """The host side of a meeting: start, hand out chunks, stop. One recording per meeting id."""
+
+    def __init__(self, opener: Callable[[tuple[str, ...]], tuple[dict[str, AudioSource], list[str]]] = open_sources) -> None:
+        self._opener = opener
+        self._recordings: dict[str, Recording] = {}
+        self._lock = threading.Lock()
+
+    def start(self, meeting_id: str, sources: str = "mic,system") -> dict[str, Any]:
+        wanted = tuple(s.strip().lower() for s in sources.split(",") if s.strip()) or ("mic", "system")
+        unknown = [s for s in wanted if s not in ("mic", "system")]
+        if unknown:
+            raise MeetingError(f"unknown source(s) {', '.join(unknown)}; use 'mic', 'system' or both")
+        with self._lock:
+            if meeting_id in self._recordings:
+                rec = self._recordings[meeting_id]
+                return {"meeting_id": meeting_id, "recording": True, "sources": sorted(rec.sources), "already": True}
+            opened, problems = self._opener(wanted)
+            self._recordings[meeting_id] = Recording(meeting_id, opened, problems)
+        return {
+            "meeting_id": meeting_id,
+            "recording": True,
+            "sources": sorted(opened),
+            "unavailable": problems,
+            "rate": TARGET_RATE,
+        }
+
+    def pull(self, meeting_id: str, after_seq: int = 0) -> dict[str, Any]:
+        rec = self._recordings.get(meeting_id)
+        if rec is None:
+            raise MeetingError(f"meeting {meeting_id} is not being recorded on this machine")
+        chunk = rec.take_chunk()
+        chunks = [chunk] if chunk and chunk["seq"] > after_seq else []
+        return {"meeting_id": meeting_id, "recording": not rec.stopped, "chunks": chunks}
+
+    def stop(self, meeting_id: str) -> dict[str, Any]:
+        with self._lock:
+            rec = self._recordings.pop(meeting_id, None)
+        if rec is None:
+            return {"meeting_id": meeting_id, "recording": False, "chunks": [], "already_stopped": True}
+        chunk = rec.take_chunk(final=True)  # drain before the streams close
+        rec.close()
+        return {
+            "meeting_id": meeting_id,
+            "recording": False,
+            "chunks": [chunk] if chunk else [],
+            "seconds": round(rec.emitted_frames / TARGET_RATE, 1),
+        }
+
+    def active(self) -> list[str]:
+        return sorted(self._recordings)
+
+    def close_all(self) -> None:
+        with self._lock:
+            recordings = list(self._recordings.values())
+            self._recordings.clear()
+        for rec in recordings:
+            rec.close()

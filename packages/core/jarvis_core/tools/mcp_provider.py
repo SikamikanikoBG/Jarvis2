@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import os
 import sys
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from datetime import timedelta
 from typing import Any
@@ -41,6 +43,11 @@ class McpProvider:
         self._task: asyncio.Task[None] | None = None
         self._ready = asyncio.Event()
         self._stop = asyncio.Event()
+        # Called after every successful (re)connect. A restarted server may expose a different
+        # tool set - the host gained meeting_start on 2026-09-06 and the core kept answering
+        # "unknown tool" until someone reloaded by hand.
+        self.on_connect: Callable[[McpProvider], object] | None = None
+        self._hooks: set[asyncio.Task[None]] = set()
 
     @property
     def connected(self) -> bool:
@@ -96,6 +103,7 @@ class McpProvider:
                 self._session = session
                 self.error = None
                 self._ready.set()
+                self._announce()
                 await self._stop.wait()
         except asyncio.CancelledError:
             raise
@@ -105,6 +113,24 @@ class McpProvider:
         finally:
             self._session = None
             self._ready.set()
+
+    def _announce(self) -> None:
+        """Tell the registry we are (re)connected, without blocking this connection's task."""
+        hook = self.on_connect
+        if hook is None:
+            return
+        try:
+            result = hook(self)
+            if inspect.isawaitable(result):
+
+                async def run(awaitable: Awaitable[object] = result) -> None:
+                    await awaitable
+
+                task = asyncio.create_task(run(), name=f"mcp-reindex-{self.name}")
+                self._hooks.add(task)  # a bare create_task can be collected mid-flight
+                task.add_done_callback(self._hooks.discard)
+        except Exception:
+            log.exception("mcp %s: reindex hook failed", self.name)
 
     async def _ensure(self) -> ClientSession:
         if self._session is None:

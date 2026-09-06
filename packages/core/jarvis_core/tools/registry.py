@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from typing import Any, Protocol
 
 import jsonschema
@@ -35,14 +36,48 @@ class ToolProvider(Protocol):
 
 class ToolRegistry:
     def __init__(self, providers: list[ToolProvider] | None = None) -> None:
-        self._providers: list[ToolProvider] = list(providers or [])
+        self._providers: list[ToolProvider] = []
         self._index: dict[str, tuple[ToolProvider, ToolSpec]] = {}
+        self._errors: dict[str, str] = {}
+        # Called with the provider name when its tool set actually changed (the UI refreshes).
+        self._on_change: list[Callable[[str], None]] = []
+        self.set_providers(list(providers or []))  # one place installs the reconnect hooks
+
+    def on_change(self, hook: Callable[[str], None]) -> None:
+        self._on_change.append(hook)
 
     def add(self, provider: ToolProvider) -> None:
-        self._providers.append(provider)
+        self.set_providers([*self._providers, provider])
 
     def set_providers(self, providers: list[ToolProvider]) -> None:
         self._providers = list(providers)
+        for provider in self._providers:
+            # A provider that can reconnect (an MCP server) re-lists itself when it does, so a
+            # restarted host does not stay invisible until someone reloads by hand.
+            if hasattr(provider, "on_connect"):
+                provider.on_connect = self.reindex  # type: ignore[attr-defined]
+
+    async def reindex(self, provider: ToolProvider) -> None:
+        """Replace one provider's tools in the index. Safe to call at any time."""
+        if provider not in self._providers:
+            return
+        try:
+            specs = await provider.list_tools()
+        except Exception as exc:
+            self._errors[provider.name] = getattr(provider, "error", None) or f"{type(exc).__name__}: {exc}"
+            log.warning("provider %s failed to re-list tools: %s", provider.name, self._errors[provider.name])
+            return
+        index = {name: entry for name, entry in self._index.items() if entry[0] is not provider}
+        for spec in specs:
+            index[spec.name] = (provider, spec)
+        before = sorted(n for n, (p, _) in self._index.items() if p is provider)
+        self._index = index
+        after = sorted(s.name for s in specs)
+        self._errors.pop(provider.name, None)
+        if before != after:
+            log.info("provider %s re-listed: %d tools (was %d)", provider.name, len(after), len(before))
+            for hook in self._on_change:
+                hook(provider.name)
 
     def forget(self, provider: ToolProvider) -> None:
         """Drop a provider's tools synchronously (used when a connection goes away)."""
@@ -50,7 +85,7 @@ class ToolRegistry:
 
     async def refresh(self) -> None:
         index: dict[str, tuple[ToolProvider, ToolSpec]] = {}
-        self._errors: dict[str, str] = {}
+        self._errors = {}
         for provider in self._providers:
             try:
                 for spec in await provider.list_tools():
@@ -64,7 +99,7 @@ class ToolRegistry:
 
     def provider_health(self) -> list[dict[str, Any]]:
         """Per provider: how many tools it contributes and why it failed, if it did."""
-        errors = getattr(self, "_errors", {})
+        errors = self._errors
         out: list[dict[str, Any]] = []
         for provider in self._providers:
             count = sum(1 for p, _ in self._index.values() if p is provider)

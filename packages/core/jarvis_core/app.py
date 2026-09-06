@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -41,9 +43,12 @@ from jarvis_core.tools.facades import ExposurePolicy
 from jarvis_core.tools.mcp_provider import McpProvider
 from jarvis_core.tools.ws_provider import WsProvider
 from jarvis_proto import ConversationKind, RunKind, Settings, ThinkLevel
+from jarvis_proto.events import ToolsChanged
 from jarvis_proto.settings import RoleName
 
 log = logging.getLogger(__name__)
+
+MCP_RECONNECT_S = 30.0  # how often a disconnected MCP server is retried
 
 
 class Core:
@@ -82,6 +87,8 @@ class Core:
         self.mcp: list[McpProvider] = []
         self.policy = ExposurePolicy(self.settings.tool_exposure, self.settings.facade_threshold)
         self.registry = ToolRegistry([self.builtin])
+        # A reconnected MCP server re-lists itself; tell the UI so the tool list on Status is real.
+        self.registry.on_change(lambda provider: self.bus.publish(ToolsChanged(provider=provider)))
 
         # Engine.
         self.context = ContextAssembler(
@@ -148,9 +155,30 @@ class Core:
         await self.scheduler.start()
         await self.triage.start()
         await self.rsvp.start()
+        self._mcp_watch = asyncio.create_task(self._watch_mcp(), name="mcp-watch")
         log.info("jarvis-core %s ready (db=%s, tools=%d)", __version__, self.db.path, len(self.registry.specs()))
 
+    async def _watch_mcp(self) -> None:
+        """Bring a dropped MCP server back without waiting for a tool call to fail.
+
+        A restarted jarvis-host is the normal case: its old session dies, and until something
+        reconnects, the core answers "unknown tool" for anything the new host added (2026-09-06:
+        meeting_start was invisible until a manual reload). Reconnecting re-lists the server, so
+        the tool set follows the host.
+        """
+        while True:
+            await asyncio.sleep(MCP_RECONNECT_S)
+            for provider in list(self.mcp):
+                if not provider.connected:
+                    with contextlib.suppress(Exception):
+                        await self.registry.reindex(provider)
+
     async def stop(self) -> None:
+        watch = getattr(self, "_mcp_watch", None)
+        if watch is not None:
+            watch.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watch
         await self.triage.stop()
         await self.rsvp.stop()
         await self.meetings.stop_all()

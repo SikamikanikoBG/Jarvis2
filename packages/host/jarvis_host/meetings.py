@@ -33,6 +33,11 @@ TARGET_RATE = 16_000
 SAMPLE_WIDTH = 2  # int16
 MIN_CHUNK_S = 1.0  # below this a chunk is not worth an STT round trip
 MAX_BUFFER_S = 600  # if nobody pulls for ten minutes, drop the oldest audio rather than the host
+# Whisper invents words for silence: the first live meeting produced two segments of "Thank you."
+# from a quiet room. A chunk this quiet holds no speech, so it is dropped before it can be
+# transcribed - the timeline still advances, so later chunks keep their real offsets.
+# ~ -48 dBFS on the int16 scale; normal speech is 20-100x louder.
+SILENCE_RMS = 120
 
 
 class MeetingError(RuntimeError):
@@ -161,6 +166,7 @@ class Recording:
     problems: list[str] = field(default_factory=list)
     seq: int = 0
     emitted_frames: int = 0  # 16 kHz frames already handed to the core = the next chunk's t0
+    silent_frames: int = 0  # dropped as silence; reported so a dead microphone is visible
     stopped: bool = False
     _resamplers: dict[str, _Resampler] = field(default_factory=dict)
     # Mixed audio that was too short to be worth a chunk. Draining the sources and then throwing
@@ -185,12 +191,17 @@ class Recording:
         return mixed
 
     def take_chunk(self, *, final: bool = False) -> dict[str, Any] | None:
-        """The audio since the last call as a WAV chunk, or None when there is too little."""
+        """The audio since the last call as a WAV chunk, or None when there is too little - or
+        when it is silence, which Whisper would turn into invented words."""
         self._pending += self._mix()
         frames = len(self._pending) // SAMPLE_WIDTH
         if not frames or (not final and frames < MIN_CHUNK_S * TARGET_RATE):
             return None
         pcm, self._pending = self._pending, b""
+        if audioop.rms(pcm, SAMPLE_WIDTH) < SILENCE_RMS:
+            self.emitted_frames += frames  # keep the clock honest for the chunks that follow
+            self.silent_frames += frames
+            return None
         t0 = self.emitted_frames / TARGET_RATE
         self.emitted_frames += frames
         self.seq += 1
@@ -250,7 +261,12 @@ class MeetingCapture:
             raise MeetingError(f"meeting {meeting_id} is not being recorded on this machine")
         chunk = rec.take_chunk()
         chunks = [chunk] if chunk and chunk["seq"] > after_seq else []
-        return {"meeting_id": meeting_id, "recording": not rec.stopped, "chunks": chunks}
+        return {
+            "meeting_id": meeting_id,
+            "recording": not rec.stopped,
+            "chunks": chunks,
+            "silent_seconds": round(rec.silent_frames / TARGET_RATE, 1),
+        }
 
     def stop(self, meeting_id: str) -> dict[str, Any]:
         with self._lock:
@@ -264,6 +280,7 @@ class MeetingCapture:
             "recording": False,
             "chunks": [chunk] if chunk else [],
             "seconds": round(rec.emitted_frames / TARGET_RATE, 1),
+            "silent_seconds": round(rec.silent_frames / TARGET_RATE, 1),
         }
 
     def active(self) -> list[str]:

@@ -108,6 +108,22 @@ def test_a_short_burst_waits_but_the_stop_drains_it(capture):  # type: ignore[no
     assert all(s.closed for s in sources.values()) and cap.active() == []
 
 
+def test_silence_is_dropped_but_the_clock_keeps_running(capture):  # type: ignore[no-untyped-def]
+    """The first live meeting transcribed a quiet room as two segments of "Thank you."."""
+    cap, sources = capture
+    cap.start("mtg_s")
+    sources["mic"].queued += tone(2.0, 44_100, 2, amp=20)  # room tone, no speech
+    sources["system"].queued += tone(2.0, 48_000, 2, amp=20)
+    res = cap.pull("mtg_s")
+    assert res["chunks"] == [] and res["silent_seconds"] >= 1.9
+
+    sources["mic"].push(2.0)  # someone speaks
+    sources["system"].push(2.0)
+    chunk = cap.pull("mtg_s")["chunks"][0]
+    # Dropped silence still moved the clock, so this chunk is timed where it really happened.
+    assert chunk["seq"] == 1 and 1.9 < chunk["t0"] < 2.1
+
+
 def test_one_dead_source_still_records_the_other_and_says_so():
     def opener(wanted: tuple[str, ...]) -> tuple[dict[str, AudioSource], list[str]]:
         return {"mic": FakeSource(16_000, 1)}, ["system: OSError: no loopback device"]

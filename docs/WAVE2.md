@@ -38,7 +38,7 @@ remote_access/server.py routes, shared-brain tables). Status: **have** = in V2 n
 | read_file / write_shared_file / list/search shared files | host `fs_*` (text) | have |
 | word_read / excel_read / pptx_read, PDF | one host `doc_read(path)` → Markdown for docx/xlsx/pptx/pdf | wave 2 · slice 1 (same reader serves attachments) |
 | word_write / excel_write / pptx_write / doc_edit | host `doc_write(path, format, content)` | wave 2 · slice 2 |
-| onenote_read / onenote_write | host OneNote COM tools | ask (the OneNote schedule waits on it) |
+| onenote_read / onenote_write | host `onenote_tree/read/search/create/append/move` | **done** (2026-09-06, live-verified) |
 | markdown_parser, paste_content, read_clipboard | attachments + host `clipboard_read` | wave 2 · slice 1 |
 | **Images & vision** | | |
 | image upload (`/api/images/upload`, thumbs), vision status | **attachments**: image → multimodal content part (vader's qwen3.8-27b answers on images — probed 2026-09-06) | wave 2 · slice 1 |
@@ -124,7 +124,7 @@ OneNote **yes** (host COM tools, slice 2). Plus: chat-surface parity with ChatGP
 Open WebUI ("copy a message, share it…") — slice 0 below, built as ONE action bar, ONE menu,
 ONE search, not a widget per feature.
 
-### Slice 0 — Chat surface parity (what the three mainstream UIs have and V2 lacks)
+### Slice 0 — Chat surface parity — **shipped 2026-09-06 (2.0.0a5)**
 Audit of V2 on 2026-09-06: a bot message has one action (pin to board); a user message has
 none; no code-block copy; no search; no export; no auto-title; no scroll-to-latest; no
 shortcuts; no notification when a long run finishes in a background tab.
@@ -142,6 +142,6 @@ shortcuts; no notification when a long run finishes in a background tab.
 | jump to latest + "new reply below" while scrolled up | transcript | slice 0 |
 | keyboard shortcuts (new chat, search, stop, focus composer) | app shell, one map | slice 0 |
 | desktop notification + tab badge when a run finishes in a hidden tab | app shell, `run.done` | slice 0 |
-| attachments, paste, drag-drop, image lightbox | slice 1 | slice 1 |
+| attachments, paste, drag-drop, image lightbox | slice 1 | **next** |
 | slash commands / prompt library, ↑ history, per-chat instructions & model | slice 3 | slice 3 |
 | message feedback thumbs, temporary chat, canvas/artifacts, custom folders & tags, multi-model compare, read-aloud | — | drop |

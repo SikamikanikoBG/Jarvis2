@@ -10,7 +10,7 @@ import type { Attachment, Conversation, ConversationSummary, Message, Run, RunSc
 import { isRunScoped, isTerminal } from '../protocol/types';
 import { applyFeatureEvents, initialFeatureState, type FeatureState } from './features';
 import { applyServerEvents } from './reducer';
-import { selectActiveRun } from './selectors';
+import { selectActiveRun, selectSendRefusal } from './selectors';
 import { NEW_CONVERSATION_KEY, initialChatState, omit, type ChatState, type LocalMessage } from './state';
 
 export interface Notice {
@@ -57,7 +57,10 @@ export interface Actions {
   openConversation: (id: string | null, opts?: { replace?: boolean; silent?: boolean }) => Promise<void>;
   newChat: () => void;
   refreshConversation: (id: string) => Promise<void>;
-  send: (text: string) => void;
+  /** True when the message was handed to the socket. False means it was refused and the
+   *  composer must KEEP the text — clearing it unconditionally lost what Arsen had typed
+   *  whenever the connection had dropped or a run was still going. */
+  send: (text: string) => boolean;
   stop: () => void;
   confirmTool: (runId: string, callId: string, approved: boolean, note?: string) => void;
   renameConversation: (id: string, title: string) => Promise<void>;
@@ -77,8 +80,9 @@ export interface Actions {
   regenerate: () => void;
   startEdit: (conversationId: string, messageId: string, text: string) => void;
   cancelEdit: () => void;
-  /** Fork the conversation before the edited message and send the new text there. */
-  sendEdit: (text: string) => Promise<void>;
+  /** Fork the conversation before the edited message and send the new text there. False when
+   *  the fork or the send was refused, so the composer keeps the edit. */
+  sendEdit: (text: string) => Promise<boolean>;
   setNotifyRuns: (on: boolean) => Promise<void>;
   /** Upload files (photos, documents) and hold them for the next message. */
   attachFiles: (files: File[]) => Promise<void>;
@@ -245,14 +249,18 @@ export const useStore = create<AppState>()((set, get) => ({
     const s = get();
     const trimmed = text.trim();
     const attachments = s.pendingAttachments;
-    // A photo with no words is a perfectly good message ("what is this?" is implied).
-    if (!trimmed && attachments.length === 0) return;
-    if (!ws?.isOpen) {
-      s.notify('Not connected — the message was not sent.', 'error');
-      return;
-    }
     const open = s.openConversationId;
-    if (open && selectActiveRun(s, open)) return;
+    const socket = ws;
+    // A photo with no words is a perfectly good message ("what is this?" is implied).
+    const refusal = selectSendRefusal(s, {
+      connection: socket?.isOpen ? 'open' : 'closed', // the socket itself, not the last reported state
+      hasText: Boolean(trimmed) || attachments.length > 0,
+      conversationId: open,
+    });
+    if (refusal !== null || !socket) {
+      if (refusal !== null && refusal !== 'nothing to send') s.notify(refusal, 'error');
+      return false;
+    }
     const clientRef = `c${Date.now().toString(36)}_${(clientRefSeq++).toString(36)}`;
     const optimistic: LocalMessage = {
       id: `local_${clientRef}`,
@@ -276,7 +284,7 @@ export const useStore = create<AppState>()((set, get) => ({
       pendingAttachments: [],
     }));
     const choice = s.thinkChoice[key];
-    ws.send({
+    return socket.send({
       type: 'run.create',
       conversation_id: open,
       text: trimmed,
@@ -343,15 +351,16 @@ export const useStore = create<AppState>()((set, get) => ({
     const s = get();
     const editing = s.editing;
     const trimmed = text.trim();
-    if (!editing || !trimmed) return;
+    if (!editing || !trimmed) return false;
     try {
       const fork = await api.conversations.fork(editing.conversationId, editing.messageId);
       set({ editing: null });
       upsertConversation(set, fork);
       await get().openConversation(fork.id);
-      get().send(trimmed);
+      return get().send(trimmed);
     } catch (e) {
       get().notify(`Could not fork the conversation: ${errorText(e)}`, 'error');
+      return false;
     }
   },
 

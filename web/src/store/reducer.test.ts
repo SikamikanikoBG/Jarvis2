@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Conversation, Message, ModelUsage, Run, ServerEvent } from '../protocol/types';
 import { applyServerEvent, applyServerEvents } from './reducer';
-import { selectActiveRun, selectPendingConfirm, selectSidebar } from './selectors';
+import { selectActiveRun, selectPendingConfirm, selectSendRefusal, selectSidebar } from './selectors';
 import { initialChatState, type ChatState, type LocalMessage } from './state';
 import { buildTranscript, buildTranscriptFrom, transcriptSource } from './transcript';
 
@@ -424,5 +424,38 @@ describe('buildTranscript — tool cards', () => {
     const note = buildTranscript(s, CONV).find((i) => i.kind === 'note');
     expect(note?.kind === 'note' && note.note.level).toBe('error');
     expect(note?.kind === 'note' && note.note.detail).toBe('Looping on the same call');
+  });
+});
+
+describe('selectSendRefusal', () => {
+  const at = (state: ChatState, over: Partial<{ connection: string; hasText: boolean; conversationId: string | null }> = {}) =>
+    selectSendRefusal(state, { connection: 'open', hasText: true, conversationId: CONV, ...over });
+
+  it('lets a message through when there is text and the socket is open', () => {
+    expect(at(withOpen(CONV))).toBeNull();
+  });
+
+  it('refuses an empty message quietly, and a disconnected one out loud', () => {
+    expect(at(withOpen(CONV), { hasText: false })).toBe('nothing to send');
+    for (const connection of ['connecting', 'reconnecting', 'closed']) {
+      expect(at(withOpen(CONV), { connection })).toContain('Not connected');
+    }
+  });
+
+  it('refuses a second message while a run is still going, and says so', () => {
+    // The store returned here without a word and the composer had already cleared the box,
+    // so the message vanished with no trace and no explanation.
+    const running = applyServerEvents(withOpen(CONV), [queued, started], T0);
+    expect(selectActiveRun(running, CONV)).not.toBeNull();
+    expect(at(running)).toContain('still working');
+    // ...but another conversation is free, and so is a brand-new chat.
+    expect(at(running, { conversationId: 'conv_b' })).toBeNull();
+    expect(at(running, { conversationId: null })).toBeNull();
+  });
+
+  it('lets the next message through once the run is done', () => {
+    let s = applyServerEvents(withOpen(CONV), [queued, started], T0);
+    s = applyServerEvent(s, runScoped({ type: 'run.done', message_id: 'm_a1', usage: usage(1, 1), steps_used: 1, summary: null }, 50), T0);
+    expect(at(s)).toBeNull();
   });
 });

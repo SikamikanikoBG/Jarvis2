@@ -114,3 +114,21 @@ export function selectPendingConfirm(state: ChatState, runId: string): ToolConfi
 export function selectUnreadCount(conversations: Record<string, Conversation>): number {
   return Object.values(conversations).reduce((n, c) => n + (c.unread ? 1 : 0), 0);
 }
+
+/**
+ * Why this message cannot go out right now, or null when it can.
+ *
+ * One answer for the two callers that used to disagree: the composer only greyed the Send
+ * button out when the socket was down, while Enter went straight to `store.send`, which
+ * refused a second message during a run without a word. Either way the composer cleared the
+ * box first, so what Arsen had typed was gone.
+ */
+export function selectSendRefusal(
+  state: ChatState,
+  { connection, hasText, conversationId }: { connection: string; hasText: boolean; conversationId: string | null },
+): string | null {
+  if (!hasText) return 'nothing to send';
+  if (connection !== 'open') return 'Not connected — the message was not sent.';
+  if (selectActiveRun(state, conversationId)) return 'Jarvis is still working on the previous message.';
+  return null;
+}

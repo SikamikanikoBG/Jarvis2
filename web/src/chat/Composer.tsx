@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type Key
 import { Icon } from '../components/Icon';
 import { IconButton, Menu } from '../components/primitives';
 import { THINK_CHOICES, THINK_DEFAULT, thinkChoiceKey } from '../lib/think';
+import { selectSendRefusal } from '../store/selectors';
 import { NEW_CONVERSATION_KEY } from '../store/state';
 import { useStore } from '../store/store';
 import { PendingAttachments } from './Attachments';
@@ -35,6 +36,13 @@ export function Composer({ runActive, stopping }: Props) {
   const fileInput = useRef<HTMLInputElement>(null);
   const cameraInput = useRef<HTMLInputElement>(null);
   const [attachMenu, setAttachMenu] = useState<HTMLElement | null>(null);
+  const refusal = useStore((s) =>
+    selectSendRefusal(s, {
+      connection: s.connection,
+      hasText: text.trim().length > 0 || s.pendingAttachments.length > 0,
+      conversationId: s.openConversationId,
+    }),
+  );
 
   const resize = useCallback(() => {
     const el = ref.current;
@@ -63,11 +71,13 @@ export function Composer({ runActive, stopping }: Props) {
     };
   }, []);
 
+  // The box is cleared only once the message is actually on its way. It used to clear
+  // unconditionally, so a send refused for being offline (Enter bypasses the disabled button)
+  // or for a run still in flight threw away what Arsen had just typed.
   const submit = () => {
     if (runActive || (!text.trim() && pending.length === 0)) return;
-    if (editing) void sendEdit(text);
-    else send(text);
-    setText('');
+    if (editing) void sendEdit(text).then((sent) => sent && setText(''));
+    else if (send(text)) setText('');
   };
 
   const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -95,7 +105,8 @@ export function Composer({ runActive, stopping }: Props) {
     }
   };
 
-  const canSend = (text.trim().length > 0 || pending.length > 0) && connection === 'open';
+  // The same rule the store enforces, so the button and the Enter key agree about what is sendable.
+  const canSend = refusal === null;
   const pick = (input: HTMLInputElement | null) => {
     setAttachMenu(null);
     input?.click();

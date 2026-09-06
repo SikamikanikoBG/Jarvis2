@@ -290,6 +290,36 @@ async def test_mutating_call_gets_an_idempotency_key(harness: Harness):
     assert await harness.core.store.idempotent_result(call.idempotency_key) is not None
 
 
+async def test_a_repeated_mutating_call_is_answered_with_what_it_did(harness: Harness):
+    """A model that re-emits a tool_call id must not be told its action failed.
+
+    The key is claimed once, so the second call is refused — and the refusal used to be all the
+    model got ("duplicate call refused"), which reads as a failure. The result had been recorded
+    all along by record_idempotent_result and nothing ever read it back; a model that believes
+    its mail was not sent sends it again by another route.
+    """
+    tools = await with_tools(harness)
+    repeated = [ToolCall(id="same", name="test.write", arguments={})]
+    harness.chat.push(
+        FakeTurn(tool_calls=list(repeated)),
+        FakeTurn(tool_calls=list(repeated)),  # the same call id again
+        FakeTurn(text="ok"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="w", conversation_id=conv.id)
+    await harness.wait_for(sub, "run.done", timeout=10)
+
+    assert tools.calls == ["write"], "the action must run exactly once"
+    tool_msgs = [m for m in await harness.core.store.list_messages(conv.id) if m.role.value == "tool"]
+    assert len(tool_msgs) == 2
+    assert tool_msgs[0].content == "written"
+    # The replay says what happened, and says that it is a replay.
+    assert tool_msgs[1].content.startswith("written")
+    assert "already ran in this run" in tool_msgs[1].content
+    assert "Error" not in tool_msgs[1].content
+
+
 async def test_old_tool_results_are_truncated_in_context_but_kept_in_db(harness: Harness):
     """A 5k-char tool result is whole for the step that must read it, a head afterwards."""
     tools = await with_tools(harness)

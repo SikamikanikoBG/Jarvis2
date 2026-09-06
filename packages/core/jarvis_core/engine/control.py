@@ -14,15 +14,6 @@ class RunCancelledError(Exception):
         self.partial_message_id = partial_message_id
 
 
-class RunWaitingError(Exception):
-    """The run parked itself in ``waiting_user`` and released its slot."""
-
-    def __init__(self, reason: str, call_id: str | None) -> None:
-        super().__init__(reason)
-        self.reason = reason
-        self.call_id = call_id
-
-
 @dataclass(slots=True)
 class RunControl:
     emitter: RunEmitter

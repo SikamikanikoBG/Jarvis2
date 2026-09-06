@@ -9,6 +9,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
 
+from pydantic import ValidationError
+
 from jarvis_core.db import Store
 from jarvis_core.engine.bus import EventBus
 from jarvis_core.engine.context import ContextAssembler
@@ -416,7 +418,14 @@ class AgentLoop:
                     continue
 
             if not read_only and not await self._store.claim_idempotency(key, run.id, call.name):
-                result = ToolResult.failure("duplicate call refused (idempotency key already used)")
+                # The action already ran under this key, so answer with what it RETURNED.
+                # `record_idempotent_result` has always stored that and nothing ever read it
+                # back: the model was told "duplicate call refused", which reads as a failure,
+                # and a model that believes its mail was not sent sends it again another way.
+                stored = await self._store.idempotent_result(key)
+                result = _replay(stored) or ToolResult.failure(
+                    "duplicate call refused (this key already ran and recorded no result)"
+                )
                 results.append(await self._tool_message(run, call, result, 0, emit))
                 continue
 
@@ -637,6 +646,18 @@ def _compress_old_tool_results(messages: list[Message], budget_tokens: int) -> N
         total -= full - len(messages[i].content)
         if total <= budget:
             break
+
+
+def _replay(stored: str | None) -> ToolResult | None:
+    """The result a duplicate call already produced, labelled as a replay. None if unusable."""
+    if not stored:
+        return None
+    try:
+        result = ToolResult.model_validate_json(stored)
+    except ValidationError:
+        return None
+    note = "\n[this exact call already ran in this run; the result above is what it returned then]"
+    return result.model_copy(update={"text": result.text + note})
 
 
 def _pending_tool_calls(run_messages: list[Message]) -> tuple[Message, list[ToolCall]] | None:

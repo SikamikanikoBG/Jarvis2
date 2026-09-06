@@ -19,3 +19,6 @@ data/
 !.env.example
 logs/
 *.log
+.coverage
+coverage.xml
+htmlcov/

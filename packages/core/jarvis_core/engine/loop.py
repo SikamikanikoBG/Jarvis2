@@ -7,16 +7,14 @@ import logging
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from jarvis_core.db import Store
 from jarvis_core.engine.bus import EventBus
 from jarvis_core.engine.context import ContextAssembler
 from jarvis_core.engine.control import RunCancelledError, RunControl
 from jarvis_core.engine.supervision import Emit, RunWatch, StepRecord, Supervisor, args_hash
-from jarvis_core.features.knowledge import KnowledgeLearner
-from jarvis_core.features.planner import PLAN_TOOLS, Planner
-from jarvis_core.features.skills import SkillDetector
+from jarvis_core.features.planner import PLAN_TOOLS
 from jarvis_core.models.base import (
     ModelAdapter,
     ModelCancelled,
@@ -62,6 +60,15 @@ from jarvis_proto.events import (
 )
 from jarvis_proto.runs import PlanStepStatus
 from jarvis_proto.settings import RoleName
+
+if TYPE_CHECKING:
+    # Type-only: these live in jarvis_core.features, which imports jarvis_core.engine.bus, which
+    # runs jarvis_core.engine.__init__, which imports this module. Importing them for real made
+    # `import jarvis_core.features.knowledge` (or .skills) as the FIRST jarvis_core import raise a
+    # circular ImportError — invisible from the app, which always reaches them via app.py.
+    from jarvis_core.features.knowledge import KnowledgeLearner
+    from jarvis_core.features.planner import Planner
+    from jarvis_core.features.skills import SkillDetector
 
 log = logging.getLogger(__name__)
 

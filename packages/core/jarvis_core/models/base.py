@@ -73,17 +73,24 @@ class ModelAdapter(Protocol):
     async def probe(self) -> ProbeResult: ...
 
 
-_endpoint_semaphores: dict[str, asyncio.Semaphore] = {}
+_endpoint_semaphores: dict[str, tuple[int, asyncio.Semaphore]] = {}
 
 
 def endpoint_semaphore(spec: ModelSpec, limit: int) -> asyncio.Semaphore:
-    """One semaphore per endpoint (GPU box), shared by every role that points at it."""
+    """One semaphore per endpoint (GPU box), shared by every role that points at it.
+
+    Keyed by the limit that was CONFIGURED, not by how many permits are free. The check used to
+    be ``sem._value > limit`` — the remaining permits — which got it wrong in both directions:
+    an idle semaphore was rebuilt on every lookup (so roles stopped sharing one), and once the
+    permits had been spent a *raised* ``max_concurrent_runs_per_endpoint`` was ignored, leaving
+    the endpoint pinned to the old, narrower limit until the process restarted.
+    """
     key = spec.endpoint_key
-    sem = _endpoint_semaphores.get(key)
-    if sem is None or sem._value > limit:
-        sem = asyncio.Semaphore(limit)
-        _endpoint_semaphores[key] = sem
-    return sem
+    current = _endpoint_semaphores.get(key)
+    if current is None or current[0] != limit:
+        current = (limit, asyncio.Semaphore(limit))
+        _endpoint_semaphores[key] = current
+    return current[1]
 
 
 def reset_endpoint_semaphores() -> None:

@@ -8,7 +8,15 @@ import json
 import httpx
 import pytest
 
-from jarvis_core.models.base import ModelDoneChunk, ModelError, ModelReasoningChunk, ModelTextChunk, ModelToolCallsChunk
+from jarvis_core.models.base import (
+    ModelDoneChunk,
+    ModelError,
+    ModelReasoningChunk,
+    ModelTextChunk,
+    ModelToolCallsChunk,
+    endpoint_semaphore,
+    reset_endpoint_semaphores,
+)
 from jarvis_core.models.ollama import OllamaAdapter, to_ollama_messages
 from jarvis_core.models.openai_compat import OpenAICompatAdapter, to_openai_messages
 from jarvis_proto import Message, ModelSpec, Provider, ToolCall
@@ -30,6 +38,31 @@ def test_reasoning_is_never_sent_back():
     a = to_openai_messages(msgs)
     assert a[1]["tool_calls"][0]["function"]["arguments"] == '{"x": 1}'
     assert a[2]["tool_call_id"] == "1"
+
+
+async def test_endpoint_semaphore_is_shared_and_follows_the_configured_limit():
+    """One semaphore per endpoint, rebuilt only when the configured limit itself changes."""
+    reset_endpoint_semaphores()
+    chat = ModelSpec(provider=Provider.VLLM, base_url="http://gpu/v1", model="a")
+    triage = ModelSpec(provider=Provider.VLLM, base_url="http://gpu/v1", model="b")
+    other = ModelSpec(provider=Provider.VLLM, base_url="http://other/v1", model="a")
+
+    sem = endpoint_semaphore(chat, 2)
+    # Two roles on the same box share one limit; a different box gets its own.
+    assert endpoint_semaphore(triage, 2) is sem
+    assert endpoint_semaphore(other, 2) is not sem
+    # Sharing survives a lookup while permits are held (the old check compared free permits, so
+    # an in-flight call made the next role build a second semaphore and the box saw 2x traffic).
+    async with sem:
+        assert endpoint_semaphore(triage, 2) is sem
+
+    # Lowering the setting tightens the endpoint...
+    tighter = endpoint_semaphore(chat, 1)
+    assert tighter is not sem and tighter._value == 1
+    # ...and raising it again takes effect. It used to be ignored for the life of the process.
+    wider = endpoint_semaphore(chat, 4)
+    assert wider is not tighter and wider._value == 4
+    reset_endpoint_semaphores()
 
 
 def _mock_transport(lines: list[str], *, status: int = 200) -> httpx.MockTransport:

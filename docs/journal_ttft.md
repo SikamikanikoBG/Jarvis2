@@ -84,6 +84,79 @@ for itself over a long run; firing three times cannot.
 vLLM returns `prompt_tokens_details.cached_tokens` in the streaming usage. Recording it turns
 every one of the inferences above into a number the run inspector shows directly.
 
+## Cause 3 — pre-flight asked the model two questions one after the other
+
+Once prefill was fixed the wait moved. Time to first token, measured end to end, was ~1,300 ms
+of which ~950 ms was pre-flight: skill detection and the plan-tier decision, two independent
+questions about the same sentence, sent as two sequential round trips. `planner.py` has said
+"tier + skills in one cheap call" since it was written; the code never did it. Nothing streams
+while they run, so all of it is Arsen watching an empty screen.
+
+There are 40 skills installed and **none has triggers**, so the structural shortcut never fires
+and the classifier call happens on every single message.
+
 ## Changes
 
-(filled in as they land)
+1. **`cached_tokens` recorded** (core a19, proto a9). vLLM's own count of what its prefix cache
+   served, in `ModelUsage` → `model.done` → the run inspector shows `cached 12.4k (94%)`. Every
+   number below is measured with it, not inferred from timings.
+2. **The tool list stopped churning** (core a19). `specs()` is sorted by name, so a reconnect
+   cannot reorder the prompt; a provider that answers "nothing" while reporting itself not
+   connected keeps its tools, because closing a browser is not losing a capability.
+3. **Compression stopped re-firing** (core a20). It comes back to 70% of the budget instead of
+   just under it, so the one edit that costs a full re-prefill happens rarely enough to pay for
+   itself.
+4. **Pre-flight goes together** (core a21, proto a10). `asyncio.gather` over the two questions —
+   same prompts, same answers — and `max_concurrent_runs_per_endpoint` 1 → 2, without which the
+   gather is a no-op.
+
+## After (same box, same model, measured the same way)
+
+Browser extension arriving and leaving mid-conversation, the exact case that cost 17 s a turn:
+
+```
+1 baseline            prompt 13,444 | cached  93% | TTFT   820 ms
+2 baseline            prompt 13,470 | cached 100% | TTFT   395 ms
+3 extension CONNECTED prompt 13,496 | cached 100% | TTFT   225 ms
+4 extension still on  prompt 13,522 | cached 100% | TTFT   220 ms
+5 extension GONE      prompt 13,548 | cached 100% | TTFT   275 ms
+6 still gone          prompt 13,574 | cached 100% | TTFT   221 ms
+```
+
+Time to first token, end to end, as the endpoint limit was raised:
+
+```
+limit 1   median 1,181 ms      limit 2   median 992 ms      limit 3   median 803 ms
+```
+
+And the property Arsen asked for — only the missing chunk is prefilled — as a conversation grows:
+
+```
+turn 1  prompt 14,183 | cached 88% | prefill 1,639 | first token 3,395 ms
+turn 4  prompt 16,718 | cached 95% | prefill   846 | first token 2,482 ms
+turn 8  prompt 20,098 | cached 96% | prefill   850 | first token 2,544 ms
+```
+
+Prefill is flat at ~850 tokens — exactly the new turn — while the conversation grows by 6,000.
+It is O(what is new), not O(how long the chat is).
+
+| | before | after |
+|---|---|---|
+| chat TTFT, median | 9.4 s | 0.2-0.4 s |
+| chat TTFT, p90 | 22.1 s | ~0.4 s |
+| worst observed in a run | 64.2 s | — (the repeated rewrite is gone) |
+| first token, end to end | 12-40 s | 0.8-1.3 s |
+
+## Still on the table
+
+* The **date line** lives in the system message, so the shared prefix changes at midnight: one
+  ~9 s prefill for whoever chats first that day. Moving it into the per-turn context (which sits
+  at the end) would make the system prefix stable forever, at the risk of the model reading an
+  older date from an earlier turn. Not worth the correctness risk without thinking it through.
+* **Skills have no triggers.** 40 skills, 0 triggers, so the structural shortcut in
+  `SkillDetector` never fires and every message pays for a classifier call. Adding trigger
+  phrases to the skills that have obvious ones removes that call entirely for those messages.
+  That is data, not code, and it is Arsen's to write.
+* `max_concurrent_runs_per_endpoint` 3 measured better (803 ms) on an idle box. It is one
+  setting away, and the reason it is not the default is written next to it.
+

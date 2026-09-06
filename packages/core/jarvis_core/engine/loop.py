@@ -183,8 +183,12 @@ class AgentLoop:
 
             # Plan progress is the one thing that changes every step; it rides as the LAST message
             # so every cached token before it stays valid (the system prompt never changes).
-            if plan_trailer is not None and messages and messages[-1] is plan_trailer:
-                messages.pop()
+            # It must exist at most ONCE. Removing it only when it was still last was wrong for
+            # every step that called a tool — the assistant message and the tool results land
+            # after it — so each such step left its block behind and the model read a stack of
+            # plan blocks with a different step marked "current" in each.
+            if plan_trailer is not None:
+                messages[:] = [m for m in messages if m is not plan_trailer]
             plan_trailer = self._context.plan_message(run.plan) if run.plan is not None else None
             # Tool results from earlier steps have been acted on; keep their head only. The DB
             # keeps the full text. Without this a 49-event calendar_list rode along in every one

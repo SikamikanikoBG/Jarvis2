@@ -270,6 +270,14 @@ async def test_multi_step_request_gets_a_plan_and_steps_advance(harness: Harness
     assert any(call[0][-1].name == "plan" and "## Plan" in call[0][-1].content for call in plan_calls)
     # The trailer is not persisted.
     assert not any(m.name == "plan" for m in await core.store.list_messages(conv.id))
+    # ...and exactly ONE of it exists per call. The trailer was only popped when it was still
+    # the last message, but a step that calls a tool puts the assistant message and the tool
+    # results after it, so every such step left its block behind: the model ended up reading
+    # several plan blocks, each with a different step marked "← current".
+    for i, call in enumerate(plan_calls):
+        blocks = [m for m in call[0] if m.name == "plan"]
+        assert len(blocks) == 1, f"call {i} carried {len(blocks)} plan blocks, not 1"
+        assert call[0][-1] is blocks[0], f"call {i} did not end with the plan block"
     # Plan tools were exposed only because a plan exists.
     assert any(t.name == "jarvis.plan_step_done" for t in harness.chat.calls[2][1])
 

@@ -22,6 +22,7 @@ import base64
 import io
 import logging
 import threading
+import time
 import wave
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -38,6 +39,7 @@ MAX_BUFFER_S = 600  # if nobody pulls for ten minutes, drop the oldest audio rat
 # transcribed - the timeline still advances, so later chunks keep their real offsets.
 # ~ -48 dBFS on the int16 scale; normal speech is 20-100x louder.
 SILENCE_RMS = 120
+START_LISTEN_S = 0.5  # sample the devices before answering meeting_start, to report their levels
 
 
 class MeetingError(RuntimeError):
@@ -49,6 +51,7 @@ class AudioSource(Protocol):
 
     rate: int
     channels: int
+    peak: int  # loudest RMS seen so far; 0 means the device delivered digital silence
 
     def read(self) -> bytes: ...
     def close(self) -> None: ...
@@ -60,6 +63,10 @@ class _Buffered:
     def __init__(self, rate: int, channels: int) -> None:
         self.rate = rate
         self.channels = channels
+        # Loudest thing this source has delivered. A device that is muted, blocked by Windows
+        # privacy settings or rendering to another endpoint delivers digital zeros, and without
+        # this the only symptom is an empty transcript.
+        self.peak = 0
         self._buf = bytearray()
         self._lock = threading.Lock()
 
@@ -69,6 +76,8 @@ class _Buffered:
             self._buf.extend(data)
             if len(self._buf) > limit:
                 del self._buf[: len(self._buf) - limit]
+        if data:
+            self.peak = max(self.peak, audioop.rms(data, SAMPLE_WIDTH))
 
     def read(self) -> bytes:
         with self._lock:
@@ -212,10 +221,28 @@ class Recording:
             "wav_base64": base64.b64encode(to_wav(pcm)).decode("ascii"),
         }
 
+    def levels(self) -> dict[str, int]:
+        """Peak RMS per source. All zeros = nothing reached this process; see `describe_levels`."""
+        return {name: int(getattr(src, "peak", 0)) for name, src in self.sources.items()}
+
     def close(self) -> None:
         self.stopped = True
         for source in self.sources.values():
             source.close()
+
+
+def describe_levels(levels: dict[str, int]) -> str | None:
+    """A sentence about dead sources, or None when everything is delivering audio."""
+    dead = sorted(name for name, peak in levels.items() if peak < SILENCE_RMS)
+    if not dead or not levels:
+        return None
+    what = {
+        "mic": "the microphone delivered digital silence (muted, or Windows microphone access is "
+        "off for this app)",
+        "system": "system audio delivered digital silence (nothing was playing through the "
+        "speakers this machine captures, or the sound is going to another device)",
+    }
+    return "; ".join(what.get(name, f"{name} delivered digital silence") for name in dead)
 
 
 def to_wav(pcm: bytes, rate: int = TARGET_RATE) -> bytes:
@@ -246,13 +273,20 @@ class MeetingCapture:
                 rec = self._recordings[meeting_id]
                 return {"meeting_id": meeting_id, "recording": True, "sources": sorted(rec.sources), "already": True}
             opened, problems = self._opener(wanted)
-            self._recordings[meeting_id] = Recording(meeting_id, opened, problems)
+            rec = Recording(meeting_id, opened, problems)
+            self._recordings[meeting_id] = rec
+        # Listen briefly before answering: "recording" while every device delivers zeros is the
+        # one failure the UI cannot see, and it is worth half a second to say so up front.
+        time.sleep(START_LISTEN_S)
+        levels = rec.levels()
         return {
             "meeting_id": meeting_id,
             "recording": True,
             "sources": sorted(opened),
             "unavailable": problems,
             "rate": TARGET_RATE,
+            "levels": levels,
+            "warning": describe_levels(levels),
         }
 
     def pull(self, meeting_id: str, after_seq: int = 0) -> dict[str, Any]:
@@ -266,6 +300,8 @@ class MeetingCapture:
             "recording": not rec.stopped,
             "chunks": chunks,
             "silent_seconds": round(rec.silent_frames / TARGET_RATE, 1),
+            "levels": rec.levels(),
+            "warning": describe_levels(rec.levels()),
         }
 
     def stop(self, meeting_id: str) -> dict[str, Any]:
@@ -281,6 +317,8 @@ class MeetingCapture:
             "chunks": [chunk] if chunk else [],
             "seconds": round(rec.emitted_frames / TARGET_RATE, 1),
             "silent_seconds": round(rec.silent_frames / TARGET_RATE, 1),
+            "levels": rec.levels(),
+            "warning": describe_levels(rec.levels()),
         }
 
     def active(self) -> list[str]:

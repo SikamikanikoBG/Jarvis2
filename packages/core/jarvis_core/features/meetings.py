@@ -36,11 +36,23 @@ _SUMMARY_PROMPT = (
 PULL_INTERVAL_S = 10.0
 
 
+def _warning_of(text: str) -> str:
+    """The host's level warning out of a tool reply, or "" when there is none."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return ""
+    return str(data.get("warning") or "") if isinstance(data, dict) else ""
+
+
 class MeetingService:
     def __init__(self, core: Core) -> None:
         self.core = core
         self._pollers: dict[str, asyncio.Task[None]] = {}
         self._watchers: set[asyncio.Task[None]] = set()
+        # Latest level warning the host reported per meeting ("the microphone delivered digital
+        # silence"), so a silent recording can say WHY instead of only that it was silent.
+        self._warnings: dict[str, str] = {}
 
     # --- store ---------------------------------------------------------------------------
 
@@ -126,6 +138,9 @@ class MeetingService:
         if res.kind.value == "error":
             await self._set_status(meeting, MeetingStatus.FAILED, ended_at=now)
             raise RuntimeError(f"host could not start capture: {res.text[:200]}")
+        # The host listens for half a second before answering; a device delivering digital
+        # silence is said out loud now, not discovered as an empty transcript at the end.
+        await self._note_warning(meeting, _warning_of(res.text))
         self.core.bus.publish(
             MeetingChanged(meeting_id=meeting.id, conversation_id=conv.id, status=meeting.status.value)
         )
@@ -172,13 +187,25 @@ class MeetingService:
         watcher.add_done_callback(self._watchers.discard)
         return meeting
 
+    async def _note_warning(self, meeting: Meeting, warning: str) -> None:
+        if not warning:
+            return
+        self._warnings[meeting.id] = warning
+        msg = await self.core.store.add_message(
+            Message.assistant(f"⚠ {warning}", conversation_id=meeting.conversation_id, name="meeting")
+        )
+        self.core.bus.publish(MessageCreated(message=msg))
+
     async def _nothing_recorded(self, meeting: Meeting) -> Meeting:
         """Say so plainly instead of inventing a summary. No run, no model call."""
+        detail = self._warnings.pop(meeting.id, "")
         text = (
             "No speech was captured, so there is nothing to summarise. The recording ran but every "
             "chunk was silence — check that the right microphone is active and, for a call, that "
             "system audio is being played through the speakers this machine captures."
         )
+        if detail:
+            text += f"\n\nWhat the host measured: {detail}."
         msg = await self.core.store.add_message(
             Message.assistant(text, conversation_id=meeting.conversation_id, name="meeting")
         )
@@ -228,6 +255,10 @@ class MeetingService:
             data = json.loads(res.text)
         except json.JSONDecodeError:
             return
+        if isinstance(data, dict) and "warning" in data:
+            # Present and empty means the levels recovered; absent means an older host that does
+            # not measure them - do not erase what the start already told us.
+            self._warnings[meeting.id] = str(data["warning"] or "")
         for chunk in data.get("chunks", []) if isinstance(data, dict) else []:
             audio = base64.b64decode(chunk.get("wav_base64", ""))
             if audio:

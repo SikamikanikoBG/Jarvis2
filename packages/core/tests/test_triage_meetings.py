@@ -166,6 +166,7 @@ class FakeHost(BuiltinProvider):
         self.reads: list[str] = []
         self.folders_created: list[str] = []
         self.pulled = 0
+        self.warning = ""  # what meeting_start reports about the devices
         self.invites = [dict(i) for i in _INVITES]
         self.responses: list[tuple[str, str, str]] = []
         self.canceled_calls = 0
@@ -222,7 +223,7 @@ class FakeHost(BuiltinProvider):
 
     @tool("laptop.meeting_start", description="start", args=_MeetingArgs)
     async def _mstart(self, meeting_id: str, after_seq: int = 0) -> ToolResult:
-        return ToolResult.data("recording")
+        return ToolResult.data(json.dumps({"recording": True, "levels": {"mic": 800}, "warning": self.warning}))
 
     @tool("laptop.meeting_stop", description="stop", args=_MeetingArgs)
     async def _mstop(self, meeting_id: str, after_seq: int = 0) -> ToolResult:
@@ -588,7 +589,12 @@ async def test_a_silent_meeting_says_so_instead_of_summarising_something_else(ha
         return SttResult(text="", language="en", backend="fake", duration_ms=5, segments=[])
 
     monkeypatch.setattr(core.transcriber, "transcribe", silent)
+    host = next(p for p in core.registry._providers if getattr(p, "name", "") == "laptop")  # type: ignore[attr-defined]
+    host.warning = "the microphone delivered digital silence (muted, or access is off)"
     meeting = await core.meetings.start(title="Quiet room", host="laptop")
+    # The dead device is announced at the start, not discovered at the end.
+    started_msgs = await core.store.list_messages(meeting.conversation_id)
+    assert started_msgs[-1].name == "meeting" and "digital silence" in started_msgs[-1].content
     await core.meetings._pull_once(meeting)
     stopped = await core.meetings.stop(meeting.id)
 
@@ -598,6 +604,7 @@ async def test_a_silent_meeting_says_so_instead_of_summarising_something_else(ha
     msgs = await core.store.list_messages(meeting.conversation_id)
     assert msgs[-1].name == "meeting" and "nothing to summarise" in msgs[-1].content
     assert "microphone" in msgs[-1].content  # and it says what to check
+    assert "What the host measured" in msgs[-1].content
 
 
 async def test_meeting_start_fails_loudly_when_host_cannot_capture(harness: Harness):

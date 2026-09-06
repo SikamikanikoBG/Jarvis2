@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import audioop
 import base64
 import io
 import math
@@ -10,7 +11,7 @@ import wave
 
 import pytest
 
-from jarvis_host.meetings import TARGET_RATE, AudioSource, MeetingCapture, MeetingError
+from jarvis_host.meetings import TARGET_RATE, AudioSource, MeetingCapture, MeetingError, describe_levels
 
 
 def tone(seconds: float, rate: int, channels: int, freq: float = 220.0, amp: int = 8000) -> bytes:
@@ -28,11 +29,14 @@ class FakeSource(AudioSource):
     def __init__(self, rate: int, channels: int) -> None:
         self.rate = rate
         self.channels = channels
+        self.peak = 0
         self.queued = bytearray()
         self.closed = False
 
-    def push(self, seconds: float) -> None:
-        self.queued += tone(seconds, self.rate, self.channels)
+    def push(self, seconds: float, amp: int = 8000) -> None:
+        data = tone(seconds, self.rate, self.channels, amp=amp)
+        self.queued += data
+        self.peak = max(self.peak, audioop.rms(data, 2))
 
     def read(self) -> bytes:
         data = bytes(self.queued)
@@ -106,6 +110,26 @@ def test_a_short_burst_waits_but_the_stop_drains_it(capture):  # type: ignore[no
     assert (channels, rate) == (1, TARGET_RATE) and abs(frames - int(0.6 * TARGET_RATE)) < 200
     assert stopped["recording"] is False and 0.5 < stopped["seconds"] < 0.7
     assert all(s.closed for s in sources.values()) and cap.active() == []
+
+
+def test_a_device_that_delivers_digital_silence_is_named(capture):  # type: ignore[no-untyped-def]
+    """On this laptop both devices delivered exact zeros to the host process (the endpoint peak
+    meter confirmed nothing was rendered). An empty transcript was the only symptom."""
+    cap, sources = capture
+    started = cap.start("mtg_lvl")
+    assert started["levels"] == {"mic": 0, "system": 0}
+    assert "microphone delivered digital silence" in started["warning"]
+    assert "system audio delivered digital silence" in started["warning"]
+
+    sources["mic"].push(1.5)  # the microphone comes alive
+    res = cap.pull("mtg_lvl")
+    assert res["levels"]["mic"] > 0 and res["levels"]["system"] == 0
+    assert "microphone" not in (res["warning"] or "") and "system audio" in res["warning"]
+
+    sources["system"].push(1.5)
+    stopped = cap.stop("mtg_lvl")
+    assert stopped["warning"] is None and all(v > 0 for v in stopped["levels"].values())
+    assert describe_levels({}) is None
 
 
 def test_silence_is_dropped_but_the_clock_keeps_running(capture):  # type: ignore[no-untyped-def]

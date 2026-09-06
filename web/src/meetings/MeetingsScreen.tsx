@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { Icon } from '../components/Icon';
-import { IconButton, RelativeTime } from '../components/primitives';
+import { IconButton, InlineConfirm, RelativeTime } from '../components/primitives';
 import { useTicker } from '../components/useTicker';
 import { formatDuration } from '../lib/format';
 import { errorText, useLoader } from '../lib/useLoader';
@@ -162,6 +162,7 @@ function MeetingPanel({ id, version, onBack, desktop, onChanged, notify }: Panel
     return [...map.values()].sort((a, b) => a.seq - b.seq);
   }, [m, live]);
   const [stopping, setStopping] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   if (error) return <section className="kg-detail field-error">{error}</section>;
   if (!m) return <section className="kg-detail empty small">Loading…</section>;
@@ -196,7 +197,26 @@ function MeetingPanel({ id, version, onBack, desktop, onChanged, notify }: Panel
             {stopping ? 'Stopping…' : 'Stop'}
           </button>
         )}
+        {!confirmDelete && <IconButton icon="trash" label="Delete this recording" onClick={() => setConfirmDelete(true)} />}
       </header>
+      {confirmDelete && (
+        <InlineConfirm
+          text={`Delete "${m.title}", its transcript and its frames?`}
+          confirmLabel="Delete"
+          danger
+          onConfirm={() => {
+            setConfirmDelete(false);
+            api.meetings
+              .remove(m.id)
+              .then(() => {
+                onBack();
+                onChanged();
+              })
+              .catch((e: unknown) => notify(`Delete failed: ${errorText(e)}`, 'error'));
+          }}
+          onCancel={() => setConfirmDelete(false)}
+        />
+      )}
       <div className="row small muted" style={{ flexWrap: 'wrap' }}>
         <span>host {m.host}</span>
         <span>· started {new Date(m.started_at).toLocaleString()}</span>

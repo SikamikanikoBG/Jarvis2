@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -68,6 +68,16 @@ async def get_meeting(request: Request, meeting_id: str) -> MeetingDetail:
     if detail is None:
         raise HTTPException(404, "meeting not found")
     return detail
+
+
+@router.delete("/meetings/{meeting_id}", status_code=204)
+async def delete_meeting(request: Request, meeting_id: str, keep_conversation: bool = False) -> Response:
+    """Delete a recording: its rows, its frames on disk and, unless asked otherwise, the
+    conversation holding its transcript. A recording still running is stopped first."""
+    ok = await core_of(request).meetings.delete(meeting_id, with_conversation=not keep_conversation)
+    if not ok:
+        raise HTTPException(404, "meeting not found")
+    return Response(status_code=204)
 
 
 @router.post("/meetings/{meeting_id}/stop", response_model=Meeting)

@@ -40,6 +40,10 @@ MAX_BUFFER_S = 600  # if nobody pulls for ten minutes, drop the oldest audio rat
 # ~ -48 dBFS on the int16 scale; normal speech is 20-100x louder.
 SILENCE_RMS = 120
 START_LISTEN_S = 0.5  # sample the devices before answering meeting_start, to report their levels
+# Silence is judged on the LOUDEST short window, never on the whole chunk: a 10-second pull that
+# holds two seconds of a child speaking quietly averages out below any useful threshold. The
+# first family recording lost 5 of its 7 chunks that way - 26 seconds of speech, gone.
+WINDOW_S = 0.2
 
 
 class MeetingError(RuntimeError):
@@ -189,14 +193,23 @@ class Recording:
             track = resampler.convert(source.read())
             if track:
                 tracks.append(track)
-        if not tracks:
-            return b""
-        longest = max(len(t) for t in tracks)
-        mixed = tracks[0].ljust(longest, b"\x00")
-        for track in tracks[1:]:
+        live = [t for t in tracks if audioop.max(t, SAMPLE_WIDTH) > 0]
+        if not live:
+            return tracks[0] if tracks else b""
+        if len(live) == 1:
+            # Only one source is really producing sound (the other is muted, or nothing is
+            # playing). Attenuating then would just make quiet speech quieter for no benefit.
+            return live[0]
+        longest = max(len(t) for t in live)
+        mixed = live[0].ljust(longest, b"\x00")
+        for track in live[1:]:
             # Halve first: two full-scale sources added together clip, and a clipped meeting
             # transcribes worse than a quiet one.
-            mixed = audioop.add(audioop.mul(mixed, SAMPLE_WIDTH, 0.7), audioop.mul(track.ljust(longest, b"\x00"), SAMPLE_WIDTH, 0.7), SAMPLE_WIDTH)
+            mixed = audioop.add(
+                audioop.mul(mixed, SAMPLE_WIDTH, 0.7),
+                audioop.mul(track.ljust(longest, b"\x00"), SAMPLE_WIDTH, 0.7),
+                SAMPLE_WIDTH,
+            )
         return mixed
 
     def take_chunk(self, *, final: bool = False) -> dict[str, Any] | None:
@@ -207,7 +220,7 @@ class Recording:
         if not frames or (not final and frames < MIN_CHUNK_S * TARGET_RATE):
             return None
         pcm, self._pending = self._pending, b""
-        if audioop.rms(pcm, SAMPLE_WIDTH) < SILENCE_RMS:
+        if loudest_window(pcm) < SILENCE_RMS:
             self.emitted_frames += frames  # keep the clock honest for the chunks that follow
             self.silent_frames += frames
             return None
@@ -243,6 +256,16 @@ def describe_levels(levels: dict[str, int]) -> str | None:
         "speakers this machine captures, or the sound is going to another device)",
     }
     return "; ".join(what.get(name, f"{name} delivered digital silence") for name in dead)
+
+
+def loudest_window(pcm: bytes, window_s: float = WINDOW_S) -> int:
+    """RMS of the loudest ``window_s`` slice. Speech anywhere in a chunk keeps the whole chunk."""
+    if not pcm:
+        return 0
+    step = max(SAMPLE_WIDTH, int(TARGET_RATE * window_s) * SAMPLE_WIDTH)
+    if len(pcm) <= step:
+        return audioop.rms(pcm, SAMPLE_WIDTH)
+    return max(audioop.rms(pcm[i : i + step], SAMPLE_WIDTH) for i in range(0, len(pcm) - step + 1, step))
 
 
 def to_wav(pcm: bytes, rate: int = TARGET_RATE) -> bytes:

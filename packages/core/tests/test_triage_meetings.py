@@ -167,6 +167,8 @@ class FakeHost(BuiltinProvider):
         self.folders_created: list[str] = []
         self.pulled = 0
         self.warning = ""  # what meeting_start reports about the devices
+        self.chunk_seq: int | None = None  # set to 0 to number chunks like the real host
+        self.after_seqs: list[int] = []  # what the core told the host to skip past
         self.invites = [dict(i) for i in _INVITES]
         self.responses: list[tuple[str, str, str]] = []
         self.canceled_calls = 0
@@ -227,10 +229,25 @@ class FakeHost(BuiltinProvider):
 
     @tool("laptop.meeting_stop", description="stop", args=_MeetingArgs)
     async def _mstop(self, meeting_id: str, after_seq: int = 0) -> ToolResult:
-        return ToolResult.data("stopped")
+        if self.chunk_seq is None:
+            return ToolResult.data("stopped")
+        self.chunk_seq += 1  # the real host returns its last chunk WITH the stop
+        return ToolResult.data(json.dumps({"chunks": [self._chunk()], "recording": False}))
+
+    def _chunk(self) -> dict[str, object]:
+        wav = base64.b64encode(b"RIFF....fake").decode()
+        t0 = (self.chunk_seq - 1) * 10.0
+        return {"seq": self.chunk_seq, "t0": t0, "t1": t0 + 10.0, "wav_base64": wav}
 
     @tool("laptop.meeting_pull", description="pull", args=_MeetingArgs, read_only=True)
     async def _mpull(self, meeting_id: str, after_seq: int = 0) -> ToolResult:
+        self.after_seqs.append(after_seq)
+        if self.chunk_seq is not None:
+            # Like the real host: a chunk whose number is not past `after_seq` is withheld.
+            self.chunk_seq += 1
+            chunk = self._chunk()
+            chunks = [chunk] if chunk["seq"] > after_seq else []  # type: ignore[operator]
+            return ToolResult.data(json.dumps({"chunks": chunks}))
         if self.pulled:
             return ToolResult.empty()
         self.pulled += 1
@@ -550,8 +567,10 @@ async def test_meeting_records_transcribes_and_summarises(harness: Harness, monk
     meeting = await core.meetings.start(title="Steering", host="laptop")
     sub = harness.subscribe(meeting.conversation_id)
     assert meeting.status.value == "recording"
-    # Pull once by hand (the poller ticks every 10 s) and check the transcript landed.
+    # Pull once by hand (the poller ticks every 10 s) and check the transcript landed. Pulling and
+    # transcribing are separate now, so wait for the transcription worker to catch up.
     await core.meetings._pull_once(meeting)
+    await core.meetings.settle(meeting)
     detail = await core.meetings.detail(meeting.id)
     assert detail is not None and [s.text for s in detail.segments] == ["Welcome everyone.", "Budget is approved."]
     segs = [e for e in _drain(sub) if getattr(e, "type", "") == "meeting.segment"]
@@ -596,6 +615,7 @@ async def test_a_silent_meeting_says_so_instead_of_summarising_something_else(ha
     started_msgs = await core.store.list_messages(meeting.conversation_id)
     assert started_msgs[-1].name == "meeting" and "digital silence" in started_msgs[-1].content
     await core.meetings._pull_once(meeting)
+    await core.meetings.settle(meeting)
     stopped = await core.meetings.stop(meeting.id)
 
     assert stopped.status.value == "done" and stopped.summary_run_id is None
@@ -605,6 +625,42 @@ async def test_a_silent_meeting_says_so_instead_of_summarising_something_else(ha
     assert msgs[-1].name == "meeting" and "nothing to summarise" in msgs[-1].content
     assert "microphone" in msgs[-1].content  # and it says what to check
     assert "What the host measured" in msgs[-1].content
+
+
+async def test_no_chunk_is_lost_between_the_pulls_or_at_the_stop(harness: Harness, monkeypatch: Any):
+    """A real 68-second family recording came back with 22 seconds missing in the middle and the
+    last 26 gone. Three causes, all here: the core sent the host a SEGMENT count where it expects
+    a CHUNK number (so the host discarded chunks whose number had fallen behind), the closing
+    chunk that meeting_stop returns was never read, and transcription blocked the next pull."""
+    core = harness.core
+    host = await _with_host(harness)
+
+    async def transcribe(audio: bytes, *, filename: str, mime: str, language: str | None = None) -> SttResult:
+        await asyncio.sleep(0.05)  # Whisper is slow; the pulls must not wait for it
+        return SttResult(
+            text="one two three",
+            language="en",
+            backend="fake",
+            duration_ms=5,
+            # Three segments per chunk: this is what pushed the segment count past the chunk number.
+            segments=[{"t0": 0.0, "t1": 1.0, "text": "one"}, {"t0": 1.0, "t1": 2.0, "text": "two"}, {"t0": 2.0, "t1": 3.0, "text": "three"}],
+        )
+
+    monkeypatch.setattr(core.transcriber, "transcribe", transcribe)
+    host.chunk_seq = 0  # the fake host numbers its chunks like the real one
+    meeting = await core.meetings.start(title="Family", host="laptop")
+
+    for _ in range(4):
+        await core.meetings._pull_once(meeting)
+    await core.meetings.settle(meeting)
+    assert host.after_seqs == [0, 1, 2, 3], f"the host was told {host.after_seqs}, not chunk numbers"
+    detail = await core.meetings.detail(meeting.id)
+    assert detail is not None and len(detail.segments) == 12  # four chunks, nothing discarded
+
+    stopped = await core.meetings.stop(meeting.id)
+    detail = await core.meetings.detail(meeting.id)
+    assert detail is not None and len(detail.segments) == 15  # the closing chunk landed too
+    assert stopped.status.value == "summarising"
 
 
 async def test_meeting_start_fails_loudly_when_host_cannot_capture(harness: Harness):

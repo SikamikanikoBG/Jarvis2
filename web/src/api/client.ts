@@ -186,6 +186,8 @@ export const api = {
     get: (id: string) => request<MeetingDetail>('GET', `/api/meetings/${encodeURIComponent(id)}`),
     create: (body: { title?: string; host: string }) => request<Meeting>('POST', '/api/meetings', body),
     stop: (id: string) => request<Meeting>('POST', `/api/meetings/${encodeURIComponent(id)}/stop`),
+    /** Deletes the recording, its frames and the conversation holding its transcript. */
+    remove: (id: string) => request<null>('DELETE', `/api/meetings/${encodeURIComponent(id)}`),
   },
   collab: {
     keys: () => request<CollabKey[]>('GET', '/api/collab/keys'),

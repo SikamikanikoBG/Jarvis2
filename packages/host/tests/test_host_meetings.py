@@ -148,6 +148,44 @@ def test_silence_is_dropped_but_the_clock_keeps_running(capture):  # type: ignor
     assert chunk["seq"] == 1 and 1.9 < chunk["t0"] < 2.1
 
 
+def test_quiet_speech_inside_a_long_silence_is_kept(capture):  # type: ignore[no-untyped-def]
+    """The first family recording lost 5 of 7 chunks: whole-chunk RMS averaged two seconds of a
+    child speaking into eight seconds of room tone and called the result silence."""
+    cap, sources = capture
+    cap.start("mtg_q")
+    mic = sources["mic"]
+    mic.queued += tone(8.0, mic.rate, mic.channels, amp=15)  # room tone
+    mic.push(2.0, amp=900)  # someone speaks, not loudly
+    mic.queued += tone(8.0, mic.rate, mic.channels, amp=15)
+    res = cap.pull("mtg_q")
+    assert res["chunks"], "quiet speech inside a long silence must not be dropped"
+    frames = wav_frames(res["chunks"][0]["wav_base64"])[2]
+    assert frames > 17 * TARGET_RATE  # the whole window is handed over, not just the loud part
+
+    # Genuine silence of the same length is still dropped.
+    mic.queued += tone(10.0, mic.rate, mic.channels, amp=15)
+    assert cap.pull("mtg_q")["chunks"] == []
+
+
+def test_a_single_live_source_is_not_attenuated(capture):  # type: ignore[no-untyped-def]
+    """Halving matters only when two sources are added; with one live source it just makes
+    quiet speech quieter and more likely to be judged silence."""
+    from jarvis_host.meetings import loudest_window
+
+    cap, sources = capture
+    cap.start("mtg_a")
+    sources["mic"].push(2.0, amp=400)  # the loopback stays at digital zero
+    chunk = cap.pull("mtg_a")["chunks"][0]
+    import base64 as _b64
+    import io as _io
+    import wave as _wave
+
+    with _wave.open(_io.BytesIO(_b64.b64decode(chunk["wav_base64"])), "rb") as wf:
+        pcm = wf.readframes(wf.getnframes())
+    # 400 amplitude sine ≈ 283 RMS; a 0.7 mix would put it near 198.
+    assert loudest_window(pcm) > 240
+
+
 def test_one_dead_source_still_records_the_other_and_says_so():
     def opener(wanted: tuple[str, ...]) -> tuple[dict[str, AudioSource], list[str]]:
         return {"mic": FakeSource(16_000, 1)}, ["system: OSError: no loopback device"]

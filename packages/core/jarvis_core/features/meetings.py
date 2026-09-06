@@ -13,12 +13,19 @@ import base64
 import contextlib
 import json
 import logging
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from jarvis_proto import ConversationKind, Meeting, MeetingDetail, Message, RunKind, new_id
-from jarvis_proto.events import ConversationUpdated, MeetingChanged, MeetingSegment, MessageCreated
+from jarvis_proto.events import (
+    ConversationDeleted,
+    ConversationUpdated,
+    MeetingChanged,
+    MeetingSegment,
+    MessageCreated,
+)
 from jarvis_proto.features import MeetingFrameModel, MeetingSegmentModel, MeetingStatus
 
 if TYPE_CHECKING:
@@ -36,12 +43,16 @@ _SUMMARY_PROMPT = (
 PULL_INTERVAL_S = 10.0
 
 
+def _payload(text: str) -> Any:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
 def _warning_of(text: str) -> str:
     """The host's level warning out of a tool reply, or "" when there is none."""
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return ""
+    data = _payload(text)
     return str(data.get("warning") or "") if isinstance(data, dict) else ""
 
 
@@ -53,6 +64,11 @@ class MeetingService:
         # Latest level warning the host reported per meeting ("the microphone delivered digital
         # silence"), so a silent recording can say WHY instead of only that it was silent.
         self._warnings: dict[str, str] = {}
+        # Highest CHUNK number taken from the host per meeting (not a segment count).
+        self._last_chunk: dict[str, int] = {}
+        # Audio waiting to be transcribed, so a slow Whisper never delays the next pull.
+        self._queues: dict[str, asyncio.Queue[tuple[bytes, float]]] = {}
+        self._transcribers: dict[str, asyncio.Task[None]] = {}
 
     # --- store ---------------------------------------------------------------------------
 
@@ -144,6 +160,10 @@ class MeetingService:
         self.core.bus.publish(
             MeetingChanged(meeting_id=meeting.id, conversation_id=conv.id, status=meeting.status.value)
         )
+        self._queues[meeting.id] = asyncio.Queue()
+        self._transcribers[meeting.id] = asyncio.create_task(
+            self._transcribe_loop(meeting), name=f"meeting-stt-{meeting.id}"
+        )
         self._pollers[meeting.id] = asyncio.create_task(self._poll(meeting), name=f"meeting-{meeting.id}")
         return meeting
 
@@ -158,14 +178,19 @@ class MeetingService:
             poller.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await poller
-        await self.core.registry.call(
+        res = await self.core.registry.call(
             f"{meeting.host}.meeting_stop",
             {"meeting_id": meeting.id},
             cancel=asyncio.Event(),
             idempotency_key=f"mtg:{meeting.id}:stop",
             timeout_s=60,
         )
-        await self._pull_once(meeting)  # drain what the host still holds
+        # The stop reply CARRIES the last chunk: the host has already forgotten the recording, so
+        # a pull after it returns nothing. Ignoring this reply lost the closing seconds of every
+        # meeting.
+        if res.kind.value != "error":
+            self._ingest(meeting, _payload(res.text))
+        await self._drain(meeting)
         meeting = await self._set_status(meeting, MeetingStatus.SUMMARISING, ended_at=datetime.now(UTC))
         row = await self.core.db.fetchone(
             "SELECT COUNT(*) AS n FROM meeting_segments WHERE meeting_id = ?", (meeting.id,)
@@ -238,13 +263,30 @@ class MeetingService:
             except Exception as exc:
                 log.warning("meeting %s pull failed: %s", meeting.id, exc)
 
+    async def _transcribe_loop(self, meeting: Meeting) -> None:
+        """Transcription runs beside the polling, not inside it.
+
+        Pull and transcribe used to share one loop, so a slow Whisper call pushed the next pull
+        out by however long it took. Audio was never lost (the host keeps recording into its own
+        buffer) but the transcript fell further and further behind the room.
+        """
+        queue = self._queues[meeting.id]
+        while True:
+            audio, t0 = await queue.get()
+            try:
+                await self.ingest_chunk(meeting.id, audio, t0, filename="chunk.wav", mime="audio/wav")
+            except Exception as exc:
+                log.warning("meeting %s transcription failed: %s", meeting.id, exc)
+            finally:
+                queue.task_done()
+
     async def _pull_once(self, meeting: Meeting) -> None:
-        last = await self.core.db.fetchone(
-            "SELECT COALESCE(MAX(seq), 0) AS s FROM meeting_segments WHERE meeting_id = ?", (meeting.id,)
-        )
+        # The host counts CHUNKS; `meeting_segments.seq` counts SEGMENTS, and one chunk can hold
+        # several. Passing the segment count made the host discard every chunk whose number had
+        # fallen behind — 22 seconds of a real meeting vanished that way.
         res = await self.core.registry.call(
             f"{meeting.host}.meeting_pull",
-            {"meeting_id": meeting.id, "after_seq": int(last["s"]) if last else 0},
+            {"meeting_id": meeting.id, "after_seq": self._last_chunk.get(meeting.id, 0)},
             cancel=asyncio.Event(),
             idempotency_key=f"mtg:{meeting.id}:pull",
             timeout_s=60,
@@ -255,16 +297,50 @@ class MeetingService:
             data = json.loads(res.text)
         except json.JSONDecodeError:
             return
-        if isinstance(data, dict) and "warning" in data:
+        self._ingest(meeting, data)
+        if self._queues.get(meeting.id) is None:
+            await self._drain(meeting)  # a hand-driven pull (tests): transcribe inline
+
+    def _ingest(self, meeting: Meeting, data: Any) -> None:
+        """Queue the chunks of a host reply and remember the highest chunk number seen."""
+        if not isinstance(data, dict):
+            return
+        if "warning" in data:
             # Present and empty means the levels recovered; absent means an older host that does
             # not measure them - do not erase what the start already told us.
             self._warnings[meeting.id] = str(data["warning"] or "")
-        for chunk in data.get("chunks", []) if isinstance(data, dict) else []:
+        queue = self._queues.setdefault(meeting.id, asyncio.Queue())
+        for chunk in data.get("chunks", []) or []:
             audio = base64.b64decode(chunk.get("wav_base64", ""))
-            if audio:
-                await self.ingest_chunk(
-                    meeting.id, audio, float(chunk.get("t0", 0.0)), filename="chunk.wav", mime="audio/wav"
-                )
+            if not audio:
+                continue
+            self._last_chunk[meeting.id] = max(self._last_chunk.get(meeting.id, 0), int(chunk.get("seq", 0)))
+            queue.put_nowait((audio, float(chunk.get("t0", 0.0))))
+
+    async def settle(self, meeting: Meeting) -> None:
+        """Wait until everything pulled so far has been transcribed. The worker keeps running."""
+        queue = self._queues.get(meeting.id)
+        if queue is not None and self._transcribers.get(meeting.id) is not None:
+            await queue.join()
+
+    async def _drain(self, meeting: Meeting) -> None:
+        """Transcribe everything queued, then stop the worker. Nothing recorded is summarised late."""
+        queue = self._queues.get(meeting.id)
+        worker = self._transcribers.get(meeting.id)
+        if queue is not None and worker is not None:
+            await queue.join()
+        elif queue is not None:  # no worker (a hand-driven pull): do it here, in order
+            while not queue.empty():
+                audio, t0 = queue.get_nowait()
+                with contextlib.suppress(Exception):
+                    await self.ingest_chunk(meeting.id, audio, t0, filename="chunk.wav", mime="audio/wav")
+                queue.task_done()
+        worker = self._transcribers.pop(meeting.id, None)
+        if worker is not None:
+            worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
+        self._queues.pop(meeting.id, None)
 
     async def ingest_chunk(self, meeting_id: str, audio: bytes, t0: float, *, filename: str, mime: str) -> int:
         meeting = await self.get(meeting_id)
@@ -303,6 +379,36 @@ class MeetingService:
         return added
 
     # --- frames -----------------------------------------------------------------------------
+
+    async def delete(self, meeting_id: str, *, with_conversation: bool = True) -> bool:
+        """Remove a recording: stop it if it is still running, drop its rows, its frames on disk
+        and (by default) the conversation that holds its transcript."""
+        meeting = await self.get(meeting_id)
+        if meeting is None:
+            return False
+        if meeting.status is MeetingStatus.RECORDING:
+            with contextlib.suppress(Exception):
+                await self.stop(meeting_id)
+        for task_map in (self._pollers, self._transcribers):
+            task = task_map.pop(meeting_id, None)
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+        self._queues.pop(meeting_id, None)
+        self._warnings.pop(meeting_id, None)
+        self._last_chunk.pop(meeting_id, None)
+        with contextlib.suppress(OSError):
+            shutil.rmtree(self.core.config.home / "meetings" / meeting_id, ignore_errors=True)
+        # meeting_segments and meeting_frames are ON DELETE CASCADE from meetings.
+        await self.core.db.execute("DELETE FROM meetings WHERE id = ?", (meeting_id,))
+        if with_conversation:
+            await self.core.store.delete_conversation(meeting.conversation_id)
+            self.core.bus.publish(ConversationDeleted(conversation_id=meeting.conversation_id))
+        self.core.bus.publish(
+            MeetingChanged(meeting_id=meeting_id, conversation_id=meeting.conversation_id, status="deleted")
+        )
+        return True
 
     def frames_dir(self, meeting_id: str) -> Path:
         d = self.core.config.home / "meetings" / meeting_id

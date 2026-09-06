@@ -220,6 +220,8 @@ export interface TriageAlert {
   senders: string[];
   /** Case-insensitive substrings of the subject; empty = any subject. */
   keywords: string[];
+  /** An out-of-office bounce from a VIP is not the VIP writing; on by default. */
+  skip_auto_replies: boolean;
 }
 
 /** Meeting auto-RSVP through the host's calendar (docs/stories/08). */

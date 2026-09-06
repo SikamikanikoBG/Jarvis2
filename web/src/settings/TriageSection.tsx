@@ -221,7 +221,7 @@ function RulesEditor({ title, rules, onChange, onRemove, showDemandToggle }: Rul
           type="button"
           className="btn btn-secondary btn-sm"
           style={{ alignSelf: 'flex-start' }}
-          onClick={() => patch({ alerts: [...alerts, { name: '', enabled: true, senders: [], keywords: [] }] })}
+          onClick={() => patch({ alerts: [...alerts, { name: '', enabled: true, senders: [], keywords: [], skip_auto_replies: true }] })}
         >
           <Icon name="plus" size={14} />
           Add alert

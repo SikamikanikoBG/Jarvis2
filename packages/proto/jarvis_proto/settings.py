@@ -124,6 +124,30 @@ def _default_mcp_servers() -> list[McpServerSpec]:
     ]
 
 
+_AUTO_REPLY_PREFIXES = (
+    "automatic reply:",
+    "auto-reply:",
+    "autoreply:",
+    "out of office",
+    "автоматичен отговор",
+    "отсъствие",
+    "accepted:",
+    "declined:",
+    "tentative:",
+    "undeliverable:",
+)
+
+
+def is_auto_reply(subject: str) -> bool:
+    """A bounce, an out-of-office or a meeting response - the sender's mail system talking, not
+    the sender. Prefix matching only: a subject that MENTIONS an out-of-office is a real mail."""
+    low = " ".join(subject.split()).lower()
+    for marker in ("re:", "fw:", "fwd:", "отн:", "препр:"):
+        while low.startswith(marker):
+            low = low[len(marker) :].lstrip()
+    return low.startswith(_AUTO_REPLY_PREFIXES)
+
+
 class TriageAlert(BaseModel):
     """"Tell me the moment this person writes." Ported from V1's alerts_config.json.
 
@@ -138,9 +162,14 @@ class TriageAlert(BaseModel):
     senders: list[str] = Field(default_factory=list)
     # Case-insensitive substrings of the subject; empty = any subject.
     keywords: list[str] = Field(default_factory=list)
+    # An out-of-office bounce from a VIP is still not the VIP writing to you. Measured on the real
+    # mailbox: 1 of 4 alerts was "Automatic reply: ...". Off only if you really want those buzzes.
+    skip_auto_replies: bool = True
 
     def matches(self, address: str, display_name: str, subject: str) -> bool:
         if not self.enabled or (not self.senders and not self.keywords):
+            return False
+        if self.skip_auto_replies and is_auto_reply(subject):
             return False
         if self.senders:
             addr = address.strip().lower()

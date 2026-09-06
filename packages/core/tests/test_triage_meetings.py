@@ -381,6 +381,25 @@ async def test_vip_alerts_are_structural_and_push_once_per_pass(harness: Harness
     assert [p["alert"] for p in dry.proposed if p["alert"]] == ["Petya Dimitrova", "Invoices"]
 
 
+def test_auto_replies_from_a_vip_do_not_buzz_the_phone():
+    """Measured on the real mailbox: one of four VIP alerts was 'Automatic reply: ...'."""
+    from jarvis_proto import TriageAlert
+    from jarvis_proto.settings import is_auto_reply
+
+    assert is_auto_reply("Automatic reply: Proposal for the CEO")
+    assert is_auto_reply("RE: Отн: Автоматичен отговор: отпуска")
+    assert is_auto_reply("Accepted: Weekly sync") and is_auto_reply("Undeliverable: report")
+    # A real mail that merely mentions it is not one.
+    assert not is_auto_reply("Please set an out of office before Friday")
+    assert not is_auto_reply("RE: Protocol signing")
+
+    vip = TriageAlert(name="Rumen", senders=["rradushev@postbank.bg"])
+    assert vip.matches("rradushev@postbank.bg", "Rumen Radushev", "RE: Protocol signing")
+    assert not vip.matches("rradushev@postbank.bg", "Rumen Radushev", "Automatic reply: I am away")
+    loud = TriageAlert(name="Rumen", senders=["rradushev@postbank.bg"], skip_auto_replies=False)
+    assert loud.matches("rradushev@postbank.bg", "Rumen Radushev", "Automatic reply: I am away")
+
+
 async def test_triage_without_host_reports_instead_of_crashing(harness: Harness):
     harness.enable(triage=TriageSettings(enabled=True, host=""))
     report = await harness.core.triage.run_once()

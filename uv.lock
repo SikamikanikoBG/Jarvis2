@@ -355,7 +355,7 @@ wheels = [
 
 [[package]]
 name = "jarvis-core"
-version = "2.0.0a21"
+version = "2.0.0a23"
 source = { editable = "packages/core" }
 dependencies = [
     { name = "aiosqlite" },
@@ -427,7 +427,7 @@ requires-dist = [
 
 [[package]]
 name = "jarvis-proto"
-version = "2.0.0a10"
+version = "2.0.0a11"
 source = { editable = "packages/proto" }
 dependencies = [
     { name = "pydantic" },

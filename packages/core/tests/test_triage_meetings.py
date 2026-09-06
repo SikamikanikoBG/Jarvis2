@@ -132,21 +132,21 @@ class FakeHost(BuiltinProvider):
                 "subject": "RE: budget approval",
                 "from": {"name": "Rumen Petrov", "address": "rumen@bank.bg"},
                 "sender": "Rumen Petrov",
-                "received": "2026-09-05T08:00:00",
+                "received": "2026-09-05T08:15:00",
                 "preview": "As agreed in DM-4521 the budget is approved.",  # demand only in the body
             },
             {
                 "entry_id": "e2",
                 "subject": "Team lunch on Friday?",
                 "from": {"name": "Maria", "address": "maria@bank.bg"},
-                "received": "2026-09-05T08:05:00",
+                "received": "2026-09-05T08:10:00",
                 "preview": "who is in",
             },
             {
                 "entry_id": "e3",
                 "subject": "Invoice 2026-118",
                 "from": {"name": "", "address": "billing@vendor.com"},
-                "received": "2026-09-05T08:10:00",
+                "received": "2026-09-05T08:05:00",
                 "preview": "payment due",
             },
             {
@@ -155,7 +155,7 @@ class FakeHost(BuiltinProvider):
                 "entry_id": "e4",
                 "subject": "Jira Email Summary - 04.09.2026",
                 "from": {"name": "Arsen", "address": "arsen@bank.bg"},
-                "received": "2026-09-05T08:15:00",
+                "received": "2026-09-05T08:00:00",
                 "preview": "Today: DM-1096 extraction moved to PROD ...",
             },
         ]
@@ -176,6 +176,7 @@ class FakeHost(BuiltinProvider):
         # the set to let the next attempt through.
         self.move_fails: set[str] = set()
         self.respond_fails: set[str] = set()
+        self.since_seen: list[str | None] = []  # what triage asked the host to filter by
         super().__init__()
 
     @tool("laptop.calendar_invites", description="invites", args=_InvitesArgs, read_only=True)
@@ -211,7 +212,10 @@ class FakeHost(BuiltinProvider):
 
     @tool("laptop.outlook_list", description="list", args=_ListArgs, read_only=True)
     async def _list(self, account: str, folder: str = "Inbox", since: str | None = None, limit: int = 50) -> ToolResult:
+        self.since_seen.append(since)
         items = [i for i in self.items if since is None or i["received"] > since]
+        # Newest first and capped, exactly like the host's GetTable read.
+        items = sorted(items, key=lambda i: str(i["received"]), reverse=True)[:limit]
         return ToolResult.data(json.dumps({"items": items, "cursor": None}))
 
     @tool("laptop.outlook_move", description="move", args=_MoveArgs)
@@ -429,10 +433,11 @@ def test_auto_replies_from_a_vip_do_not_buzz_the_phone():
 async def test_triage_retries_a_mail_it_could_not_move_and_says_it_could_not(harness: Harness):
     """A move that failed leaves the mail in the Inbox — so it must stay triageable.
 
-    Two things used to bury it: the decision row is written BEFORE the move (right, for crash
-    safety) and was left behind claiming a move that never happened, and the cursor advanced
-    past the mail anyway. The mail was then invisible to every later pass, and report.errors
-    was empty, so the API answered "0 errors" about a mailbox it had quietly given up on.
+    The decision row is written BEFORE the move (right, for crash safety) and used to be left
+    behind claiming a move that never happened, so the mail was invisible to every later pass —
+    while report.errors was empty, so the API answered "0 errors" about a mailbox it had quietly
+    given up on. What makes the retry work is that the row is dropped and the mail is still in
+    the Inbox, which is the queue; the received time it carries is not part of it.
     """
     core = harness.core
     host = await _with_host(harness)
@@ -456,10 +461,10 @@ async def test_triage_retries_a_mail_it_could_not_move_and_says_it_could_not(har
     assert host.moves == [("e1", "Demands/DM-4521")]  # the demand went, the invoice did not
     assert first.routed == 1
     assert any("Invoice 2026-118" in e and "not moved to Finance/Invoices" in e for e in first.errors)
-    # Nothing claims the move happened, and the cursor did not step over the mail.
+    # Nothing claims the move happened, and the failure is on the account's status.
     assert await core.db.fetchone("SELECT 1 FROM triage_decisions WHERE entry_id = 'e3'") is None
     states = await core.triage.states()
-    assert states[0].cursor is None and states[0].last_error and "Invoice" in states[0].last_error
+    assert states[0].last_error and "Invoice" in states[0].last_error
     # The day's summary tells Arsen too, rather than only the log.
     convs = [c for c in await core.store.list_conversations() if c.kind.value == "triage"]
     assert "move failed" in (await core.store.list_messages(convs[0].id))[-1].content
@@ -476,6 +481,80 @@ async def test_triage_retries_a_mail_it_could_not_move_and_says_it_could_not(har
     # ...and a third pass has nothing left to do.
     third = await core.triage.run_once()
     assert third.processed == 0 and third.routed == 0 and len(host.moves) == 2
+
+
+async def test_mail_left_in_the_inbox_is_never_stranded_behind_a_clock(harness: Harness):
+    """The Inbox is the queue. A mail is skipped because it was DECIDED, not because of when it
+    arrived.
+
+    Filtering the listing by a received-time watermark let the watermark outrun mail that was
+    never sorted, with no way back. Measured on the real postbank mailbox 2026-09-06: four mails
+    sat in the Inbox while the cursor stood two hours past them, and every pass reported
+    "0 processed, no errors" — the classifier was fine, it was simply never shown them.
+    """
+    core = harness.core
+    host = await _with_host(harness)
+    harness.enable(
+        triage=TriageSettings(
+            host="laptop",
+            accounts=["Work"],
+            demand_routing=False,
+            categories=[{"name": "reference", "folder": "Action Hub/Reference", "rule": "anything informational"}],
+        )
+    )
+    # One mail arrives and is filed, pushing any watermark to 09:00.
+    host.items = [{"entry_id": "new", "subject": "Latest", "from": {"name": "A"}, "received": "2026-09-06T09:00:00"}]
+    harness.chat.push(FakeTurn(text='{"category": "reference"}'))
+    first = await core.triage.run_once()
+    assert first.processed == 1 and host.moves == [("new", "Action Hub/Reference")]
+
+    # Now an OLDER mail turns up in the Inbox — a delayed delivery, or one Arsen moved back.
+    # Under a watermark it is invisible for ever; it must simply be the next thing in the queue.
+    host.items = [{"entry_id": "old", "subject": "Arrived late", "from": {"name": "B"}, "received": "2026-09-06T07:30:00"}]
+    harness.chat.push(FakeTurn(text='{"category": "reference"}'))
+    second = await core.triage.run_once()
+    assert second.processed == 1, "a mail older than the cursor was never looked at"
+    assert host.moves[-1] == ("old", "Action Hub/Reference")
+    assert host.since_seen and all(s is None for s in host.since_seen), f"still filtering by time: {host.since_seen}"
+
+    # And it is still decided exactly once: the Inbox no longer holds it, and a re-list of what
+    # remains does not re-do the work.
+    host.items = []
+    third = await core.triage.run_once()
+    assert third.processed == 0 and len(host.moves) == 2
+
+
+async def test_a_backlog_bigger_than_one_page_drains_instead_of_being_skipped(harness: Harness):
+    """More mail than one listing holds must be worked through, not jumped over.
+
+    The host returns the NEWEST `limit` above the watermark and the watermark then moved to the
+    newest of those, so everything between was stranded — which is what a night of downtime on a
+    work mailbox looks like.
+    """
+    core = harness.core
+    host = await _with_host(harness)
+    harness.enable(
+        triage=TriageSettings(
+            host="laptop",
+            accounts=["Work"],
+            demand_routing=False,
+            categories=[{"name": "reference", "folder": "Action Hub/Reference", "rule": "anything"}],
+        )
+    )
+    host.items = [
+        {"entry_id": f"m{i:02d}", "subject": f"Mail {i}", "from": {"name": "S"}, "received": f"2026-09-06T{7 + i // 10:02d}:{i % 10:02d}:00"}
+        for i in range(12)
+    ]
+    harness.chat.push(*[FakeTurn(text='{"category": "reference"}')] * 12)
+
+    # Five at a time: three passes must file all twelve, oldest included.
+    for _ in range(3):
+        report = await core.triage.run_once(limit=5)
+        for moved, _folder in host.moves:
+            host.items = [i for i in host.items if i["entry_id"] != moved]
+        assert report.errors == []
+    assert len(host.moves) == 12, f"only {len(host.moves)} of 12 were ever filed"
+    assert {m[0] for m in host.moves} == {f"m{i:02d}" for i in range(12)}
 
 
 async def test_triage_counts_what_this_pass_routed_across_every_account(harness: Harness):

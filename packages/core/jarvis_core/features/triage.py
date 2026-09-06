@@ -194,16 +194,21 @@ class TriageJob:
                 await self._ensure_folders(cfg.host, account, wanted, report)
             try:
                 if folder:
-                    items, cursor = await self._list(cfg.host, account, None, folder=folder, limit=limit or 30)
+                    items, cursor = await self._list(cfg.host, account, folder=folder, limit=limit or 30)
                 else:
-                    items, cursor = await self._list(cfg.host, account, state.cursor, limit=limit or 50)
+                    # No `since`: the INBOX is the queue. Filtering by a received-time watermark
+                    # let the watermark outrun mail that was never sorted, and nothing could ever
+                    # bring it back — measured on the real mailbox 2026-09-06, four mails sitting
+                    # in the Inbox while the cursor stood two hours past them and every pass
+                    # reported "0 processed, no errors". A mail is skipped because it has been
+                    # DECIDED, not because of when it arrived.
+                    items, cursor = await self._list(cfg.host, account, limit=limit or 50)
             except Exception as exc:
                 state.last_error = f"list failed: {exc}"
                 report.errors.append(f"{account}: {state.last_error}")
                 await self._save_state(state)
                 continue
             lines: list[str] = []
-            stuck = 0  # mails this pass decided on but could not move
             for item in items:
                 entry_id = str(item.get("entry_id") or "")
                 if not entry_id or (not dry_run and await self._decided(entry_id, account)):
@@ -256,14 +261,12 @@ class TriageJob:
                     except Exception as exc:
                         failure = str(exc)[:120]
                     if failure:
-                        # The mail is still in the Inbox. Drop the decision row so the next pass
-                        # can try again, and say so out loud: this used to leave a row claiming
-                        # the move, and the cursor moved past the mail, so it was never seen
-                        # again by anything — with report.errors empty.
+                        # The mail is still in the Inbox, so drop the decision row: without
+                        # that it would carry a record claiming a move that never happened and
+                        # be skipped for good. Said out loud too — this used to fail silently.
                         action = f"move failed: {failure}"
                         await self._forget(entry_id, account)
                         report.errors.append(f"{account}: {subject[:60]!r} not moved to {target}: {failure}")
-                        stuck += 1
                     else:
                         action = f"moved → {target}"
                         state.routed_today += 1
@@ -276,12 +279,11 @@ class TriageJob:
                 lines.append(f"- {mark}{self._sender(item) or '?'} — {subject[:70]} → {action}")
             if dry_run:
                 continue  # nothing is persisted on a dry run
-            # The cursor is a high-water mark over `received`, and the host lists the NEWEST
-            # mails above it — so holding it back re-offers the ones that failed without
-            # starving new arrivals, while advancing it would retire them from triage for good.
-            # Everything already decided is skipped by a single indexed lookup, so a held
-            # cursor costs one list call, not a re-classification.
-            if cursor and not stuck:
+            # Informational only now — the newest mail this pass saw, for the status screen. It
+            # no longer filters anything, so it can no longer strand mail behind it, and there is
+            # nothing to hold back when a move fails: an undecided mail is simply still in the
+            # Inbox and comes round again next pass.
+            if cursor:
                 state.cursor = cursor
             state.last_run_at = datetime.now(UTC)
             state.last_error = next((e for e in report.errors if e.startswith(f"{account}:")), None)
@@ -350,12 +352,15 @@ class TriageJob:
         return out
 
     async def _list(
-        self, host: str, account: str, cursor: str | None, *, folder: str = "Inbox", limit: int = 50
+        self, host: str, account: str, *, folder: str = "Inbox", limit: int = 50
     ) -> tuple[list[dict[str, Any]], str | None]:
+        """The newest ``limit`` messages of a folder, and the newest received time among them.
+
+        Deliberately no ``since``: the returned time is recorded so the UI can show how far
+        triage has seen, never to filter the next listing. See ``_run``.
+        """
         # A long preview so the demand rule can tell a digest (many DM ids) from a thread (one).
         args: dict[str, Any] = {"account": account, "folder": folder, "limit": limit, "preview_chars": 1500}
-        if cursor:
-            args["since"] = cursor
         res = await self.core.registry.call(
             f"{host}.outlook_list",
             args,
@@ -368,13 +373,11 @@ class TriageJob:
         data = _json(res.text)
         if isinstance(data, dict):
             items = [i for i in data.get("items", []) if isinstance(i, dict)]
-            newest = data.get("newest") or data.get("cursor_since")
-            next_cursor = newest or max((str(i.get("received", "")) for i in items), default=None) or cursor
-            return items, next_cursor
-        if isinstance(data, list):
+        elif isinstance(data, list):
             items = [i for i in data if isinstance(i, dict)]
-            return items, max((str(i.get("received", "")) for i in items), default=cursor)
-        return [], cursor
+        else:
+            return [], None
+        return items, max((str(i.get("received", "")) for i in items), default=None)
 
     @staticmethod
     def _sender(item: dict[str, Any]) -> str:

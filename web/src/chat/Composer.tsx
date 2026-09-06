@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
 import { Icon } from '../components/Icon';
 import { IconButton, Menu } from '../components/primitives';
+import { cameraSupport, readCameraEnv } from '../lib/camera';
 import { THINK_CHOICES, THINK_DEFAULT, thinkChoiceKey } from '../lib/think';
 import { selectSendRefusal } from '../store/selectors';
 import { NEW_CONVERSATION_KEY } from '../store/state';
 import { useStore } from '../store/store';
 import { PendingAttachments } from './Attachments';
+import { CameraDialog } from './CameraDialog';
 import { MicButton } from './MicButton';
 
 /** Pasted text longer than this becomes an attachment instead of filling the input. */
@@ -36,6 +38,11 @@ export function Composer({ runActive, stopping }: Props) {
   const fileInput = useRef<HTMLInputElement>(null);
   const cameraInput = useRef<HTMLInputElement>(null);
   const [attachMenu, setAttachMenu] = useState<HTMLElement | null>(null);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const notify = useStore((s) => s.notify);
+  // Fixed for the life of the composer: whether this device can show a live preview does not
+  // change while Arsen is typing.
+  const camera = useMemo(() => cameraSupport(readCameraEnv()), []);
   const refusal = useStore((s) =>
     selectSendRefusal(s, {
       connection: s.connection,
@@ -111,6 +118,15 @@ export function Composer({ runActive, stopping }: Props) {
     setAttachMenu(null);
     input?.click();
   };
+  // Taking a photo is offered on every device. Where a live preview is possible it opens in the
+  // app; on a phone without one (the core is served over plain http on the tailnet, and
+  // getUserMedia needs a secure context) the OS camera app still works through the file input.
+  const takePhoto = () => {
+    setAttachMenu(null);
+    if (camera.mode === 'stream') setCameraOpen(true);
+    else if (camera.mode === 'os') cameraInput.current?.click();
+    else notify(camera.reason, 'error');
+  };
   return (
     <div
       className="composer-wrap"
@@ -144,6 +160,15 @@ export function Composer({ runActive, stopping }: Props) {
           e.target.value = '';
         }}
       />
+      {cameraOpen && (
+        <CameraDialog
+          onClose={() => setCameraOpen(false)}
+          onCapture={(file) => {
+            setCameraOpen(false);
+            void attachFiles([file]);
+          }}
+        />
+      )}
       <PendingAttachments pending={pending} uploading={uploading} onRemove={removeAttachment} />
       {editing && (
         <div className="edit-banner" role="status">
@@ -182,7 +207,7 @@ export function Composer({ runActive, stopping }: Props) {
             anchor={attachMenu}
             onClose={() => setAttachMenu(null)}
             items={[
-              ...(coarsePointer() ? [{ label: 'Take a photo', icon: 'camera' as const, onSelect: () => pick(cameraInput.current) }] : []),
+              { label: 'Take a photo', icon: 'camera', onSelect: takePhoto },
               { label: 'Photo or file', icon: 'image', onSelect: () => pick(fileInput.current) },
             ]}
           />

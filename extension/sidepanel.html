@@ -55,7 +55,9 @@
        leave it empty if the core runs without one.</p>
     <p><button class="btn" id="openOpts">Open settings</button></p>
   </div>
-  <iframe id="frame" hidden allow="clipboard-write; microphone"></iframe>
+  <!-- `camera` as well as `microphone`: a cross-origin iframe gets neither unless it is granted
+       here, so without it "Take a photo" is blocked inside the panel even on a secure origin. -->
+  <iframe id="frame" hidden allow="clipboard-write; microphone; camera"></iframe>
   <script src="sidepanel.js"></script>
 </body>
 </html>

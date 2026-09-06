@@ -46,6 +46,24 @@ export function cameraSupport(env: CameraEnv): CameraSupport {
   };
 }
 
+/** What went wrong, said in a sentence a person can act on rather than a DOMException name. */
+export function describeCameraError(err: unknown): string {
+  const name = err instanceof Error ? err.name : '';
+  switch (name) {
+    case 'NotAllowedError':
+    case 'SecurityError':
+      return 'Camera access was refused. Allow the camera for this site in your browser, then try again.';
+    case 'NotFoundError':
+    case 'OverconstrainedError':
+      return 'No camera was found on this device.';
+    case 'NotReadableError':
+    case 'AbortError':
+      return 'The camera is busy — another app or tab is already using it.';
+    default:
+      return err instanceof Error && err.message ? err.message : 'The camera could not be opened.';
+  }
+}
+
 /** A stable, sortable name for a photo taken now: photo-20260906-141530.jpg */
 export function photoFilename(at: Date = new Date()): string {
   const p = (n: number) => String(n).padStart(2, '0');

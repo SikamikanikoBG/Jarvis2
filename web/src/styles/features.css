@@ -996,3 +996,87 @@
   height: 100%;
   display: block;
 }
+
+/* --- camera: taking a photo with this device --- */
+.camera {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  background: rgb(0 0 0 / 92%);
+}
+.camera-stage {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 12px;
+}
+.camera-stage video {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: var(--radius-xs);
+  background: #000;
+}
+.camera-error,
+.camera-hint {
+  position: absolute;
+  max-width: 34ch;
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+.camera-error {
+  color: var(--danger);
+}
+.camera-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  /* Clear of the phone's home indicator. */
+  padding: 14px 24px calc(14px + env(safe-area-inset-bottom));
+}
+.camera-bar .icon-btn {
+  color: #fff;
+}
+.camera-bar-spacer {
+  width: 34px;
+  display: inline-flex;
+  justify-content: center;
+  color: rgb(255 255 255 / 35%);
+}
+.camera-shutter {
+  width: 66px;
+  height: 66px;
+  padding: 0;
+  border: 3px solid #fff;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.camera-shutter:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.camera-shutter-dot {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 90ms ease;
+}
+.camera-shutter:active:not(:disabled) .camera-shutter-dot {
+  transform: scale(0.88);
+}

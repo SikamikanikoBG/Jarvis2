@@ -394,7 +394,14 @@ class Settings(BaseModel):
     roles: dict[RoleName, ModelSpec] = Field(default_factory=_default_roles)
     budgets: dict[RunKind, RunBudget] = Field(default_factory=_default_budgets)
     mcp_servers: list[McpServerSpec] = Field(default_factory=_default_mcp_servers)
-    max_concurrent_runs_per_endpoint: int = 1
+    # Two, because pre-flight asks the model two independent questions about the incoming message
+    # (which skills apply, and whether it needs a plan) and they now go together — at 1 they
+    # queue behind each other and the gather is a no-op. Measured on ardi 2026-09-06: median time
+    # to Arsen's first token 1,181 ms at 1, 992 ms at 2, 803 ms at 3. It stops at 2 on purpose:
+    # above that, several long runs can be in flight at once and a scheduled run reaches ~95k
+    # tokens against a 305k-token KV cache, so they start evicting each other's cached prefixes —
+    # which is the expensive thing this whole exercise removed. Raise it if the box grows.
+    max_concurrent_runs_per_endpoint: int = 2
     repeated_call_threshold: int = 3
     # Tool exposure: "facade" = one tool per namespace with an op enum (derived from the live
     # list); "flat" = every tool; "auto" = facades once more than facade_threshold tools exist.

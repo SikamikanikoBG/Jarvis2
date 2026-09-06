@@ -69,7 +69,7 @@ if TYPE_CHECKING:
     # `import jarvis_core.features.knowledge` (or .skills) as the FIRST jarvis_core import raise a
     # circular ImportError — invisible from the app, which always reaches them via app.py.
     from jarvis_core.features.knowledge import KnowledgeLearner
-    from jarvis_core.features.planner import Planner
+    from jarvis_core.features.planner import Planner, Preflight
     from jarvis_core.features.skills import SkillDetector
 
 log = logging.getLogger(__name__)
@@ -137,19 +137,35 @@ class AgentLoop:
             await emit(RunStarted(run_id="", conversation_id=""))
 
         # Pre-flight: skills (structural triggers, else one cheap call) and the plan decision.
-        skill_names: list[str] = []
-        if self._skills is not None and run.kind in _CONTEXT_KINDS and not ctl.resumed:
-            skill_names = await self._skills.detect(run.input_text)
-            if skill_names:
-                await emit(ContextSkills(run_id="", conversation_id="", names=skill_names))
-        if (
+        # Nothing is streamed while these run, so they are pure waiting for Arsen — and they ask
+        # the same model two unrelated questions about the same sentence. They are independent,
+        # so they go together; whether that actually overlaps is up to the endpoint's concurrency
+        # limit, which is why `max_concurrent_runs_per_endpoint` below 2 makes this a no-op
+        # rather than a bug.
+        wants_skills = self._skills is not None and run.kind in _CONTEXT_KINDS and not ctl.resumed
+        wants_tier = (
             self._planner is not None
             and run.plan is None
             and not ctl.resumed
             and run.kind in _CONTEXT_KINDS
             and self._settings().planning_enabled
-        ):
+        )
+        skill_names: list[str] = []
+        pre: Preflight | None = None
+        if wants_skills and wants_tier:
+            assert self._skills is not None and self._planner is not None
+            skill_names, pre = await asyncio.gather(
+                self._skills.detect(run.input_text), self._planner.preflight(run.input_text)
+            )
+        elif wants_skills:
+            assert self._skills is not None
+            skill_names = await self._skills.detect(run.input_text)
+        elif wants_tier:
+            assert self._planner is not None
             pre = await self._planner.preflight(run.input_text)
+        if skill_names:
+            await emit(ContextSkills(run_id="", conversation_id="", names=skill_names))
+        if pre is not None and self._planner is not None:
             run.usage = run.usage.add(pre.usage)
             if pre.tier == "multi_step":
                 # Tool NAMES, not namespaces: given only "workocholic" the planner invented a

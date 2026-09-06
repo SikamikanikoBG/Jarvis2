@@ -5,10 +5,17 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 
-from jarvis_core.models.fake import FakeTurn
+from jarvis_core.models.base import ModelDoneChunk, ModelTextChunk
+from jarvis_core.models.fake import FakeAdapter, FakeTurn
 from jarvis_core.tools.facades import ExposurePolicy, build_facades
-from jarvis_proto import RunKind, RunStatus, ToolCall, ToolSpec
+from jarvis_proto import ModelUsage, RoleName, RunKind, RunStatus, ToolCall, ToolSpec
 from tests.conftest import Harness
+
+
+def _answer(text: str):
+    """The chunks a scripted classifier yields for one JSON reply."""
+    return [ModelTextChunk(text), ModelDoneChunk(usage=ModelUsage(prompt_tokens=10, completion_tokens=5, calls=1))]
+
 
 # --- facades ------------------------------------------------------------------------------
 
@@ -280,6 +287,57 @@ async def test_multi_step_request_gets_a_plan_and_steps_advance(harness: Harness
         assert call[0][-1] is blocks[0], f"call {i} did not end with the plan block"
     # Plan tools were exposed only because a plan exists.
     assert any(t.name == "jarvis.plan_step_done" for t in harness.chat.calls[2][1])
+
+
+async def test_the_two_preflight_questions_are_asked_together(harness: Harness):
+    """Skill detection and the plan tier are two unrelated questions about the same sentence.
+
+    Nothing is streamed while they run, so they are pure waiting: measured on ardi they were
+    ~70% of the time to Arsen's first token once prefill was fixed. They are independent, so
+    they must be in flight at the same time — asked one after the other they cost two round
+    trips to the same box for no reason.
+    """
+    core = harness.core
+    await core.skills.put("weekly", "---\ndescription: the weekly report\n---\nUse three sections.")
+    harness.enable(planning_enabled=True)
+
+    in_flight = 0
+    both = asyncio.Event()
+    peak = 0
+
+    class Barrier(FakeAdapter):
+        async def stream(self, messages, tools, *, cancel):  # type: ignore[no-untyped-def,override]
+            nonlocal in_flight, peak
+            self.calls.append((list(messages), list(tools)))
+            in_flight += 1
+            peak = max(peak, in_flight)
+            if in_flight >= 2:
+                both.set()
+            try:
+                # Answers both questions at once, so this does not depend on which call lands
+                # first: each parser reads only the key it cares about.
+                async with asyncio.timeout(5):
+                    await both.wait()
+                for chunk in _answer('{"tier": "simple", "skills": []}'):
+                    yield chunk
+            finally:
+                in_flight -= 1
+
+    barrier = Barrier()
+    core.adapters.fakes = {r: barrier for r in RoleName}
+    core.adapters.fakes[RoleName.CHAT] = harness.chat
+    harness.chat.push(FakeTurn(text="done"))
+
+    conv = await core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await core.engine.create_run(
+        text="Please prepare the weekly report for Rumen with the numbers from this week.",
+        conversation_id=conv.id,
+    )
+    seen = await harness.wait_for(sub, "run.done", timeout=15)
+    assert not any(e.type == "run.failed" for e in seen)
+    assert len(barrier.calls) == 2, f"expected skills + tier, got {len(barrier.calls)} classifier calls"
+    assert peak == 2, "the two pre-flight questions were asked one after the other, not together"
 
 
 async def test_simple_request_skips_planning(harness: Harness):

@@ -486,6 +486,10 @@ def build_app(config: HostConfig, deps: Deps | None = None) -> BearerAuth:
             async with mcp.session_manager.run():
                 yield
         finally:
+            # A recording still running holds the microphone and the loopback device. Without
+            # this, restarting the host mid-meeting left the mic light on and the device claimed
+            # until the process was killed outright.
+            deps.meetings.close_all()
             deps.worker.stop()
 
     async def healthz(_request: Request) -> Response:

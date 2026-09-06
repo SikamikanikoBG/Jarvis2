@@ -181,6 +181,46 @@ async def test_tools_annotations_and_calls(server: tuple[str, BearerAuth], world
     assert deps.worker.status().completed >= 4
 
 
+def test_shutdown_releases_the_microphone(world: World, tmp_path: Path):
+    """A recording still running holds the mic and the loopback device.
+
+    The lifespan stopped the COM worker and left MeetingCapture alone, so restarting the host
+    mid-meeting left the mic light on and the device claimed until the process was killed.
+    """
+    from starlette.testclient import TestClient
+
+    from jarvis_host.meetings import MeetingCapture
+
+    closed: list[str] = []
+
+    class FakeSource:
+        rate, channels, peak = 16_000, 1, 500
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def read(self) -> bytes:
+            return b""
+
+        def close(self) -> None:
+            closed.append(self.name)
+
+    cfg = HostConfig(name="testhost", token=TOKEN, fs_roots=(tmp_path,))
+    deps = make_deps(cfg, dispatch=world.dispatch)
+    deps.meetings = MeetingCapture(lambda wanted: ({n: FakeSource(n) for n in wanted}, []))
+    deps.status.process_state = lambda: None
+    app = build_app(cfg, deps)
+
+    with TestClient(app) as client:
+        assert client.get("/healthz").status_code == 200
+        deps.meetings.start("mtg_1", "mic,system")
+        assert deps.meetings.active() == ["mtg_1"]
+        assert closed == []
+    # Leaving the context runs the lifespan's shutdown.
+    assert sorted(closed) == ["mic", "system"]
+    assert deps.meetings.active() == []
+
+
 def test_transport_security_wildcard_disables_the_guard_and_a_list_enables_it():
     """The SDK matches exact hosts and `host:*` only, so "*" must turn the guard off, not
     be passed through as an allow-list entry that never matches (a live 421 from ardi)."""

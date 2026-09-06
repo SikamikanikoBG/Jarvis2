@@ -46,6 +46,7 @@ function msg(partial: Partial<Message> & { role: Message['role'] }): Message {
     tool_call_id: null,
     name: null,
     partial: false,
+    attachments: [],
     created_at: iso(0),
     ...partial,
   };

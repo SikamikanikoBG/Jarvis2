@@ -313,6 +313,8 @@ class RunCreateRequest(BaseModel):
     # Budget of another kind for this run (e.g. dry-running a scheduled prompt interactively
     # with the scheduled budget). None = the budget of `kind`.
     budget_kind: RunKind | None = None
+    # Attachments uploaded before sending (POST /api/attachments), tied to this message.
+    attachment_ids: list[str] = Field(default_factory=list)
 
 
 class RunCancelRequest(BaseModel):

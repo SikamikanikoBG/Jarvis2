@@ -29,6 +29,8 @@ export interface Message {
   tool_call_id: string | null;
   name: string | null;
   partial: boolean;
+  /** Photos and files sent with this message (empty for everything else). */
+  attachments: Attachment[];
   created_at: string;
 }
 
@@ -116,6 +118,20 @@ export interface Run {
 }
 
 export type ConversationKind = 'chat' | 'scheduled' | 'collab' | 'triage' | 'meeting' | 'archive';
+
+export type AttachmentKind = 'image' | 'document' | 'text' | 'email';
+
+/** A photo, a file, pasted text or an email thread handed to Jarvis with a message. */
+export interface Attachment {
+  id: string;
+  kind: AttachmentKind;
+  name: string;
+  mime: string;
+  bytes: number;
+  text: string | null;
+  meta: Record<string, unknown>;
+  created_at: string;
+}
 
 export interface Conversation {
   id: string;
@@ -725,6 +741,8 @@ export interface RunCreateRequest {
   /** Per-message thinking override; null = the chat role's configured setting. */
   think: boolean | null;
   think_level: ThinkLevel | null;
+  /** Ids of attachments uploaded before sending, tied to this message. */
+  attachment_ids?: string[];
 }
 export interface RunCancelRequest {
   type: 'run.cancel';

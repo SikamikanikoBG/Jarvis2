@@ -26,6 +26,38 @@ class ToolCall(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
+class AttachmentKind(StrEnum):
+    IMAGE = "image"
+    DOCUMENT = "document"  # a file whose text was extracted (pdf, office, code, csv…)
+    TEXT = "text"  # pasted text
+    EMAIL = "email"  # an Outlook thread
+
+
+class Attachment(BaseModel):
+    """Something handed to Jarvis alongside a message: a photo, a file, pasted text, a thread.
+
+    One concept for all of them (docs/stories/09_attachments.md): ``kind`` decides how it reaches
+    the model — an image becomes an image part, everything else becomes text.
+    """
+
+    id: str
+    kind: AttachmentKind
+    name: str
+    mime: str
+    bytes: int
+    # Extracted text for everything that is not an image; images carry it only if OCR ran.
+    text: str | None = None
+    meta: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # Filled in only while building a model request (an image as a data: URL). Never persisted and
+    # never sent to the browser - the SPA fetches /api/attachments/{id} instead.
+    data_url: str | None = Field(default=None, exclude=True)
+
+    @property
+    def url(self) -> str:
+        return f"/api/attachments/{self.id}"
+
+
 class Message(BaseModel):
     id: str | None = None
     conversation_id: str | None = None
@@ -37,6 +69,7 @@ class Message(BaseModel):
     tool_call_id: str | None = None
     name: str | None = None
     partial: bool = False
+    attachments: list[Attachment] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @classmethod

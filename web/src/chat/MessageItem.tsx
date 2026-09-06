@@ -2,6 +2,7 @@ import { Icon } from '../components/Icon';
 import { Markdown } from '../components/Markdown';
 import { isInjectedUserMessage } from '../lib/injected';
 import type { LocalMessage } from '../store/state';
+import { MessageAttachments } from './Attachments';
 import { InjectedNote } from './InjectedNote';
 import { MessageActions } from './MessageActions';
 import { ReasoningFold } from './ReasoningFold';
@@ -13,6 +14,7 @@ export function MessageItem({ message }: { message: LocalMessage }) {
     return (
       <div className={`msg msg-user has-actions${message.optimistic ? ' optimistic' : ''}`} aria-label="You">
         {message.content}
+        <MessageAttachments attachments={message.attachments ?? []} />
         <MessageActions message={message} />
       </div>
     );

@@ -29,6 +29,7 @@ const msg = (over: Partial<Message>): Message => ({
   tool_call_id: null,
   name: null,
   partial: false,
+  attachments: [],
   created_at: '2026-09-06T08:00:00.000Z',
   ...over,
 });

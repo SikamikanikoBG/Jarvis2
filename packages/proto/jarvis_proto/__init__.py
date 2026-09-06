@@ -59,7 +59,15 @@ from jarvis_proto.features import (
     TriageState,
 )
 from jarvis_proto.ids import new_id
-from jarvis_proto.messages import Message, Role, ToolCall, ToolResult, ToolResultKind
+from jarvis_proto.messages import (
+    Attachment,
+    AttachmentKind,
+    Message,
+    Role,
+    ToolCall,
+    ToolResult,
+    ToolResultKind,
+)
 from jarvis_proto.runs import (
     Conversation,
     ConversationKind,
@@ -92,6 +100,8 @@ from jarvis_proto.settings import (
 from jarvis_proto.tools import ToolSpec
 
 __all__ = [
+    "Attachment",
+    "AttachmentKind",
     "Board",
     "ClientMessage",
     "CollabKey",

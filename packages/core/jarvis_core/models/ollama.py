@@ -36,6 +36,10 @@ def to_ollama_messages(messages: list[Message]) -> list[dict[str, Any]]:
             out.append({"role": "tool", "content": m.content, "tool_name": m.name or ""})
             continue
         item: dict[str, Any] = {"role": m.role.value, "content": m.content}
+        # Ollama takes images as bare base64 on the message, not as content parts.
+        images = [a.data_url.split(",", 1)[-1] for a in m.attachments if a.data_url]
+        if images:
+            item["images"] = images
         if m.tool_calls:
             item["tool_calls"] = [{"function": {"name": c.name, "arguments": c.arguments}} for c in m.tool_calls]
         # Reasoning is deliberately not re-sent.

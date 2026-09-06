@@ -308,6 +308,95 @@
   font-size: var(--fs-md);
 }
 
+/* --- attachments (docs/stories/09) --- */
+.att-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.att-pending {
+  margin: 0 0 6px;
+}
+.att-thumb {
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: none;
+  cursor: pointer;
+  overflow: hidden;
+  line-height: 0;
+}
+.att-thumb img {
+  max-width: 160px;
+  max-height: 160px;
+  object-fit: cover;
+}
+.att-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg-surface);
+  color: inherit;
+  font-size: var(--fs-sm);
+  text-decoration: none;
+}
+.att-chip:hover {
+  background: var(--bg-elevated);
+}
+.att-chip-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  object-fit: cover;
+}
+.att-uploading {
+  opacity: 0.7;
+}
+.spin {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.attach-btn {
+  flex: none;
+  margin-bottom: 2px;
+}
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 20px;
+  background: rgb(0 0 0 / 82%);
+}
+.lightbox img {
+  max-width: 100%;
+  max-height: calc(100vh - 90px);
+  object-fit: contain;
+  border-radius: var(--radius-xs);
+}
+.lightbox-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  padding: 6px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-surface);
+}
+
 /* --- edit and resend --- */
 .edit-banner {
   display: flex;

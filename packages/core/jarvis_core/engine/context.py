@@ -10,12 +10,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from jarvis_core.db import Store
 from jarvis_core.features.personality import personality_block
-from jarvis_proto import Message, Plan, Role, Run, RunKind, Settings
+from jarvis_proto import Attachment, AttachmentKind, Message, Plan, Role, Run, RunKind, Settings
 
 # One numbered list behind a precedence block. Count, not length, is what degrades the
 # local model (V1 lesson), so keep this short and add rules only when a test demands one.
@@ -53,12 +53,14 @@ class ContextAssembler:
         providers: list[BlockProvider] | None = None,
         compactor: object | None = None,
         clock: Callable[[], datetime] | None = None,
+        attachments: Any | None = None,
     ) -> None:
         self._store = store
         self._settings = settings
         self._providers: list[BlockProvider] = list(providers or [])
         self._compactor = compactor  # features.compaction.Compactor, optional
         self._clock = clock
+        self._attachments = attachments  # features.attachments.AttachmentStore, optional
 
     def add_provider(self, provider: BlockProvider) -> None:
         self._providers.append(provider)
@@ -164,7 +166,29 @@ class ContextAssembler:
         if self._compactor is not None and run.kind is not RunKind.TRIAGE:
             history = await self._compactor.prepare(run.conversation_id, history, self.budget_chars)  # type: ignore[attr-defined]
         system = await self.system_message(run)
-        return [system, *self.trim(history)]
+        return [system, *await self._hydrate(self.trim(history))]
+
+    async def _hydrate(self, history: list[Message]) -> list[Message]:
+        """Fill in what the model needs from attachments: image bytes as data URLs, and a line
+        naming the files a message carried. Done here, on copies, so nothing persisted grows."""
+        if self._attachments is None:
+            return history
+        ids = [m.id for m in history if m.id]
+        by_message = await self._attachments.for_messages(ids)
+        if not by_message:
+            return history
+        out: list[Message] = []
+        for m in history:
+            atts = by_message.get(m.id or "", [])
+            if not atts:
+                out.append(m)
+                continue
+            hydrated = []
+            for att in atts:
+                url = await self._attachments.data_url(att.id) if att.kind is AttachmentKind.IMAGE else None
+                hydrated.append(att.model_copy(update={"data_url": url}) if url else att)
+            out.append(m.model_copy(update={"attachments": hydrated, "content": _with_attachment_note(m, hydrated)}))
+        return out
 
     def trim(self, history: list[Message]) -> list[Message]:
         """Newest messages that fit the budget, cut at a user-message boundary so no tool
@@ -185,6 +209,25 @@ class ContextAssembler:
         while kept and kept[0].role is not Role.USER:
             kept.pop(0)
         return [*pinned, *kept]
+
+
+def _with_attachment_note(message: Message, attachments: list[Attachment]) -> str:
+    """The message text plus what came with it. Images say they are shown; text is inlined here
+    so a document reaches even a model that cannot see pictures."""
+    parts = [message.content] if message.content else []
+    for att in attachments:
+        size = f"{att.bytes // 1024} kB" if att.bytes >= 1024 else f"{att.bytes} B"
+        if att.kind is AttachmentKind.IMAGE:
+            note = f"[image attached: {att.name}, {size}"
+            if not att.data_url:
+                note += " — this model cannot be shown images, so describe what you need instead"
+            parts.append(note + "]")
+        elif att.text:
+            label = "email thread" if att.kind is AttachmentKind.EMAIL else att.name
+            parts.append(f"[attached {label} ({size})]\n{att.text}")
+        else:
+            parts.append(f"[attached file: {att.name}, {size} — no text could be read from it]")
+    return "\n\n".join(parts)
 
 
 # --- ready-made providers ---------------------------------------------------------------

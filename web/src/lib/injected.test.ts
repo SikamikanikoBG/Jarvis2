@@ -30,6 +30,7 @@ const m = (role: LocalMessage['role'], content: string, name: string | null = nu
   tool_call_id: null,
   name,
   partial: false,
+  attachments: [],
   created_at: '2026-09-05T10:00:00.000Z',
 });
 

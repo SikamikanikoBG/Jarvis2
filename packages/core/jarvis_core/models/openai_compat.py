@@ -36,6 +36,18 @@ def to_openai_messages(messages: list[Message]) -> list[dict[str, Any]]:
         if m.role is Role.TOOL:
             out.append({"role": "tool", "content": m.content, "tool_call_id": m.tool_call_id or ""})
             continue
+        images = [a.data_url for a in m.attachments if a.data_url]
+        if images:
+            # OpenAI-style multimodal content: the text first, then the pictures.
+            item = {
+                "role": m.role.value,
+                "content": [
+                    *([{"type": "text", "text": m.content}] if m.content else []),
+                    *({"type": "image_url", "image_url": {"url": url}} for url in images),
+                ],
+            }
+            out.append(item)
+            continue
         item: dict[str, Any] = {"role": m.role.value, "content": m.content}
         if m.tool_calls:
             item["tool_calls"] = [

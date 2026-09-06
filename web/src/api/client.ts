@@ -1,4 +1,5 @@
 import type {
+  Attachment,
   Board,
   CollabKey,
   CollabKeyCreated,
@@ -188,6 +189,26 @@ export const api = {
     stop: (id: string) => request<Meeting>('POST', `/api/meetings/${encodeURIComponent(id)}/stop`),
     /** Deletes the recording, its frames and the conversation holding its transcript. */
     remove: (id: string) => request<null>('DELETE', `/api/meetings/${encodeURIComponent(id)}`),
+  },
+  attachments: {
+    upload: (file: File, conversationId: string | null) => {
+      const form = new FormData();
+      form.append('file', file, file.name);
+      if (conversationId) form.append('conversation_id', conversationId);
+      return request<Attachment>('POST', '/api/attachments', form);
+    },
+    uploadText: (text: string, name: string, conversationId: string | null) =>
+      request<Attachment>('POST', '/api/attachments/text', { text, name, conversation_id: conversationId }),
+    remove: (id: string) => request<null>('DELETE', `/api/attachments/${encodeURIComponent(id)}`),
+    /** Direct URL for an <img> or a download; the token rides in the query like the SPA's own. */
+    url: (id: string, opts: { thumb?: boolean } = {}) => {
+      const token = getToken();
+      const params = new URLSearchParams();
+      if (opts.thumb) params.set('thumb', '1');
+      if (token) params.set('token', token);
+      const query = params.toString();
+      return `/api/attachments/${encodeURIComponent(id)}${query ? `?${query}` : ''}`;
+    },
   },
   collab: {
     keys: () => request<CollabKey[]>('GET', '/api/collab/keys'),

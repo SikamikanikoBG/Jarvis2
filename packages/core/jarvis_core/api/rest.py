@@ -143,7 +143,13 @@ async def delete_conversation(request: Request, conversation_id: str) -> Respons
 
 @router.get("/conversations/{conversation_id}/messages", response_model=list[Message])
 async def list_messages(request: Request, conversation_id: str) -> list[Message]:
-    return await core_of(request).store.list_messages(conversation_id)
+    core = core_of(request)
+    messages = await core.store.list_messages(conversation_id)
+    # Attachments live in their own table; the transcript needs them on the message they came with.
+    by_message = await core.attachments.for_messages([m.id for m in messages if m.id])
+    for m in messages:
+        m.attachments = by_message.get(m.id or "", [])
+    return messages
 
 
 @router.get("/conversations/{conversation_id}/runs", response_model=list[Run])

@@ -95,3 +95,10 @@ export function tokPerSec(completionTokens: number, durationMs: number, ttftMs: 
   if (gen <= 0 || completionTokens <= 0) return null;
   return (completionTokens / gen) * 1000;
 }
+
+/** Human file size for an attachment chip. */
+export function sizeLabel(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} kB`;
+  return `${bytes} B`;
+}

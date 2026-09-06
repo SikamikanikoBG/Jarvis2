@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
 import { Icon } from '../components/Icon';
-import { Menu } from '../components/primitives';
+import { IconButton, Menu } from '../components/primitives';
 import { THINK_CHOICES, THINK_DEFAULT, thinkChoiceKey } from '../lib/think';
 import { NEW_CONVERSATION_KEY } from '../store/state';
 import { useStore } from '../store/store';
+import { PendingAttachments } from './Attachments';
 import { MicButton } from './MicButton';
+
+/** Pasted text longer than this becomes an attachment instead of filling the input. */
+const PASTE_AS_FILE_CHARS = 2000;
 
 interface Props {
   runActive: boolean;
@@ -23,6 +27,14 @@ export function Composer({ runActive, stopping }: Props) {
   const sendEdit = useStore((s) => s.sendEdit);
   const [text, setText] = useState('');
   const ref = useRef<HTMLTextAreaElement>(null);
+  const pending = useStore((s) => s.pendingAttachments);
+  const uploading = useStore((s) => s.uploadingAttachments);
+  const attachFiles = useStore((s) => s.attachFiles);
+  const attachText = useStore((s) => s.attachText);
+  const removeAttachment = useStore((s) => s.removeAttachment);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const cameraInput = useRef<HTMLInputElement>(null);
+  const [attachMenu, setAttachMenu] = useState<HTMLElement | null>(null);
 
   const resize = useCallback(() => {
     const el = ref.current;
@@ -52,10 +64,28 @@ export function Composer({ runActive, stopping }: Props) {
   }, []);
 
   const submit = () => {
-    if (runActive || !text.trim()) return;
+    if (runActive || (!text.trim() && pending.length === 0)) return;
     if (editing) void sendEdit(text);
     else send(text);
     setText('');
+  };
+
+  const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const items: DataTransferItem[] = Array.from(e.clipboardData?.items ?? []);
+    const files = items
+      .filter((i) => i.kind === 'file')
+      .map((i) => i.getAsFile())
+      .filter((f): f is File => f !== null);
+    if (files.length > 0) {
+      e.preventDefault(); // a screenshot from the clipboard is an attachment, not text
+      void attachFiles(files);
+      return;
+    }
+    const pasted = e.clipboardData?.getData('text') ?? '';
+    if (pasted.length > PASTE_AS_FILE_CHARS) {
+      e.preventDefault();
+      void attachText(pasted, `pasted ${Math.round(pasted.length / 1024)} kB`);
+    }
   };
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -65,9 +95,45 @@ export function Composer({ runActive, stopping }: Props) {
     }
   };
 
-  const canSend = text.trim().length > 0 && connection === 'open';
+  const canSend = (text.trim().length > 0 || pending.length > 0) && connection === 'open';
+  const pick = (input: HTMLInputElement | null) => {
+    setAttachMenu(null);
+    input?.click();
+  };
   return (
-    <div className="composer-wrap">
+    <div
+      className="composer-wrap"
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => {
+        const files = [...e.dataTransfer.files];
+        if (files.length) {
+          e.preventDefault();
+          void attachFiles(files);
+        }
+      }}
+    >
+      <input
+        ref={fileInput}
+        type="file"
+        multiple
+        hidden
+        onChange={(e) => {
+          void attachFiles([...(e.target.files ?? [])]);
+          e.target.value = '';
+        }}
+      />
+      <input
+        ref={cameraInput}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        hidden
+        onChange={(e) => {
+          void attachFiles([...(e.target.files ?? [])]);
+          e.target.value = '';
+        }}
+      />
+      <PendingAttachments pending={pending} uploading={uploading} onRemove={removeAttachment} />
       {editing && (
         <div className="edit-banner" role="status">
           <Icon name="edit" size={13} />
@@ -91,12 +157,32 @@ export function Composer({ runActive, stopping }: Props) {
           submit();
         }}
       >
+        <IconButton
+          icon="paperclip"
+          label="Attach a photo or a file"
+          className="attach-btn"
+          aria-haspopup="menu"
+          aria-expanded={Boolean(attachMenu)}
+          disabled={runActive}
+          onClick={(e) => setAttachMenu(attachMenu ? null : e.currentTarget)}
+        />
+        {attachMenu && (
+          <Menu
+            anchor={attachMenu}
+            onClose={() => setAttachMenu(null)}
+            items={[
+              ...(coarsePointer() ? [{ label: 'Take a photo', icon: 'camera' as const, onSelect: () => pick(cameraInput.current) }] : []),
+              { label: 'Photo or file', icon: 'image', onSelect: () => pick(fileInput.current) },
+            ]}
+          />
+        )}
         <textarea
           ref={ref}
           rows={1}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKey}
+          onPaste={onPaste}
           placeholder={runActive ? 'Jarvis is working…' : 'Message Jarvis'}
           aria-label="Message"
           disabled={runActive}

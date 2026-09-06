@@ -13,6 +13,7 @@ import logging
 import traceback
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from typing import Any
 
 from jarvis_core.db import Store
 from jarvis_core.engine.bus import EventBus
@@ -65,6 +66,7 @@ class RunEngine:
         *,
         max_concurrent: int = 3,
         titler: Callable[[str, str], Awaitable[str | None]] | None = None,
+        attachments: Any | None = None,
     ) -> None:
         self._store = store
         self._bus = bus
@@ -74,6 +76,7 @@ class RunEngine:
         # Names a chat after its first completed exchange (docs/WAVE2.md slice 0); None = keep
         # the first-line title forever.
         self._titler = titler
+        self._attachments = attachments  # features.attachments.AttachmentStore, optional
         self._heap: list[tuple[int, str, str]] = []  # (priority, created_at iso, run_id)
         self._queued: dict[str, Run] = {}
         self._active: dict[str, tuple[asyncio.Task[None], RunControl]] = {}
@@ -135,6 +138,7 @@ class RunEngine:
         think: bool | None = None,
         think_level: ThinkLevel | None = None,
         budget_kind: RunKind | None = None,
+        attachment_ids: list[str] | None = None,
     ) -> tuple[Run, Conversation]:
         conv: Conversation | None = None
         if conversation_id:
@@ -152,6 +156,12 @@ class RunEngine:
             self._bus.publish(ConversationUpdated(conversation=conv))
 
         user_msg = await self._store.add_message(Message.user(text, conversation_id=conv.id))
+        if attachment_ids and self._attachments is not None:
+            # Bind before publishing: the transcript must show the photo with the message it came
+            # with, not a bare line of text followed by a picture appearing later.
+            user_msg.attachments = await self._attachments.bind(
+                attachment_ids, message_id=user_msg.id or "", conversation_id=conv.id
+            )
         self._bus.publish(MessageCreated(message=user_msg))
 
         settings = self._settings()

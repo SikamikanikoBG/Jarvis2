@@ -253,3 +253,15 @@ harness — library vs. own is an open question to settle in the design.
   which the core writes into the meeting conversation at the start and repeats when a recording
   ends with nothing. Verified live: both sources report level 0 with the warning naming each one.
   Arsen still has to check Windows microphone access for the host and where his sound is going.
+- 2026-09-06 (evening) — Attachments (wave-2 slice 1) built: one `attachments` table, one upload
+  endpoint and one ingestion path for photos, documents, pasted text and (next) email threads.
+  Images are resized to 1568 px on the way in (a phone photo is 4000 px and the model reads none
+  of it) and reach the model as image parts — OpenAI-style content parts for vLLM, bare base64 in
+  `images` for Ollama; documents become text that is inlined into the message the model sees, so a
+  PDF works even on a model that cannot see pictures. A scanned PDF says it has no text layer
+  instead of attaching nothing. UI: a paperclip menu (Take a photo on a phone, photo or file
+  otherwise), drag-and-drop, paste (a screenshot becomes an attachment, and pasted text over 2 kB
+  becomes one instead of filling the input), chips and thumbnails on the sent message, a lightbox
+  with download. The `data_url` an image is sent with is filled in only while building the model
+  request and is excluded from serialisation, so nothing persisted or broadcast carries base64.
+  Meetings can be deleted now too (rows, frames on disk, and the transcript conversation).

@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from jarvis_core import __version__
+from jarvis_core.api import attachments as attachments_api
 from jarvis_core.api import collab, features, media, openai_compat, rest, ws
 from jarvis_core.config import CoreConfig
 from jarvis_core.db import Database, Store
@@ -23,6 +24,7 @@ from jarvis_core.engine import EventBus, RunEngine
 from jarvis_core.engine.context import BoardsBlock, BrowserBlock, ContextAssembler, KnowledgeBlock, SkillsBlock
 from jarvis_core.engine.loop import AgentLoop
 from jarvis_core.engine.supervision import Supervisor
+from jarvis_core.features.attachments import AttachmentStore
 from jarvis_core.features.boards import BoardStore, NotesTools
 from jarvis_core.features.collab import CollabAuthMiddleware, CollabKeys, build_mcp_server
 from jarvis_core.features.compaction import Compactor
@@ -78,6 +80,7 @@ class Core:
         self.collab_keys = CollabKeys(self.db)
         self.transcriber = Transcriber(settings)
         self.mcp_server = build_mcp_server(self)
+        self.attachments = AttachmentStore(self)
         self.triage = TriageJob(self)
         self.rsvp = RsvpJob(self)
         self.meetings = MeetingService(self)
@@ -101,6 +104,7 @@ class Core:
                 BrowserBlock(self.browser),
             ],
             compactor=self.compactor,
+            attachments=self.attachments,
         )
         self.supervisor = Supervisor(settings, lambda: self.adapters.for_role(RoleName.JUDGE))
         self.loop = AgentLoop(
@@ -124,6 +128,7 @@ class Core:
             settings,
             max_concurrent=config.max_concurrent_runs,
             titler=self.titler.title,
+            attachments=self.attachments,
         )
         self.scheduler = Scheduler(self.schedules, self._fire_schedule)
 
@@ -255,6 +260,7 @@ def create_app(config: CoreConfig | None = None, *, core: Core | None = None) ->
     app.include_router(collab.owner_router)
     app.include_router(collab.router)
     app.include_router(media.router)
+    app.include_router(attachments_api.router)
     app.include_router(openai_compat.router)
     app.include_router(ws.router)
     app.mount("/mcp", CollabAuthMiddleware(the_core.mcp_server.streamable_http_app(), the_core))

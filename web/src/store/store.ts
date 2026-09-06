@@ -6,7 +6,7 @@ import { notifyDesktop, readNotifyPref, writeNotifyPref } from '../lib/notify';
 import { navigate, parseLocation, rememberConversation, type View } from '../lib/router';
 import { applyThemePref, isPanelMode, readThemePref, type ThemePref } from '../lib/theme';
 import type { ThinkChoice } from '../lib/think';
-import type { Conversation, ConversationSummary, Message, Run, RunScopedEvent, ServerEvent } from '../protocol/types';
+import type { Attachment, Conversation, ConversationSummary, Message, Run, RunScopedEvent, ServerEvent } from '../protocol/types';
 import { isRunScoped, isTerminal } from '../protocol/types';
 import { applyFeatureEvents, initialFeatureState, type FeatureState } from './features';
 import { applyServerEvents } from './reducer';
@@ -42,6 +42,10 @@ export interface UiState {
   moreOpen: boolean;
   /** "Edit and resend": the message being edited; sending forks the conversation before it. */
   editing: { conversationId: string; messageId: string; text: string } | null;
+  /** Uploaded and waiting to be sent with the next message. */
+  pendingAttachments: Attachment[];
+  /** Names of files currently uploading, so the composer can show them. */
+  uploadingAttachments: string[];
   /** Desktop notification when a run finishes while this tab is hidden (per device). */
   notifyRuns: boolean;
 }
@@ -76,6 +80,10 @@ export interface Actions {
   /** Fork the conversation before the edited message and send the new text there. */
   sendEdit: (text: string) => Promise<void>;
   setNotifyRuns: (on: boolean) => Promise<void>;
+  /** Upload files (photos, documents) and hold them for the next message. */
+  attachFiles: (files: File[]) => Promise<void>;
+  attachText: (text: string, name?: string) => Promise<void>;
+  removeAttachment: (id: string) => void;
   exportConversation: (id: string, format: 'markdown' | 'json') => Promise<void>;
 }
 
@@ -110,6 +118,8 @@ export const useStore = create<AppState>()((set, get) => ({
   summaries: {},
   moreOpen: false,
   editing: null,
+  pendingAttachments: [],
+  uploadingAttachments: [],
   notifyRuns: readNotifyPref(),
 
   boot: () => {
@@ -234,7 +244,9 @@ export const useStore = create<AppState>()((set, get) => ({
   send: (text) => {
     const s = get();
     const trimmed = text.trim();
-    if (!trimmed) return;
+    const attachments = s.pendingAttachments;
+    // A photo with no words is a perfectly good message ("what is this?" is implied).
+    if (!trimmed && attachments.length === 0) return;
     if (!ws?.isOpen) {
       s.notify('Not connected — the message was not sent.', 'error');
       return;
@@ -253,6 +265,7 @@ export const useStore = create<AppState>()((set, get) => ({
       tool_call_id: null,
       name: null,
       partial: false,
+      attachments,
       created_at: new Date().toISOString(),
       optimistic: true,
     };
@@ -260,6 +273,7 @@ export const useStore = create<AppState>()((set, get) => ({
     set((st) => ({
       messages: { ...st.messages, [key]: [...(open ? (st.messages[key] ?? []) : []), optimistic] },
       pendingNewConversation: open ? st.pendingNewConversation : { clientRef, text: trimmed },
+      pendingAttachments: [],
     }));
     const choice = s.thinkChoice[key];
     ws.send({
@@ -270,6 +284,7 @@ export const useStore = create<AppState>()((set, get) => ({
       client_ref: clientRef,
       think: choice?.think ?? null,
       think_level: choice?.think ? (choice.think_level ?? null) : null,
+      attachment_ids: attachments.map((a) => a.id),
     });
   },
 
@@ -338,6 +353,34 @@ export const useStore = create<AppState>()((set, get) => ({
     } catch (e) {
       get().notify(`Could not fork the conversation: ${errorText(e)}`, 'error');
     }
+  },
+
+  attachFiles: async (files) => {
+    for (const file of files) {
+      set((s) => ({ uploadingAttachments: [...s.uploadingAttachments, file.name] }));
+      try {
+        const att = await api.attachments.upload(file, get().openConversationId);
+        set((s) => ({ pendingAttachments: [...s.pendingAttachments, att] }));
+      } catch (e) {
+        get().notify(`${file.name}: ${errorText(e)}`, 'error');
+      } finally {
+        set((s) => ({ uploadingAttachments: s.uploadingAttachments.filter((n) => n !== file.name) }));
+      }
+    }
+  },
+
+  attachText: async (text, name = 'pasted text') => {
+    try {
+      const att = await api.attachments.uploadText(text, name, get().openConversationId);
+      set((s) => ({ pendingAttachments: [...s.pendingAttachments, att] }));
+    } catch (e) {
+      get().notify(`Could not attach the text: ${errorText(e)}`, 'error');
+    }
+  },
+
+  removeAttachment: (id) => {
+    set((s) => ({ pendingAttachments: s.pendingAttachments.filter((a) => a.id !== id) }));
+    api.attachments.remove(id).catch(() => undefined); // best effort: the row is orphaned anyway
   },
 
   setNotifyRuns: async (on) => {

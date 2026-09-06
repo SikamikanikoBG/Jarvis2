@@ -70,23 +70,55 @@ defect was demonstrated on the *old* code before it was changed.
 | 13 | api | `?limit=-1` meant "no limit" to SQLite on five endpoints | `_clamp` at both ends |
 | 14 | api | bearer tokens compared with `==` on REST, WS and collab (the host already used `hmac.compare_digest`) | shared helper |
 | 15 | web | the composer cleared the textarea before the store accepted the message, so a send refused for being offline or for a run in flight deleted what was typed — the second case said nothing at all | `selectSendRefusal`, 4 cases |
+| 16 | agent loop | the "ephemeral" plan trailer was popped only when it was still last, which no tool-calling step leaves it — so every such step buried a stale plan block in the context, each marking a different step "← current" | "call 1 carried 2 plan blocks" |
+| 17 | host | `MeetingCapture.close_all()` existed, was tested, and was never called: shutdown kept the microphone and loopback device | `[] == ['mic','system']` |
+| 18 | agent loop | `record_idempotent_result` stored every mutating result and nothing read it back; a duplicate call was told "duplicate call refused", which reads as a failure for an action that DID happen | replay test |
+| 19 | api | `/api/openapi.json` and `/api/docs` answered without a token — the whole API description, on a box reachable over Tailscale with `/collab` tunnelled publicly | route-table walk |
 
 ### Looked at and found sound
+
+Recorded so the next reader does not re-open them.
 
 * `kg_aliases` is `COLLATE NOCASE` in the schema, so the alias lookup in `find()` is
   case-insensitive despite the SQL not saying so — checked before "fixing" it.
 * `Files.resolve` is not bypassable by a symlink: `Path.resolve()` follows the existing prefix,
   so both a symlinked target and a symlinked parent land outside the roots and are refused.
+* A path traversal in a skill name cannot reach the route — the router normalises `..%2F` away
+  before matching — and `SkillStore._path` refuses it anyway.
+* `EmailPolicy.is_approved`'s domain rule keeps the `@`, so `@bank.bg` does not match
+  `attacker@evilbank.bg`. `Confirmations.needs_confirmation` skipping `always_ask` for unattended
+  runs is deliberate and documented; the draft-instead-of-send policy is the real guard there.
+* `search()`'s DASL `LIKE` does not escape `%`, but every row is verified against the query
+  afterwards (the V1 Gmail incident), so an over-match costs rows, not correctness.
 * The host's `BearerAuth` was already constant-time; `ComWorker`'s abandon-on-timeout contract
   holds (a timed-out caller never parks a thread on a lock).
 * `registry.call`'s double timeout (outer `wait_for` and the provider's own) races, but both
   paths produce a "timed out" result, so it is cosmetic.
+* `MeetingCapture.pull()` consuming a chunk before the `after_seq` check could lose audio only
+  if the core asked with a seq it already holds, which the pull protocol makes unreachable.
+* Every other place that clears an input after an action (boards, notes, collab keys) already
+  clears inside `.then()`; the composer was the only one that cleared first.
+
+### Known and deliberately left
+
+* `regenerate()` re-sends the last user message without its attachments. Fixing it properly
+  needs attachments to be shared between messages (today one row points at one message), so
+  re-binding would take the picture off the original message. Out of proportion here.
+* `TriageSettings.rules_for` replaces a mailbox's rules wholesale, so an account override that
+  only wanted `demand_routing: false` also loses the global alerts. That is a design decision,
+  not a defect — but it is a footgun worth revisiting.
 
 ## After
 
 ```
-python:   245 passed (was 187)
+python:   255 passed (was 187)
 web:      40 passed (was 36)
 lint:     ruff + pyright + eslint + tsc all clean
+coverage: 87% (was 83%) — api/features 51→97, api/attachments 45→88, boards 57→86,
+          schedules 75→88, skills 73→81
+live:     core booted on a temp home, 37 tools, /api/health 200; the Run-now fix, the negative
+          -limit clamps and the docs gate verified against the running server, not only in tests
 ```
+
+Ten commits, each carrying the test that fails without it.
 

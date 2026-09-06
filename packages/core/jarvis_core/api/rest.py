@@ -127,7 +127,7 @@ async def fork_conversation(request: Request, conversation_id: str, body: ForkRe
 @router.get("/search", response_model=list[SearchHit])
 async def search(request: Request, q: str, limit: int = 30) -> list[SearchHit]:
     """Conversations by title, then by message text; one hit per conversation with a snippet."""
-    return await core_of(request).store.search(q, limit=max(1, min(limit, 100)))
+    return await core_of(request).store.search(q, limit=min(limit, 100) if limit > 0 else 30)
 
 
 @router.delete("/conversations/{conversation_id}", status_code=204)
@@ -154,7 +154,8 @@ async def list_messages(request: Request, conversation_id: str) -> list[Message]
 
 @router.get("/conversations/{conversation_id}/runs", response_model=list[Run])
 async def list_runs(request: Request, conversation_id: str, limit: int = 50) -> list[Run]:
-    return await core_of(request).store.list_runs(conversation_id, limit=limit)
+    # A negative LIMIT means "no limit" to SQLite, so the ceiling has to hold at both ends.
+    return await core_of(request).store.list_runs(conversation_id, limit=min(limit, 200) if limit > 0 else 50)
 
 
 # --- runs --------------------------------------------------------------------------

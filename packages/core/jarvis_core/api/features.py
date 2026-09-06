@@ -16,6 +16,10 @@ from jarvis_proto.runs import ThinkLevel
 router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
 
 
+def _clamp(value: int, ceiling: int, *, default: int) -> int:
+    return min(value, ceiling) if value > 0 else default
+
+
 # --- boards ------------------------------------------------------------------------------
 
 
@@ -117,12 +121,16 @@ class MergeBody(BaseModel):
 
 @router.get("/kg/entities", response_model=list[Entity])
 async def search_entities(request: Request, q: str = "", limit: int = 50) -> list[Entity]:
-    return await core_of(request).knowledge.search(q, limit=min(limit, 200))
+    # Clamped at BOTH ends: SQLite reads a negative LIMIT as "no limit", so ?limit=-1 asked for
+    # the whole graph. Same for depth below.
+    return await core_of(request).knowledge.search(q, limit=_clamp(limit, 200, default=50))
 
 
 @router.get("/kg/graph", response_model=Graph)
 async def kg_graph(request: Request, center: str | None = None, depth: int = 1, limit: int = 80) -> Graph:
-    return await core_of(request).knowledge.graph(center=center, depth=depth, limit=min(limit, 300))
+    return await core_of(request).knowledge.graph(
+        center=center, depth=_clamp(depth, 5, default=1), limit=_clamp(limit, 300, default=80)
+    )
 
 
 @router.get("/kg/entities/{entity_id}", response_model=EntityDetail)
@@ -283,13 +291,13 @@ async def run_schedule(request: Request, schedule_id: str) -> dict[str, str]:
     schedule = await core.schedules.get(schedule_id)
     if schedule is None:
         raise HTTPException(404, "schedule not found")
-    run_id, conversation_id = await core.scheduler.fire_now(schedule)
+    run_id, conversation_id = await core.scheduler.run_now(schedule)
     return {"run_id": run_id, "conversation_id": conversation_id}
 
 
 @router.get("/schedules/{schedule_id}/fires", response_model=list[ScheduleFire])
 async def schedule_fires(request: Request, schedule_id: str, limit: int = 20) -> list[ScheduleFire]:
-    return await core_of(request).schedules.fires(schedule_id, limit=min(limit, 200))
+    return await core_of(request).schedules.fires(schedule_id, limit=_clamp(limit, 200, default=20))
 
 
 # --- conversation summary (compaction divider) ------------------------------------------

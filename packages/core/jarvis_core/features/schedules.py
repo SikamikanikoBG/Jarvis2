@@ -306,6 +306,16 @@ class Scheduler:
             await self.store.advance(schedule, slot)
         return fired
 
+    async def run_now(self, schedule: Schedule) -> tuple[str, str]:
+        """The "Run now" button. Recorded like any other fire, so the schedule's history and its
+        last_run_id show it — pressing it used to produce a run the schedule never heard about,
+        leaving the card saying "last run: yesterday" next to a run that just finished."""
+        slot = _now()
+        await self.store.claim_slot(schedule.id, slot)
+        run_id, conv_id = await self.fire_now(schedule, slot)
+        await self.store.record_fire(schedule.id, slot, run_id, conv_id)
+        return run_id, conv_id
+
     async def fire_now(self, schedule: Schedule, slot: datetime | None = None) -> tuple[str, str]:
         slot = slot or _now()
         local = slot.astimezone(ZoneInfo(schedule.tz)).strftime("%Y-%m-%d %H:%M")

@@ -100,6 +100,55 @@ def test_ws_rejects_bad_token(client: TestClient):
         ws.receive_text()
 
 
+def test_a_negative_limit_does_not_mean_unlimited(client: TestClient):
+    """SQLite reads LIMIT -1 as "no limit", so a ceiling has to hold at BOTH ends.
+
+    The endpoints clamped with `min(limit, N)` only, so ?limit=-1 asked for the whole table —
+    every entity in the graph, every run of a conversation — from an endpoint whose contract
+    says 50.
+    """
+    from jarvis_core.api.features import _clamp
+
+    assert [_clamp(v, 200, default=50) for v in (-1, 0, 1, 50, 500)] == [50, 50, 1, 50, 200]
+
+    # And the endpoints themselves answer rather than fall over.
+    conv = client.post("/api/conversations", json={"title": "hits"}, headers=_h()).json()["id"]
+    for limit in (-1, 0, 9999):
+        for url in (
+            f"/api/conversations/{conv}/runs?limit={limit}",
+            f"/api/kg/entities?limit={limit}",
+            f"/api/kg/graph?limit={limit}",
+            f"/api/search?q=hits&limit={limit}",
+            f"/api/schedules/none/fires?limit={limit}",
+        ):
+            assert client.get(url, headers=_h()).status_code == 200, url
+
+
+def test_opening_a_conversation_tells_every_client_it_is_read(client: TestClient):
+    """The unread badge has to clear on the phone as well as in the tab that opened the chat.
+
+    The WS marked the conversation read in the database and published nothing, so any other
+    connected client kept its badge until something unrelated republished the conversation.
+    """
+    conv = client.post("/api/conversations", json={"title": "unread one"}, headers=_h()).json()["id"]
+    client.patch(f"/api/conversations/{conv}", json={"unread": True}, headers=_h())
+    assert client.get(f"/api/conversations/{conv}", headers=_h()).json()["unread"] is True
+
+    with client.websocket_connect("/ws?token=secret") as ws:
+        ws.send_text(json.dumps({"type": "subscribe", "conversation_id": conv}))
+        ws.send_text(json.dumps({"type": "ping"}))  # a fence, so a missing event fails fast
+        seen: list[dict] = []
+        while True:
+            ev = json.loads(ws.receive_text())
+            seen.append(ev)
+            if ev["type"] == "pong":
+                break
+        updates = [e for e in seen if e["type"] == "conversation.updated" and e["conversation"]["id"] == conv]
+        assert updates, f"marking the conversation read announced nothing: {[e['type'] for e in seen]}"
+        assert updates[-1]["conversation"]["unread"] is False
+    assert client.get(f"/api/conversations/{conv}", headers=_h()).json()["unread"] is False
+
+
 def test_status_reports_endpoints(client: TestClient):
     fake_roles = fake_settings().model_dump(mode="json")["roles"]
     client.patch("/api/settings", json={"roles": fake_roles}, headers=_h())

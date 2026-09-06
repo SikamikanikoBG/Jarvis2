@@ -339,6 +339,28 @@ async def test_cron_schedule_skip_policy_advances_without_firing(harness: Harnes
     assert await core.schedules.fires(sched.id) == []
 
 
+async def test_run_now_appears_in_the_schedule_history(harness: Harness):
+    """"Run now" is a fire like any other and must be recorded as one.
+
+    It called fire_now without claiming a slot or recording it, so the run existed but the
+    schedule never heard about it: the card still said "last run: <the previous scheduled one>"
+    next to a run that had just finished, and the history list stayed empty.
+    """
+    core = harness.core
+    harness.chat.push(FakeTurn(text="done now"))
+    sched = await core.schedules.create(name="Weekly report", prompt="write it", cron="0 9 * * 1", tz="UTC")
+    assert await core.schedules.fires(sched.id) == []
+
+    run_id, conv_id = await core.scheduler.run_now(sched)
+    fires = await core.schedules.fires(sched.id)
+    assert [(f.run_id, f.conversation_id) for f in fires] == [(run_id, conv_id)]
+    after = await core.schedules.get(sched.id)
+    assert after is not None and after.last_run_id == run_id
+    # The recurring schedule is untouched by a manual run: it still fires on its own cron.
+    assert after.enabled and after.next_fire is not None and after.next_fire > datetime.now(UTC)
+    assert after.next_fire == sched.next_fire
+
+
 async def test_schedule_tool_creates_from_chat(harness: Harness):
     core = harness.core
     harness.chat.push(

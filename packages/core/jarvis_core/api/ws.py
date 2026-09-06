@@ -70,7 +70,10 @@ async def _ui_leg(ws: WebSocket) -> None:
                         sub.deliver(RunUpdated(run=run))
                 conv = await core.store.get_conversation(msg.conversation_id)
                 if conv is not None and conv.unread:
-                    await core.store.update_conversation(conv.id, unread=0)
+                    # Announce it: the badge has to clear on Arsen's phone too, not only in the
+                    # tab that opened the conversation.
+                    updated = await core.store.update_conversation(conv.id, unread=0)
+                    core.bus.publish(ConversationUpdated(conversation=updated or conv))
             elif isinstance(msg, Unsubscribe):
                 sub.conversations.discard(msg.conversation_id)
             elif isinstance(msg, RunCreateRequest):

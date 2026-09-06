@@ -178,12 +178,14 @@ class CollabAuthMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        from jarvis_core.api.deps import token_matches
+
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
         auth = headers.get("authorization", "")
         token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
         owner = self.core.config.token
         key = None
-        if not (owner and token == owner) and not (owner is None and not token):
+        if not (owner and token_matches(token, owner)) and not (owner is None and not token):
             key = await self.core.collab_keys.verify(token)
             if key is None:
                 body = b'{"error":"unauthorized"}'

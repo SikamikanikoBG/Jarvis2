@@ -34,6 +34,7 @@ from jarvis_host.audio import Audio
 from jarvis_host.com import ComWorker
 from jarvis_host.config import HostConfig
 from jarvis_host.files import Files
+from jarvis_host.onenote import OneNoteBackend, OneNoteError, OneNoteService, onenote_dispatch
 from jarvis_host.outlook import OutlookBackend, OutlookError, OutlookService, outlook_dispatch
 from jarvis_host.screen import Screen
 from jarvis_host.shell import Shell
@@ -63,6 +64,7 @@ class Deps:
     config: HostConfig
     worker: ComWorker
     outlook: OutlookService | None
+    onenote: OneNoteService | None
     files: Files
     shell: Shell
     screen: Screen
@@ -71,16 +73,21 @@ class Deps:
 
 
 def make_deps(
-    config: HostConfig, *, dispatch: Callable[[], Any] | None = None, worker: ComWorker | None = None
+    config: HostConfig,
+    *,
+    dispatch: Callable[[], Any] | None = None,
+    worker: ComWorker | None = None,
+    onenote_dispatch_fn: Callable[[], Any] | None = None,
 ) -> Deps:
     worker = worker or ComWorker()
     backend = OutlookBackend(dispatch or outlook_dispatch, config.outlook_accounts)
     outlook = OutlookService(backend, worker)
+    onenote = OneNoteService(OneNoteBackend(onenote_dispatch_fn or onenote_dispatch), worker)
     roots = config.fs_roots or ()
     files = Files(roots)
     shell = Shell(allowed=config.shell_allow, default_cwd=files.roots[0])
     screen = Screen(enabled=config.screen_enabled)
-    return Deps(config, worker, outlook, files, shell, screen, Audio(), Status(config, worker, outlook))
+    return Deps(config, worker, outlook, onenote, files, shell, screen, Audio(), Status(config, worker, outlook))
 
 
 def json_text(obj: Any) -> str:
@@ -129,6 +136,11 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
         if deps.outlook is None:
             raise OutlookError("Outlook is only available on a Windows host")
         return deps.outlook
+
+    def onenote() -> OneNoteService:
+        if deps.onenote is None:
+            raise OneNoteError("OneNote is only available on a Windows host")
+        return deps.onenote
 
     def tool(name: str, annotations: ToolAnnotations) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         return mcp.tool(name=name, annotations=annotations, structured_output=False)
@@ -308,6 +320,34 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
                 lambda: outlook().call("calendar_remove_canceled", account, days_back, days_ahead),
             )
         )
+
+    # --- OneNote -------------------------------------------------------------------------
+
+    @tool("onenote_tree", READ)
+    async def onenote_tree(with_pages: bool = True) -> str:
+        """Notebooks → sections (section groups flattened) → pages, each with its id and its 'Notebook/Section/Page' path. Pass with_pages=false for a fast structure-only listing."""
+        return json_text(await _run("onenote_tree", lambda: onenote().call("tree", with_pages)))
+
+    @tool("onenote_read", READ)
+    async def onenote_read(page: str, max_chars: int = 20_000) -> str:
+        """Text of a OneNote page, by 'Notebook/Section/Page' path or by page id (from onenote_tree / onenote_search). Says when the text was truncated."""
+        cap = max(500, min(int(max_chars or 20_000), 200_000))
+        return json_text(await _run("onenote_read", lambda: onenote().call("read", page, cap)))
+
+    @tool("onenote_search", READ)
+    async def onenote_search(query: str, limit: int = 20) -> str:
+        """Pages whose title or text matches `query`, through OneNote's own index. Returns ids and paths; read one with onenote_read."""
+        return json_text(await _run("onenote_search", lambda: onenote().call("search", query, limit)))
+
+    @tool("onenote_create", MUTATING)
+    async def onenote_create(section: str, title: str, content: str = "") -> str:
+        """Create a page in a section ('Notebook/Section' path from onenote_tree). `content` is Markdown: headings, bullets, numbered lists, quotes, fenced code and tables are converted; long content is written in chunks."""
+        return json_text(await _run("onenote_create", lambda: onenote().call("create", section, title, content)))
+
+    @tool("onenote_append", MUTATING)
+    async def onenote_append(page: str, content: str) -> str:
+        """Append Markdown to an existing page (path or id). Existing content is never rewritten - the new blocks are added to the page."""
+        return json_text(await _run("onenote_append", lambda: onenote().call("append", page, content)))
 
     # --- files ---------------------------------------------------------------------------
 

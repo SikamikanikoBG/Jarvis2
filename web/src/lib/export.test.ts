@@ -12,6 +12,7 @@ const conv: Conversation = {
   unread: false,
   pinned: false,
   title_auto: true,
+  instructions: '',
   preview: null,
   message_count: 0,
   created_at: '2026-09-06T08:00:00.000Z',

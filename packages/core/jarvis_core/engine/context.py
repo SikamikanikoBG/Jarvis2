@@ -92,11 +92,20 @@ class ContextAssembler:
                 block = None
             if block:
                 parts.append(block)
+        # This chat's own instructions, if it has any. LAST of the stable blocks on purpose: a
+        # conversation without them is byte-identical to every other, and one with them still
+        # shares the cached prefix up to this point, so only the tail is re-read.
+        conversation = await self._store.get_conversation(run.conversation_id)
+        if conversation is not None and conversation.instructions.strip():
+            parts.append(
+                "## Instructions for this conversation\n"
+                "These come from Arsen and apply to this chat only. They add to the rules above "
+                "and never override rule 1 or 2.\n" + conversation.instructions.strip()
+            )
         if run.kind is RunKind.SCHEDULED:
             # The model must know it IS the reminder. Without this, "Remind Arsen to ..." firing
             # at 08:45 was read as "set up a reminder" and it created a second schedule.
-            conv = await self._store.get_conversation(run.conversation_id)
-            name = conv.folder_label if conv and conv.folder_label else "scheduled prompt"
+            name = conversation.folder_label if conversation and conversation.folder_label else "scheduled prompt"
             parts.append(
                 f"## This run\nYou are executing the scheduled prompt '{name}' which is firing NOW. "
                 "Do what it says immediately, in this run. Do not create, edit or re-schedule any "

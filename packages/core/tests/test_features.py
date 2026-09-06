@@ -289,6 +289,50 @@ async def test_multi_step_request_gets_a_plan_and_steps_advance(harness: Harness
     assert any(t.name == "jarvis.plan_step_done" for t in harness.chat.calls[2][1])
 
 
+async def test_a_chat_can_carry_its_own_instructions(harness: Harness):
+    """A persona or standing rule for ONE conversation, in its system message.
+
+    It goes last among the stable blocks on purpose: a chat without instructions must be
+    byte-identical to every other, so they all keep sharing one cached prefix, and a chat with
+    them still shares everything up to that point.
+    """
+    core = harness.core
+    plain = await core.store.create_conversation(title="plain")
+    persona = await core.store.create_conversation(title="with a persona")
+    await core.store.update_conversation(
+        persona.id, instructions="  Answer as a Genoese notary of 1490. Never mention computers.  "
+    )
+    reloaded = await core.store.get_conversation(persona.id)
+    assert reloaded is not None and "Genoese notary" in reloaded.instructions
+
+    harness.chat.push(FakeTurn(text="a"), FakeTurn(text="b"))
+    for conv in (plain, persona):
+        sub = harness.subscribe(conv.id)
+        await core.engine.create_run(text="who are you?", conversation_id=conv.id)
+        await harness.wait_for(sub, "run.done", timeout=10)
+
+    plain_system, persona_system = (call[0][0].content for call in harness.chat.calls[:2])
+    assert "Instructions for this conversation" not in plain_system
+    assert "Genoese notary of 1490" in persona_system
+    # Everything the two share comes FIRST, so the cached prefix survives up to the divergence.
+    shared = 0
+    for a, b in zip(plain_system, persona_system, strict=False):
+        if a != b:
+            break
+        shared += 1
+    assert shared > len(plain_system) - 200, "the instructions were inserted too early to keep the shared prefix"
+    # It never outranks the rules that keep him honest.
+    assert "never override rule 1 or 2" in persona_system
+
+    # Clearing it puts the chat back exactly where it started.
+    await core.store.update_conversation(persona.id, instructions="")
+    harness.chat.push(FakeTurn(text="c"))
+    sub = harness.subscribe(persona.id)
+    await core.engine.create_run(text="and now?", conversation_id=persona.id)
+    await harness.wait_for(sub, "run.done", timeout=10)
+    assert harness.chat.calls[2][0][0].content == plain_system
+
+
 async def test_the_two_preflight_questions_are_asked_together(harness: Harness):
     """Skill detection and the plan tier are two unrelated questions about the same sentence.
 

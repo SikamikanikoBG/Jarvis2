@@ -1080,3 +1080,38 @@
 .camera-shutter:active:not(:disabled) .camera-shutter-dot {
   transform: scale(0.88);
 }
+
+/* --- per-chat instructions --- */
+.instructions-card {
+  width: min(560px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-2);
+}
+.instructions-card h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: var(--fs-md);
+}
+.instructions-card p {
+  margin: 0;
+}
+.instructions-card textarea {
+  resize: vertical;
+  min-height: 120px;
+  font: inherit;
+  line-height: 1.5;
+}
+.instructions-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}

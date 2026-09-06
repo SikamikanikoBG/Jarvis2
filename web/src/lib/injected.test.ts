@@ -13,6 +13,7 @@ const conv = (preview: string | null): Conversation => ({
   unread: false,
   pinned: false,
   title_auto: true,
+  instructions: '',
   preview,
   message_count: 0,
   created_at: '2026-09-05T10:00:00.000Z',

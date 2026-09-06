@@ -76,6 +76,8 @@ export interface Actions {
   notify: (text: string, level?: Notice['level']) => void;
   dismissNotice: () => void;
   pinConversation: (id: string, pinned: boolean) => Promise<void>;
+  /** A persona or standing rule for ONE chat; "" clears it. */
+  setConversationInstructions: (id: string, instructions: string) => Promise<void>;
   /** Re-run the last user message of the open conversation; the earlier reply stays. */
   regenerate: () => void;
   startEdit: (conversationId: string, messageId: string, text: string) => void;
@@ -337,6 +339,16 @@ export const useStore = create<AppState>()((set, get) => ({
       upsertConversation(set, conv);
     } catch (e) {
       get().notify(`${pinned ? 'Pin' : 'Unpin'} failed: ${errorText(e)}`, 'error');
+    }
+  },
+
+  setConversationInstructions: async (id, instructions) => {
+    try {
+      const conv = await api.conversations.patch(id, { instructions });
+      upsertConversation(set, conv);
+      get().notify(instructions.trim() ? 'Instructions saved for this chat.' : 'Instructions cleared.');
+    } catch (e) {
+      get().notify(`Could not save the instructions: ${errorText(e)}`, 'error');
     }
   },
 

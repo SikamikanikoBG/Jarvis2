@@ -122,7 +122,10 @@ export const api = {
     list: (archived: boolean) => request<Conversation[]>('GET', `/api/conversations?archived=${archived ? 1 : 0}`),
     create: (body: { kind?: string; title?: string }) => request<Conversation>('POST', '/api/conversations', body),
     get: (id: string) => request<Conversation>('GET', `/api/conversations/${encodeURIComponent(id)}`),
-    patch: (id: string, body: { title?: string; archived?: boolean; unread?: boolean; pinned?: boolean }) =>
+    patch: (
+      id: string,
+      body: { title?: string; archived?: boolean; unread?: boolean; pinned?: boolean; instructions?: string },
+    ) =>
       request<Conversation>('PATCH', `/api/conversations/${encodeURIComponent(id)}`, body),
     remove: (id: string) => request<null>('DELETE', `/api/conversations/${encodeURIComponent(id)}`),
     /** New conversation with the transcript BEFORE `upToMessageId` (null = all of it). */

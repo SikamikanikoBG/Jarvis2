@@ -27,6 +27,7 @@ function conv(id: string, updated: number, extra: Partial<Conversation> = {}): C
     unread: false,
     pinned: false,
     title_auto: true,
+    instructions: '',
     preview: null,
     message_count: 0,
     created_at: iso(0),

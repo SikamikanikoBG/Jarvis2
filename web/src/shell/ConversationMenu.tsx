@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { InstructionsDialog } from '../chat/InstructionsDialog';
 import { IconButton, InlineConfirm, Menu } from '../components/primitives';
 import { useStore } from '../store/store';
 
@@ -15,9 +16,11 @@ export function ConversationMenu() {
   const remove = useStore((s) => s.deleteConversation);
   const pin = useStore((s) => s.pinConversation);
   const exportConv = useStore((s) => s.exportConversation);
+  const setInstructions = useStore((s) => s.setConversationInstructions);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [confirm, setConfirm] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [instructing, setInstructing] = useState(false);
   const [title, setTitle] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -61,6 +64,13 @@ export function ConversationMenu() {
   }
   return (
     <>
+      {instructing && (
+        <InstructionsDialog
+          conversation={conv}
+          onClose={() => setInstructing(false)}
+          onSave={(text) => void setInstructions(id, text)}
+        />
+      )}
       <IconButton icon="more" label="Conversation menu" aria-haspopup="menu" aria-expanded={Boolean(anchor)} onClick={(e) => setAnchor(anchor ? null : e.currentTarget)} />
       {anchor && (
         <Menu
@@ -74,6 +84,11 @@ export function ConversationMenu() {
                 setTitle(conv.title);
                 setEditing(true);
               },
+            },
+            {
+              label: conv.instructions.trim() ? 'Instructions ✓' : 'Instructions…',
+              icon: 'brain',
+              onSelect: () => setInstructing(true),
             },
             { label: conv.pinned ? 'Unpin' : 'Pin', icon: 'pin', onSelect: () => void pin(id, !conv.pinned) },
             { label: conv.archived ? 'Unarchive' : 'Archive', icon: conv.archived ? 'unarchive' : 'archive', onSelect: () => void archive(id, !conv.archived) },

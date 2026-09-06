@@ -155,6 +155,9 @@ class Conversation(BaseModel):
     pinned: bool = False
     # True while the title is machine-made; a rename by the user turns it off for good.
     title_auto: bool = True
+    # A persona or standing rule for THIS chat only, added to the system message. Empty for the
+    # vast majority; when set it is what makes one conversation behave differently from the rest.
+    instructions: str = ""
     preview: str | None = None
     message_count: int = 0
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

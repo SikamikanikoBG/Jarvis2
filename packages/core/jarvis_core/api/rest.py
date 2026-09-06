@@ -65,6 +65,8 @@ class ConversationPatch(BaseModel):
     archived: bool | None = None
     unread: bool | None = None
     pinned: bool | None = None
+    # A persona or standing rule for this chat only; "" clears it.
+    instructions: str | None = None
 
 
 class ForkRequest(BaseModel):
@@ -102,6 +104,10 @@ async def patch_conversation(request: Request, conversation_id: str, body: Conve
     if "title" in fields:
         fields["title"] = str(fields["title"]).strip()[:80] or "New chat"
         fields["title_auto"] = 0  # a human named it; the titler leaves it alone from now on
+    if "instructions" in fields:
+        # Capped: this rides in every model call for this conversation, so it is a paragraph of
+        # standing guidance, not a document. Long context belongs in the messages.
+        fields["instructions"] = str(fields["instructions"]).strip()[:4000]
     conv = await core.store.update_conversation(conversation_id, **fields)
     if conv is None:
         raise HTTPException(404, "conversation not found")

@@ -146,6 +146,8 @@ export interface Conversation {
   pinned: boolean;
   /** True while the title is machine-made; a rename by the user turns it off. */
   title_auto: boolean;
+  /** A persona or standing rule for THIS chat only, added to its system message. */
+  instructions: string;
   preview: string | null;
   message_count: number;
   created_at: string;

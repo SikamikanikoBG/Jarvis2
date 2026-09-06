@@ -71,6 +71,7 @@ class Store:
             unread=bool(row["unread"]),
             pinned=bool(row["pinned"]),
             title_auto=bool(row["title_auto"]),
+            instructions=row["instructions"] or "",
             preview=row["preview"],
             message_count=row["message_count"],
             created_at=_dt(row["created_at"]) or datetime.now(UTC),
@@ -113,7 +114,10 @@ class Store:
         return [self._conversation(r) for r in await self.db.fetchall(sql)]
 
     async def update_conversation(self, conversation_id: str, **fields: Any) -> Conversation | None:
-        allowed = {"title", "archived", "unread", "pinned", "title_auto", "preview", "folder_key", "folder_label", "kind"}
+        allowed = {
+            "title", "archived", "unread", "pinned", "title_auto", "instructions",
+            "preview", "folder_key", "folder_label", "kind",
+        }
         sets: list[str] = []
         params: list[Any] = []
         for key, value in fields.items():

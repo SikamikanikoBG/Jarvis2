@@ -4,6 +4,7 @@ import type {
   CollabKeyCreated,
   Conversation,
   ConversationSummary,
+  SearchHit,
   Entity,
   EntityDetail,
   Graph,
@@ -120,9 +121,13 @@ export const api = {
     list: (archived: boolean) => request<Conversation[]>('GET', `/api/conversations?archived=${archived ? 1 : 0}`),
     create: (body: { kind?: string; title?: string }) => request<Conversation>('POST', '/api/conversations', body),
     get: (id: string) => request<Conversation>('GET', `/api/conversations/${encodeURIComponent(id)}`),
-    patch: (id: string, body: { title?: string; archived?: boolean; unread?: boolean }) =>
+    patch: (id: string, body: { title?: string; archived?: boolean; unread?: boolean; pinned?: boolean }) =>
       request<Conversation>('PATCH', `/api/conversations/${encodeURIComponent(id)}`, body),
     remove: (id: string) => request<null>('DELETE', `/api/conversations/${encodeURIComponent(id)}`),
+    /** New conversation with the transcript BEFORE `upToMessageId` (null = all of it). */
+    fork: (id: string, upToMessageId: string | null) =>
+      request<Conversation>('POST', `/api/conversations/${encodeURIComponent(id)}/fork`, { up_to_message_id: upToMessageId }),
+    search: (q: string, limit = 30) => request<SearchHit[]>('GET', `/api/search?q=${encodeURIComponent(q)}&limit=${limit}`),
     messages: (id: string) => request<Message[]>('GET', `/api/conversations/${encodeURIComponent(id)}/messages`),
     runs: (id: string) => request<Run[]>('GET', `/api/conversations/${encodeURIComponent(id)}/runs`),
     summary: (id: string) => request<ConversationSummary | null>('GET', `/api/conversations/${encodeURIComponent(id)}/summary`),

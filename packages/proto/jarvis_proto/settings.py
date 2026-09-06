@@ -124,6 +124,25 @@ def _default_mcp_servers() -> list[McpServerSpec]:
     ]
 
 
+class TriageRules(BaseModel):
+    """How one mailbox is sorted: its categories, the free-text rules, the catch-all.
+
+    ``categories`` entries are ``{name, folder, rule}``; folders are paths under the account's
+    inbox (``Action Hub/To-Do``) or a well-known role (``deleted`` for spam). ``instructions`` is
+    read before the category list (who the owner is, what Cc-only means, VIPs, hard exclusions).
+    ``fallback_category`` receives "none": empty leaves the mail in the inbox.
+    """
+
+    categories: list[dict[str, str]] = Field(default_factory=list)
+    instructions: str = ""
+    fallback_category: str = ""
+    # DM-1234 → Demands/DM-1234 makes sense for the work mailbox, not for a personal Gmail.
+    demand_routing: bool = True
+
+    def folders(self) -> list[str]:
+        return [str(c["folder"]) for c in self.categories if c.get("folder")]
+
+
 class TriageSettings(BaseModel):
     enabled: bool = False
     interval_min: int = 15
@@ -131,13 +150,22 @@ class TriageSettings(BaseModel):
     accounts: list[str] = Field(default_factory=list)
     demand_root: str = "Demands"
     demand_prefixes: list[str] = Field(default_factory=lambda: ["DM-"])
+    # The DEFAULT rules (every account without an override).
     categories: list[dict[str, str]] = Field(default_factory=list)  # {name, folder, rule}
-    # Free-text rules the classifier reads before the category list: who the owner is, what
-    # "CC-only" means for them, hard exclusions. Ported from V1's classification_instruction.
     instructions: str = ""
-    # Category used when the classifier answers "none" (or nonsense). Empty = leave the mail in
-    # the inbox; set it to the catch-all (e.g. "reference") for inbox zero.
     fallback_category: str = ""
+    # Per-account overrides, keyed by the account name `outlook_accounts` reports (case-insensitive).
+    # The work mailbox and a personal Gmail want different folders and different rules.
+    account_rules: dict[str, TriageRules] = Field(default_factory=dict)
+
+    def rules_for(self, account: str) -> TriageRules:
+        wanted = account.strip().lower()
+        for name, rules in self.account_rules.items():
+            if name.strip().lower() == wanted:
+                return rules
+        return TriageRules(
+            categories=self.categories, instructions=self.instructions, fallback_category=self.fallback_category
+        )
 
 
 class MeetingRsvpSettings(BaseModel):

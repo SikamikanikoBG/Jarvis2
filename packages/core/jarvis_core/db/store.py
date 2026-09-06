@@ -25,6 +25,7 @@ from jarvis_proto import (
     new_id,
 )
 from jarvis_proto.events import RunEvent
+from jarvis_proto.runs import SearchHit
 
 
 def _now() -> str:
@@ -33,6 +34,23 @@ def _now() -> str:
 
 def _dt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
+
+
+def _escape_like(pattern: str) -> str:
+    """Escape LIKE metacharacters inside the user's text; the outer %…% stay live."""
+    inner = pattern[1:-1] if pattern.startswith("%") and pattern.endswith("%") else pattern
+    inner = inner.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{inner}%"
+
+
+def _snippet(text: str, query: str, width: int = 70) -> str:
+    flat = " ".join(text.split())
+    at = flat.lower().find(query.lower())
+    if at < 0:
+        return flat[:width] + ("…" if len(flat) > width else "")
+    start = max(0, at - width // 2)
+    end = min(len(flat), at + len(query) + width // 2)
+    return ("…" if start > 0 else "") + flat[start:end] + ("…" if end < len(flat) else "")
 
 
 class Store:
@@ -51,6 +69,8 @@ class Store:
             folder_label=row["folder_label"],
             archived=bool(row["archived"]),
             unread=bool(row["unread"]),
+            pinned=bool(row["pinned"]),
+            title_auto=bool(row["title_auto"]),
             preview=row["preview"],
             message_count=row["message_count"],
             created_at=_dt(row["created_at"]) or datetime.now(UTC),
@@ -93,7 +113,7 @@ class Store:
         return [self._conversation(r) for r in await self.db.fetchall(sql)]
 
     async def update_conversation(self, conversation_id: str, **fields: Any) -> Conversation | None:
-        allowed = {"title", "archived", "unread", "preview", "folder_key", "folder_label", "kind"}
+        allowed = {"title", "archived", "unread", "pinned", "title_auto", "preview", "folder_key", "folder_label", "kind"}
         sets: list[str] = []
         params: list[Any] = []
         for key, value in fields.items():
@@ -119,6 +139,88 @@ class Store:
 
     async def delete_conversation(self, conversation_id: str) -> None:
         await self.db.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+
+    async def search(self, query: str, *, limit: int = 30) -> list[SearchHit]:
+        """Titles first, then message text (user/assistant, unnamed = not injected context).
+        One hit per conversation; the message hit carries a snippet around the first match."""
+        q = " ".join(query.split())
+        if not q:
+            return []
+        like = f"%{q}%"
+        hits: list[SearchHit] = []
+        seen: set[str] = set()
+        rows = await self.db.fetchall(
+            "SELECT * FROM conversations WHERE title LIKE ? ESCAPE '\\' ORDER BY updated_at DESC LIMIT ?",
+            (_escape_like(like), limit),
+        )
+        for r in rows:
+            conv = self._conversation(r)
+            seen.add(conv.id)
+            hits.append(SearchHit(conversation=conv, matched="title"))
+        if len(hits) >= limit:
+            return hits
+        rows = await self.db.fetchall(
+            "SELECT m.id AS message_id, m.content AS content, c.* FROM messages m"
+            " JOIN conversations c ON c.id = m.conversation_id"
+            " WHERE m.role IN ('user', 'assistant') AND m.name IS NULL AND m.content LIKE ? ESCAPE '\\'"
+            " ORDER BY m.rowid DESC LIMIT ?",
+            (_escape_like(like), limit * 4),
+        )
+        for r in rows:
+            if r["id"] in seen:
+                continue
+            seen.add(r["id"])
+            hits.append(
+                SearchHit(
+                    conversation=self._conversation(r),
+                    message_id=r["message_id"],
+                    snippet=_snippet(r["content"] or "", q),
+                    matched="message",
+                )
+            )
+            if len(hits) >= limit:
+                break
+        return hits
+
+    async def fork_conversation(self, conversation_id: str, *, up_to_message_id: str | None) -> Conversation | None:
+        """A new conversation holding copies of the messages BEFORE ``up_to_message_id`` (all of
+        them when None). History stays append-only: editing a message means forking here and
+        sending the edit in the fork. Copies carry no run ids."""
+        src = await self.get_conversation(conversation_id)
+        if src is None:
+            return None
+        rows = await self.db.fetchall(
+            "SELECT * FROM messages WHERE conversation_id = ? ORDER BY rowid", (conversation_id,)
+        )
+        if up_to_message_id is not None:
+            cut = next((i for i, r in enumerate(rows) if r["id"] == up_to_message_id), None)
+            if cut is None:
+                raise ValueError("up_to_message_id is not in this conversation")
+            rows = rows[:cut]
+        fork = await self.create_conversation(kind=ConversationKind.CHAT, title=f"{src.title} (fork)")
+        await self.db.execute("UPDATE conversations SET title_auto = 0 WHERE id = ?", (fork.id,))
+        last_preview: str | None = None
+        for r in rows:
+            await self.db.execute(
+                "INSERT INTO messages(id, conversation_id, run_id, role, content, reasoning, tool_calls,"
+                " tool_call_id, name, partial, created_at) VALUES (?,?,NULL,?,?,?,?,?,?,?,?)",
+                (
+                    new_id("msg"),
+                    fork.id,
+                    r["role"],
+                    r["content"],
+                    r["reasoning"],
+                    r["tool_calls"],
+                    r["tool_call_id"],
+                    r["name"],
+                    r["partial"],
+                    r["created_at"],
+                ),
+            )
+            if r["role"] in ("user", "assistant") and not r["name"]:
+                last_preview = r["content"]
+        await self.touch_conversation(fork.id, last_preview)
+        return await self.get_conversation(fork.id)
 
     # --- messages -------------------------------------------------------------------
 

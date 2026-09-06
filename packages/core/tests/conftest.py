@@ -44,6 +44,9 @@ class Harness:
         self.core.apply_settings(await self.core.store.load_settings())
         self.core.adapters.fakes = {r: self.chat for r in RoleName}
         self.core.adapters.fakes[RoleName.JUDGE] = self.judge
+        # Tests script every model turn; the auto-titler would consume one after each first run.
+        # test_ui_parity switches it back on for its own test.
+        self.core.engine.set_titler(None)
         await self.core.reload_tools()
         await self.core.engine.start()
         await self.core.scheduler.start()

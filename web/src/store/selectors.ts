@@ -35,6 +35,8 @@ export interface SidebarModel {
 }
 
 const byUpdatedDesc = (a: Conversation, b: Conversation) => b.updated_at.localeCompare(a.updated_at);
+/** Pinned chats first (their own recency order), then the rest newest first. */
+const byPinnedThenUpdated = (a: Conversation, b: Conversation) => Number(b.pinned) - Number(a.pinned) || byUpdatedDesc(a, b);
 
 function folderOf(c: Conversation): FolderKind | 'chat' {
   if (c.archived || c.kind === 'archive') return 'archive';
@@ -60,6 +62,7 @@ export function selectSidebar(conversations: Record<string, Conversation>): Side
     if (c.unread) g.unread += 1;
     groups.set(key, g);
   }
+  chats.sort(byPinnedThenUpdated);
   const folders: Folder[] = [];
   for (const kind of FOLDER_ORDER) {
     const groups = buckets.get(kind);

@@ -126,7 +126,19 @@ class Conversation(BaseModel):
     folder_label: str | None = None
     archived: bool = False
     unread: bool = False
+    pinned: bool = False
+    # True while the title is machine-made; a rename by the user turns it off for good.
+    title_auto: bool = True
     preview: str | None = None
     message_count: int = 0
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class SearchHit(BaseModel):
+    """One search result: a conversation, and the message that matched when the text did."""
+
+    conversation: Conversation
+    message_id: str | None = None
+    snippet: str | None = None
+    matched: Literal["title", "message"] = "title"

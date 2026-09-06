@@ -191,6 +191,13 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
             await _run("outlook_move", lambda: outlook().call("move", entry_id, folder, account, create))
         )
 
+    @tool("outlook_folder_create", MUTATING_IDEMPOTENT)
+    async def outlook_folder_create(path: str, account: str = "") -> str:
+        """Create a folder path under the account's inbox (an existing top-level tree is reused, so are existing segments; safe to repeat). Returns the folder's path and id and which segments were created."""
+        return json_text(
+            await _run("outlook_folder_create", lambda: outlook().call("folder_create", path, account))
+        )
+
     @tool("outlook_flag", MUTATING_IDEMPOTENT)
     async def outlook_flag(entry_id: str, flag: bool = True, account: str = "") -> str:
         """Flag (MarkAsTask) or unflag (ClearTaskFlag + FlagStatus=0) a message and verify the result via both FlagStatus and IsMarkedAsTask."""

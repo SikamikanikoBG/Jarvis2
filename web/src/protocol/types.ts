@@ -125,10 +125,21 @@ export interface Conversation {
   folder_label: string | null;
   archived: boolean;
   unread: boolean;
+  pinned: boolean;
+  /** True while the title is machine-made; a rename by the user turns it off. */
+  title_auto: boolean;
   preview: string | null;
   message_count: number;
   created_at: string;
   updated_at: string;
+}
+
+/** One `GET /api/search` result: a conversation, plus the matching message when the text matched. */
+export interface SearchHit {
+  conversation: Conversation;
+  message_id: string | null;
+  snippet: string | null;
+  matched: 'title' | 'message';
 }
 
 // ---- settings.py ---------------------------------------------------------------------
@@ -186,6 +197,17 @@ export interface TriageSettings {
   instructions: string;
   /** Category used when the classifier answers "none"; empty = leave the mail in the inbox. */
   fallback_category: string;
+  /** Per-account overrides, keyed by the account name (work mailbox vs personal Gmail). */
+  account_rules: Record<string, TriageRules>;
+}
+
+/** How ONE mailbox is sorted; the defaults on TriageSettings have the same shape. */
+export interface TriageRules {
+  categories: Record<string, string>[];
+  instructions: string;
+  fallback_category: string;
+  /** DM-1234 → Demands/DM-1234. Right for the work mailbox, wrong for a personal one. */
+  demand_routing: boolean;
 }
 
 /** Meeting auto-RSVP through the host's calendar (docs/stories/08). */

@@ -53,6 +53,32 @@ export function App() {
     return () => mq.removeEventListener('change', onChange);
   }, [themePref, setTheme]);
 
+  // Keyboard shortcuts, one map: Ctrl/⌘+Shift+O new chat · Ctrl/⌘+K search · Esc stop the run ·
+  // Shift+Esc focus the composer. (The same keys ChatGPT / claude.ai use where they overlap.)
+  const newChat = useStore((s) => s.newChat);
+  const stop = useStore((s) => s.stop);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.shiftKey && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        newChat();
+      } else if (mod && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        useStore.getState().setView('chat');
+        if (!desktop) setSidebarOpen(true);
+        setTimeout(() => window.dispatchEvent(new CustomEvent('jarvis:focus-search')), 0);
+      } else if (e.key === 'Escape' && e.shiftKey) {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('jarvis:focus-composer'));
+      } else if (e.key === 'Escape' && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement)) {
+        stop();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [newChat, stop, desktop, setSidebarOpen]);
+
   const Screen = SCREENS[view];
 
   return (

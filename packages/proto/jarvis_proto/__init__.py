@@ -71,6 +71,7 @@ from jarvis_proto.runs import (
     RunBudget,
     RunKind,
     RunStatus,
+    SearchHit,
     ThinkLevel,
 )
 from jarvis_proto.settings import (
@@ -84,6 +85,7 @@ from jarvis_proto.settings import (
     Provider,
     RoleName,
     Settings,
+    TriageRules,
     TriageSettings,
 )
 from jarvis_proto.tools import ToolSpec
@@ -148,6 +150,7 @@ __all__ = [
     "RunWaitingUser",
     "Schedule",
     "ScheduleFire",
+    "SearchHit",
     "ServerEvent",
     "Settings",
     "Skill",
@@ -162,6 +165,7 @@ __all__ = [
     "ToolResultEvent",
     "ToolResultKind",
     "ToolSpec",
+    "TriageRules",
     "TriageSettings",
     "TriageState",
     "Unsubscribe",

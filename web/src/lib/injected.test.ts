@@ -11,6 +11,8 @@ const conv = (preview: string | null): Conversation => ({
   folder_label: null,
   archived: false,
   unread: false,
+  pinned: false,
+  title_auto: true,
   preview,
   message_count: 0,
   created_at: '2026-09-05T10:00:00.000Z',

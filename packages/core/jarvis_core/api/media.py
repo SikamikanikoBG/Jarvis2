@@ -128,14 +128,19 @@ async def triage_state(request: Request) -> list[TriageState]:
 
 @router.post("/triage/run")
 async def triage_run(
-    request: Request, dry_run: bool = False, folder: str | None = None, limit: int | None = None
+    request: Request,
+    dry_run: bool = False,
+    folder: str | None = None,
+    limit: int | None = None,
+    account: str | None = None,
 ) -> dict[str, Any]:
     """Run one triage pass now. ``?dry_run=true`` classifies and reports the moves it would
     make without moving, recording or advancing anything; add ``folder=`` (dry run only) to
-    sample an already-sorted folder and compare the proposal with where the mail lives."""
+    sample an already-sorted folder and compare the proposal with where the mail lives, and
+    ``account=`` to work on one mailbox (folders differ between the work one and a personal one)."""
     if folder and not dry_run:
         raise HTTPException(422, "folder sampling is only allowed with dry_run=true")
-    report = await core_of(request).triage.run_once(dry_run=dry_run, folder=folder, limit=limit)
+    report = await core_of(request).triage.run_once(dry_run=dry_run, folder=folder, limit=limit, account=account)
     return {
         "run_id": None,
         "dry_run": report.dry_run,

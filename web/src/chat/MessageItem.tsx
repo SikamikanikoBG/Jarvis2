@@ -3,7 +3,7 @@ import { Markdown } from '../components/Markdown';
 import { isInjectedUserMessage } from '../lib/injected';
 import type { LocalMessage } from '../store/state';
 import { InjectedNote } from './InjectedNote';
-import { PinButton } from './PinButton';
+import { MessageActions } from './MessageActions';
 import { ReasoningFold } from './ReasoningFold';
 
 export function MessageItem({ message }: { message: LocalMessage }) {
@@ -11,8 +11,9 @@ export function MessageItem({ message }: { message: LocalMessage }) {
     // The transcript builder routes injected user-role messages to InjectedNote; this is a last line of defence.
     if (isInjectedUserMessage(message)) return <InjectedNote name={message.name} text={message.content} />;
     return (
-      <div className={`msg msg-user${message.optimistic ? ' optimistic' : ''}`} aria-label="You">
+      <div className={`msg msg-user has-actions${message.optimistic ? ' optimistic' : ''}`} aria-label="You">
         {message.content}
+        <MessageActions message={message} />
       </div>
     );
   }
@@ -30,11 +31,7 @@ export function MessageItem({ message }: { message: LocalMessage }) {
           </span>
         </div>
       )}
-      {message.id && (
-        <div className="msg-actions">
-          <PinButton messageId={message.id} text={message.content} />
-        </div>
-      )}
+      <MessageActions message={message} />
     </div>
   );
 }

@@ -11,7 +11,7 @@ import contextlib
 import heapq
 import logging
 import traceback
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from jarvis_core.db import Store
@@ -24,6 +24,7 @@ from jarvis_proto import (
     Conversation,
     ConversationKind,
     Message,
+    Role,
     Run,
     RunKind,
     RunStatus,
@@ -63,12 +64,16 @@ class RunEngine:
         settings: Callable[[], Settings],
         *,
         max_concurrent: int = 3,
+        titler: Callable[[str, str], Awaitable[str | None]] | None = None,
     ) -> None:
         self._store = store
         self._bus = bus
         self._loop = loop
         self._settings = settings
         self._max = max_concurrent
+        # Names a chat after its first completed exchange (docs/WAVE2.md slice 0); None = keep
+        # the first-line title forever.
+        self._titler = titler
         self._heap: list[tuple[int, str, str]] = []  # (priority, created_at iso, run_id)
         self._queued: dict[str, Run] = {}
         self._active: dict[str, tuple[asyncio.Task[None], RunControl]] = {}
@@ -76,6 +81,10 @@ class RunEngine:
         self._wake = asyncio.Event()
         self._dispatcher: asyncio.Task[None] | None = None
         self._stopping = False
+
+    def set_titler(self, titler: Callable[[str, str], Awaitable[str | None]] | None) -> None:
+        """Swap or disable the auto-titler (tests script every model turn and switch it off)."""
+        self._titler = titler
 
     # --- lifecycle -----------------------------------------------------------------
 
@@ -291,6 +300,35 @@ class RunEngine:
         if conv is not None:
             self._bus.publish(ConversationUpdated(conversation=conv))
         self._bus.publish(RunUpdated(run=run.model_copy()))
+        if (
+            conv is not None
+            and self._titler is not None
+            and run.status is RunStatus.DONE
+            and conv.title_auto
+            and conv.kind is ConversationKind.CHAT
+        ):
+            await self._maybe_title(run, conv)
+
+    async def _maybe_title(self, run: Run, conv: Conversation) -> None:
+        """Name the chat once, after its FIRST completed exchange; later turns keep the name."""
+        done = [r for r in await self._store.list_runs(conv.id) if r.status is RunStatus.DONE]
+        if len(done) != 1:
+            return
+        msgs = await self._store.list_run_messages(run.id)
+        user = next((m.content for m in msgs if m.role is Role.USER and not m.name), run.input_text)
+        reply = next((m.content for m in reversed(msgs) if m.role is Role.ASSISTANT and m.content), "")
+        if not reply:
+            return
+        assert self._titler is not None
+        try:
+            title = await self._titler(user, reply)
+        except Exception:
+            log.exception("titler failed")
+            return
+        if title and title != conv.title:
+            updated = await self._store.update_conversation(conv.id, title=title)
+            if updated:
+                self._bus.publish(ConversationUpdated(conversation=updated))
 
 
 def _title_from(text: str) -> str:

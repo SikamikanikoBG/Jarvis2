@@ -57,11 +57,15 @@ class TriageReport:
     proposed: list[dict[str, str]] = field(default_factory=list)
 
 
+_WELL_KNOWN = {"inbox", "sent", "drafts", "deleted", "trash", "junk", "spam", "outbox", "archive"}
+
+
 class TriageJob:
     def __init__(self, core: Core) -> None:
         self.core = core
         self._task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
+        self._folders_ready: set[str] = set()  # accounts whose category folders exist
 
     # --- lifecycle -----------------------------------------------------------------
 
@@ -140,13 +144,18 @@ class TriageJob:
     # --- the job -------------------------------------------------------------------------
 
     async def run_once(
-        self, *, dry_run: bool = False, folder: str | None = None, limit: int | None = None
+        self, *, dry_run: bool = False, folder: str | None = None, limit: int | None = None, account: str | None = None
     ) -> TriageReport:
         async with self._lock:
-            return await self._run(dry_run=dry_run, folder=folder, limit=limit)
+            return await self._run(dry_run=dry_run, folder=folder, limit=limit, only_account=account)
 
     async def _run(
-        self, *, dry_run: bool = False, folder: str | None = None, limit: int | None = None
+        self,
+        *,
+        dry_run: bool = False,
+        folder: str | None = None,
+        limit: int | None = None,
+        only_account: str | None = None,
     ) -> TriageReport:
         """One pass. ``dry_run`` classifies and reports the moves it would make - nothing is
         moved, recorded, advanced or written to the triage conversation. With ``folder`` the dry
@@ -162,12 +171,19 @@ class TriageJob:
             report.errors.append("triage.host is not set (name of the jarvis-host MCP server)")
             return report
         accounts = list(cfg.accounts) or await self._discover_accounts(cfg.host, report)
+        if only_account:
+            wanted = only_account.strip().lower()
+            accounts = [a for a in accounts if a.strip().lower() == wanted] or [only_account]
         today = datetime.now(ZoneInfo(self.core.settings.timezone)).strftime("%Y-%m-%d")
         for account in accounts:
             report.accounts.append(account)
+            rules = cfg.rules_for(account)
             state = await self._state(account)
             if state.day != today:
                 state.day, state.processed_today, state.routed_today = today, 0, 0
+            if not dry_run:
+                wanted = [*rules.folders(), *([cfg.demand_root] if rules.demand_routing else [])]
+                await self._ensure_folders(cfg.host, account, wanted, report)
             try:
                 if folder:
                     items, cursor = await self._list(cfg.host, account, None, folder=folder, limit=limit or 30)
@@ -183,7 +199,7 @@ class TriageJob:
                 entry_id = str(item.get("entry_id") or "")
                 if not entry_id or (not dry_run and await self._decided(entry_id, account)):
                     continue
-                category, target = await self._route(item, cfg, account)
+                category, target = await self._route(item, cfg, account, rules)
                 if dry_run:
                     report.processed += 1
                     if target:
@@ -231,6 +247,30 @@ class TriageJob:
             if lines:
                 await self._append_summary(account, today, lines)
         return report
+
+    async def _ensure_folders(self, host: str, account: str, folders: list[str], report: TriageReport) -> None:
+        """Create the category folders once per account per process (a fresh Gmail store has
+        none of them). Well-known roles (deleted, junk, …) need no creating."""
+        if account in self._folders_ready:
+            return
+        for folder in folders:
+            if not folder or ("/" not in folder and folder.lower() in _WELL_KNOWN):
+                continue
+            try:
+                res = await self.core.registry.call(
+                    f"{host}.outlook_folder_create",
+                    {"path": folder, "account": account},
+                    cancel=asyncio.Event(),
+                    idempotency_key=f"triage:mkdir:{account}:{folder}",
+                    timeout_s=60,
+                )
+                if res.kind.value == "error":
+                    report.errors.append(f"{account}: folder {folder!r}: {res.text[:120]}")
+                    return  # leave the account unmarked: try again next pass
+            except Exception as exc:
+                report.errors.append(f"{account}: folder {folder!r}: {exc}")
+                return
+        self._folders_ready.add(account)
 
     async def _discover_accounts(self, host: str, report: TriageReport) -> list[str]:
         res = await self.core.registry.call(
@@ -316,12 +356,15 @@ class TriageJob:
             return str(data.get("body") or data.get("text") or "")
         return res.text
 
-    async def _route(self, item: dict[str, Any], cfg: Any, account: str = "") -> tuple[str | None, str | None]:
+    async def _route(
+        self, item: dict[str, Any], cfg: Any, account: str = "", rules: Any = None
+    ) -> tuple[str | None, str | None]:
+        rules = rules if rules is not None else cfg.rules_for(account)
         subject = str(item.get("subject") or "")
         preview = str(item.get("preview") or item.get("body_preview") or item.get("snippet") or "")
-        if demand_ids(subject, cfg.demand_prefixes):
+        if rules.demand_routing and demand_ids(subject, cfg.demand_prefixes):
             return "demand", demand_folder(subject, "", prefixes=cfg.demand_prefixes, root=cfg.demand_root)
-        if demand_ids(preview, cfg.demand_prefixes):
+        if rules.demand_routing and demand_ids(preview, cfg.demand_prefixes):
             # A demand named only in the body: the table preview is too short to tell a thread
             # (one demand) from a digest (many), so read the body the way V1 did (4,000 chars).
             entry_id = str(item.get("entry_id") or "")
@@ -329,10 +372,10 @@ class TriageJob:
             demand = demand_folder(subject, body or preview, prefixes=cfg.demand_prefixes, root=cfg.demand_root)
             if demand:
                 return "demand", demand
-        if not cfg.categories:
+        if not rules.categories:
             return None, None
-        cats = "\n".join(f"- {c.get('name')}: {c.get('rule', '')}" for c in cfg.categories if c.get("name"))
-        instructions = str(getattr(cfg, "instructions", "") or "").strip()
+        cats = "\n".join(f"- {c.get('name')}: {c.get('rule', '')}" for c in rules.categories if c.get("name"))
+        instructions = str(rules.instructions or "").strip()
         address = self._sender_address(item)
         sender = f"{self._sender(item)} <{address}>" if address else self._sender(item)
         prompt = _CLASSIFY.format(
@@ -357,12 +400,12 @@ class TriageJob:
         except Exception as exc:
             log.warning("triage classify skipped: %s", exc)
             return None, None
-        for c in cfg.categories:
+        for c in rules.categories:
             if c.get("name") == name and c.get("folder"):
                 return name, str(c["folder"])
         # "none" or an unknown name: the configured catch-all, if there is one (inbox zero).
-        fallback = str(getattr(cfg, "fallback_category", "") or "")
-        for c in cfg.categories:
+        fallback = str(rules.fallback_category or "")
+        for c in rules.categories:
             if fallback and c.get("name") == fallback and c.get("folder"):
                 return fallback, str(c["folder"])
         return None, None

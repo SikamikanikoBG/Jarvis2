@@ -35,6 +35,11 @@ class _ReadArgs(BaseModel):
     max_chars: int = 20_000
 
 
+class _FolderCreateArgs(BaseModel):
+    path: str
+    account: str = ""
+
+
 class _MeetingArgs(BaseModel):
     meeting_id: str
     after_seq: int = 0
@@ -155,6 +160,7 @@ class FakeHost(BuiltinProvider):
             "e4": "Today: DM-1096 extraction moved to PROD. DM-1945 ECAT waits UAT. DM-2167 estimation due.",
         }
         self.reads: list[str] = []
+        self.folders_created: list[str] = []
         self.pulled = 0
         self.invites = [dict(i) for i in _INVITES]
         self.responses: list[tuple[str, str, str]] = []
@@ -199,6 +205,11 @@ class FakeHost(BuiltinProvider):
     async def _move(self, entry_id: str, folder: str) -> ToolResult:
         self.moves.append((entry_id, folder))
         return ToolResult.data("moved")
+
+    @tool("laptop.outlook_folder_create", description="mkdir", args=_FolderCreateArgs)
+    async def _folder_create(self, path: str, account: str = "") -> ToolResult:
+        self.folders_created.append(path)
+        return ToolResult.data(json.dumps({"path": path, "created": [path]}))
 
     @tool("laptop.outlook_read", description="read", args=_ReadArgs, read_only=True)
     async def _read(self, entry_id: str, account: str = "", max_chars: int = 20_000) -> ToolResult:
@@ -267,6 +278,43 @@ async def test_triage_routes_demands_structurally_and_classifies_the_rest(harnes
     assert msgs[-1].name == "triage" and "Rumen Petrov" in msgs[-1].content and "Demands/DM-4521" in msgs[-1].content
     assert "billing@vendor.com" in msgs[-1].content
     assert any(getattr(e, "type", "") == "conversation.updated" for e in _drain(global_sub))
+
+
+async def test_per_account_rules_override_the_defaults_and_folders_are_created_once(harness: Harness):
+    """Work mailbox and personal Gmail: different categories, different rules, demand routing off
+    for the personal one - and the category folders are created before the first move."""
+    from jarvis_proto import TriageRules
+
+    core = harness.core
+    host = await _with_host(harness)
+    harness.enable(
+        triage=TriageSettings(
+            host="laptop",
+            accounts=["Work"],
+            categories=[{"name": "invoices", "folder": "Finance/Invoices", "rule": "invoices"}],
+            instructions="Owner: Arsen at the bank.",
+            account_rules={
+                "work": TriageRules(
+                    categories=[{"name": "spam", "folder": "Trash/Delete", "rule": "marketing"}],
+                    instructions="Personal mailbox rules.",
+                    fallback_category="spam",
+                    demand_routing=False,
+                )
+            },
+        )
+    )
+    harness.chat.push(*[FakeTurn(text='{"category": "none"}')] * 4)
+    report = await core.triage.run_once()
+    assert report.errors == []
+    # Every mail lands in the personal catch-all: the override replaced the work categories,
+    # and the DM-4521 in the body was NOT routed as a demand (demand_routing off).
+    assert host.moves == [(f"e{i}", "Trash/Delete") for i in (1, 2, 3, 4)]
+    assert host.folders_created == ["Trash/Delete"]  # once, before the first move; no Demands root
+    prompt = harness.chat.calls[-1][0][-1].content
+    assert "Personal mailbox rules." in prompt and "Owner: Arsen at the bank." not in prompt
+    # A second pass creates nothing again.
+    await core.triage.run_once()
+    assert host.folders_created == ["Trash/Delete"]
 
 
 async def test_triage_without_host_reports_instead_of_crashing(harness: Harness):

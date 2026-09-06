@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Icon } from '../components/Icon';
 import { Drawer, IconButton } from '../components/primitives';
 import { effectiveTheme } from '../lib/theme';
@@ -19,8 +20,16 @@ export function TopBar({ desktop }: { desktop: boolean }) {
   const setSidebarOpen = useStore((s) => s.setSidebarOpen);
   const activeRun = useStore((s) => (s.openConversationId ? (s.runsByConversation[s.openConversationId] ?? []).some((id) => s.streams[id]) : false));
 
+  const notifyRuns = useStore((s) => s.notifyRuns);
+  const setNotifyRuns = useStore((s) => s.setNotifyRuns);
+
   const theme = effectiveTheme(themePref);
   const heading = view === 'chat' ? (title ?? 'New chat') : NAV_ALL.find((n) => n.view === view)?.label;
+
+  // Tab badge: "(2) Jarvis" while replies wait unread, like every mail client.
+  useEffect(() => {
+    document.title = unread > 0 ? `(${unread}) Jarvis` : 'Jarvis';
+  }, [unread]);
 
   return (
     <header className="topbar">
@@ -64,6 +73,13 @@ export function TopBar({ desktop }: { desktop: boolean }) {
         <span className={`dot ${connection === 'open' ? 'dot-ok' : connection === 'closed' ? 'dot-danger' : 'dot-warn dot-pulse'}`} />
         {desktop && <span>{connection === 'open' ? 'live' : connection}</span>}
       </div>
+      {'Notification' in window && (
+        <IconButton
+          icon={notifyRuns ? 'bell' : 'bellOff'}
+          label={notifyRuns ? 'Desktop notifications on — click to turn off' : 'Notify me when a run finishes in a background tab'}
+          onClick={() => void setNotifyRuns(!notifyRuns)}
+        />
+      )}
       <IconButton icon={theme === 'dark' ? 'sun' : 'moon'} label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} />
     </header>
   );

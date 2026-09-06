@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { Icon } from '../components/Icon';
 import { IconButton, InlineConfirm, Menu, RelativeTime } from '../components/primitives';
 import { stripMarkdown } from '../lib/format';
 import { previewFor } from '../lib/injected';
@@ -16,6 +17,8 @@ export function ConversationRow({ conversation: c, active }: Props) {
   const rename = useStore((s) => s.renameConversation);
   const archive = useStore((s) => s.archiveConversation);
   const remove = useStore((s) => s.deleteConversation);
+  const pin = useStore((s) => s.pinConversation);
+  const exportConv = useStore((s) => s.exportConversation);
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -61,6 +64,7 @@ export function ConversationRow({ conversation: c, active }: Props) {
           <button type="button" className="conv-main" onClick={() => void open(c.id)} aria-current={active ? 'page' : undefined} style={{ textAlign: 'left', color: 'inherit' }}>
             <div className="conv-title">
               {c.unread && <span className="unread-dot" aria-label="Unread" />}
+              {c.pinned && <Icon name="pin" size={12} className="conv-pin" aria-label="Pinned" />}
               <span className="truncate">{c.title}</span>
             </div>
             {preview && <div className="conv-preview">{stripMarkdown(preview)}</div>}
@@ -83,7 +87,10 @@ export function ConversationRow({ conversation: c, active }: Props) {
               onClose={() => setMenuAnchor(null)}
               items={[
                 { label: 'Rename', icon: 'edit', onSelect: () => setEditing(true) },
+                { label: c.pinned ? 'Unpin' : 'Pin', icon: 'pin', onSelect: () => void pin(c.id, !c.pinned) },
                 { label: archived ? 'Unarchive' : 'Archive', icon: archived ? 'unarchive' : 'archive', onSelect: () => void archive(c.id, !archived) },
+                { label: 'Export as Markdown', icon: 'download', onSelect: () => void exportConv(c.id, 'markdown') },
+                { label: 'Export as JSON', icon: 'download', onSelect: () => void exportConv(c.id, 'json') },
                 { label: 'Delete', icon: 'trash', danger: true, onSelect: () => setConfirmDelete(true) },
               ]}
             />

@@ -103,6 +103,24 @@ def test_folder_create_adds_only_the_missing_tail(backend: OutlookBackend, world
         backend._folder(store, "Demands/DM-7777")
 
 
+def test_folder_create_builds_under_the_inbox_and_is_idempotent(backend: OutlookBackend, world: World):
+    store = world.exchange
+    res = backend.folder_create("Important/Action", "")
+    assert res["created"] == ["Important", "Action"]
+    important = backend._folder(store, "inbox/Important")
+    assert important.parent is world.inbox and backend._folder(store, "Important/Action").parent is important
+    # Again: nothing created, same folder.
+    again = backend.folder_create("Important/Action", "")
+    assert again["created"] == [] and again["folder_id"] == res["folder_id"]
+    # An existing top-level tree is reused, not duplicated under the inbox.
+    top = backend.folder_create("Archive/2026", "")
+    assert top["created"] == ["2026"] and backend._folder(store, "Archive/2026").parent is world.archive
+    # Existing inbox children are reused too.
+    assert backend.folder_create("Demands/DM-1234", "")["created"] == []
+    with pytest.raises(OutlookError):
+        backend.folder_create("   ", "")
+
+
 def test_folders_tree_paths_and_roles(backend: OutlookBackend, world: World):
     tree = backend.folders("")
     assert tree["account"] == "aapostolov@postbank.bg"

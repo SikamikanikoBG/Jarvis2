@@ -25,6 +25,7 @@ remote_access/server.py routes, shared-brain tables). Status: **have** = in V2 n
 | search_emails_rag / deep_email_search | `outlook_search` is DASL + verified; RAG over mail needs an embedding index | ask |
 | email accounts UI (`/api/email-accounts`) | `outlook_accounts` + `settings.triage.accounts` | have |
 | background triage, demand routing, security quarantine | `TriageJob` (categories incl. `quarantine`) | have (off until go) |
+| per-account folder structures (work vs personal Gmail) | `settings.triage.account_rules` + `outlook_folder_create` | have |
 | meeting auto-RSVP | `RsvpJob` | have (off until go) |
 | **Calendar** | | |
 | get_calendar / create / delete / find_free_slots / check_availability | host `calendar_list / create / delete / free_slots / invites` | have |
@@ -117,5 +118,30 @@ override (stable prefix), composer `/` completions and ↑ history, Today view, 
 Ideas → board, projects → KG, V1 message attachments → attachments (files are in the shared
 folder), the daily brief / management report / meeting prep as scheduled prompts.
 
-### Decisions needed from Arsen
-TTS (voice out) · WhatsApp · OneNote · finance / wellbeing trackers · RAG over mail.
+### Decisions taken by Arsen (2026-09-06)
+TTS **no** · WhatsApp **no** · finance / wellbeing trackers **no** · RAG over mail **no** ·
+OneNote **yes** (host COM tools, slice 2). Plus: chat-surface parity with ChatGPT / claude.ai /
+Open WebUI ("copy a message, share it…") — slice 0 below, built as ONE action bar, ONE menu,
+ONE search, not a widget per feature.
+
+### Slice 0 — Chat surface parity (what the three mainstream UIs have and V2 lacks)
+Audit of V2 on 2026-09-06: a bot message has one action (pin to board); a user message has
+none; no code-block copy; no search; no export; no auto-title; no scroll-to-latest; no
+shortcuts; no notification when a long run finishes in a background tab.
+
+| They have | V2 home | In |
+|---|---|---|
+| copy message (markdown) · share (Web Share on the phone) | one `MessageActions` bar on every message | slice 0 |
+| regenerate a reply | new run with the same input; the earlier reply stays visible | slice 0 |
+| edit a message and resend (branch) | **fork**: `POST /api/conversations/{id}/fork?up_to=` copies the transcript up to that message into a new conversation, the edit is sent there — history stays append-only | slice 0 |
+| copy button + language label on code blocks | markdown renderer | slice 0 |
+| search conversations and messages | one `GET /api/search?q=` (titles + message text) + sidebar search box | slice 0 |
+| pin / star a conversation | `pinned` on Conversation; pinned sort first | slice 0 |
+| automatic conversation title after the first exchange | classifier role names it once (`title_auto`), rename turns it off | slice 0 |
+| export a conversation (Markdown / JSON) | conversation menu → download | slice 0 |
+| jump to latest + "new reply below" while scrolled up | transcript | slice 0 |
+| keyboard shortcuts (new chat, search, stop, focus composer) | app shell, one map | slice 0 |
+| desktop notification + tab badge when a run finishes in a hidden tab | app shell, `run.done` | slice 0 |
+| attachments, paste, drag-drop, image lightbox | slice 1 | slice 1 |
+| slash commands / prompt library, ↑ history, per-chat instructions & model | slice 3 | slice 3 |
+| message feedback thumbs, temporary chat, canvas/artifacts, custom folders & tags, multi-model compare, read-aloud | — | drop |

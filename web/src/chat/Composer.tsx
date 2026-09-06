@@ -18,6 +18,9 @@ export function Composer({ runActive, stopping }: Props) {
   const send = useStore((s) => s.send);
   const stop = useStore((s) => s.stop);
   const connection = useStore((s) => s.connection);
+  const editing = useStore((s) => (s.editing?.conversationId === s.openConversationId ? s.editing : null));
+  const cancelEdit = useStore((s) => s.cancelEdit);
+  const sendEdit = useStore((s) => s.sendEdit);
   const [text, setText] = useState('');
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -32,10 +35,26 @@ export function Composer({ runActive, stopping }: Props) {
   useEffect(() => {
     if (!runActive && !coarsePointer()) ref.current?.focus();
   }, [runActive]);
+  // "Edit and resend" hands the original text over as an event (store.startEdit); the shortcut
+  // Shift+Esc focuses the box the same way.
+  useEffect(() => {
+    const focus = () => ref.current?.focus();
+    const compose = (e: Event) => {
+      setText((e as CustomEvent<string>).detail ?? '');
+      ref.current?.focus();
+    };
+    window.addEventListener('jarvis:focus-composer', focus);
+    window.addEventListener('jarvis:compose', compose);
+    return () => {
+      window.removeEventListener('jarvis:focus-composer', focus);
+      window.removeEventListener('jarvis:compose', compose);
+    };
+  }, []);
 
   const submit = () => {
     if (runActive || !text.trim()) return;
-    send(text);
+    if (editing) void sendEdit(text);
+    else send(text);
     setText('');
   };
 
@@ -49,6 +68,22 @@ export function Composer({ runActive, stopping }: Props) {
   const canSend = text.trim().length > 0 && connection === 'open';
   return (
     <div className="composer-wrap">
+      {editing && (
+        <div className="edit-banner" role="status">
+          <Icon name="edit" size={13} />
+          <span>Editing — sending forks this chat from here and continues in the fork.</span>
+          <button
+            type="button"
+            className="btn btn-sm btn-secondary"
+            onClick={() => {
+              cancelEdit();
+              setText('');
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
       <form
         className="composer"
         onSubmit={(e) => {

@@ -1029,6 +1029,52 @@ class OutlookBackend:
             "folder_id": _text(_prop(target, "EntryID", "")),
         }
 
+    def folder_create(self, path: str, account: str = "") -> dict[str, Any]:
+        """Create a '/'-separated folder path, reusing every segment that already exists.
+
+        The first segment is looked up under the store root and under the inbox; when it exists
+        in neither, the whole path is created under the INBOX (where triage keeps its folders).
+        Idempotent: calling it for an existing path creates nothing. Returns the folder and the
+        segments that were created.
+        """
+        store = self._store(account)
+        parts = [p.strip() for p in re.split(r"[\\/]+", path or "") if p.strip()]
+        if not parts:
+            raise OutlookError("folder path is empty")
+        root = store.GetRootFolder()
+        inbox = self._default_folder(store, FOLDER_INBOX)
+        head = parts[0].lower().replace(" ", "").replace("_", "")
+        if head in WELL_KNOWN_FOLDERS:
+            node = self._default_folder(store, WELL_KNOWN_FOLDERS[head])
+            if node is None:
+                raise NotFound(f"store has no {parts[0]} folder")
+            parts = parts[1:]
+        elif parts[0].lower() == _text(_prop(root, "Name", "")).lower():
+            node = root
+            parts = parts[1:]
+        elif self._child(root, parts[0]) is not None and (inbox is None or self._child(inbox, parts[0]) is None):
+            node = root  # an existing top-level tree (e.g. "Archive"), never a duplicate under the inbox
+        else:
+            if inbox is None:
+                raise NotFound("store has no inbox folder")
+            node = inbox
+        created: list[str] = []
+        for part in parts:
+            child = self._child(node, part)
+            if child is None:
+                try:
+                    child = node.Folders.Add(part)
+                except Exception as exc:
+                    where = _text(_prop(node, "FolderPath", "")) or _text(_prop(node, "Name", ""))
+                    raise OutlookError(f"creating {part!r} under {where}: {describe_com_error(exc)}") from exc
+                created.append(part)
+            node = child
+        return {
+            "path": _text(_prop(node, "FolderPath", "")) or _text(_prop(node, "Name", "")),
+            "folder_id": _text(_prop(node, "EntryID", "")),
+            "created": created,
+        }
+
     def flag(self, entry_id: str, flag: bool, account: str = "") -> dict[str, Any]:
         item, _ = self._item(entry_id, account)
         errors: list[str] = []
@@ -1617,6 +1663,7 @@ class OutlookService:
         "search": 90,
         "read": 45,
         "move": 45,
+        "folder_create": 45,
         "flag": 45,
         "send": 60,
         "calendar_list": 60,

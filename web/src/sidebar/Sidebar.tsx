@@ -4,6 +4,7 @@ import { IconButton } from '../components/primitives';
 import { selectSidebar, type Folder } from '../store/selectors';
 import { useStore } from '../store/store';
 import { ConversationRow } from './ConversationRow';
+import { SearchBox, SearchResults } from './SearchBox';
 
 export function Sidebar() {
   const conversations = useStore((s) => s.conversations);
@@ -11,6 +12,7 @@ export function Sidebar() {
   const openId = useStore((s) => s.openConversationId);
   const newChat = useStore((s) => s.newChat);
   const model = useMemo(() => selectSidebar(conversations), [conversations]);
+  const [query, setQuery] = useState('');
 
   return (
     <nav className="sidebar" aria-label="Conversations">
@@ -18,6 +20,10 @@ export function Sidebar() {
         <h2>Chats</h2>
         <IconButton icon="plus" label="New chat" onClick={newChat} />
       </div>
+      <SearchBox query={query} onQuery={setQuery} />
+      {query.trim() ? (
+        <SearchResults query={query} />
+      ) : (
       <div className="sidebar-list">
         {model.chats.length === 0 && loaded && (
           <div className="empty small" style={{ padding: '18px 8px' }}>
@@ -31,6 +37,7 @@ export function Sidebar() {
           <FolderSection key={f.kind} folder={f} openId={openId} />
         ))}
       </div>
+      )}
     </nav>
   );
 }

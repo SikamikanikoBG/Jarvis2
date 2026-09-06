@@ -32,6 +32,7 @@ from jarvis_core.features.rsvp import RsvpJob
 from jarvis_core.features.schedules import Scheduler, ScheduleStore, ScheduleTools
 from jarvis_core.features.skills import SkillDetector, SkillsTools, SkillStore
 from jarvis_core.features.stt import Transcriber
+from jarvis_core.features.titles import Titler
 from jarvis_core.features.triage import TriageJob
 from jarvis_core.features.web import WebTools
 from jarvis_core.models import AdapterFactory
@@ -108,7 +109,15 @@ class Core:
             skills=self.skill_detector,
             learner=self.learner,
         )
-        self.engine = RunEngine(self.store, self.bus, self.loop, settings, max_concurrent=config.max_concurrent_runs)
+        self.titler = Titler(lambda: self.adapters.for_role(RoleName.CLASSIFIER))
+        self.engine = RunEngine(
+            self.store,
+            self.bus,
+            self.loop,
+            settings,
+            max_concurrent=config.max_concurrent_runs,
+            titler=self.titler.title,
+        )
         self.scheduler = Scheduler(self.schedules, self._fire_schedule)
 
     async def _fire_schedule(

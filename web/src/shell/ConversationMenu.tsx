@@ -13,6 +13,8 @@ export function ConversationMenu() {
   const rename = useStore((s) => s.renameConversation);
   const archive = useStore((s) => s.archiveConversation);
   const remove = useStore((s) => s.deleteConversation);
+  const pin = useStore((s) => s.pinConversation);
+  const exportConv = useStore((s) => s.exportConversation);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [confirm, setConfirm] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -73,7 +75,10 @@ export function ConversationMenu() {
                 setEditing(true);
               },
             },
+            { label: conv.pinned ? 'Unpin' : 'Pin', icon: 'pin', onSelect: () => void pin(id, !conv.pinned) },
             { label: conv.archived ? 'Unarchive' : 'Archive', icon: conv.archived ? 'unarchive' : 'archive', onSelect: () => void archive(id, !conv.archived) },
+            { label: 'Export as Markdown', icon: 'download', onSelect: () => void exportConv(id, 'markdown') },
+            { label: 'Export as JSON', icon: 'download', onSelect: () => void exportConv(id, 'json') },
             { label: 'Delete', icon: 'trash', danger: true, onSelect: () => setConfirm(true) },
           ]}
         />

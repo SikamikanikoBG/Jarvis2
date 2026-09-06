@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { ApiError, api, describeError } from '../api/client';
 import { WsClient, type ConnectionState } from '../api/ws';
+import { conversationToMarkdown, downloadText, safeFilename } from '../lib/export';
+import { notifyDesktop, readNotifyPref, writeNotifyPref } from '../lib/notify';
 import { navigate, parseLocation, rememberConversation, type View } from '../lib/router';
 import { applyThemePref, isPanelMode, readThemePref, type ThemePref } from '../lib/theme';
 import type { ThinkChoice } from '../lib/think';
@@ -38,6 +40,10 @@ export interface UiState {
   summaries: Record<string, ConversationSummary | null | undefined>;
   /** Mobile "More" navigation sheet. */
   moreOpen: boolean;
+  /** "Edit and resend": the message being edited; sending forks the conversation before it. */
+  editing: { conversationId: string; messageId: string; text: string } | null;
+  /** Desktop notification when a run finishes while this tab is hidden (per device). */
+  notifyRuns: boolean;
 }
 
 export interface Actions {
@@ -62,6 +68,15 @@ export interface Actions {
   setMoreOpen: (open: boolean) => void;
   notify: (text: string, level?: Notice['level']) => void;
   dismissNotice: () => void;
+  pinConversation: (id: string, pinned: boolean) => Promise<void>;
+  /** Re-run the last user message of the open conversation; the earlier reply stays. */
+  regenerate: () => void;
+  startEdit: (conversationId: string, messageId: string, text: string) => void;
+  cancelEdit: () => void;
+  /** Fork the conversation before the edited message and send the new text there. */
+  sendEdit: (text: string) => Promise<void>;
+  setNotifyRuns: (on: boolean) => Promise<void>;
+  exportConversation: (id: string, format: 'markdown' | 'json') => Promise<void>;
 }
 
 export type AppState = ChatState & FeatureState & UiState & Actions;
@@ -94,6 +109,8 @@ export const useStore = create<AppState>()((set, get) => ({
   thinkChoice: {},
   summaries: {},
   moreOpen: false,
+  editing: null,
+  notifyRuns: readNotifyPref(),
 
   boot: () => {
     const route = parseLocation();
@@ -145,6 +162,15 @@ export const useStore = create<AppState>()((set, get) => ({
     const open = after.openConversationId;
     if (open && events.some((e) => e.type === 'conversation.updated' && e.conversation.id === open && e.conversation.unread)) {
       api.conversations.patch(open, { unread: false }).catch(() => undefined);
+    }
+    // A long task finished while Arsen was elsewhere: one desktop notification, if he opted in.
+    if (after.notifyRuns && document.visibilityState === 'hidden') {
+      for (const e of events) {
+        if (e.type === 'run.done' || e.type === 'run.failed') {
+          const conv = after.conversations[e.conversation_id];
+          notifyDesktop(conv?.title ?? 'Jarvis', e.type === 'run.done' ? (conv?.preview ?? 'Finished.') : `Failed: ${e.error}`, e.conversation_id);
+        }
+      }
     }
   },
 
@@ -271,6 +297,77 @@ export const useStore = create<AppState>()((set, get) => ({
       upsertConversation(set, conv);
     } catch (e) {
       get().notify(`Rename failed: ${errorText(e)}`, 'error');
+    }
+  },
+
+  pinConversation: async (id, pinned) => {
+    try {
+      const conv = await api.conversations.patch(id, { pinned });
+      upsertConversation(set, conv);
+    } catch (e) {
+      get().notify(`${pinned ? 'Pin' : 'Unpin'} failed: ${errorText(e)}`, 'error');
+    }
+  },
+
+  regenerate: () => {
+    const s = get();
+    const open = s.openConversationId;
+    if (!open || selectActiveRun(s, open)) return;
+    const last = [...(s.messages[open] ?? [])].reverse().find((m) => m.role === 'user' && !m.name && !m.optimistic);
+    if (!last) return;
+    s.send(last.content);
+  },
+
+  startEdit: (conversationId, messageId, text) => {
+    set({ editing: { conversationId, messageId, text } });
+    window.dispatchEvent(new CustomEvent('jarvis:compose', { detail: text }));
+  },
+  cancelEdit: () => set({ editing: null }),
+
+  sendEdit: async (text) => {
+    const s = get();
+    const editing = s.editing;
+    const trimmed = text.trim();
+    if (!editing || !trimmed) return;
+    try {
+      const fork = await api.conversations.fork(editing.conversationId, editing.messageId);
+      set({ editing: null });
+      upsertConversation(set, fork);
+      await get().openConversation(fork.id);
+      get().send(trimmed);
+    } catch (e) {
+      get().notify(`Could not fork the conversation: ${errorText(e)}`, 'error');
+    }
+  },
+
+  setNotifyRuns: async (on) => {
+    if (on && 'Notification' in window && Notification.permission === 'default') {
+      const result = await Notification.requestPermission();
+      if (result !== 'granted') {
+        get().notify('Notifications are blocked by the browser for this site.', 'error');
+        return;
+      }
+    }
+    if (on && (!('Notification' in window) || Notification.permission !== 'granted')) {
+      get().notify('Notifications are not available in this browser.', 'error');
+      return;
+    }
+    writeNotifyPref(on);
+    set({ notifyRuns: on });
+  },
+
+  exportConversation: async (id, format) => {
+    const s = get();
+    const conv = s.conversations[id];
+    if (!conv) return;
+    try {
+      const messages = s.messages[id] ?? (await api.conversations.messages(id));
+      const stamp = conv.updated_at.slice(0, 10);
+      const base = `${safeFilename(conv.title)}-${stamp}`;
+      if (format === 'json') downloadText(`${base}.json`, JSON.stringify({ conversation: conv, messages }, null, 2), 'application/json');
+      else downloadText(`${base}.md`, conversationToMarkdown(conv, messages), 'text/markdown');
+    } catch (e) {
+      get().notify(`Export failed: ${errorText(e)}`, 'error');
     }
   },
 

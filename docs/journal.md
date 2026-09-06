@@ -191,3 +191,19 @@ harness — library vs. own is an open question to settle in the design.
   attachments can carry images natively. docs/WAVE2.md maps V1's ~100 tools / 16 services /
   158 routes onto V2's primitives with a status per line and four slices; slice 1 is
   docs/stories/09_attachments.md. Chrome extension for a real-browser UI check was not connected.
+- 2026-09-06 (day) — Arsen's UI verdict: "copy a message, share it… see what Open WebUI / ChatGPT /
+  claude.ai have that I do not — just do not end up a patchwork like before". Audited V2's chat
+  surface against the three, wrote the gap table into docs/WAVE2.md as slice 0 and built it as ONE
+  action bar, ONE menu, ONE search: copy/share on every message, edit-and-resend (a FORK, because
+  the history is append-only: POST /api/conversations/{id}/fork), regenerate the last reply, code
+  blocks with a language label and a copy control, GET /api/search over titles + message text
+  (injected context messages excluded), pinned chats, export to Markdown/JSON, automatic chat
+  titles after the first exchange (classifier role, a rename turns it off for good), tab badge and
+  an opt-in desktop notification when a run finishes in a hidden tab, and four shortcuts
+  (Ctrl/Cmd+Shift+O, Ctrl/Cmd+K, Esc, Shift+Esc). Dropped deliberately: feedback thumbs, temporary
+  chats, canvas, tags, multi-model compare, read-aloud. Arsen's decisions on the rest of wave 2:
+  TTS no, WhatsApp no, finance/wellbeing no, RAG over mail no, OneNote yes.
+  Also: his Gmail (an IMAP store inside the same Outlook) was never triaged, because triage had ONE
+  category set. Now `triage.account_rules` holds a rule set per mailbox (categories, instructions,
+  catch-all, demand routing on/off) and the host gained `outlook_folder_create`, so a mailbox that
+  lacks the folders gets them once before the first move.

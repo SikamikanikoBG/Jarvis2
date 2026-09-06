@@ -182,6 +182,147 @@
   background: var(--bg-surface);
   border: 1px solid var(--border);
 }
+/* User bubbles sit on the right; their actions hang off the left edge. */
+.msg-user.has-actions {
+  position: relative;
+}
+.msg-user .msg-actions {
+  right: auto;
+  left: -14px;
+  transform: translateX(-100%);
+}
+
+/* --- code blocks: language + copy (docs/WAVE2.md slice 0) --- */
+.codeblock {
+  margin: 8px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+}
+.codehead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+}
+.codelang {
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+.code-copy {
+  cursor: pointer;
+  padding: 1px 8px;
+  border-radius: 4px;
+  user-select: none;
+}
+.code-copy:hover,
+.code-copy:focus-visible {
+  background: var(--bg-surface);
+  color: var(--fg);
+}
+.codeblock pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+/* --- sidebar search --- */
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 8px 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--fg-muted);
+}
+.search-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: var(--fg);
+  font: inherit;
+}
+.search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 4px;
+  overflow: auto;
+}
+.search-hit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.search-hit:hover,
+.search-hit:focus-visible {
+  background: var(--bg-elevated);
+}
+.search-snippet {
+  max-width: 100%;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.conv-pin {
+  flex: none;
+  color: var(--fg-muted);
+}
+
+/* --- triage: one rules editor per mailbox --- */
+.rules-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+}
+.rules-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.rules-head h3 {
+  margin: 0;
+  font-size: var(--fs-md);
+}
+
+/* --- edit and resend --- */
+.edit-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding: 6px 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-xs);
+  font-size: var(--fs-sm);
+  color: var(--fg-2);
+}
+.edit-banner > span {
+  flex: 1;
+}
 
 .mic-btn {
   display: inline-flex;

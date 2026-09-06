@@ -48,7 +48,9 @@ def main() -> int:
     ap.add_argument("--settings", help="JSON file with a top-level 'triage' block to PATCH first")
     ap.add_argument("--sample", action="append", help="FOLDER=N (repeatable); default = the V1 folder set")
     ap.add_argument("--no-inbox", action="store_true")
+    ap.add_argument("--account", help="only this mailbox (folders differ between work and a personal one)")
     args = ap.parse_args()
+    scope = {"account": args.account} if args.account else {}
 
     client = httpx.Client(
         base_url=args.base, headers={"Authorization": f"Bearer {args.token}"}, timeout=httpx.Timeout(30, read=1500)
@@ -61,7 +63,7 @@ def main() -> int:
         print(f"settings: triage host={t['host']} accounts={t['accounts']} categories={len(t['categories'])} enabled={t['enabled']}")
 
     if not args.no_inbox:
-        r = client.post("/api/triage/run", params={"dry_run": "true"})
+        r = client.post("/api/triage/run", params={"dry_run": "true", **scope})
         r.raise_for_status()
         rep = r.json()
         print(f"\n=== INBOX dry run: {rep['processed']} mails, {rep['routed']} would move, errors={rep['errors']}")
@@ -71,7 +73,7 @@ def main() -> int:
     total_ok = total_n = 0
     for spec in args.sample or DEFAULT_SAMPLES:
         folder, _, n = spec.partition("=")
-        r = client.post("/api/triage/run", params={"dry_run": "true", "folder": folder, "limit": int(n or 20)})
+        r = client.post("/api/triage/run", params={"dry_run": "true", "folder": folder, "limit": int(n or 20), **scope})
         if r.status_code != 200:
             print(f"\n=== {folder}: HTTP {r.status_code} {r.text[:200]}")
             continue

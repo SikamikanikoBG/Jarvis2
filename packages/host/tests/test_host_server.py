@@ -30,6 +30,7 @@ EXPECTED_ANNOTATIONS = {
     "outlook_read": ("read", True),
     "outlook_search": ("read", True),
     "outlook_move": ("mutating", False),
+    "outlook_folder_create": ("mutating", True),
     "outlook_flag": ("mutating", True),
     "outlook_send": ("destructive", False),
     "calendar_list": ("read", True),

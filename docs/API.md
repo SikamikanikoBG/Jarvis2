@@ -155,14 +155,20 @@ GET  /api/triage/state                         → [{account, cursor, last_run_a
 POST /api/triage/run                           → {processed, routed, accounts, errors, proposed: []}
 POST /api/triage/run?dry_run=true              → same shape; nothing moved/recorded/advanced,
                                                  proposed: [{account, sender, subject, category, folder, current_folder}]
-POST /api/triage/run?dry_run=true&folder=F&limit=N
+POST /api/triage/run?dry_run=true&folder=F&limit=N&account=A
                                                → samples the newest N mails of an ALREADY-SORTED
                                                  folder: proposal vs current_folder = accuracy check
-                                                 (422 without dry_run)
+                                                 (422 without dry_run). `account=` restricts the pass
+                                                 to one mailbox - folder names differ between the
+                                                 work store and a personal Gmail.
 ```
 Settings: `triage {enabled, interval_min, host, accounts: string[], demand_root: "Demands",
 demand_prefixes: ["DM-"], categories: [{name, folder, rule}], instructions: str,
-fallback_category: str}`. `instructions` is free text the classifier reads before the categories
+fallback_category: str, account_rules: {account: {categories, instructions, fallback_category,
+demand_routing}}}`. `account_rules` is how one mailbox differs from another: the work store sorts
+into Action Hub / Smart Lab / Leadership with demand routing on, a personal Gmail into
+Important / Low Priority with it off. Missing category folders are created once per account per
+process through `outlook_folder_create` before the first move. `instructions` is free text the classifier reads before the categories
 (owner, what Cc-only means, VIP list, hard exclusions); `fallback_category` is where "none"
 lands (set it to the catch-all for inbox zero). The classifier sees `From: name <smtp>`, `To`,
 `Cc`, subject and a 500-char preview; the host list is asked for `preview_chars=1500` so the

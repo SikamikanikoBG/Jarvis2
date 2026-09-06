@@ -10,7 +10,7 @@ from pydantic import BaseModel, ValidationError
 
 from jarvis_core import __version__
 from jarvis_core.api.deps import core_of, require_token
-from jarvis_proto import Conversation, ConversationKind, Message, Run, Settings, ToolSpec
+from jarvis_proto import Conversation, ConversationKind, Message, Run, SearchHit, Settings, ToolSpec
 from jarvis_proto.events import ConversationDeleted, ConversationUpdated
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
@@ -64,6 +64,13 @@ class ConversationPatch(BaseModel):
     title: str | None = None
     archived: bool | None = None
     unread: bool | None = None
+    pinned: bool | None = None
+
+
+class ForkRequest(BaseModel):
+    """Fork BEFORE this message (None = copy the whole transcript)."""
+
+    up_to_message_id: str | None = None
 
 
 @router.get("/conversations", response_model=list[Conversation])
@@ -92,11 +99,35 @@ async def get_conversation(request: Request, conversation_id: str) -> Conversati
 async def patch_conversation(request: Request, conversation_id: str, body: ConversationPatch) -> Conversation:
     core = core_of(request)
     fields = {k: (int(v) if isinstance(v, bool) else v) for k, v in body.model_dump(exclude_none=True).items()}
+    if "title" in fields:
+        fields["title"] = str(fields["title"]).strip()[:80] or "New chat"
+        fields["title_auto"] = 0  # a human named it; the titler leaves it alone from now on
     conv = await core.store.update_conversation(conversation_id, **fields)
     if conv is None:
         raise HTTPException(404, "conversation not found")
     core.bus.publish(ConversationUpdated(conversation=conv))
     return conv
+
+
+@router.post("/conversations/{conversation_id}/fork", response_model=Conversation, status_code=201)
+async def fork_conversation(request: Request, conversation_id: str, body: ForkRequest) -> Conversation:
+    """Copy the transcript up to (not including) a message into a new conversation - how
+    "edit and resend" works on an append-only history."""
+    core = core_of(request)
+    try:
+        conv = await core.store.fork_conversation(conversation_id, up_to_message_id=body.up_to_message_id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if conv is None:
+        raise HTTPException(404, "conversation not found")
+    core.bus.publish(ConversationUpdated(conversation=conv))
+    return conv
+
+
+@router.get("/search", response_model=list[SearchHit])
+async def search(request: Request, q: str, limit: int = 30) -> list[SearchHit]:
+    """Conversations by title, then by message text; one hit per conversation with a snippet."""
+    return await core_of(request).store.search(q, limit=max(1, min(limit, 100)))
 
 
 @router.delete("/conversations/{conversation_id}", status_code=204)

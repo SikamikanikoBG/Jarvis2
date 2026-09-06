@@ -197,6 +197,7 @@ export interface TriageSettings {
   instructions: string;
   /** Category used when the classifier answers "none"; empty = leave the mail in the inbox. */
   fallback_category: string;
+  alerts: TriageAlert[];
   /** Per-account overrides, keyed by the account name (work mailbox vs personal Gmail). */
   account_rules: Record<string, TriageRules>;
 }
@@ -208,6 +209,17 @@ export interface TriageRules {
   fallback_category: string;
   /** DM-1234 → Demands/DM-1234. Right for the work mailbox, wrong for a personal one. */
   demand_routing: boolean;
+  alerts: TriageAlert[];
+}
+
+/** "Tell me the moment this person writes." Matched structurally, never by the classifier. */
+export interface TriageAlert {
+  name: string;
+  enabled: boolean;
+  /** Full addresses or whole domains; empty = any sender. */
+  senders: string[];
+  /** Case-insensitive substrings of the subject; empty = any subject. */
+  keywords: string[];
 }
 
 /** Meeting auto-RSVP through the host's calendar (docs/stories/08). */

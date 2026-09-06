@@ -124,6 +124,44 @@ def _default_mcp_servers() -> list[McpServerSpec]:
     ]
 
 
+class TriageAlert(BaseModel):
+    """"Tell me the moment this person writes." Ported from V1's alerts_config.json.
+
+    The match is structural (an address, a domain, a subject substring) - never a judgement -
+    so a VIP mail cannot be missed because a classifier had an opinion. An alert does not change
+    where the mail is filed; it only makes Arsen's phone buzz.
+    """
+
+    name: str = ""
+    enabled: bool = True
+    # Full addresses ("pdimitrova@postbank.bg") or whole domains ("@board.bg"); empty = any sender.
+    senders: list[str] = Field(default_factory=list)
+    # Case-insensitive substrings of the subject; empty = any subject.
+    keywords: list[str] = Field(default_factory=list)
+
+    def matches(self, address: str, display_name: str, subject: str) -> bool:
+        if not self.enabled or (not self.senders and not self.keywords):
+            return False
+        if self.senders:
+            addr = address.strip().lower()
+            name = display_name.strip().lower()
+            domain = addr.rsplit("@", 1)[-1] if "@" in addr else ""
+            hit = False
+            for raw in self.senders:
+                want = raw.strip().lower().lstrip("@")
+                if not want:
+                    continue
+                if addr == want or (domain and domain == want) or (want in name and "@" not in want):
+                    hit = True
+                    break
+            if not hit:
+                return False
+        if self.keywords:
+            low = subject.lower()
+            return any(k.strip().lower() in low for k in self.keywords if k.strip())
+        return True
+
+
 class TriageRules(BaseModel):
     """How one mailbox is sorted: its categories, the free-text rules, the catch-all.
 
@@ -138,9 +176,18 @@ class TriageRules(BaseModel):
     fallback_category: str = ""
     # DM-1234 → Demands/DM-1234 makes sense for the work mailbox, not for a personal Gmail.
     demand_routing: bool = True
+    # Senders (and subjects) worth a push notification the moment they arrive.
+    alerts: list[TriageAlert] = Field(default_factory=list)
 
     def folders(self) -> list[str]:
         return [str(c["folder"]) for c in self.categories if c.get("folder")]
+
+    def alert_for(self, address: str, display_name: str, subject: str) -> str | None:
+        """The name of the first alert this mail trips, or None."""
+        for alert in self.alerts:
+            if alert.matches(address, display_name, subject):
+                return alert.name or "alert"
+        return None
 
 
 class TriageSettings(BaseModel):
@@ -154,6 +201,7 @@ class TriageSettings(BaseModel):
     categories: list[dict[str, str]] = Field(default_factory=list)  # {name, folder, rule}
     instructions: str = ""
     fallback_category: str = ""
+    alerts: list[TriageAlert] = Field(default_factory=list)
     # Per-account overrides, keyed by the account name `outlook_accounts` reports (case-insensitive).
     # The work mailbox and a personal Gmail want different folders and different rules.
     account_rules: dict[str, TriageRules] = Field(default_factory=dict)
@@ -164,7 +212,10 @@ class TriageSettings(BaseModel):
             if name.strip().lower() == wanted:
                 return rules
         return TriageRules(
-            categories=self.categories, instructions=self.instructions, fallback_category=self.fallback_category
+            categories=self.categories,
+            instructions=self.instructions,
+            fallback_category=self.fallback_category,
+            alerts=self.alerts,
         )
 
 

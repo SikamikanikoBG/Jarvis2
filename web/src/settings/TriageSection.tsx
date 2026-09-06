@@ -1,6 +1,6 @@
 import { Icon } from '../components/Icon';
 import { IconButton, Switch } from '../components/primitives';
-import type { TriageRules, TriageSettings } from '../protocol/types';
+import type { TriageAlert, TriageRules, TriageSettings } from '../protocol/types';
 
 interface Props {
   value: TriageSettings;
@@ -12,7 +12,7 @@ interface Props {
 const lines = (s: string) => s.split('\n').map((x) => x.trim()).filter(Boolean);
 const csv = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
 
-const emptyRules = (): TriageRules => ({ categories: [], instructions: '', fallback_category: '', demand_routing: true });
+const emptyRules = (): TriageRules => ({ categories: [], instructions: '', fallback_category: '', demand_routing: true, alerts: [] });
 
 /** The `triage` settings block: host, accounts, demand routing, and one rule set per mailbox. */
 export function TriageSection({ value, hosts, onChange, error }: Props) {
@@ -22,11 +22,13 @@ export function TriageSection({ value, hosts, onChange, error }: Props) {
     instructions: value.instructions,
     fallback_category: value.fallback_category,
     demand_routing: true,
+    alerts: value.alerts ?? [],
   };
   const overrides = value.account_rules ?? {};
   const withoutOverride = value.accounts.filter((a) => !(a in overrides));
 
-  const patchDefaults = (r: TriageRules) => patch({ categories: r.categories, instructions: r.instructions, fallback_category: r.fallback_category });
+  const patchDefaults = (r: TriageRules) =>
+    patch({ categories: r.categories, instructions: r.instructions, fallback_category: r.fallback_category, alerts: r.alerts });
   const patchOverride = (account: string, r: TriageRules) => patch({ account_rules: { ...overrides, [account]: r } });
   const dropOverride = (account: string) => patch({ account_rules: Object.fromEntries(Object.entries(overrides).filter(([a]) => a !== account)) });
 
@@ -115,8 +117,10 @@ interface RulesProps {
 /** Categories + instructions + catch-all: the same editor for the defaults and for one account. */
 function RulesEditor({ title, rules, onChange, onRemove, showDemandToggle }: RulesProps) {
   const cats = rules.categories;
+  const alerts = rules.alerts ?? [];
   const patch = (p: Partial<TriageRules>) => onChange({ ...rules, ...p });
   const setCat = (i: number, field: 'name' | 'folder' | 'rule', v: string) => patch({ categories: cats.map((c, j) => (j === i ? { ...c, [field]: v } : c)) });
+  const setAlert = (i: number, p: Partial<TriageAlert>) => patch({ alerts: alerts.map((a, j) => (j === i ? { ...a, ...p } : a)) });
 
   return (
     <div className="rules-editor">
@@ -163,6 +167,65 @@ function RulesEditor({ title, rules, onChange, onRemove, showDemandToggle }: Rul
             </div>
           </div>
         )}
+      </div>
+      <div className="field">
+        <label>Alert me the moment these arrive</label>
+        <div className="budget-wrap">
+          <table className="budget-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Senders (addresses or domains)</th>
+                <th>Subject keywords</th>
+                <th aria-label="On" />
+                <th aria-label="Actions" />
+              </tr>
+            </thead>
+            <tbody>
+              {alerts.map((a, i) => (
+                <tr key={i}>
+                  <td>
+                    <input className="input" value={a.name} onChange={(e) => setAlert(i, { name: e.target.value })} aria-label={`Alert ${i + 1} name`} />
+                  </td>
+                  <td>
+                    <input
+                      className="input mono"
+                      value={a.senders.join(', ')}
+                      onChange={(e) => setAlert(i, { senders: csv(e.target.value) })}
+                      placeholder="pdimitrova@postbank.bg"
+                      aria-label={`Alert ${i + 1} senders`}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      className="input"
+                      value={a.keywords.join(', ')}
+                      onChange={(e) => setAlert(i, { keywords: csv(e.target.value) })}
+                      placeholder="any subject"
+                      aria-label={`Alert ${i + 1} keywords`}
+                    />
+                  </td>
+                  <td>
+                    <Switch checked={a.enabled} onChange={(v) => setAlert(i, { enabled: v })} label={`Alert ${i + 1} enabled`} />
+                  </td>
+                  <td>
+                    <IconButton icon="trash" label="Remove alert" size="sm" onClick={() => patch({ alerts: alerts.filter((_, j) => j !== i) })} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <span className="field-hint">Matched on the address and the subject, never by the classifier, so a VIP mail cannot be missed. One Discord push per pass.</span>
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          style={{ alignSelf: 'flex-start' }}
+          onClick={() => patch({ alerts: [...alerts, { name: '', enabled: true, senders: [], keywords: [] }] })}
+        >
+          <Icon name="plus" size={14} />
+          Add alert
+        </button>
       </div>
       <div className="field">
         <label>Categories</label>

@@ -55,6 +55,8 @@ class TriageReport:
     dry_run: bool = False
     # dry run: what WOULD happen, per mail: {account, sender, subject, category, folder}
     proposed: list[dict[str, str]] = field(default_factory=list)
+    # VIP / keyword alerts this pass tripped: {account, alert, sender, subject, folder}
+    alerts: list[dict[str, str]] = field(default_factory=list)
 
 
 _WELL_KNOWN = {"inbox", "sent", "drafts", "deleted", "trash", "junk", "spam", "outbox", "archive"}
@@ -200,6 +202,20 @@ class TriageJob:
                 if not entry_id or (not dry_run and await self._decided(entry_id, account)):
                     continue
                 category, target = await self._route(item, cfg, account, rules)
+                subject = str(item.get("subject") or "")
+                # Structural, before any judgement: a VIP mail must never be missed because a
+                # classifier had an opinion about it.
+                alert = rules.alert_for(self._sender_address(item), self._sender(item), subject)
+                if alert:
+                    report.alerts.append(
+                        {
+                            "account": account,
+                            "alert": alert,
+                            "sender": self._sender(item) or self._sender_address(item),
+                            "subject": subject[:120],
+                            "folder": target or "Inbox",
+                        }
+                    )
                 if dry_run:
                     report.processed += 1
                     if target:
@@ -208,10 +224,11 @@ class TriageJob:
                         {
                             "account": account,
                             "sender": self._sender(item),
-                            "subject": str(item.get("subject") or "")[:90],
+                            "subject": subject[:90],
                             "category": category or "",
                             "folder": target or "(leave in Inbox)",
                             "current_folder": folder or "Inbox",
+                            "alert": alert or "",
                         }
                     )
                     continue
@@ -235,7 +252,8 @@ class TriageJob:
                     await self._record(entry_id, account, category, "left")
                 state.processed_today += 1
                 report.processed += 1
-                lines.append(f"- {self._sender(item) or '?'} — {str(item.get('subject') or '')[:70]} → {action}")
+                mark = f"[ALERT {alert}] " if alert else ""
+                lines.append(f"- {mark}{self._sender(item) or '?'} — {subject[:70]} → {action}")
             if dry_run:
                 continue  # nothing is persisted on a dry run
             report.routed = state.routed_today
@@ -246,7 +264,26 @@ class TriageJob:
             await self._save_state(state)
             if lines:
                 await self._append_summary(account, today, lines)
+        if report.alerts and not dry_run:
+            await self._push_alerts(report)
         return report
+
+    async def _push_alerts(self, report: TriageReport) -> None:
+        """One push per pass, not per mail: a VIP thread of five replies is one buzz."""
+        head = f"🔔 {len(report.alerts)} mail(s) you asked to be told about:"
+        body = "\n".join(f"• [{a['alert']}] {a['sender']} — {a['subject']}" for a in report.alerts[:15])
+        try:
+            res = await self.core.registry.call(
+                "notify.discord",
+                {"text": f"{head}\n{body}"},
+                cancel=asyncio.Event(),
+                idempotency_key=f"triage:alert:{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}",
+                timeout_s=30,
+            )
+            if res.kind.value == "error":
+                report.errors.append(f"alert not delivered: {res.text[:120]}")
+        except Exception as exc:
+            report.errors.append(f"alert not delivered: {exc}")
 
     async def _ensure_folders(self, host: str, account: str, folders: list[str], report: TriageReport) -> None:
         """Create the category folders once per account per process (a fresh Gmail store has

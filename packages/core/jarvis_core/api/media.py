@@ -149,6 +149,7 @@ async def triage_run(
         "accounts": report.accounts,
         "errors": report.errors,
         "proposed": report.proposed,
+        "alerts": report.alerts,
     }
 
 

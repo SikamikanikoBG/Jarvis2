@@ -40,6 +40,10 @@ class _FolderCreateArgs(BaseModel):
     account: str = ""
 
 
+class _NotifyArgs(BaseModel):
+    text: str
+
+
 class _MeetingArgs(BaseModel):
     meeting_id: str
     after_seq: int = 0
@@ -315,6 +319,66 @@ async def test_per_account_rules_override_the_defaults_and_folders_are_created_o
     # A second pass creates nothing again.
     await core.triage.run_once()
     assert host.folders_created == ["Trash/Delete"]
+
+
+async def test_vip_alerts_are_structural_and_push_once_per_pass(harness: Harness):
+    """Ported from V1's alerts_config.json: a named sender (or a subject keyword) buzzes Arsen's
+    phone the moment it arrives, whatever the classifier thinks of the mail."""
+    from jarvis_proto import TriageAlert
+
+    core = harness.core
+    host = await _with_host(harness)
+    pushed: list[str] = []
+
+    class FakeNotify(BuiltinProvider):
+        name = "notify"
+
+        @tool("notify.discord", description="push", args=_NotifyArgs)
+        async def _discord(self, text: str) -> ToolResult:
+            pushed.append(text)
+            return ToolResult.data("sent")
+
+    core.registry.add(FakeNotify())
+    await core.registry.refresh()
+    harness.enable(
+        triage=TriageSettings(
+            host="laptop",
+            accounts=["Work"],
+            categories=[{"name": "reference", "folder": "Action Hub/Reference", "rule": "everything"}],
+            fallback_category="reference",
+            alerts=[
+                TriageAlert(name="Petya Dimitrova", senders=["rumen@bank.bg"]),
+                TriageAlert(name="Invoices", keywords=["invoice"]),
+                TriageAlert(name="Off", enabled=False, senders=["maria@bank.bg"]),
+                TriageAlert(name="Empty"),  # no senders and no keywords: matches nothing
+            ],
+        )
+    )
+    harness.chat.push(*[FakeTurn(text='{"category": "reference"}')] * 4)
+    report = await core.triage.run_once()
+    assert report.errors == []
+    # The VIP (by address) and the keyword mail; Maria's alert is off, and "Empty" matches nothing.
+    assert [(a["alert"], a["sender"]) for a in report.alerts] == [
+        ("Petya Dimitrova", "Rumen Petrov"),
+        ("Invoices", "billing@vendor.com"),
+    ]
+    # One push for the pass, listing both, with where each was filed.
+    assert len(pushed) == 1
+    assert "2 mail(s)" in pushed[0] and "[Petya Dimitrova] Rumen Petrov" in pushed[0] and "[Invoices]" in pushed[0]
+    # The day's triage message marks them too.
+    convs = [c for c in await core.store.list_conversations() if c.kind.value == "triage"]
+    text = (await core.store.list_messages(convs[0].id))[-1].content
+    assert "[ALERT Petya Dimitrova]" in text and "[ALERT Invoices]" in text
+    # Mail still goes where the rules say; an alert changes nothing about filing.
+    assert ("e2", "Action Hub/Reference") in host.moves
+
+    # A dry run reports the alerts and sends nothing. (Sampling the folder, because the live pass
+    # above moved the cursor past these mails - which is exactly what it should have done.)
+    pushed.clear()
+    harness.chat.push(*[FakeTurn(text='{"category": "reference"}')] * 4)
+    dry = await core.triage.run_once(dry_run=True, folder="Inbox")
+    assert pushed == [] and [a["alert"] for a in dry.alerts] == ["Petya Dimitrova", "Invoices"]
+    assert [p["alert"] for p in dry.proposed if p["alert"]] == ["Petya Dimitrova", "Invoices"]
 
 
 async def test_triage_without_host_reports_instead_of_crashing(harness: Harness):

@@ -85,6 +85,7 @@ from jarvis_proto.settings import (
     Provider,
     RoleName,
     Settings,
+    TriageAlert,
     TriageRules,
     TriageSettings,
 )
@@ -165,6 +166,7 @@ __all__ = [
     "ToolResultEvent",
     "ToolResultKind",
     "ToolSpec",
+    "TriageAlert",
     "TriageRules",
     "TriageSettings",
     "TriageState",

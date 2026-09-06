@@ -207,3 +207,17 @@ harness — library vs. own is an open question to settle in the design.
   category set. Now `triage.account_rules` holds a rule set per mailbox (categories, instructions,
   catch-all, demand routing on/off) and the host gained `outlook_folder_create`, so a mailbox that
   lacks the folders gets them once before the first move.
+- 2026-09-06 (afternoon) — Gmail triage, second round: 64% → 84% agreement on 68 real mails
+  (Newsletters and Notifications 100%, Finance 92%, Shopping 80%, Personal and Action 67%). The
+  first round's misses were all rule defects, not model failures: LinkedIn "X just messaged you"
+  is a human reaching him (personal), security alerts about his own repos and credentials are
+  action, a subscribed publication is a newsletter whatever its tone, hotel bookings are
+  shopping, and platform statements (IUVO, Klear) are finance. Also learned: a redirected stdout
+  buffers 8 kB, so a healthy 10-minute evaluation looked hung and I killed it — both scripts are
+  line-buffered now, and restarting the host under a running evaluation stalls it.
+  Arsen: "мигрирай и VIP имейлите — да ме алармира". V1 kept five alert rules in
+  config/alerts_config.json (Rumen Radushev, Petya Dimitrova, Todor Plugchiev, Diana Dimitrova,
+  Yordanka Kostova). Ported as `TriageAlert` on the triage rules: the match is STRUCTURAL (address,
+  domain, subject substring), so a VIP mail cannot be missed because a classifier had an opinion;
+  filing is unchanged; one Discord push per pass, not per mail; the day's triage message marks the
+  lines [ALERT name]; a dry run reports them and sends nothing.

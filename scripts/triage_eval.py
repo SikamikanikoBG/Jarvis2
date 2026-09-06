@@ -41,7 +41,9 @@ def norm(path: str) -> str:
 
 
 def main() -> int:
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]  # Cyrillic subjects
+    # UTF-8 for Cyrillic subjects; line buffering so a long run shows progress instead of looking
+    # hung (a redirected stdout buffers 8 kB by default and the whole report arrives at the end).
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)  # type: ignore[union-attr]
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://100.97.120.53:9020")
     ap.add_argument("--token", required=True)

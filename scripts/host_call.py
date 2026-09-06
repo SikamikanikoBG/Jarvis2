@@ -38,7 +38,7 @@ MUTATING = {
 
 async def main() -> int:
     # Windows consoles default to a legacy code page; mail previews carry emoji.
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)  # type: ignore[union-attr]
     ap = argparse.ArgumentParser()
     ap.add_argument("tool")
     ap.add_argument("args", nargs="?", default="{}", help="JSON object of tool arguments")

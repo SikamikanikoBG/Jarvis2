@@ -85,8 +85,12 @@ remote_access/server.py routes, shared-brain tables). Status: **have** = in V2 n
 
 ## Slices, in order
 
-### Slice 1 — Attachments (photos, files, email threads, clipboard)
-One concept, not four features. Stories in `docs/stories/09_attachments.md`.
+### Slice 1 — Attachments — **shipped 2026-09-06 (2.0.0a8)**, email threads still to come
+One concept, not four features. Stories in `docs/stories/09_attachments.md`. Live-verified: a
+1200×800 image uploaded from the API came back described correctly by qwen3.8-27b ("three
+horizontal bands, red, green, blue"), and a CSV attachment answered "Q4 revenue = 1,450,000".
+Still open in this slice: the email-thread picker (needs host `outlook_thread`, slice 2) and
+Office documents (host `doc_read`, slice 2 — the host has Office installed, so no new deps).
 
 - `attachments` table (id, conversation_id, message_id, kind image|file|email|page|text, name,
   mime, bytes, path, text, meta, created_at). Blobs on disk under `JARVIS_HOME/attachments/`.

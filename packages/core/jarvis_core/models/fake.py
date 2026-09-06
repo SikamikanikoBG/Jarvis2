@@ -29,6 +29,7 @@ class FakeTurn:
     hang: bool = False  # never finishes until cancelled
     prompt_tokens: int = 100
     completion_tokens: int = 20
+    cached_tokens: int = 0  # what a prefix cache served, for budget/TTFT tests
 
 
 class FakeAdapter:
@@ -72,6 +73,7 @@ class FakeAdapter:
             usage=ModelUsage(
                 prompt_tokens=turn.prompt_tokens,
                 completion_tokens=turn.completion_tokens,
+                cached_tokens=turn.cached_tokens,
                 calls=1,
                 ttft_ms=1,
                 duration_ms=2,

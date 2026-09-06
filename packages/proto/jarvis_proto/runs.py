@@ -72,6 +72,21 @@ class ModelUsage(BaseModel):
         """Prompt tokens that actually had to be read: what TTFT is spent on."""
         return max(0, self.prompt_tokens - self.cached_tokens)
 
+    @property
+    def processed_tokens(self) -> int:
+        """Work done: tokens the model actually read, plus the ones it wrote.
+
+        Every step re-sends the whole conversation, so summing ``prompt_tokens`` over a run
+        counts the same text once per step — a 20k conversation over 11 steps "costs" 220k
+        without anything new being said. The prefix cache serves those repeats from KV, so they
+        are neither time nor compute. This is the number a budget should be measured against;
+        ``total_tokens`` stays what it says, for showing how big the context got.
+
+        A provider that does not report ``cached_tokens`` leaves it at 0, and this equals
+        ``total_tokens`` exactly as before.
+        """
+        return self.prefilled_tokens + self.completion_tokens
+
 
 class PlanStepStatus(StrEnum):
     PENDING = "pending"

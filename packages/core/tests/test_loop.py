@@ -135,6 +135,64 @@ async def test_empty_reply_is_nudged_once_then_fails(harness: Harness):
     assert "empty" in seen[-1].error
 
 
+async def test_the_token_budget_counts_work_not_the_conversation_resent_each_step(harness: Harness):
+    """Every step re-sends the whole conversation, so summing prompt_tokens counts the same text
+    once per step. The prefix cache serves those repeats from KV — they are neither time nor
+    compute. Measured on ardi 2026-09-06: a chat stopped at "224,594 tokens" of which 203,840
+    were cached; 20k of actual work, judged against a 200k budget.
+    """
+    await with_tools(harness)
+    # Six steps, each re-sending a 50k conversation of which 49k comes back from the cache.
+    for i in range(6):
+        harness.chat.push(
+            FakeTurn(
+                tool_calls=[ToolCall(id=f"c{i}", name="test.echo", arguments={"text": str(i)})],
+                prompt_tokens=50_000,
+                cached_tokens=49_000,
+                completion_tokens=100,
+            )
+        )
+    harness.chat.push(FakeTurn(text="done", prompt_tokens=50_000, cached_tokens=49_000, completion_tokens=100))
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    s = harness.core.settings.model_copy(deep=True)
+    s.budgets[RunKind.CHAT].max_tokens = 200_000
+    harness.core.apply_settings(s)
+    run, _ = await harness.core.engine.create_run(text="go", conversation_id=conv.id)
+    seen = await harness.wait_for(sub, "run.done", timeout=15)
+
+    done = await harness.core.store.get_run(run.id)
+    assert done is not None
+    # 7 x 50k = 350k counted the old way — well past the budget — but only 7 x 1.1k of it was work.
+    assert done.usage.total_tokens > 300_000
+    assert done.usage.processed_tokens < 10_000
+    assert seen[-1].summary is None, f"stopped on a budget it never really used: {seen[-1].summary}"
+    assert (await harness.core.store.list_messages(conv.id))[-1].content == "done"
+
+
+async def test_the_token_budget_still_stops_a_run_that_is_really_working(harness: Harness):
+    """The guard has to keep working: a loop that keeps adding NEW tokens still trips it."""
+    await with_tools(harness)
+    for i in range(30):
+        harness.chat.push(
+            FakeTurn(
+                tool_calls=[ToolCall(id=f"c{i}", name="test.echo", arguments={"text": str(i)})],
+                prompt_tokens=60_000,
+                cached_tokens=0,  # nothing reused: this is real reading, every step
+                completion_tokens=500,
+            )
+        )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    s = harness.core.settings.model_copy(deep=True)
+    s.budgets[RunKind.CHAT].max_tokens = 200_000
+    harness.core.apply_settings(s)
+    await harness.core.engine.create_run(text="go", conversation_id=conv.id)
+    seen = await harness.wait_for(sub, "run.done", timeout=15)
+    assert seen[-1].summary and "token budget" in seen[-1].summary
+    assert "I stopped here" in (await harness.core.store.list_messages(conv.id))[-1].content
+
+
 async def test_step_budget_ends_the_run_with_a_summary(harness: Harness):
     await with_tools(harness)
     # Always call a tool with different args → no repetition signal, only the budget.

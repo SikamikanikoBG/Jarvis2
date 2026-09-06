@@ -77,8 +77,15 @@ class Supervisor:
         b = watch.budget
         if run.steps_used >= b.max_steps:
             return f"step budget reached ({b.max_steps} model calls)"
-        if run.usage.total_tokens >= b.max_tokens:
-            return f"token budget reached ({run.usage.total_tokens:,} tokens)"
+        # Against tokens the model actually READ, not against the conversation counted once per
+        # step. Measured on ardi 2026-09-06: a chat stopped at "224,594 tokens" of which 203,840
+        # had been served from the prefix cache — 20k of work judged against a 200k budget. A
+        # runaway loop still trips it, because a loop keeps adding new tokens.
+        if run.usage.processed_tokens >= b.max_tokens:
+            detail = f"{run.usage.processed_tokens:,} tokens"
+            if run.usage.cached_tokens:
+                detail += f" read and written, on top of {run.usage.cached_tokens:,} served from the prompt cache"
+            return f"token budget reached ({detail})"
         if watch.elapsed_s() >= b.max_seconds:
             return f"time budget reached ({b.max_seconds}s)"
         return None

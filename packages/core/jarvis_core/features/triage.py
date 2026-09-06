@@ -143,6 +143,12 @@ class TriageJob:
             (entry_id, account, category, action, datetime.now(UTC).isoformat()),
         )
 
+    async def _forget(self, entry_id: str, account: str) -> None:
+        """Undo the pre-move record when the move did not happen, so the mail stays retryable."""
+        await self.core.db.execute(
+            "DELETE FROM triage_decisions WHERE entry_id = ? AND account = ?", (entry_id, account)
+        )
+
     # --- the job -------------------------------------------------------------------------
 
     async def run_once(
@@ -197,6 +203,7 @@ class TriageJob:
                 await self._save_state(state)
                 continue
             lines: list[str] = []
+            stuck = 0  # mails this pass decided on but could not move
             for item in items:
                 entry_id = str(item.get("entry_id") or "")
                 if not entry_id or (not dry_run and await self._decided(entry_id, account)):
@@ -234,7 +241,9 @@ class TriageJob:
                     continue
                 action = "left"
                 if target:
+                    # Recorded BEFORE the move, so a crash between the two re-does nothing.
                     await self._record(entry_id, account, category, f"move:{target}")
+                    failure = ""
                     try:
                         res = await self.core.registry.call(
                             f"{cfg.host}.outlook_move",
@@ -243,11 +252,22 @@ class TriageJob:
                             idempotency_key=f"triage:{account}:{entry_id}",
                             timeout_s=60,
                         )
-                        action = f"moved → {target}" if res.kind.value != "error" else f"move failed: {res.text[:80]}"
-                        if res.kind.value != "error":
-                            state.routed_today += 1
+                        failure = res.text[:120] if res.kind.value == "error" else ""
                     except Exception as exc:
-                        action = f"move failed: {exc}"
+                        failure = str(exc)[:120]
+                    if failure:
+                        # The mail is still in the Inbox. Drop the decision row so the next pass
+                        # can try again, and say so out loud: this used to leave a row claiming
+                        # the move, and the cursor moved past the mail, so it was never seen
+                        # again by anything — with report.errors empty.
+                        action = f"move failed: {failure}"
+                        await self._forget(entry_id, account)
+                        report.errors.append(f"{account}: {subject[:60]!r} not moved to {target}: {failure}")
+                        stuck += 1
+                    else:
+                        action = f"moved → {target}"
+                        state.routed_today += 1
+                        report.routed += 1
                 else:
                     await self._record(entry_id, account, category, "left")
                 state.processed_today += 1
@@ -256,11 +276,15 @@ class TriageJob:
                 lines.append(f"- {mark}{self._sender(item) or '?'} — {subject[:70]} → {action}")
             if dry_run:
                 continue  # nothing is persisted on a dry run
-            report.routed = state.routed_today
-            if cursor:
+            # The cursor is a high-water mark over `received`, and the host lists the NEWEST
+            # mails above it — so holding it back re-offers the ones that failed without
+            # starving new arrivals, while advancing it would retire them from triage for good.
+            # Everything already decided is skipped by a single indexed lookup, so a held
+            # cursor costs one list call, not a re-classification.
+            if cursor and not stuck:
                 state.cursor = cursor
             state.last_run_at = datetime.now(UTC)
-            state.last_error = None
+            state.last_error = next((e for e in report.errors if e.startswith(f"{account}:")), None)
             await self._save_state(state)
             if lines:
                 await self._append_summary(account, today, lines)

@@ -195,14 +195,23 @@ class RsvpJob:
             report.decisions.append(decision)
             if dry_run:
                 continue
-            await self._record(key, decision)
-            if decision.decision in ANSWERED:
-                state.answered_total += 1
+            if decision.decision == "failed":
+                # The invite is still unanswered, so it must NOT enter the ledger: a ledger row
+                # is what stops the next pass from trying again. One COM hiccup used to retire
+                # an invite for good, silently — nothing in the ledger says "failed" out loud
+                # and report.errors was empty.
+                report.errors.append(f"{decision.subject!r} from {decision.organizer}: {decision.detail}")
+            else:
+                await self._record(key, decision)
+                if decision.decision in ANSWERED:
+                    state.answered_total += 1
             lines.append(self._line(decision))
 
         if not dry_run:
             state.last_run_at = datetime.now(UTC)
-            state.last_error = None
+            # A pass that could not answer something is not a clean pass: the status the UI reads
+            # has to say so, or a stuck invite is invisible until someone misses the meeting.
+            state.last_error = report.errors[0][:200] if report.errors else None
             await self._save_state(state)
             if lines:
                 await self._append_summary(cfg.account, lines)

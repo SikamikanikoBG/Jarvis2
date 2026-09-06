@@ -172,6 +172,10 @@ class FakeHost(BuiltinProvider):
         self.invites = [dict(i) for i in _INVITES]
         self.responses: list[tuple[str, str, str]] = []
         self.canceled_calls = 0
+        # Entry ids the host refuses to act on, as a real Outlook does when COM hiccups. Clear
+        # the set to let the next attempt through.
+        self.move_fails: set[str] = set()
+        self.respond_fails: set[str] = set()
         super().__init__()
 
     @tool("laptop.calendar_invites", description="invites", args=_InvitesArgs, read_only=True)
@@ -180,6 +184,8 @@ class FakeHost(BuiltinProvider):
 
     @tool("laptop.calendar_respond", description="respond", args=_RespondArgs)
     async def _respond(self, entry_id: str, decision: str = "accept", comment: str = "", account: str = "") -> ToolResult:
+        if entry_id in self.respond_fails:
+            return ToolResult.failure("The messaging interface has returned an unknown error")
         self.responses.append((entry_id, decision, comment))
         return ToolResult.data(json.dumps({"sent": True, "decision": decision}))
 
@@ -210,6 +216,8 @@ class FakeHost(BuiltinProvider):
 
     @tool("laptop.outlook_move", description="move", args=_MoveArgs)
     async def _move(self, entry_id: str, folder: str) -> ToolResult:
+        if entry_id in self.move_fails:
+            return ToolResult.failure("cannot move: the item is open in another window")
         self.moves.append((entry_id, folder))
         return ToolResult.data("moved")
 
@@ -418,6 +426,88 @@ def test_auto_replies_from_a_vip_do_not_buzz_the_phone():
     assert loud.matches("rradushev@postbank.bg", "Rumen Radushev", "Automatic reply: I am away")
 
 
+async def test_triage_retries_a_mail_it_could_not_move_and_says_it_could_not(harness: Harness):
+    """A move that failed leaves the mail in the Inbox — so it must stay triageable.
+
+    Two things used to bury it: the decision row is written BEFORE the move (right, for crash
+    safety) and was left behind claiming a move that never happened, and the cursor advanced
+    past the mail anyway. The mail was then invisible to every later pass, and report.errors
+    was empty, so the API answered "0 errors" about a mailbox it had quietly given up on.
+    """
+    core = harness.core
+    host = await _with_host(harness)
+    harness.enable(
+        triage=TriageSettings(
+            host="laptop",
+            accounts=["Work"],
+            categories=[{"name": "invoices", "folder": "Finance/Invoices", "rule": "invoices"}],
+        )
+    )
+    host.move_fails = {"e3"}  # the invoice cannot be filed this time
+    # e1 is a demand (no classifier); the other three are lunch → none, invoice → invoices,
+    # digest → none.
+    harness.chat.push(
+        FakeTurn(text='{"category": "none"}'),
+        FakeTurn(text='{"category": "invoices"}'),
+        FakeTurn(text='{"category": "none"}'),
+    )
+
+    first = await core.triage.run_once()
+    assert host.moves == [("e1", "Demands/DM-4521")]  # the demand went, the invoice did not
+    assert first.routed == 1
+    assert any("Invoice 2026-118" in e and "not moved to Finance/Invoices" in e for e in first.errors)
+    # Nothing claims the move happened, and the cursor did not step over the mail.
+    assert await core.db.fetchone("SELECT 1 FROM triage_decisions WHERE entry_id = 'e3'") is None
+    states = await core.triage.states()
+    assert states[0].cursor is None and states[0].last_error and "Invoice" in states[0].last_error
+    # The day's summary tells Arsen too, rather than only the log.
+    convs = [c for c in await core.store.list_conversations() if c.kind.value == "triage"]
+    assert "move failed" in (await core.store.list_messages(convs[0].id))[-1].content
+
+    # Next pass: only the stuck mail is re-classified, and this time it lands.
+    host.move_fails = set()
+    harness.chat.push(FakeTurn(text='{"category": "invoices"}'))
+    second = await core.triage.run_once()
+    assert second.errors == [] and second.routed == 1 and second.processed == 1
+    assert host.moves == [("e1", "Demands/DM-4521"), ("e3", "Finance/Invoices")]
+    states = await core.triage.states()
+    assert states[0].cursor == "2026-09-05T08:15:00" and states[0].last_error is None
+
+    # ...and a third pass has nothing left to do.
+    third = await core.triage.run_once()
+    assert third.processed == 0 and third.routed == 0 and len(host.moves) == 2
+
+
+async def test_triage_counts_what_this_pass_routed_across_every_account(harness: Harness):
+    """report.routed is this pass's moves. It used to be assigned `state.routed_today` inside
+    the per-account loop, so the last account overwrote the others (two accounts routing 3 and
+    0 reported 0) and a second pass on one account reported the whole day's total."""
+    from jarvis_proto import TriageRules
+
+    core = harness.core
+    host = await _with_host(harness)
+    harness.enable(
+        triage=TriageSettings(
+            host="laptop",
+            accounts=["Work", "Personal"],
+            demand_routing=False,
+            categories=[{"name": "invoices", "folder": "Finance/Invoices", "rule": "invoices"}],
+            account_rules={"personal": TriageRules(categories=[], demand_routing=False)},  # files nothing
+        )
+    )
+    harness.chat.push(*[FakeTurn(text='{"category": "invoices"}')] * 4)  # Work: all four filed
+    report = await core.triage.run_once()
+    assert sorted(report.accounts) == ["Personal", "Work"]
+    assert report.processed == 8 and report.routed == 4  # not 0, which is Personal's day total
+    assert len(host.moves) == 4
+
+    # A second pass over the same day adds nothing: the count is per pass, not per day.
+    again = await core.triage.run_once()
+    assert again.processed == 0 and again.routed == 0
+    states = {s.account: s for s in await core.triage.states()}
+    assert states["Work"].routed_today == 4 and states["Personal"].routed_today == 0
+
+
 async def test_triage_without_host_reports_instead_of_crashing(harness: Harness):
     harness.enable(triage=TriageSettings(enabled=True, host=""))
     report = await harness.core.triage.run_once()
@@ -533,6 +623,41 @@ async def test_rsvp_accepts_free_declines_clashes_never_declines_vip_and_answers
     assert len(convs) == 1
     msgs = await core.store.list_messages(convs[0].id)
     assert msgs[-1].name == "rsvp" and "'Clash'" in msgs[-1].content and "left_external" in msgs[-1].content
+
+
+async def test_rsvp_retries_an_invite_it_could_not_answer(harness: Harness):
+    """A failed calendar_respond must not enter the ledger.
+
+    The ledger is what stops the next pass from trying again, so recording a "failed" row
+    retired the invite for good after one COM hiccup — and report.errors was empty, so nothing
+    said so. Arsen finds out by missing the meeting.
+    """
+    core = harness.core
+    host = await _with_host(harness)
+    host.invites = [dict(_INVITES[0])]  # one clean accept, nothing else in the way
+    host.respond_fails = {"i1"}
+    harness.enable(rsvp=MeetingRsvpSettings(host="laptop", account="Work", allowed_domains=["bank.bg"]))
+
+    first = await core.rsvp.run_once()
+    assert [d.decision for d in first.decisions] == ["failed"]
+    assert host.responses == []
+    assert any("Free sync" in e and "unknown error" in e for e in first.errors)
+    # Nothing in the ledger, and the run's own status says why.
+    assert await core.db.fetchone("SELECT 1 FROM rsvp_decisions") is None
+    state = await core.rsvp.state()
+    assert state is not None and state.answered_total == 0 and state.last_error and "Free sync" in state.last_error
+
+    # The next pass answers it, because the invite was never marked as decided.
+    host.respond_fails = set()
+    second = await core.rsvp.run_once()
+    assert [d.decision for d in second.decisions] == ["accept"]
+    assert [(r[0], r[1]) for r in host.responses] == [("i1", "accept")]
+    state = await core.rsvp.state()
+    assert state is not None and state.answered_total == 1 and state.last_error is None
+
+    # ...and only once: now it IS in the ledger.
+    third = await core.rsvp.run_once()
+    assert third.decisions == [] and len(host.responses) == 1
 
 
 async def test_rsvp_without_host_or_domains_fails_closed(harness: Harness):

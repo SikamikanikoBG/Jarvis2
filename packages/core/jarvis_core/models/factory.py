@@ -31,8 +31,12 @@ class AdapterFactory:
         semaphore, so concurrency limits still hold per GPU box.
         """
         if role in self.fakes:
+            # Rebased on the ROLE's spec, not on the fake's current one. Deriving it from the
+            # fake meant an override stuck: once anything asked for think=False, a later call
+            # passing None re-derived from the already-off spec and thinking stayed off for the
+            # rest of the process — so a test could not see per-step thinking at all.
             fake = self.fakes[role]
-            fake.spec = fake.spec.with_thinking(think, think_level)
+            fake.spec = self.spec_for(role).with_thinking(think, think_level)
             return fake
         spec = self.spec_for(role).with_thinking(think, think_level)
         key = spec.model_dump_json()

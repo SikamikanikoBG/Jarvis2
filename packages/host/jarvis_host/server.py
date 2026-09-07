@@ -401,6 +401,13 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
         """Write (or append) UTF-8 text to a file under the allowed roots, creating parent directories."""
         return json_text(await _run("fs_write", lambda: asyncio.to_thread(deps.files.write, path, text, append)))
 
+    @tool("fs_edit", DESTRUCTIVE)
+    async def fs_edit(path: str, old: str, new: str, expect: int = 1) -> str:
+        """Replace `old` with `new` inside an existing text file — the way to change part of a long document without re-sending all of it. `expect` is how many occurrences you believe exist (default 1); if the real count differs nothing is written, so quote enough surrounding text to be unique."""
+        return json_text(
+            await _run("fs_edit", lambda: asyncio.to_thread(deps.files.edit, path, old, new, expect=expect))
+        )
+
     @tool("fs_search", READ)
     async def fs_search(root: str, glob: str, limit: int = 500) -> str:
         """Files matching a glob (e.g. '*.pdf', '**/report*.xlsx') recursively under `root`, which must be inside the allowed roots."""

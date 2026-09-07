@@ -34,6 +34,7 @@ from jarvis_core.features.knowledge import KnowledgeLearner, KnowledgeStore, Kno
 from jarvis_core.features.meetings import MeetingService
 from jarvis_core.features.notify import NotifyTools
 from jarvis_core.features.planner import Planner
+from jarvis_core.features.results import ResultsTools
 from jarvis_core.features.rsvp import RsvpJob
 from jarvis_core.features.schedules import Scheduler, ScheduleStore, ScheduleTools
 from jarvis_core.features.skills import SkillDetector, SkillsTools, SkillStore
@@ -221,6 +222,7 @@ class Core:
                 self.builtin,
                 NotesTools(self.boards),
                 KnowledgeTools(self.knowledge),
+                ResultsTools(self.store),
                 SkillsTools(self.skills),
                 ScheduleTools(self.schedules, tz=lambda: self.settings.timezone),
                 self.notify,

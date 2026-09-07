@@ -71,3 +71,44 @@ def test_list_read_write_search(root: Path):
 def test_empty_roots_are_rejected():
     with pytest.raises(ValueError):
         Files([])
+
+
+def test_edit_replaces_in_place_without_resending_the_file(root: Path):
+    files = Files([root])
+    target = root / "docs" / "deck.html"
+    target.write_text("<h1>Население</h1>\n<section id='gdp'>TODO</section>\n", encoding="utf-8")
+
+    out = files.edit(str(target), "<section id='gdp'>TODO</section>", "<section id='gdp'>БВП 2025</section>")
+    assert out["replaced"] == 1
+    assert target.read_text(encoding="utf-8") == "<h1>Население</h1>\n<section id='gdp'>БВП 2025</section>\n"
+    assert out["delta_bytes"] == len("БВП 2025".encode()) - len("TODO")
+    # The heading was never re-sent, which is the whole point.
+    assert "Население" in target.read_text(encoding="utf-8")
+
+
+def test_edit_refuses_when_the_count_is_not_what_the_caller_expected(root: Path):
+    files = Files([root])
+    target = root / "docs" / "twice.txt"
+    target.write_text("row\nrow\n", encoding="utf-8")
+
+    with pytest.raises(FsError, match="found 2 times"):
+        files.edit(str(target), "row", "col")
+    assert target.read_text(encoding="utf-8") == "row\nrow\n", "nothing is written when the count is wrong"
+
+    assert files.edit(str(target), "row", "col", expect=2)["replaced"] == 2
+    assert target.read_text(encoding="utf-8") == "col\ncol\n"
+
+    with pytest.raises(FsError, match="not found"):
+        files.edit(str(target), "missing", "x")
+
+
+def test_edit_guards_binaries_missing_files_and_empty_old(root: Path):
+    files = Files([root])
+    with pytest.raises(FsError, match="looks binary"):
+        files.edit(str(root / "bin.dat"), "binary", "text")
+    with pytest.raises(FsError, match="is not a file"):
+        files.edit(str(root / "docs" / "nope.txt"), "a", "b")
+    with pytest.raises(FsError, match="old is empty"):
+        files.edit(str(root / "docs" / "a.txt"), "", "b")
+    with pytest.raises(OutsideRoots):
+        files.edit(str(root.parent / "outside.txt"), "a", "b")

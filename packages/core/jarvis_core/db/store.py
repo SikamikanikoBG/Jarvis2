@@ -296,6 +296,18 @@ class Store:
         rows = await self.db.fetchall("SELECT * FROM messages WHERE run_id = ? ORDER BY rowid", (run_id,))
         return [self._message(r) for r in rows]
 
+    async def tool_result(self, tool_call_id: str) -> tuple[str, str] | None:
+        """The FULL text of an earlier tool result, by the id of the call that produced it.
+
+        Context assembly only ever shows the model a head of an older tool result; the whole
+        thing has always been kept here and nothing could reach it. Returns (tool name, text).
+        """
+        row = await self.db.fetchone(
+            "SELECT name, content FROM messages WHERE role = 'tool' AND tool_call_id = ? ORDER BY rowid LIMIT 1",
+            (tool_call_id,),
+        )
+        return (row["name"] or "", row["content"] or "") if row is not None else None
+
     # --- runs -----------------------------------------------------------------------
 
     @staticmethod

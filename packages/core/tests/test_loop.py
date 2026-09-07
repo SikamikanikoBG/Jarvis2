@@ -23,6 +23,8 @@ class ToolsForTests(BuiltinProvider):
         super().__init__()
         self.calls = []
         self.gate = asyncio.Event()
+        self.in_flight = 0
+        self.both_in_flight = asyncio.Event()
 
     @tool("test.echo", description="echo", args=_EchoArgs, read_only=True)
     async def _echo(self, text: str) -> ToolResult:
@@ -45,6 +47,19 @@ class ToolsForTests(BuiltinProvider):
         self.calls.append("gate")
         await asyncio.wait_for(self.gate.wait(), timeout=10)
         return ToolResult.data("gate opened")
+
+    @tool("test.barrier", description="read-only; only returns once two are in flight", read_only=True)
+    async def _barrier(self) -> ToolResult:
+        """Proof of concurrency: serialized, the first call waits out the timeout and fails."""
+        self.in_flight += 1
+        if self.in_flight >= 2:
+            self.both_in_flight.set()
+        await asyncio.wait_for(self.both_in_flight.wait(), timeout=5)
+        return ToolResult.data("barrier")
+
+    @tool("test.long", description="read-only; returns a lot of text", read_only=True)
+    async def _long(self) -> ToolResult:
+        return ToolResult.data("Население на България. " * 4000)
 
     @tool("test.send", description="mutating", destructive=True)
     async def _send(self) -> ToolResult:
@@ -317,8 +332,9 @@ async def test_the_token_budget_still_stops_a_run_that_is_really_working(harness
 async def test_step_budget_ends_the_run_with_a_summary(harness: Harness):
     await with_tools(harness)
     # Always call a tool with different args → no repetition signal, only the budget.
-    for i in range(30):
+    for i in range(4):
         harness.chat.push(FakeTurn(tool_calls=[ToolCall(id=f"c{i}", name="test.echo", arguments={"text": str(i)})]))
+    harness.chat.push(FakeTurn(text="Here are the four numbers I read: 0, 1, 2, 3."))
     conv = await harness.core.store.create_conversation()
     sub = harness.subscribe(conv.id)
     s = harness.core.settings.model_copy(deep=True)
@@ -329,7 +345,97 @@ async def test_step_budget_ends_the_run_with_a_summary(harness: Harness):
     done = seen[-1]
     assert done.summary and "step budget" in done.summary and done.steps_used == 4
     msgs = await harness.core.store.list_messages(conv.id)
-    assert "I stopped here" in msgs[-1].content
+    # The run is over, but it hands over the work rather than only the verdict.
+    assert "Here are the four numbers" in msgs[-1].content
+    assert "[stopped: step budget reached (4 model calls)]" in msgs[-1].content
+
+
+async def test_a_stopped_run_writes_its_answer_with_no_tools_and_no_thinking(harness: Harness):
+    """19% of runs on 2026-09-07 ended as "I stopped here" and nothing else. Never again."""
+    await with_tools(harness)
+    for i in range(2):
+        harness.chat.push(FakeTurn(tool_calls=[ToolCall(id=f"c{i}", name="test.echo", arguments={"text": str(i)})]))
+    harness.chat.push(FakeTurn(text="Found two figures; the third source never answered.", reasoning="unused"))
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    s = harness.core.settings.model_copy(deep=True)
+    s.budgets[RunKind.CHAT].max_steps = 2
+    harness.core.apply_settings(s)
+    await harness.core.engine.create_run(text="research", conversation_id=conv.id)
+    await harness.wait_for(sub, "run.done", timeout=10)
+
+    wrap_messages, wrap_tools = harness.chat.calls[-1]
+    assert wrap_tools == [], "it must not be able to start new work"
+    assert "You get no more tool calls" in wrap_messages[-1].content
+    assert wrap_messages[-1].name == "supervisor"
+    msgs = await harness.core.store.list_messages(conv.id)
+    assert msgs[-1].content.startswith("Found two figures")
+
+
+async def test_a_stopped_run_falls_back_to_the_old_note_if_the_closing_call_fails(harness: Harness):
+    await with_tools(harness)
+    harness.chat.push(FakeTurn(tool_calls=[ToolCall(id="c0", name="test.echo", arguments={"text": "x"})]))
+    harness.chat.push(FakeTurn(fail_before_first_byte=True))
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    s = harness.core.settings.model_copy(deep=True)
+    s.budgets[RunKind.CHAT].max_steps = 1
+    harness.core.apply_settings(s)
+    await harness.core.engine.create_run(text="go", conversation_id=conv.id)
+    await harness.wait_for(sub, "run.done", timeout=10)
+    msgs = await harness.core.store.list_messages(conv.id)
+    assert "I stopped here" in msgs[-1].content, "a failed wrap-up still ends the run cleanly"
+
+
+# --- B: thinking is a decision, not a default ------------------------------------------
+
+
+def _think_flags(seen: list[object]) -> list[bool]:
+    return [e.think for e in seen if e.type == "model.call"]  # type: ignore[attr-defined]
+
+
+async def test_thinking_is_on_for_the_first_step_and_off_for_mechanical_ones(harness: Harness):
+    await with_tools(harness)
+    harness.chat.push(
+        FakeTurn(tool_calls=[ToolCall(id="c1", name="test.echo", arguments={"text": "a"})]),
+        FakeTurn(tool_calls=[ToolCall(id="c2", name="test.echo", arguments={"text": "b"})]),
+        FakeTurn(text="done"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="two reads", conversation_id=conv.id)
+    seen = await harness.wait_for(sub, "run.done")
+    # Step 1 decides what to do; steps 2 and 3 are acting on a result that came back fine.
+    assert _think_flags(seen) == [True, False, False]
+
+
+async def test_an_error_a_steer_or_a_nudge_buys_the_next_step_its_reasoning(harness: Harness):
+    await with_tools(harness)
+    harness.chat.push(
+        FakeTurn(tool_calls=[ToolCall(id="c1", name="test.echo", arguments={"text": "fine"})]),
+        FakeTurn(tool_calls=[ToolCall(id="c2", name="test.fail", arguments={})]),
+        FakeTurn(text="that route is blocked; here is what I have"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="go", conversation_id=conv.id)
+    seen = await harness.wait_for(sub, "run.done")
+    # first: yes · after a good result: no · after the failure: yes again
+    assert _think_flags(seen) == [True, False, True]
+
+
+async def test_adaptive_thinking_can_be_switched_off(harness: Harness):
+    await with_tools(harness)
+    harness.core.apply_settings(harness.core.settings.model_copy(update={"adaptive_thinking": False}))
+    harness.chat.push(
+        FakeTurn(tool_calls=[ToolCall(id="c1", name="test.echo", arguments={"text": "a"})]),
+        FakeTurn(text="done"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="go", conversation_id=conv.id)
+    seen = await harness.wait_for(sub, "run.done")
+    assert _think_flags(seen) == [True, True], "roles.chat.think decides every step again"
 
 
 async def test_repeated_identical_call_summons_the_judge_who_stops_it(harness: Harness):
@@ -614,3 +720,115 @@ async def test_tool_results_under_budget_are_never_truncated(harness: Harness):
     last_call_msgs = harness.chat.calls[-1][0]
     tool_msgs = [m for m in last_call_msgs if m.role.value == "tool"]
     assert len(tool_msgs) == 5 and all("[truncated" not in m.content for m in tool_msgs)
+
+
+# --- E: read-only calls in one batch go out together ------------------------------------
+
+
+async def test_read_only_calls_in_one_batch_run_concurrently(harness: Harness):
+    """test.barrier only returns once two of it are in flight, so this passes only in parallel."""
+    tools = await with_tools(harness)
+    harness.chat.push(
+        FakeTurn(
+            tool_calls=[
+                ToolCall(id="b1", name="test.barrier", arguments={}),
+                ToolCall(id="b2", name="test.barrier", arguments={}),
+            ]
+        ),
+        FakeTurn(text="both came back"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="two reads", conversation_id=conv.id)
+    seen = await harness.wait_for(sub, "run.done")
+    results = [e for e in seen if e.type == "tool.result"]
+    assert len(results) == 2
+    assert all(r.result.kind is ToolResultKind.DATA for r in results), "serialized, the first would time out"
+    assert tools.in_flight == 2
+
+
+async def test_a_write_is_never_overtaken_by_a_read_that_followed_it(harness: Harness):
+    """Grouping is by consecutive runs, so the model's own ordering across a mutation holds."""
+    tools = await with_tools(harness)
+    harness.chat.push(
+        FakeTurn(
+            tool_calls=[
+                ToolCall(id="r1", name="test.echo", arguments={"text": "before"}),
+                ToolCall(id="w1", name="test.write", arguments={}),
+                ToolCall(id="r2", name="test.echo", arguments={"text": "after"}),
+            ]
+        ),
+        FakeTurn(text="ordered"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="mixed batch", conversation_id=conv.id)
+    await harness.wait_for(sub, "run.done")
+    assert tools.calls == ["before", "write", "after"]
+    # Results reach the model in the order it asked for them, not the order they finished.
+    msgs = await harness.core.store.list_messages(conv.id)
+    assert [m.content for m in msgs if m.role.value == "tool"] == ["echo:before", "written", "echo:after"]
+
+
+# --- G1: the same failing call is not tried a third time -------------------------------
+
+
+async def test_a_call_that_failed_twice_the_same_way_is_refused_without_running(harness: Harness):
+    tools = await with_tools(harness)
+    call = ToolCall(id="f", name="test.fail", arguments={})
+    for _ in range(3):
+        harness.chat.push(FakeTurn(tool_calls=[call.model_copy(update={"id": f"f{_}"})]))
+    harness.chat.push(FakeTurn(text="giving up on that route"))
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    harness.core.apply_settings(harness.core.settings.model_copy(update={"repeated_call_threshold": 99}))
+    await harness.core.engine.create_run(text="keep failing", conversation_id=conv.id)
+    seen = await harness.wait_for(sub, "run.done")
+    texts = [e.result.text for e in seen if e.type == "tool.result"]
+    assert texts[0] == "Error: boom" and texts[1] == "Error: boom"
+    assert "will not be retried" in texts[2], texts[2]
+    assert "boom" in texts[2], "the refusal quotes the error it keeps getting"
+    # The third one never reached the tool.
+    assert len(tools.calls) == 0, "test.fail records nothing, so count the tool.call events instead"
+    assert sum(1 for e in seen if e.type == "tool.call") == 2
+
+
+# --- A: research that was trimmed can be read back -------------------------------------
+
+
+async def test_a_trimmed_tool_result_names_a_ref_that_reads_it_back(harness: Harness):
+    """The 8.4% problem: a long result rides as a head, and the rest stays reachable."""
+    await with_tools(harness)
+    harness.core.apply_settings(harness.core.settings.model_copy(update={"tool_context_token_budget": 200}))
+    harness.chat.push(
+        FakeTurn(tool_calls=[ToolCall(id="L1", name="test.long", arguments={})]),
+        FakeTurn(tool_calls=[ToolCall(id="e1", name="test.echo", arguments={"text": "next"})]),
+        FakeTurn(text="read the head"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="gather a lot", conversation_id=conv.id)
+    await harness.wait_for(sub, "run.done")
+
+    # By the third call the long result has been cut down, and the marker says how to get it back.
+    third = harness.chat.calls[2][0]
+    trimmed = next(m for m in third if m.role.value == "tool" and "[truncated" in m.content)
+    assert 'jarvis.result_read(ref="L1")' in trimmed.content
+    assert len(trimmed.content) < 2000, "the head, not the whole thing"
+
+    # And the tool actually returns it.
+    whole = await harness.core.store.tool_result("L1")
+    assert whole is not None and len(whole[1]) > 80_000
+    back = await harness.core.registry.call(
+        "jarvis.result_read", {"ref": "L1", "offset": 0, "limit": 500}, cancel=asyncio.Event(), idempotency_key="k"
+    )
+    assert back.kind is ToolResultKind.DATA
+    assert "Население на България" in back.text and "continue with offset=500" in back.text
+    paged = await harness.core.registry.call(
+        "jarvis.result_read", {"ref": "L1", "offset": 500, "limit": 100}, cancel=asyncio.Event(), idempotency_key="k2"
+    )
+    assert "500-600 of" in paged.text
+    missing = await harness.core.registry.call(
+        "jarvis.result_read", {"ref": "nope"}, cancel=asyncio.Event(), idempotency_key="k3"
+    )
+    assert missing.kind is ToolResultKind.ERROR and "no tool result" in missing.text

@@ -118,6 +118,42 @@ class Files:
             fh.write(payload)
         return {"path": str(target), "bytes": len(payload), "created": not existed, "appended": append}
 
+    def edit(self, path: str, old: str, new: str, *, expect: int = 1) -> dict[str, Any]:
+        """Replace ``old`` with ``new`` in an existing file, without re-sending the whole file.
+
+        A whole-file ``write`` is the only way to change one section of a long document, so
+        editing a 23-slide HTML deck meant re-emitting all of it: measured 2026-09-07 on
+        "бизнес презентация", 16 writes re-generated 107,765 chars (~33k output tokens) of
+        markup that was already on disk. ``expect`` is the number of occurrences the caller
+        believes are there; a different count is an error and nothing is written, so a string
+        that turns out not to be unique cannot silently rewrite the wrong place.
+        """
+        target = self.resolve(path)
+        if not target.is_file():
+            raise FsError(f"{target} is not a file")
+        if not old:
+            raise FsError("old is empty; use fs_write to create or replace a file")
+        raw = target.read_bytes()
+        if b"\0" in raw[:8192]:
+            raise FsError(f"{target} looks binary; fs_edit works on text only")
+        text = raw.decode("utf-8-sig", errors="strict")
+        found = text.count(old)
+        expect = max(1, int(expect))
+        if found != expect:
+            hint = "not found" if found == 0 else f"found {found} times"
+            raise FsError(
+                f"old text {hint} in {target} but expect={expect}; nothing was written. "
+                "Read the file and quote a longer, unique snippet."
+            )
+        updated = text.replace(old, new)
+        target.write_bytes(updated.encode("utf-8"))
+        return {
+            "path": str(target),
+            "replaced": found,
+            "bytes": len(updated.encode("utf-8")),
+            "delta_bytes": len(updated.encode("utf-8")) - len(raw),
+        }
+
     def search(self, root: str, glob: str, limit: int = MAX_SEARCH_RESULTS) -> dict[str, Any]:
         base = self.resolve(root)
         if not base.is_dir():

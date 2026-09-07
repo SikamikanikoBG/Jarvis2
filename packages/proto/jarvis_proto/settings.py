@@ -409,6 +409,18 @@ class Settings(BaseModel):
     # which is the expensive thing this whole exercise removed. Raise it if the box grows.
     max_concurrent_runs_per_endpoint: int = 2
     repeated_call_threshold: int = 3
+    # Read-only calls the model asked for in one batch may go out together, up to this many.
+    # Reads cannot collide with each other, so the only reason for a ceiling is politeness to
+    # the machine on the other end (one Outlook COM host, one SearXNG).
+    max_parallel_tools: int = 4
+    # Think on the steps where thinking earns its keep, instead of on every step. Measured
+    # 2026-09-07: 96% of everything the model generated that day was reasoning — 395,766
+    # reasoning tokens against 18,008 tokens of answer — and one step spent its entire 16,384
+    # allowance thinking and wrote nothing at all. With this on, a step reasons when it is the
+    # first of a run, when it has an error or a steer to digest, or when the plan just changed;
+    # the mechanical steps in between (act on a result, write a file, send it) do not. Set it
+    # to False to go back to thinking on every step; roles.chat.think still switches it all off.
+    adaptive_thinking: bool = True
     # Tool exposure: "facade" = one tool per namespace with an op enum (derived from the live
     # list); "flat" = every tool; "auto" = facades once more than facade_threshold tools exist.
     # Measured 2026-09-05 with qwen3.8-27b: flat won (1 call / 9.5k tokens vs 7 calls / 12.1k

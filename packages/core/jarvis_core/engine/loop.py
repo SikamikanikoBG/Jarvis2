@@ -7,7 +7,7 @@ import logging
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 from pydantic import ValidationError
 
@@ -186,6 +186,11 @@ class AgentLoop:
         tools = self._exposed_tools(run.plan is not None)
         plan_trailer: Message | None = None  # ephemeral, always the last message
         think_off_once = False  # set for ONE step when reasoning ate the whole output allowance
+        # Adaptive thinking: the first step of a run always reasons, and after that only a step
+        # with something new to work out does. Set by the tail of the previous step, consumed at
+        # the top of the next one.
+        think_next = True
+        steps_judged = 0  # how many of watch.steps this loop has already looked at
 
         # Resume: an assistant message with tool calls that never got their results.
         run_messages = await self._store.list_run_messages(run.id)
@@ -208,6 +213,7 @@ class AgentLoop:
             for said in ctl.take_steers():
                 messages.append(await self._persist(run, Message.user(said)))
                 await emit(RunSteered(run_id="", conversation_id="", text=said[:400]))
+                think_next = True  # Arsen just changed the task; work it out properly
 
             # Plan progress is the one thing that changes every step; it rides as the LAST message
             # so every cached token before it stays valid (the system prompt never changes).
@@ -227,12 +233,16 @@ class AgentLoop:
             run.steps_used += 1
             # `think_off_once` is set when a previous step spent its whole output allowance on
             # reasoning and wrote nothing: this step gets the allowance for the answer instead.
+            # Otherwise `think_next` decides, and `run.think` (which may be None) is left alone
+            # so the role's own configuration still has the last word on thinking at all.
+            mechanical = self._settings().adaptive_thinking and not think_next
             adapter = self._adapters(
                 RoleName.CHAT,
-                think=False if think_off_once else run.think,
-                think_level=None if think_off_once else run.think_level,
+                think=False if think_off_once or mechanical else run.think,
+                think_level=None if think_off_once or mechanical else run.think_level,
             )
             think_off_once = False
+            think_next = False
             await emit(
                 ModelCall(
                     run_id="",
@@ -345,6 +355,7 @@ class AgentLoop:
                 if run.plan is not None and run.plan.current_index is not None and not watch.plan_nudged:
                     # Final answer with open plan steps: one nudge (never a loop), then accept.
                     watch.plan_nudged = True
+                    think_next = True  # a nudge is a change of course, not a mechanical step
                     await emit(
                         GuardArmed(run_id="", conversation_id="", guard="open_plan", detail="answered with open steps")
                     )
@@ -372,6 +383,15 @@ class AgentLoop:
 
             results = await self._execute_tool_calls(run, assistant, calls, ctl, watch)
             messages.extend(results)
+            # Something went wrong, or the plan just moved on: the next step has a real decision
+            # to make rather than another result to act on.
+            fresh = watch.steps[steps_judged:]
+            steps_judged = len(watch.steps)
+            think_next = (
+                think_next
+                or any(s.kind is ToolResultKind.ERROR for s in fresh)
+                or any(c.name in _PLAN_TOOLS for c in calls)
+            )
 
             verdict = await self._supervisor.review(run, watch, messages, emit, ctl.cancel)
             if verdict is None:
@@ -380,6 +400,7 @@ class AgentLoop:
                 await self._finish(run, ctl, messages, summary=f"stopped by supervisor: {verdict.reason}")
                 return
             if verdict.verdict == "nudge":
+                think_next = True  # it has been told to change approach; let it reason about how
                 messages.append(
                     await self._persist(
                         run,
@@ -443,94 +464,98 @@ class AgentLoop:
         *,
         resumed: bool = False,
     ) -> list[Message]:
-        emit = ctl.emitter.emit
         results: list[Message] = []
-        for call in calls:
+        # Consecutive read-only calls go out together; everything else keeps its place in the
+        # order the model asked for, so a mutation is never overtaken by a read that followed
+        # it. Grouping (rather than hoisting every read to the front) is what makes that safe.
+        for group in _dispatch_groups(calls, self._can_parallelise, run):
             self._check_cancel(ctl)
-            if call.name in {"jarvis.plan_step_done", "jarvis.replan"}:
-                results.append(await self._plan_tool(run, call, emit))
+            if len(group) == 1:
+                message, step = await self._execute_one(run, group[0], ctl, watch, resumed=resumed)
+                results.append(message)
+                if step is not None:
+                    watch.steps.append(step)
                 continue
-            spec = self._registry.get(call.name)
-            read_only = spec.read_only if spec else False
-            key = f"{run.id}:{call.id}"
+            sem = asyncio.Semaphore(max(1, self._settings().max_parallel_tools))
+            # return_exceptions so a failure cannot leave siblings running unobserved; the
+            # first one is re-raised once they have all settled.
+            settled = await asyncio.gather(
+                *(self._execute_guarded(run, c, ctl, watch, sem, resumed=resumed) for c in group),
+                return_exceptions=True,
+            )
+            for outcome in settled:
+                if isinstance(outcome, BaseException):
+                    raise outcome
+            # Appended in the order the model asked for, not the order they came back, so the
+            # transcript and the supervisor's view of the run stay deterministic.
+            for message, step in cast("list[tuple[Message, StepRecord | None]]", settled):
+                results.append(message)
+                if step is not None:
+                    watch.steps.append(step)
+        return results
 
-            if resumed and not read_only:
-                # We do not know whether the mutation happened. Ask, unless already answered.
+    async def _execute_guarded(
+        self,
+        run: Run,
+        call: ToolCall,
+        ctl: RunControl,
+        watch: RunWatch,
+        sem: asyncio.Semaphore,
+        *,
+        resumed: bool,
+    ) -> tuple[Message, StepRecord | None]:
+        async with sem:
+            return await self._execute_one(run, call, ctl, watch, resumed=resumed)
+
+    def _can_parallelise(self, call: ToolCall, run: Run) -> bool:
+        """A call that only reads, needs no confirmation, and claims no idempotency key."""
+        if call.name in _PLAN_TOOLS:
+            return False
+        spec = self._registry.get(call.name)
+        if spec is None or not spec.read_only:
+            return False
+        return not self._settings().confirmations.needs_confirmation(
+            call.name, destructive=bool(spec.destructive), unattended=run.kind in _UNATTENDED
+        )
+
+    async def _execute_one(
+        self,
+        run: Run,
+        call: ToolCall,
+        ctl: RunControl,
+        watch: RunWatch,
+        *,
+        resumed: bool,
+    ) -> tuple[Message, StepRecord | None]:
+        """One tool call, from policy to persisted result. The StepRecord is what the
+        supervisor sees; None means this call is not a step it should judge."""
+        emit = ctl.emitter.emit
+        if call.name in _PLAN_TOOLS:
+            return await self._plan_tool(run, call, emit), None
+        spec = self._registry.get(call.name)
+        read_only = spec.read_only if spec else False
+        key = f"{run.id}:{call.id}"
+        if resumed and not read_only:
+            # We do not know whether the mutation happened. Ask, unless already answered.
+            decision = await self._recorded_decision(run, call.id)
+            if decision is None:
+                await self._wait_for_confirmation(
+                    run,
+                    ctl,
+                    call,
+                    reason="interrupted during this action — did it complete? Approve to run it again, reject to skip.",
+                )
                 decision = await self._recorded_decision(run, call.id)
-                if decision is None:
-                    await self._wait_for_confirmation(
-                        run,
-                        ctl,
-                        call,
-                        reason="interrupted during this action — did it complete? Approve to run it again, reject to skip.",
-                    )
-                    decision = await self._recorded_decision(run, call.id)
-                if decision is not None and not decision[0]:
-                    results.append(
-                        await self._tool_message(
-                            run, call, ToolResult.failure("skipped by user after interruption"), 0, emit
-                        )
-                    )
-                    continue
-                key = f"{key}:retry"
-
-            error = self._registry.validate(call.name, call.arguments)
-            if error is not None:
-                result = ToolResult.failure(error)
-                await emit(
-                    ToolCallEvent(
-                        run_id="",
-                        conversation_id="",
-                        call_id=call.id,
-                        name=call.name,
-                        arguments=call.arguments,
-                        read_only=read_only,
-                        idempotency_key=key,
-                    )
+            if decision is not None and not decision[0]:
+                message = await self._tool_message(
+                    run, call, ToolResult.failure("skipped by user after interruption"), 0, emit
                 )
-                results.append(await self._tool_message(run, call, result, 0, emit))
-                watch.steps.append(
-                    StepRecord(call.name, args_hash(call.name, call.arguments), result.kind, result.text)
-                )
-                continue
+                return message, None
+            key = f"{key}:retry"
 
-            # Sending: anyone not on the approved list gets a draft instead. This rewrites the
-            # call before it is dispatched, so the model cannot talk its way past it.
-            if call.name.split(".")[-1] == "outlook_send" and not call.arguments.get("draft"):
-                blocked = self._settings().email.unapproved(
-                    str(call.arguments.get("to", "")), str(call.arguments.get("cc", ""))
-                )
-                if blocked:
-                    call.arguments["draft"] = True
-                    call.arguments["_policy_note"] = f"not on the approved-direct-send list: {', '.join(blocked)}"
-                    log.info("email policy: drafting instead of sending to %s", ", ".join(blocked))
-
-            if self._settings().confirmations.needs_confirmation(
-                call.name, destructive=bool(spec and spec.destructive), unattended=run.kind in _UNATTENDED
-            ):
-                decision = await self._recorded_decision(run, call.id)
-                if decision is None:
-                    await self._wait_for_confirmation(run, ctl, call, reason="this action cannot be undone")
-                    decision = await self._recorded_decision(run, call.id)
-                if decision is not None and not decision[0]:
-                    note = f" ({decision[1]})" if decision[1] else ""
-                    results.append(
-                        await self._tool_message(run, call, ToolResult.failure(f"rejected by user{note}"), 0, emit)
-                    )
-                    continue
-
-            if not read_only and not await self._store.claim_idempotency(key, run.id, call.name):
-                # The action already ran under this key, so answer with what it RETURNED.
-                # `record_idempotent_result` has always stored that and nothing ever read it
-                # back: the model was told "duplicate call refused", which reads as a failure,
-                # and a model that believes its mail was not sent sends it again another way.
-                stored = await self._store.idempotent_result(key)
-                result = _replay(stored) or ToolResult.failure(
-                    "duplicate call refused (this key already ran and recorded no result)"
-                )
-                results.append(await self._tool_message(run, call, result, 0, emit))
-                continue
-
+        error = self._registry.validate(call.name, call.arguments)
+        if error is not None:
+            result = ToolResult.failure(error)
             await emit(
                 ToolCallEvent(
                     run_id="",
@@ -542,24 +567,87 @@ class AgentLoop:
                     idempotency_key=key,
                 )
             )
-            policy_note = call.arguments.pop("_policy_note", None)
-            t0 = time.perf_counter()
-            result = await self._registry.call(
-                call.name,
-                call.arguments,
-                cancel=ctl.cancel,
-                idempotency_key=key,
-                timeout_s=self._tool_timeout(call),
+            return (
+                await self._tool_message(run, call, result, 0, emit),
+                StepRecord(call.name, args_hash(call.name, call.arguments), result.kind, result.text),
             )
-            if policy_note and result.kind is not ToolResultKind.ERROR:
-                note = f"\n[saved as a draft: {policy_note}]"
-                result = result.model_copy(update={"text": result.text + note})
-            duration = int((time.perf_counter() - t0) * 1000)
-            if not read_only:
-                await self._store.record_idempotent_result(key, result.model_dump_json())
-            results.append(await self._tool_message(run, call, result, duration, emit))
-            watch.steps.append(StepRecord(call.name, args_hash(call.name, call.arguments), result.kind, result.text))
-        return results
+
+        # A call that has already failed the same way twice is not tried a third time. The
+        # supervisor used to catch this at three, and its remedy was to end the run: on
+        # 2026-09-07 `onenote_create` returned (-2147213311) at 12:06:46, 12:08:08 and
+        # 12:08:53 and the run was stopped at 12:08:55 with nothing delivered. Refusing here
+        # costs no tool call and no judge call, and leaves the model a turn to route around it.
+        if repeat := _repeated_failure(watch, call):
+            result = ToolResult.failure(repeat)
+            return (
+                await self._tool_message(run, call, result, 0, emit),
+                StepRecord(call.name, args_hash(call.name, call.arguments), result.kind, result.text),
+            )
+
+        # Sending: anyone not on the approved list gets a draft instead. This rewrites the
+        # call before it is dispatched, so the model cannot talk its way past it.
+        if call.name.split(".")[-1] == "outlook_send" and not call.arguments.get("draft"):
+            blocked = self._settings().email.unapproved(
+                str(call.arguments.get("to", "")), str(call.arguments.get("cc", ""))
+            )
+            if blocked:
+                call.arguments["draft"] = True
+                call.arguments["_policy_note"] = f"not on the approved-direct-send list: {', '.join(blocked)}"
+                log.info("email policy: drafting instead of sending to %s", ", ".join(blocked))
+
+        if self._settings().confirmations.needs_confirmation(
+            call.name, destructive=bool(spec and spec.destructive), unattended=run.kind in _UNATTENDED
+        ):
+            decision = await self._recorded_decision(run, call.id)
+            if decision is None:
+                await self._wait_for_confirmation(run, ctl, call, reason="this action cannot be undone")
+                decision = await self._recorded_decision(run, call.id)
+            if decision is not None and not decision[0]:
+                note = f" ({decision[1]})" if decision[1] else ""
+                message = await self._tool_message(run, call, ToolResult.failure(f"rejected by user{note}"), 0, emit)
+                return message, None
+
+        if not read_only and not await self._store.claim_idempotency(key, run.id, call.name):
+            # The action already ran under this key, so answer with what it RETURNED.
+            # `record_idempotent_result` has always stored that and nothing ever read it
+            # back: the model was told "duplicate call refused", which reads as a failure,
+            # and a model that believes its mail was not sent sends it again another way.
+            stored = await self._store.idempotent_result(key)
+            result = _replay(stored) or ToolResult.failure(
+                "duplicate call refused (this key already ran and recorded no result)"
+            )
+            return await self._tool_message(run, call, result, 0, emit), None
+
+        await emit(
+            ToolCallEvent(
+                run_id="",
+                conversation_id="",
+                call_id=call.id,
+                name=call.name,
+                arguments=call.arguments,
+                read_only=read_only,
+                idempotency_key=key,
+            )
+        )
+        policy_note = call.arguments.pop("_policy_note", None)
+        t0 = time.perf_counter()
+        result = await self._registry.call(
+            call.name,
+            call.arguments,
+            cancel=ctl.cancel,
+            idempotency_key=key,
+            timeout_s=self._tool_timeout(call),
+        )
+        if policy_note and result.kind is not ToolResultKind.ERROR:
+            note = f"\n[saved as a draft: {policy_note}]"
+            result = result.model_copy(update={"text": result.text + note})
+        duration = int((time.perf_counter() - t0) * 1000)
+        if not read_only:
+            await self._store.record_idempotent_result(key, result.model_dump_json())
+        return (
+            await self._tool_message(run, call, result, duration, emit),
+            StepRecord(call.name, args_hash(call.name, call.arguments), result.kind, result.text),
+        )
 
     async def _tool_message(
         self, run: Run, call: ToolCall, result: ToolResult, duration_ms: int, emit: Emit
@@ -672,12 +760,47 @@ class AgentLoop:
     # --- finishing -----------------------------------------------------------------
 
     async def _finish(self, run: Run, ctl: RunControl, messages: list[Message], *, summary: str) -> None:
-        text = f"I stopped here: {summary}."
-        last_assistant = next((m for m in reversed(messages) if m.role is Role.ASSISTANT and m.content.strip()), None)
-        if last_assistant is not None:
-            text += f"\n\nLast progress: {last_assistant.content.strip()[:400]}"
+        """End a run that ran out of budget or was stopped — with the work, not just the verdict.
+
+        This used to write "I stopped here: <reason>. Last progress: <400 chars>" and stop, which
+        is a dead end: of 81 runs on 2026-09-07, 15 ended that way (9 supervisor, 6 budget) and
+        Arsen was left re-typing "продължи" with the stop text quoted back. Everything needed for
+        an answer is already in the conversation, so we spend one more call writing it: no tools,
+        so it cannot start anything new, and thinking off, so the whole allowance goes to the
+        answer. If that call fails we still write the old note rather than nothing.
+        """
+        note = f"[stopped: {summary}]"
+        answer = await self._wrap_up(run, ctl, messages, summary=summary)
+        if answer:
+            text = f"{answer}\n\n{note}"
+        else:
+            text = f"I stopped here: {summary}."
+            last = next((m for m in reversed(messages) if m.role is Role.ASSISTANT and m.content.strip()), None)
+            if last is not None:
+                text += f"\n\nLast progress: {last.content.strip()[:400]}"
         msg = await self._persist(run, Message.assistant(text))
         await self._done(run, ctl, message_id=msg.id, summary=summary)
+
+    async def _wrap_up(self, run: Run, ctl: RunControl, messages: list[Message], *, summary: str) -> str:
+        """One tool-less, thinking-off pass that turns what the run gathered into an answer."""
+        ask = Message.user(
+            f"[supervisor] This run is over: {summary}. You get no more tool calls. Write the answer "
+            "now, from what is already in this conversation: what you found, what you did, and what "
+            "is left undone. Give Arsen the substance you gathered, not a status report. If a step "
+            "failed, say which and why in one line. Do not promise to continue.",
+            name="supervisor",
+        )
+        try:
+            adapter = self._adapters(RoleName.CHAT, think=False, think_level=None)
+            text, _reasoning, _calls, usage, _finish = await self._stream(adapter, [*messages, ask], [], run, ctl)
+            run.usage = run.usage.add(usage)
+            await self._store.save_run(run)
+            return text.strip()
+        except RunCancelledError:
+            raise
+        except Exception as exc:
+            log.warning("could not write a closing answer for %s: %s", run.id, exc)
+            return ""
 
     async def _done(self, run: Run, ctl: RunControl, *, message_id: str | None, summary: str | None = None) -> None:
         run.status = RunStatus.DONE
@@ -708,6 +831,43 @@ class AgentLoop:
     def _check_cancel(ctl: RunControl) -> None:
         if ctl.cancel.is_set():
             raise RunCancelledError(None)
+
+
+_PLAN_TOOLS = {spec.name for spec in PLAN_TOOLS}
+# Two identical failures are a pattern; a third is a waste of a tool call and of the run.
+_SAME_FAILURE_LIMIT = 2
+
+
+def _dispatch_groups(
+    calls: list[ToolCall], parallelisable: Callable[[ToolCall, Run], bool], run: Run
+) -> list[list[ToolCall]]:
+    """Split a batch into runs of calls that may go out together, in the model's own order.
+
+    Consecutive read-only calls form one group; anything else is a group of its own. Order is
+    preserved, so a write is never overtaken by a read the model put after it. Measured over
+    the whole run history 2026-09-07: 253 batches held more than one call (one held 26), and
+    running the read-only ones concurrently recovers 362 s of the 1,301 s they spent serialized.
+    """
+    groups: list[list[ToolCall]] = []
+    for call in calls:
+        if parallelisable(call, run) and groups and parallelisable(groups[-1][-1], run):
+            groups[-1].append(call)
+        else:
+            groups.append([call])
+    return groups
+
+
+def _repeated_failure(watch: RunWatch, call: ToolCall) -> str | None:
+    """The refusal text when this exact call has already failed this way, or None."""
+    digest = args_hash(call.name, call.arguments)
+    failures = [s for s in watch.steps if s.args_hash == digest and s.kind is ToolResultKind.ERROR]
+    if len(failures) < _SAME_FAILURE_LIMIT:
+        return None
+    return (
+        f"not run: this exact {call.name} call already failed {len(failures)} times with the same "
+        f"error, so it will not be retried. Last error: {failures[-1].summary[:200]}. "
+        "Do it a different way, or say what you have and what is blocked."
+    )
 
 
 _OLD_TOOL_RESULT_HEAD = 700
@@ -749,9 +909,14 @@ def _compress_old_tool_results(messages: list[Message], budget_tokens: int) -> N
             continue
         full = len(m.content)
         head = m.content[:_OLD_TOOL_RESULT_HEAD].rstrip()
+        # The ref is what makes the rest reachable. Telling the model to "note it down now or
+        # re-read it once" was advice it could not act on: the full text is in the DB and there
+        # was no tool that could fetch it, so a long research run reached the step that had to
+        # write with 8.4% of what it had found (measured 2026-09-07, "бизнес презентация").
         marker = (
-            f"[truncated to save context: {full:,} chars in full. If you still need details "
-            "from it, note them down now or re-read it once - do not loop.]"
+            f"[truncated to save context: {full:,} chars in full."
+            + (f' Read the rest with jarvis.result_read(ref="{m.tool_call_id}").' if m.tool_call_id else "")
+            + "]"
         )
         messages[i] = m.model_copy(update={"content": head + "\n" + marker})
         total -= full - len(messages[i].content)

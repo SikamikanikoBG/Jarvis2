@@ -53,6 +53,7 @@ EXPECTED_ANNOTATIONS = {
     "fs_list": ("read", True),
     "fs_read": ("read", True),
     "fs_write": ("destructive", False),
+    "fs_edit": ("destructive", False),
     "fs_search": ("read", True),
     "shell_run": ("destructive", False),
     "volume_get": ("read", True),

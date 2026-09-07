@@ -190,7 +190,9 @@
 }
 .sidebar-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0 8px 16px;
   scrollbar-width: thin;
 }
@@ -345,6 +347,15 @@
   width: min(86vw, var(--sidebar-w));
   animation: slide-right var(--dur-slow) ease-out;
   padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+/* On desktop the sidebar is a stretched row-flex item, so it inherits a definite height and its list
+   scrolls. In the drawer it is a column-flex child: it has to claim the drawer's height itself, or the
+   list grows to its content and spills out of the fixed panel with nothing able to scroll it. */
+.drawer-left > .sidebar {
+  flex: 1;
+  width: 100%;
+  border-right: 0;
 }
 @keyframes slide-right {
   from {

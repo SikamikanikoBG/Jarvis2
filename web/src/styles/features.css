@@ -251,11 +251,14 @@
   font: inherit;
 }
 .search-results {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
   padding: 0 4px;
-  overflow: auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .search-hit {
   display: flex;

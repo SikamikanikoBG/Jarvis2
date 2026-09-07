@@ -78,11 +78,12 @@ async def test_restart_during_read_only_tool_resumes_and_finishes(harness: Harne
     tools2._entries["test.slow"].fn = quick
     harness.chat.push(FakeTurn(text="finished after restart"))
     sub2 = harness.subscribe(conv.id)
-    seen = await harness.wait_for(sub2, "run.done", timeout=10)
-    types = [e.type for e in seen]
-    assert "run.resumed" in types
+    await harness.wait_for(sub2, "run.done", timeout=10)
+    # Asserted against the event LOG, not against what this subscriber happened to catch: the
+    # engine resumes the moment it starts, which is before any client can attach to the new
+    # process's bus, so a reconnecting client learns about the resume by replaying events.
     stored = [e["type"] for e in await harness.core.store.list_events(run.id)]
-    assert "run.interrupted" in stored and stored[-1] == "run.done"
+    assert "run.interrupted" in stored and "run.resumed" in stored and stored[-1] == "run.done"
     msgs = await harness.core.store.list_messages(conv.id)
     assert [m.role.value for m in msgs] == ["user", "assistant", "tool", "assistant"]
     assert msgs[2].content == "resumed-result" and msgs[-1].content == "finished after restart"

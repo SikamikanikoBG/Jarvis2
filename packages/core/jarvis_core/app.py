@@ -91,7 +91,7 @@ class Core:
         self.builtin = CoreTools()
         self.mcp: list[McpProvider] = []
         self.policy = ExposurePolicy(self.settings.tool_exposure, self.settings.facade_threshold)
-        self.registry = ToolRegistry([self.builtin])
+        self.registry = ToolRegistry([self.builtin], memory=self.store)
         # A reconnected MCP server re-lists itself; tell the UI so the tool list on Status is real.
         self.registry.on_change(lambda provider: self.bus.publish(ToolsChanged(provider=provider)))
 
@@ -157,6 +157,9 @@ class Core:
     async def start(self) -> None:
         await self.db.open()
         self.apply_settings(await self.store.load_settings())
+        # What each machine could do before the restart, so a host that is asleep right now does
+        # not look like a machine without capabilities.
+        await self.registry.load_memory()
         await self.reload_tools()
         await self.engine.start()
         await self.scheduler.start()

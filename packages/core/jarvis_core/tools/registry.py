@@ -7,6 +7,7 @@ provider in Phase 3 — the registry is the only place that will change.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Callable
 from typing import Any, Protocol
@@ -16,6 +17,8 @@ import jsonschema
 from jarvis_proto import ToolResult, ToolSpec
 
 log = logging.getLogger(__name__)
+
+_NAMES_IN_ERROR = 40  # enough for any one namespace; a wall of text helps nobody
 
 
 class ToolProvider(Protocol):
@@ -34,8 +37,16 @@ class ToolProvider(Protocol):
     ) -> ToolResult: ...
 
 
+class ToolMemory(Protocol):
+    """Where the last-known tool sets survive a restart (``Store`` implements it)."""
+
+    async def load_provider_tools(self) -> dict[str, list[ToolSpec]]: ...
+
+    async def save_provider_tools(self, provider: str, specs: list[ToolSpec]) -> None: ...
+
+
 class ToolRegistry:
-    def __init__(self, providers: list[ToolProvider] | None = None) -> None:
+    def __init__(self, providers: list[ToolProvider] | None = None, *, memory: ToolMemory | None = None) -> None:
         self._providers: list[ToolProvider] = []
         self._index: dict[str, tuple[ToolProvider, ToolSpec]] = {}
         self._errors: dict[str, str] = {}
@@ -44,9 +55,27 @@ class ToolRegistry:
         # into the system prompt, so a provider dropping out re-prefills every conversation
         # (measured 2026-09-06: the browser extension alone, 71<->73 tools, cost 17 s a turn).
         self._last_known: dict[str, list[ToolSpec]] = {}
+        # ...and it outlives the process, or a restart while the laptop sleeps erases everything
+        # that laptop can do. See migration 0007.
+        self._memory = memory
         # Called with the provider name when its tool set actually changed (the UI refreshes).
         self._on_change: list[Callable[[str], None]] = []
         self.set_providers(list(providers or []))  # one place installs the reconnect hooks
+
+    async def load_memory(self) -> None:
+        """Read the remembered tool sets. Call once, before the first ``refresh``."""
+        if self._memory is None:
+            return
+        try:
+            remembered = await self._memory.load_provider_tools()
+        except Exception as exc:
+            log.warning("could not load the remembered tool sets: %s", exc)
+            return
+        # Entries for providers that are no longer configured are inert: only a provider that is
+        # actually present can put remembered tools back into the index.
+        self._last_known = {**remembered, **self._last_known}
+        if remembered:
+            log.info("remembered tools for %s", ", ".join(f"{n} ({len(s)})" for n, s in remembered.items()))
 
     def on_change(self, hook: Callable[[str], None]) -> None:
         self._on_change.append(hook)
@@ -66,7 +95,7 @@ class ToolRegistry:
             if hasattr(provider, "on_connect"):
                 provider.on_connect = self.reindex  # type: ignore[attr-defined]
 
-    def _resolve(self, provider: ToolProvider, specs: list[ToolSpec] | None, error: str | None) -> list[ToolSpec]:
+    async def _resolve(self, provider: ToolProvider, specs: list[ToolSpec] | None, error: str | None) -> list[ToolSpec]:
         """What this provider contributes to the prompt, given what it just answered.
 
         A listing that succeeded with tools is the truth and replaces the memory (a tool that
@@ -76,12 +105,21 @@ class ToolRegistry:
         handles. A provider that genuinely has no tools and no error keeps none.
         """
         if specs:
-            self._last_known[provider.name] = list(specs)
+            if self._last_known.get(provider.name) != specs:
+                self._last_known[provider.name] = list(specs)
+                await self._remember(provider.name, list(specs))  # only on a real change: this runs every 30 s
             return list(specs)
         if error is not None:
             return list(self._last_known.get(provider.name, []))
         self._last_known.pop(provider.name, None)
+        await self._remember(provider.name, [])
         return []
+
+    async def _remember(self, name: str, specs: list[ToolSpec]) -> None:
+        if self._memory is None:
+            return
+        with contextlib.suppress(Exception):  # a write failure must never break tool listing
+            await self._memory.save_provider_tools(name, specs)
 
     async def reindex(self, provider: ToolProvider) -> None:
         """Replace one provider's tools in the index. Safe to call at any time."""
@@ -94,7 +132,7 @@ class ToolRegistry:
         except Exception as exc:
             listed, error = None, getattr(provider, "error", None) or f"{type(exc).__name__}: {exc}"
             log.warning("provider %s failed to re-list tools: %s", provider.name, error)
-        specs = self._resolve(provider, listed, error)
+        specs = await self._resolve(provider, listed, error)
         if error is None:
             self._errors.pop(provider.name, None)
         else:
@@ -135,7 +173,7 @@ class ToolRegistry:
                 log.warning("provider %s failed to list tools: %s", provider.name, error)
             if error is not None:
                 self._errors[provider.name] = error
-            for spec in self._resolve(provider, listed, error):
+            for spec in await self._resolve(provider, listed, error):
                 if spec.name in index:
                     log.warning("tool %s from %s shadows an earlier provider", spec.name, provider.name)
                 index[spec.name] = (provider, spec)
@@ -166,11 +204,35 @@ class ToolRegistry:
         entry = self._index.get(name)
         return entry[1] if entry else None
 
+    def _cannot_route(self, name: str) -> str:
+        """Why a call cannot be routed. An unreachable machine is not a missing capability.
+
+        2026-09-07: jarvis-host died overnight and the core restarted with the laptop
+        unreachable, so ``workocholic.outlook_send`` came back as "unknown tool". The run told
+        Arsen it could not send his news digest and then guessed two tool names that never
+        existed. "unknown tool" has to mean the tool does not exist — anything else is a lie the
+        model passes on to him.
+        """
+        namespace = name.split(".", 1)[0]
+        if namespace not in {p.name for p in self._providers}:
+            return f"unknown tool {name!r}"
+        known = sorted(s.name for s in self._last_known.get(namespace, []))
+        if known and name not in known:
+            # We know this provider's real tool set, so the name is wrong whether it is reachable
+            # or not. Naming the alternatives is what stops the next guess.
+            listed = ", ".join(known[:_NAMES_IN_ERROR])
+            more = f" (+{len(known) - _NAMES_IN_ERROR} more)" if len(known) > _NAMES_IN_ERROR else ""
+            return f"unknown tool {name!r}; {namespace} offers: {listed}{more}"
+        error = self._errors.get(namespace)
+        if error is not None:
+            return f"{namespace} is not reachable right now ({error}); its tools cannot be used until it is back"
+        return f"unknown tool {name!r}"
+
     def validate(self, name: str, arguments: dict[str, Any]) -> str | None:
         """Return an error string if ``arguments`` do not fit the tool's schema."""
         spec = self.get(name)
         if spec is None:
-            return f"unknown tool {name!r}"
+            return self._cannot_route(name)
         if "__raw__" in arguments:
             return f"arguments for {name} were not valid JSON: {arguments['__raw__'][:200]!r}"
         try:
@@ -190,7 +252,7 @@ class ToolRegistry:
     ) -> ToolResult:
         entry = self._index.get(name)
         if entry is None:
-            return ToolResult.failure(f"unknown tool {name!r}")
+            return ToolResult.failure(self._cannot_route(name))
         provider, _spec = entry
         try:
             return await asyncio.wait_for(

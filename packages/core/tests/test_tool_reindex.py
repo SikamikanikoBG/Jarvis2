@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 
 from jarvis_core.tools.registry import ToolRegistry
-from jarvis_proto import ToolResult, ToolSpec
+from jarvis_proto import ToolResult, ToolResultKind, ToolSpec
 
 
 class FakeMcp:
@@ -23,6 +23,7 @@ class FakeMcp:
         self.on_connect: object | None = None
         self.lists = 0
         self.fail_list = False
+        self.fail_call: str | None = None  # what an unreachable server answers a call with
 
     async def list_tools(self) -> list[ToolSpec]:
         self.lists += 1
@@ -31,6 +32,8 @@ class FakeMcp:
         return [ToolSpec(name=f"{self.name}.{t}", description=t, input_schema={"type": "object"}) for t in self.tools]
 
     async def call(self, name: str, arguments: dict, *, cancel: asyncio.Event, idempotency_key: str, timeout_s: float) -> ToolResult:
+        if self.fail_call:
+            return ToolResult.failure(f"mcp server {self.name!r} unavailable: {self.fail_call}")
         return ToolResult.data("ok")
 
     async def reconnect(self) -> None:
@@ -197,3 +200,108 @@ async def test_marking_a_provider_unavailable_keeps_the_tools_but_tells_the_trut
     assert [s.name for s in registry.specs()] == ["browser.tabs"]
     health = registry.provider_health()[0]
     assert health["ok"] is False and "not connected" in health["error"]
+
+
+class FakeMemory:
+    """Stands in for the Store: what the last-known tool sets survive a restart in."""
+
+    def __init__(self, rows: dict[str, list[ToolSpec]] | None = None) -> None:
+        self.rows: dict[str, list[ToolSpec]] = dict(rows or {})
+        self.writes: list[tuple[str, int]] = []
+        self.fail = False
+
+    async def load_provider_tools(self) -> dict[str, list[ToolSpec]]:
+        if self.fail:
+            raise RuntimeError("db is not open")
+        return {name: list(specs) for name, specs in self.rows.items()}
+
+    async def save_provider_tools(self, provider: str, specs: list[ToolSpec]) -> None:
+        if self.fail:
+            raise RuntimeError("disk is full")
+        self.rows[provider] = list(specs)
+        self.writes.append((provider, len(specs)))
+
+
+async def test_a_restart_while_the_machine_is_asleep_does_not_erase_what_it_can_do():
+    """2026-09-07: jarvis-host died at 03:28, the core restarted at 07:33 with the laptop
+    unreachable, and all 34 workocholic tools were simply absent — so the 07:20 news digest
+    reported it could not send and then guessed two tool names that never existed."""
+    memory = FakeMemory()
+    host = FakeMcp("workocholic", ["outlook_send", "fs_write"])
+    first = ToolRegistry([host], memory=memory)
+    await first.load_memory()
+    await first.refresh()
+    assert len(first.specs()) == 2
+    assert memory.rows["workocholic"] and len(memory.writes) == 1
+
+    # The core restarts (a fresh registry, a fresh provider) while the laptop is unreachable.
+    dead = FakeMcp("workocholic", [])
+    dead.fail_list, dead.error = True, "connect timeout after 15s"
+    dead.fail_call = "connect timeout after 15s"
+    second = ToolRegistry([dead], memory=memory)
+    await second.load_memory()
+    await second.refresh()
+    assert [s.name for s in second.specs()] == ["workocholic.fs_write", "workocholic.outlook_send"]
+
+    # Sending mail is still something Jarvis can do; it routes to the machine, which says why it
+    # cannot right now. Never "unknown tool", which the model passes on as a missing capability.
+    result = await second.call(
+        "workocholic.outlook_send", {}, cancel=asyncio.Event(), idempotency_key="k", timeout_s=1.0
+    )
+    assert result.kind is ToolResultKind.ERROR
+    assert result.error and "unavailable" in result.error and "connect timeout" in result.error
+    assert "unknown tool" not in result.text
+
+    # And with nothing remembered at all (a machine never yet seen), the registry itself says
+    # unreachable rather than "unknown tool".
+    blank = FakeMcp("workocholic", [])
+    blank.fail_list, blank.error = True, "connect timeout after 15s"
+    third = ToolRegistry([blank], memory=FakeMemory())
+    await third.load_memory()
+    await third.refresh()
+    assert third.specs() == []
+    result = await third.call("workocholic.outlook_send", {}, cancel=asyncio.Event(), idempotency_key="k", timeout_s=1.0)
+    assert result.error == (
+        "workocholic is not reachable right now (connect timeout after 15s); "
+        "its tools cannot be used until it is back"
+    )
+
+
+async def test_the_remembered_set_is_written_only_when_it_changes():
+    """``_watch_mcp`` re-lists every provider every 30 s; that must not be a write every 30 s."""
+    memory = FakeMemory()
+    host = FakeMcp("laptop", ["one"])
+    registry = ToolRegistry([host], memory=memory)
+    await registry.refresh()
+    await registry.refresh()
+    await host.reconnect()
+    assert memory.writes == [("laptop", 1)]
+
+    host.tools = ["one", "two"]
+    await host.reconnect()
+    assert memory.writes == [("laptop", 1), ("laptop", 2)]
+
+
+async def test_a_wrong_tool_name_is_answered_with_the_names_that_do_exist():
+    """The run that could not send then tried workocholic.get_emails and workocholic.email —
+    both V1 names, both answered with a bare "unknown tool", so it guessed twice."""
+    host = FakeMcp("workocholic", ["outlook_send", "outlook_search"])
+    registry = ToolRegistry([host])
+    await registry.refresh()
+
+    assert registry.validate("workocholic.get_emails", {}) == (
+        "unknown tool 'workocholic.get_emails'; workocholic offers: "
+        "workocholic.outlook_search, workocholic.outlook_send"
+    )
+    # A namespace nobody provides stays a plain unknown tool: there is nothing to suggest.
+    assert registry.validate("outlook.send", {}) == "unknown tool 'outlook.send'"
+
+
+async def test_the_registry_works_when_its_memory_does_not():
+    memory = FakeMemory({"laptop": [ToolSpec(name="laptop.stale")]})
+    memory.fail = True
+    host = FakeMcp("laptop", ["one"])
+    registry = ToolRegistry([host], memory=memory)
+    await registry.load_memory()  # must not raise
+    await registry.refresh()
+    assert [s.name for s in registry.specs()] == ["laptop.one"]

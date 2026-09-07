@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from jarvis_core.db import Database, Store
-from jarvis_proto import Message, Run, RunKind, RunStatus, Settings
+from jarvis_proto import Message, Run, RunKind, RunStatus, Settings, ToolSpec
 from jarvis_proto.events import RunStarted
 
 
@@ -59,3 +59,27 @@ async def test_idempotency_claim_once(tmp_path: Path):
     assert await store.claim_idempotency("k", "r", "t") is True
     assert await store.claim_idempotency("k", "r", "t") is False
     await db.close()
+
+
+async def test_provider_tools_survive_a_restart(tmp_path: Path):
+    db = Database(tmp_path / "t.db")
+    await db.open()
+    store = Store(db)
+    specs = [ToolSpec(name="workocholic.outlook_send", description="send mail", provider="workocholic")]
+    await store.save_provider_tools("workocholic", specs)
+    await store.save_provider_tools("workocholic", specs)  # upsert, not a second row
+    await db.close()
+
+    db2 = Database(tmp_path / "t.db")
+    await db2.open()
+    loaded = await Store(db2).load_provider_tools()
+    assert list(loaded) == ["workocholic"]
+    assert loaded["workocholic"] == specs  # description and hints included, not just names
+
+    # A row this code cannot read is skipped, not fatal: the tool list would be empty either
+    # way, and a core that will not start is worse.
+    await db2.execute("UPDATE provider_tools SET specs = ? WHERE provider = ?", ("not json", "workocholic"))
+    assert await Store(db2).load_provider_tools() == {}
+    await Store(db2).forget_provider_tools("workocholic")
+    assert await db2.fetchall("SELECT provider FROM provider_tools") == []
+    await db2.close()

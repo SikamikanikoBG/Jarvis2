@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -22,10 +23,13 @@ from jarvis_proto import (
     RunStatus,
     Settings,
     ToolCall,
+    ToolSpec,
     new_id,
 )
 from jarvis_proto.events import RunEvent
 from jarvis_proto.runs import SearchHit
+
+log = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -409,6 +413,30 @@ class Store:
             " ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
             rows,
         )
+
+    # --- provider tool memory -------------------------------------------------------
+
+    async def load_provider_tools(self) -> dict[str, list[ToolSpec]]:
+        """What every provider was last seen to offer. Never raises: a stored shape the current
+        code cannot read is worth a warning, not a core that will not start."""
+        rows = await self.db.fetchall("SELECT provider, specs FROM provider_tools")
+        out: dict[str, list[ToolSpec]] = {}
+        for row in rows:
+            try:
+                out[row["provider"]] = [ToolSpec.model_validate(s) for s in json.loads(row["specs"])]
+            except Exception as exc:
+                log.warning("stored tool list for %s is unreadable (%s); ignoring it", row["provider"], exc)
+        return out
+
+    async def save_provider_tools(self, provider: str, specs: list[ToolSpec]) -> None:
+        await self.db.execute(
+            "INSERT INTO provider_tools(provider, specs, updated_at) VALUES (?,?,?)"
+            " ON CONFLICT(provider) DO UPDATE SET specs = excluded.specs, updated_at = excluded.updated_at",
+            (provider, json.dumps([s.model_dump(mode="json") for s in specs]), _now()),
+        )
+
+    async def forget_provider_tools(self, provider: str) -> None:
+        await self.db.execute("DELETE FROM provider_tools WHERE provider = ?", (provider,))
 
     # --- idempotency ----------------------------------------------------------------
 

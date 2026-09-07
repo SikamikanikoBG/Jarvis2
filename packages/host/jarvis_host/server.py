@@ -212,16 +212,12 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
     @tool("outlook_move", MUTATING)
     async def outlook_move(entry_id: str, folder: str, account: str = "", create: bool = False) -> str:
         """Move a message into `folder` (role, id or path) of its account. Re-resolves the id first; returns the message's new durable entry_id and the target folder path. `create=true` adds a missing subfolder at the end of an existing path (e.g. a new `Demands/DM-2300`); an unknown top-level folder is still an error."""
-        return json_text(
-            await _run("outlook_move", lambda: outlook().call("move", entry_id, folder, account, create))
-        )
+        return json_text(await _run("outlook_move", lambda: outlook().call("move", entry_id, folder, account, create)))
 
     @tool("outlook_folder_create", MUTATING_IDEMPOTENT)
     async def outlook_folder_create(path: str, account: str = "") -> str:
         """Create a folder path under the account's inbox (an existing top-level tree is reused, so are existing segments; safe to repeat). Returns the folder's path and id and which segments were created."""
-        return json_text(
-            await _run("outlook_folder_create", lambda: outlook().call("folder_create", path, account))
-        )
+        return json_text(await _run("outlook_folder_create", lambda: outlook().call("folder_create", path, account)))
 
     @tool("outlook_flag", MUTATING_IDEMPOTENT)
     async def outlook_flag(entry_id: str, flag: bool = True, account: str = "") -> str:
@@ -372,7 +368,9 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
     @tool("meeting_start", MUTATING)
     async def meeting_start(meeting_id: str, sources: str = "mic,system") -> str:
         """Start capturing this machine's audio for a meeting: `sources` is 'mic', 'system' (what the speakers play) or both. Returns which sources opened and why any did not - one missing source does not stop the recording."""
-        return json_text(await _run("meeting_start", lambda: asyncio.to_thread(deps.meetings.start, meeting_id, sources)))
+        return json_text(
+            await _run("meeting_start", lambda: asyncio.to_thread(deps.meetings.start, meeting_id, sources))
+        )
 
     @tool("meeting_pull", READ)
     async def meeting_pull(meeting_id: str, after_seq: int = 0) -> str:

@@ -184,7 +184,9 @@ class FakeHost(BuiltinProvider):
         return ToolResult.data(json.dumps({"invites": self.invites}))
 
     @tool("laptop.calendar_respond", description="respond", args=_RespondArgs)
-    async def _respond(self, entry_id: str, decision: str = "accept", comment: str = "", account: str = "") -> ToolResult:
+    async def _respond(
+        self, entry_id: str, decision: str = "accept", comment: str = "", account: str = ""
+    ) -> ToolResult:
         if entry_id in self.respond_fails:
             return ToolResult.failure("The messaging interface has returned an unknown error")
         self.responses.append((entry_id, decision, comment))
@@ -510,7 +512,9 @@ async def test_mail_left_in_the_inbox_is_never_stranded_behind_a_clock(harness: 
 
     # Now an OLDER mail turns up in the Inbox — a delayed delivery, or one Arsen moved back.
     # Under a watermark it is invisible for ever; it must simply be the next thing in the queue.
-    host.items = [{"entry_id": "old", "subject": "Arrived late", "from": {"name": "B"}, "received": "2026-09-06T07:30:00"}]
+    host.items = [
+        {"entry_id": "old", "subject": "Arrived late", "from": {"name": "B"}, "received": "2026-09-06T07:30:00"}
+    ]
     harness.chat.push(FakeTurn(text='{"category": "reference"}'))
     second = await core.triage.run_once()
     assert second.processed == 1, "a mail older than the cursor was never looked at"
@@ -542,7 +546,12 @@ async def test_a_backlog_bigger_than_one_page_drains_instead_of_being_skipped(ha
         )
     )
     host.items = [
-        {"entry_id": f"m{i:02d}", "subject": f"Mail {i}", "from": {"name": "S"}, "received": f"2026-09-06T{7 + i // 10:02d}:{i % 10:02d}:00"}
+        {
+            "entry_id": f"m{i:02d}",
+            "subject": f"Mail {i}",
+            "from": {"name": "S"},
+            "received": f"2026-09-06T{7 + i // 10:02d}:{i % 10:02d}:00",
+        }
         for i in range(12)
     ]
     harness.chat.push(*[FakeTurn(text='{"category": "reference"}')] * 12)
@@ -599,9 +608,14 @@ def test_demand_routing_subject_wins_and_digests_are_not_filed():
     kw = {"prefixes": ["DM-"], "root": "Demands"}
     assert demand_folder("RE: DM-2186 budget", "mentions DM-1096 and DM-1945 too", **kw) == "Demands/DM-2186"
     assert demand_folder("re: dm-2186 budget", "", **kw) == "Demands/DM-2186"  # case-insensitive, normalised
-    assert demand_folder("RE: budget approval", "As agreed in DM-4521 the budget is approved.", **kw) == "Demands/DM-4521"
+    assert (
+        demand_folder("RE: budget approval", "As agreed in DM-4521 the budget is approved.", **kw) == "Demands/DM-4521"
+    )
     # A digest: several distinct demands in the body, none in the subject -> nowhere.
-    assert demand_folder("Jira Email Summary - 04.09.2026", "DM-1945 ECAT ... DM-1096 extraction ... DM-2167", **kw) is None
+    assert (
+        demand_folder("Jira Email Summary - 04.09.2026", "DM-1945 ECAT ... DM-1096 extraction ... DM-2167", **kw)
+        is None
+    )
     # The same demand repeated is still one demand.
     assert demand_folder("FW: status", "DM-1945 is late. DM-1945 owner asked.", **kw) == "Demands/DM-1945"
     # Guards against look-alikes.
@@ -847,7 +861,11 @@ async def test_no_chunk_is_lost_between_the_pulls_or_at_the_stop(harness: Harnes
             backend="fake",
             duration_ms=5,
             # Three segments per chunk: this is what pushed the segment count past the chunk number.
-            segments=[{"t0": 0.0, "t1": 1.0, "text": "one"}, {"t0": 1.0, "t1": 2.0, "text": "two"}, {"t0": 2.0, "t1": 3.0, "text": "three"}],
+            segments=[
+                {"t0": 0.0, "t1": 1.0, "text": "one"},
+                {"t0": 1.0, "t1": 2.0, "text": "two"},
+                {"t0": 2.0, "t1": 3.0, "text": "three"},
+            ],
         )
 
     monkeypatch.setattr(core.transcriber, "transcribe", transcribe)

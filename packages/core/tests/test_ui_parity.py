@@ -83,7 +83,9 @@ async def test_engine_titles_a_chat_once_after_the_first_exchange_and_respects_r
     core = harness.core
     core.engine.set_titler(core.titler.title)
     # Turn 1: the reply. Turn 2: the classifier's title. Turn 3: a second reply (no title call).
-    harness.chat.push(FakeTurn(text="Approved: 1.2M for Q4."), FakeTurn(text="Q4 budget approval"), FakeTurn(text="Yes."))
+    harness.chat.push(
+        FakeTurn(text="Approved: 1.2M for Q4."), FakeTurn(text="Q4 budget approval"), FakeTurn(text="Yes.")
+    )
     conv = await core.store.create_conversation()
     sub = harness.subscribe(conv.id)
     await core.engine.create_run(text="is the Q4 budget approved?", conversation_id=conv.id)

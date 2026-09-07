@@ -188,7 +188,11 @@ class RsvpJob:
         reserved: list[tuple[datetime, datetime]] = []  # slots already offered this pass
         lines: list[str] = []
         for inv in invites:
-            key = ledger_key(str(inv.get("organizer_address") or inv.get("organizer") or ""), str(inv.get("subject") or ""), str(inv.get("start") or ""))
+            key = ledger_key(
+                str(inv.get("organizer_address") or inv.get("organizer") or ""),
+                str(inv.get("subject") or ""),
+                str(inv.get("start") or ""),
+            )
             if not dry_run and await self._decided(key):
                 continue
             decision = await self._decide(cfg, inv, reserved, key=key, dry_run=dry_run)
@@ -230,7 +234,10 @@ class RsvpJob:
             start=str(inv.get("start") or ""),
             end=str(inv.get("end") or ""),
             decision="",
-            conflicts=[f"{c.get('subject', '')} {str(c.get('start', ''))[11:16]}-{str(c.get('end', ''))[11:16]}" for c in conflicts],
+            conflicts=[
+                f"{c.get('subject', '')} {str(c.get('start', ''))[11:16]}-{str(c.get('end', ''))[11:16]}"
+                for c in conflicts
+            ],
         )
         if not cfg.is_allowed(address):
             d.decision = "left_external"

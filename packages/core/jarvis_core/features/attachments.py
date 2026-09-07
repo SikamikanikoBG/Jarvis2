@@ -37,8 +37,29 @@ MAX_IMAGE_EDGE = 1568
 THUMB_EDGE = 320
 IMAGE_MIME = {"image/jpeg", "image/png", "image/webp", "image/gif", "image/bmp"}
 TEXT_SUFFIXES = {
-    ".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".yaml", ".yml", ".toml", ".ini", ".log",
-    ".py", ".ts", ".tsx", ".js", ".jsx", ".sql", ".sh", ".ps1", ".html", ".css", ".xml", ".eml",
+    ".txt",
+    ".md",
+    ".markdown",
+    ".csv",
+    ".tsv",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".log",
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".sql",
+    ".sh",
+    ".ps1",
+    ".html",
+    ".css",
+    ".xml",
+    ".eml",
 }
 MAX_TEXT_CHARS = 60_000  # what one attachment may contribute before it is trimmed
 
@@ -69,7 +90,9 @@ class AttachmentStore:
         if not data:
             raise AttachmentError("the file is empty")
         if len(data) > MAX_BYTES:
-            raise AttachmentError(f"{filename} is {len(data) // 1024 // 1024} MB; the limit is {MAX_BYTES // 1024 // 1024} MB")
+            raise AttachmentError(
+                f"{filename} is {len(data) // 1024 // 1024} MB; the limit is {MAX_BYTES // 1024 // 1024} MB"
+            )
         name = Path(filename or "attachment").name
         mime = (mime or mimetypes.guess_type(name)[0] or "application/octet-stream").split(";")[0].strip()
         att_id = new_id("att")
@@ -97,7 +120,12 @@ class AttachmentStore:
         return att
 
     async def add_text(
-        self, *, text: str, name: str, kind: AttachmentKind = AttachmentKind.TEXT, conversation_id: str | None = None,
+        self,
+        *,
+        text: str,
+        name: str,
+        kind: AttachmentKind = AttachmentKind.TEXT,
+        conversation_id: str | None = None,
         meta: dict[str, Any] | None = None,
     ) -> Attachment:
         """Pasted text, or a thread the host already turned into text: no file on disk."""

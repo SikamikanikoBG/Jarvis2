@@ -450,7 +450,7 @@ async def test_cron_schedule_skip_policy_advances_without_firing(harness: Harnes
 
 
 async def test_run_now_appears_in_the_schedule_history(harness: Harness):
-    """"Run now" is a fire like any other and must be recorded as one.
+    """ "Run now" is a fire like any other and must be recorded as one.
 
     It called fire_now without claiming a slot or recording it, so the run existed but the
     schedule never heard about it: the card still said "last run: <the previous scheduled one>"

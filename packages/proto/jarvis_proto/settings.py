@@ -155,7 +155,7 @@ def is_auto_reply(subject: str) -> bool:
 
 
 class TriageAlert(BaseModel):
-    """"Tell me the moment this person writes." Ported from V1's alerts_config.json.
+    """ "Tell me the moment this person writes." Ported from V1's alerts_config.json.
 
     The match is structural (an address, a domain, a subject substring) - never a judgement -
     so a VIP mail cannot be missed because a classifier had an opinion. An alert does not change

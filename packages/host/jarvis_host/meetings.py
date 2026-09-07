@@ -250,8 +250,7 @@ def describe_levels(levels: dict[str, int]) -> str | None:
     if not dead or not levels:
         return None
     what = {
-        "mic": "the microphone delivered digital silence (muted, or Windows microphone access is "
-        "off for this app)",
+        "mic": "the microphone delivered digital silence (muted, or Windows microphone access is off for this app)",
         "system": "system audio delivered digital silence (nothing was playing through the "
         "speakers this machine captures, or the sound is going to another device)",
     }
@@ -281,7 +280,9 @@ def to_wav(pcm: bytes, rate: int = TARGET_RATE) -> bytes:
 class MeetingCapture:
     """The host side of a meeting: start, hand out chunks, stop. One recording per meeting id."""
 
-    def __init__(self, opener: Callable[[tuple[str, ...]], tuple[dict[str, AudioSource], list[str]]] = open_sources) -> None:
+    def __init__(
+        self, opener: Callable[[tuple[str, ...]], tuple[dict[str, AudioSource], list[str]]] = open_sources
+    ) -> None:
         self._opener = opener
         self._recordings: dict[str, Recording] = {}
         self._lock = threading.Lock()

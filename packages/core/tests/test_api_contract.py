@@ -77,9 +77,7 @@ def test_boards_and_notes_full_lifecycle(client: TestClient):
     assert edited["text"] == "Ring Rumen at 5" and edited["color"] == "blue"  # untouched fields survive
     ok(client.patch("/api/notes/note_missing", json={"text": "x"}, headers=h()), 404)
     # Moving a note to the other board.
-    moved_note = ok(
-        client.patch(f"/api/notes/{note['id']}", json={"board_id": second["id"]}, headers=h()), 200
-    ).json()
+    moved_note = ok(client.patch(f"/api/notes/{note['id']}", json={"board_id": second["id"]}, headers=h()), 200).json()
     assert moved_note["board_id"] == second["id"]
     assert client.get(f"/api/boards/{board['id']}/notes", headers=h()).json() == []
 
@@ -117,9 +115,7 @@ def test_knowledge_entities_graph_merge(client: TestClient):
     ).json()
     assert patched["summary"] == "Head of retail banking" and patched["name"] == "Rumen Petrov"
 
-    merged = ok(
-        client.post(f"/api/kg/entities/{duplicate.id}/merge", json={"into": rumen.id}, headers=h()), 200
-    ).json()
+    merged = ok(client.post(f"/api/kg/entities/{duplicate.id}/merge", json={"into": rumen.id}, headers=h()), 200).json()
     assert merged["id"] == rumen.id and "R. Petrov" in merged["aliases"]
     assert len(client.get("/api/kg/entities", headers=h()).json()) == 2
 
@@ -236,7 +232,11 @@ def test_attachment_routes(client: TestClient):
     ).json()
     assert doc["kind"] == "document"
     ok(
-        client.post("/api/attachments", files={"file": ("x.bin", io.BytesIO(b"\x00\x01"), "application/octet-stream")}, headers=h()),
+        client.post(
+            "/api/attachments",
+            files={"file": ("x.bin", io.BytesIO(b"\x00\x01"), "application/octet-stream")},
+            headers=h(),
+        ),
         422,
     )
 
@@ -321,8 +321,16 @@ def test_every_api_route_refuses_a_missing_token(client: TestClient):
     # /api/health is open on purpose: the UI uses it to tell "down" from "wrong token".
     open_on_purpose = {"/api/health"}
     substitutions = {
-        "conversation_id": "c", "run_id": "r", "schedule_id": "s", "entity_id": "e", "name": "n",
-        "attachment_id": "a", "meeting_id": "m", "board_id": "b", "note_id": "no", "seq": "1",
+        "conversation_id": "c",
+        "run_id": "r",
+        "schedule_id": "s",
+        "entity_id": "e",
+        "name": "n",
+        "attachment_id": "a",
+        "meeting_id": "m",
+        "board_id": "b",
+        "note_id": "no",
+        "seq": "1",
     }
     checked: list[str] = []
     for path in _get_paths(client.app):

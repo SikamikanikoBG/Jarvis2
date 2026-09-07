@@ -119,8 +119,16 @@ class Store:
 
     async def update_conversation(self, conversation_id: str, **fields: Any) -> Conversation | None:
         allowed = {
-            "title", "archived", "unread", "pinned", "title_auto", "instructions",
-            "preview", "folder_key", "folder_label", "kind",
+            "title",
+            "archived",
+            "unread",
+            "pinned",
+            "title_auto",
+            "instructions",
+            "preview",
+            "folder_key",
+            "folder_label",
+            "kind",
         }
         sets: list[str] = []
         params: list[Any] = []

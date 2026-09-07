@@ -45,9 +45,9 @@ class Titler:
 
 def clean_title(text: str) -> str | None:
     line = next((ln.strip() for ln in text.strip().splitlines() if ln.strip()), "")
-    line = line.strip(' "\'`«»“”‘’').rstrip(".").strip()
+    line = line.strip(" \"'`«»“”‘’").rstrip(".").strip()
     if line.lower().startswith(("title:", "заглавие:")):
-        line = line.split(":", 1)[1].strip().strip(' "\'')
+        line = line.split(":", 1)[1].strip().strip(" \"'")
     if not line or len(line) < 2:
         return None
     return (line[:57] + "…") if len(line) > 60 else line

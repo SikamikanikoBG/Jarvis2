@@ -31,7 +31,9 @@ class FakeMcp:
             raise RuntimeError("server went away mid-list")
         return [ToolSpec(name=f"{self.name}.{t}", description=t, input_schema={"type": "object"}) for t in self.tools]
 
-    async def call(self, name: str, arguments: dict, *, cancel: asyncio.Event, idempotency_key: str, timeout_s: float) -> ToolResult:
+    async def call(
+        self, name: str, arguments: dict, *, cancel: asyncio.Event, idempotency_key: str, timeout_s: float
+    ) -> ToolResult:
         if self.fail_call:
             return ToolResult.failure(f"mcp server {self.name!r} unavailable: {self.fail_call}")
         return ToolResult.data("ok")
@@ -164,7 +166,7 @@ async def test_a_disconnected_provider_keeps_its_tools_in_the_prompt():
     await registry.refresh()
     assert len(registry.specs()) == 2
 
-    host.tools = []                       # what a disconnected WsProvider returns
+    host.tools = []  # what a disconnected WsProvider returns
     host.error = "browser extension not connected"
     await registry.refresh()
     assert [s.name for s in registry.specs()] == ["laptop.outlook_list", "laptop.outlook_send"]
@@ -260,10 +262,11 @@ async def test_a_restart_while_the_machine_is_asleep_does_not_erase_what_it_can_
     await third.load_memory()
     await third.refresh()
     assert third.specs() == []
-    result = await third.call("workocholic.outlook_send", {}, cancel=asyncio.Event(), idempotency_key="k", timeout_s=1.0)
+    result = await third.call(
+        "workocholic.outlook_send", {}, cancel=asyncio.Event(), idempotency_key="k", timeout_s=1.0
+    )
     assert result.error == (
-        "workocholic is not reachable right now (connect timeout after 15s); "
-        "its tools cannot be used until it is back"
+        "workocholic is not reachable right now (connect timeout after 15s); its tools cannot be used until it is back"
     )
 
 

@@ -311,7 +311,9 @@ class AgentLoop:
                         )
                     )
                     await emit(
-                        GuardConsumed(run_id="", conversation_id="", guard="answer_truncated", detail="asked to continue")
+                        GuardConsumed(
+                            run_id="", conversation_id="", guard="answer_truncated", detail="asked to continue"
+                        )
                     )
                     await self._store.save_run(run)
                     continue

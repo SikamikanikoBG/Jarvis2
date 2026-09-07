@@ -332,7 +332,9 @@ class OneNoteBackend:
         )
         self._update(xml)
         for rest in batches[1:]:
-            self._update(f'<?xml version="1.0"?><one:Page xmlns:one="{ONE_NS}" ID="{page_id}">{_outline(rest)}</one:Page>')
+            self._update(
+                f'<?xml version="1.0"?><one:Page xmlns:one="{ONE_NS}" ID="{page_id}">{_outline(rest)}</one:Page>'
+            )
         return {"page_id": page_id, "section": found["path"], "title": title, "chunks": len(batches)}
 
     def append(self, page: str, content: str) -> dict[str, Any]:
@@ -341,7 +343,9 @@ class OneNoteBackend:
         page_id = self._page_id(page)
         batches = batch(markdown_to_oe(content))
         for part in batches:
-            self._update(f'<?xml version="1.0"?><one:Page xmlns:one="{ONE_NS}" ID="{page_id}">{_outline(part)}</one:Page>')
+            self._update(
+                f'<?xml version="1.0"?><one:Page xmlns:one="{ONE_NS}" ID="{page_id}">{_outline(part)}</one:Page>'
+            )
         return {"page_id": page_id, "appended_chars": len(content), "chunks": len(batches)}
 
     def move(self, page: str, section: str) -> dict[str, Any]:

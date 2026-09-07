@@ -185,6 +185,7 @@ class AgentLoop:
         messages = await self._context.assemble(run, skill_names=skill_names)
         tools = self._exposed_tools(run.plan is not None)
         plan_trailer: Message | None = None  # ephemeral, always the last message
+        think_off_once = False  # set for ONE step when reasoning ate the whole output allowance
 
         # Resume: an assistant message with tool calls that never got their results.
         run_messages = await self._store.list_run_messages(run.id)
@@ -224,7 +225,14 @@ class AgentLoop:
             if plan_trailer is not None:
                 messages.append(plan_trailer)
             run.steps_used += 1
-            adapter = self._adapters(RoleName.CHAT, think=run.think, think_level=run.think_level)
+            # `think_off_once` is set when a previous step spent its whole output allowance on
+            # reasoning and wrote nothing: this step gets the allowance for the answer instead.
+            adapter = self._adapters(
+                RoleName.CHAT,
+                think=False if think_off_once else run.think,
+                think_level=None if think_off_once else run.think_level,
+            )
+            think_off_once = False
             await emit(
                 ModelCall(
                     run_id="",
@@ -245,6 +253,69 @@ class AgentLoop:
                 ModelDone(run_id="", conversation_id="", usage=usage, finish_reason=finish, tool_call_count=len(calls))
             )
 
+            # Running out of output room is not the same as having nothing to say, and the two
+            # used to be one branch. Measured 2026-09-06 on "HTML презентация за българското
+            # население": two steps spent the whole 16,384-token allowance on reasoning and wrote
+            # nothing, and the run died with "model returned an empty reply twice" after 22
+            # minutes and 382k tokens — a diagnosis that was simply untrue.
+            if finish == "length" and not calls:
+                spent = f"{usage.completion_tokens:,} output tokens"
+                if not text.strip() and reasoning.strip() and not watch.thinking_off_retry:
+                    watch.thinking_off_retry = True
+                    think_off_once = True
+                    await emit(
+                        GuardArmed(
+                            run_id="",
+                            conversation_id="",
+                            guard="reasoning_used_the_allowance",
+                            detail=f"{spent}, all of it reasoning, no answer",
+                        )
+                    )
+                    messages.append(
+                        await self._persist(
+                            run,
+                            Message.user(
+                                f"[supervisor] Your last turn used its entire output allowance ({spent}) on "
+                                "reasoning and produced no answer. Thinking is OFF for your next turn: write "
+                                "the answer directly, and if it is long, start with the part that matters most.",
+                                name="supervisor",
+                            ),
+                        )
+                    )
+                    await emit(
+                        GuardConsumed(
+                            run_id="", conversation_id="", guard="reasoning_used_the_allowance", detail="thinking off"
+                        )
+                    )
+                    continue
+                if text.strip() and not watch.continued:
+                    # The answer is real but was cut mid-sentence. It is already in `messages`
+                    # below, so the model can see its own partial text and carry on from it.
+                    watch.continued = True
+                    await emit(
+                        GuardArmed(
+                            run_id="", conversation_id="", guard="answer_truncated", detail=f"cut off at {spent}"
+                        )
+                    )
+                    messages.append(
+                        await self._persist(run, Message.assistant(text, reasoning=reasoning or None, partial=True))
+                    )
+                    messages.append(
+                        await self._persist(
+                            run,
+                            Message.user(
+                                "[supervisor] That answer was cut off when it ran out of output room. Carry on "
+                                "from exactly where you stopped — do not repeat what you have already written.",
+                                name="supervisor",
+                            ),
+                        )
+                    )
+                    await emit(
+                        GuardConsumed(run_id="", conversation_id="", guard="answer_truncated", detail="asked to continue")
+                    )
+                    await self._store.save_run(run)
+                    continue
+
             if not text.strip() and not calls:
                 watch.empty_replies += 1
                 if watch.empty_replies == 1:
@@ -258,7 +329,11 @@ class AgentLoop:
                     messages.append(nudge)
                     await emit(GuardConsumed(run_id="", conversation_id="", guard="empty_reply", detail="nudged"))
                     continue
-                raise RuntimeError("model returned an empty reply twice")
+                raise RuntimeError(
+                    "the model wrote nothing twice in a row "
+                    f"(last turn: {usage.completion_tokens:,} output tokens, "
+                    f"{len(reasoning):,} characters of reasoning, finish_reason={finish!r})"
+                )
 
             assistant = await self._persist(run, Message.assistant(text, reasoning=reasoning or None, tool_calls=calls))
             messages.append(assistant)

@@ -30,6 +30,9 @@ class FakeTurn:
     prompt_tokens: int = 100
     completion_tokens: int = 20
     cached_tokens: int = 0  # what a prefix cache served, for budget/TTFT tests
+    # "length" reproduces a turn cut off at the output allowance, which is a different
+    # animal from a model with nothing to say. None = the usual stop/tool_calls.
+    finish_reason: str | None = None
 
 
 class FakeAdapter:
@@ -78,7 +81,7 @@ class FakeAdapter:
                 ttft_ms=1,
                 duration_ms=2,
             ),
-            finish_reason="tool_calls" if turn.tool_calls else "stop",
+            finish_reason=turn.finish_reason or ("tool_calls" if turn.tool_calls else "stop"),
         )
 
     async def probe(self) -> ProbeResult:

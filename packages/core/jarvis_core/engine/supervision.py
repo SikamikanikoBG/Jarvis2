@@ -47,6 +47,11 @@ class RunWatch:
     empty_replies: int = 0
     nudges: int = 0
     plan_nudged: bool = False
+    # The output allowance ran out before the model wrote anything, so thinking was switched off
+    # for one step to give the answer the whole budget. Once per run.
+    thinking_off_retry: bool = False
+    # An answer was cut off at the allowance and the model was asked to carry on. Once per run.
+    continued: bool = False
 
     def elapsed_s(self) -> float:
         return time.monotonic() - self.started

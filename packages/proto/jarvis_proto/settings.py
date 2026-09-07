@@ -94,7 +94,13 @@ class McpServerSpec(BaseModel):
 
 
 def _default_roles() -> dict[RoleName, ModelSpec]:
-    chat = ModelSpec(think=True)
+    # An explicit output allowance, because leaving it unset does not mean "no limit": vLLM then
+    # applies the model's own generation_config, which for qwen3.8-27b is 16,384 tokens. That is
+    # a surprise nobody chose, and a thinking model asked for a long document spends all of it
+    # reasoning and returns an empty answer (measured 2026-09-06 on "HTML презентация за
+    # българското население": two steps, 16,384 tokens each, nothing written). 32k leaves room
+    # for the reasoning AND a long answer, and the loop now recovers when even that runs out.
+    chat = ModelSpec(think=True, max_tokens=32_768)
     quiet = ModelSpec(think=False, temperature=0.1)
     return {
         RoleName.CHAT: chat,

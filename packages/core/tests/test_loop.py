@@ -133,6 +133,63 @@ async def test_unknown_tool_is_an_error_result(harness: Harness):
     assert "unknown tool" in tr.result.text
 
 
+async def test_reasoning_that_eats_the_whole_allowance_retries_with_thinking_off(harness: Harness):
+    """Running out of output room is not the same as having nothing to say.
+
+    Measured on ardi 2026-09-06, "HTML презентация за българското население": two steps each
+    spent the whole 16,384-token allowance on reasoning and wrote nothing, and the run died with
+    "model returned an empty reply twice" — untrue — after 22 minutes and 382k tokens. The
+    allowance is what ran out, so the next turn gets it for the answer instead of the thinking.
+    """
+    harness.chat.push(
+        FakeTurn(text="", reasoning="thinking " * 400, completion_tokens=16_384, finish_reason="length"),
+        FakeTurn(text="Ето презентацията."),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    # think=True explicitly, so the forced-off retry is visible rather than inferred.
+    await harness.core.engine.create_run(text="направи ми презентация", conversation_id=conv.id, think=True)
+    seen = await harness.wait_for(sub, "run.done", timeout=15)
+
+    armed = [e for e in seen if e.type == "guard.armed"]
+    assert [e.guard for e in armed] == ["reasoning_used_the_allowance"]
+    assert "16,384" in armed[0].detail and "no answer" in armed[0].detail
+    # The retry ran with thinking OFF, so the allowance went to the answer.
+    calls = [e for e in seen if e.type == "model.call"]
+    assert [c.think for c in calls] == [True, False]
+    assert (await harness.core.store.list_messages(conv.id))[-1].content == "Ето презентацията."
+    # ...and it is not mistaken for an empty reply on the way.
+    assert not any(e.type == "guard.armed" and e.guard == "empty_reply" for e in seen)
+
+
+async def test_an_answer_cut_off_at_the_allowance_is_continued_not_reported_as_finished(harness: Harness):
+    """A truncated answer used to be persisted and the run reported `done`.
+
+    Same conversation, the run that "succeeded": step 4 hit finish_reason=length after 16,384
+    tokens and left a 14,274-character answer stopping mid-sentence. Nothing said so — it looked
+    like a finished presentation.
+    """
+    harness.chat.push(
+        FakeTurn(text="<html><body><h1>Част 1", completion_tokens=16_384, finish_reason="length"),
+        FakeTurn(text="</h1><p>и краят.</p></body></html>"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="направи ми дълъг HTML", conversation_id=conv.id)
+    seen = await harness.wait_for(sub, "run.done", timeout=15)
+
+    armed = [e for e in seen if e.type == "guard.armed"]
+    assert [e.guard for e in armed] == ["answer_truncated"]
+    # The partial text is kept and marked as partial, and the model was shown it to carry on from.
+    msgs = await harness.core.store.list_messages(conv.id)
+    partial = [m for m in msgs if m.partial]
+    assert len(partial) == 1 and partial[0].content.endswith("Част 1")
+    assert msgs[-1].content == "</h1><p>и краят.</p></body></html>" and not msgs[-1].partial
+    second_call = harness.chat.calls[1][0]
+    assert any("cut off" in m.content for m in second_call if m.name == "supervisor")
+    assert any(m.content.endswith("Част 1") for m in second_call if m.role.value == "assistant")
+
+
 async def test_empty_reply_is_nudged_once_then_fails(harness: Harness):
     harness.chat.push(FakeTurn(text=""), FakeTurn(text=""))
     conv = await harness.core.store.create_conversation()
@@ -141,7 +198,11 @@ async def test_empty_reply_is_nudged_once_then_fails(harness: Harness):
     seen = await harness.wait_for(sub, "run.failed")
     types = [e.type for e in seen]
     assert types.count("guard.armed") == 1 and types.count("guard.consumed") == 1
-    assert "empty" in seen[-1].error
+    # The message has to carry the evidence, not just the verdict: "empty reply" was what the
+    # old one said about a model that had written 16,384 tokens of reasoning and been cut off.
+    error = seen[-1].error
+    assert "wrote nothing twice" in error
+    assert "output tokens" in error and "reasoning" in error and "finish_reason" in error
 
 
 async def test_a_message_sent_while_the_run_works_reaches_the_next_step(harness: Harness):

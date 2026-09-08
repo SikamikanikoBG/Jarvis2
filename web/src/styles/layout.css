@@ -199,6 +199,37 @@
 .sidebar-section {
   margin-top: 6px;
 }
+.sidebar-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 18px 8px;
+}
+
+/* "Only what is running": a toggle that also says how many that would be. */
+.live-toggle {
+  position: relative;
+}
+.live-badge {
+  position: absolute;
+  top: 1px;
+  right: 0;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: var(--radius-pill);
+  background: var(--ok);
+  color: var(--accent-ink);
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 14px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.live-toggle.active {
+  background: var(--accent-soft);
+}
 .folder-head {
   display: flex;
   align-items: center;

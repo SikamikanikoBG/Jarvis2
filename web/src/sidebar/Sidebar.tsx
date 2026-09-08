@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { Icon } from '../components/Icon';
 import { IconButton } from '../components/primitives';
 import type { Conversation } from '../protocol/types';
-import { selectSidebar, type Folder } from '../store/selectors';
+import { selectSidebar, type Folder, type SidebarModel } from '../store/selectors';
 import { useStore } from '../store/store';
 import { ActivityCount } from './ActivityDot';
 import { ChatFolderRow } from './ChatFolderRow';
@@ -23,7 +23,12 @@ export function Sidebar() {
   const createFolder = useStore((s) => s.createFolder);
   const bulk = useStore((s) => s.bulkSelected);
   const move = useStore((s) => s.moveConversation);
-  const model = useMemo(() => selectSidebar(conversations, chatFolders), [conversations, chatFolders]);
+  const runningOnly = useStore((s) => s.runningOnly);
+  const setRunningOnly = useStore((s) => s.setRunningOnly);
+  const model = useMemo(
+    () => selectSidebar(conversations, chatFolders, { runningOnly }),
+    [conversations, chatFolders, runningOnly],
+  );
   const [query, setQuery] = useState('');
   // Select mode is entered by the button and left by Done; a ctrl-click on a row also puts a
   // selection on screen without it, which is why "selecting" is either of the two.
@@ -67,9 +72,13 @@ export function Sidebar() {
     });
   };
 
-  /** Dropping on the flat list files the chats out of every folder. */
+  /**
+   * Dropping on the flat list files the chats out of every folder — but only when the flat list
+   * MEANS "no folder". While filtering it is just the live chats, and a stray drop there would
+   * silently un-file one.
+   */
   const onDropToRoot = (e: DragEvent<HTMLDivElement>) => {
-    if (!isConversationDrag(e.dataTransfer)) return;
+    if (runningOnly || !isConversationDrag(e.dataTransfer)) return;
     e.preventDefault();
     for (const id of readDragIds(e.dataTransfer)) void move(id, null);
   };
@@ -78,6 +87,25 @@ export function Sidebar() {
     <nav className="sidebar" aria-label="Conversations">
       <div className="sidebar-head">
         <h2>Chats</h2>
+        <button
+          type="button"
+          className={`icon-btn sm live-toggle${runningOnly ? ' active' : ''}`}
+          // A toggle keeps one name and says its state through aria-pressed. Renaming it to
+          // "Show all chats" while on collided with the empty state's own button of that name.
+          aria-pressed={runningOnly}
+          aria-label="Only what's running"
+          title={
+            runningOnly
+              ? 'Showing only what is running — click for all chats'
+              : model.live > 0
+                ? `Show only what is running (${model.live})`
+                : 'Show only what is running (nothing right now)'
+          }
+          onClick={() => setRunningOnly(!runningOnly)}
+        >
+          <Icon name="activity" size={16} />
+          {model.live > 0 && <span className="live-badge">{model.live}</span>}
+        </button>
         <IconButton icon="folderPlus" label="New folder" size="sm" onClick={() => setNaming('idle')} />
         <IconButton
           icon="checkSquare"
@@ -116,12 +144,12 @@ export function Sidebar() {
       {query.trim() ? (
         <SearchResults query={query} />
       ) : (
-        <div className="sidebar-list" onDragOver={(e) => isConversationDrag(e.dataTransfer) && e.preventDefault()} onDrop={onDropToRoot}>
-          {model.chats.length === 0 && model.chatFolders.length === 0 && loaded && (
-            <div className="empty small" style={{ padding: '18px 8px' }}>
-              {model.folders.length === 0 ? 'No conversations yet. Start one below.' : 'No chats yet.'}
-            </div>
-          )}
+        <div
+          className="sidebar-list"
+          onDragOver={(e) => !runningOnly && isConversationDrag(e.dataTransfer) && e.preventDefault()}
+          onDrop={onDropToRoot}
+        >
+          {loaded && <SidebarEmpty model={model} runningOnly={runningOnly} onShowAll={() => setRunningOnly(false)} />}
           {model.chats.map((c) => (
             <ConversationRow
               key={c.id}
@@ -142,6 +170,25 @@ export function Sidebar() {
       )}
     </nav>
   );
+}
+
+/** What the list says when it has nothing to show — which the filter makes a normal state. */
+function SidebarEmpty({ model, runningOnly, onShowAll }: { model: SidebarModel; runningOnly: boolean; onShowAll: () => void }) {
+  if (runningOnly) {
+    if (model.chats.length > 0) return null;
+    return (
+      <div className="empty small sidebar-empty">
+        Nothing is running.
+        <button type="button" className="btn btn-sm btn-ghost" onClick={onShowAll}>
+          Show all chats
+        </button>
+      </div>
+    );
+  }
+  // Filed chats count: with everything tucked into folders, "no chats yet" would be a lie.
+  if (model.chats.length > 0 || model.chatFolders.some((s) => s.conversations.length > 0)) return null;
+  const empty = model.chatFolders.length === 0 && model.folders.length === 0;
+  return <div className="empty small sidebar-empty">{empty ? 'No conversations yet. Start one below.' : 'No chats yet.'}</div>;
 }
 
 function FolderSection({

@@ -239,6 +239,35 @@ describe('applyServerEvent — conversations', () => {
     expect(model.folders.find((f) => f.kind === 'archive')?.count).toBe(1);
   });
 
+  it('reduces the whole sidebar to one flat list of what is running', () => {
+    let s = initialChatState();
+    const folders: ChatFolder[] = [
+      { id: 'cfld_work', name: 'Work', position: 0, conversation_count: 0, unread_count: 0, created_at: iso(0), updated_at: iso(0) },
+    ];
+    const evs: ServerEvent[] = [
+      { type: 'conversation.updated', ts: iso(0), conversation: conv('quiet', 10) },
+      { type: 'conversation.updated', ts: iso(0), conversation: conv('busy', 20, { activity: 'running' }) },
+      { type: 'conversation.updated', ts: iso(0), conversation: conv('filed-busy', 30, { folder_id: 'cfld_work', activity: 'waiting' }) },
+      { type: 'conversation.updated', ts: iso(0), conversation: conv('filed-quiet', 40, { folder_id: 'cfld_work' }) },
+      // A scheduled fire that is working is part of "what is Jarvis doing", so it comes along.
+      { type: 'conversation.updated', ts: iso(0), conversation: conv('fire', 50, { kind: 'scheduled', folder_key: 'sch_1', activity: 'running' }) },
+      { type: 'conversation.updated', ts: iso(0), conversation: conv('fire-old', 60, { kind: 'scheduled', folder_key: 'sch_1' }) },
+    ];
+    s = applyServerEvents(s, evs, T0);
+
+    const off = selectSidebar(s.conversations, folders);
+    // The count is over everything and does not depend on the filter being on.
+    expect(off.live).toBe(3);
+    expect(off.chats.map((c) => c.id)).toEqual(['busy', 'quiet']);
+
+    const on = selectSidebar(s.conversations, folders, { runningOnly: true });
+    expect(on.live).toBe(3);
+    expect(on.chats.map((c) => c.id)).toEqual(['fire', 'filed-busy', 'busy']);
+    // No folder chrome at all: filing is not the question this view answers.
+    expect(on.chatFolders).toEqual([]);
+    expect(on.folders).toEqual([]);
+  });
+
   it('switches to the conversation the server created for a null-conversation send', () => {
     let s = initialChatState();
     const optimistic: LocalMessage = { ...msg({ role: 'user', content: 'hello', conversation_id: null, run_id: null }), optimistic: true };

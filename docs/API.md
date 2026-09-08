@@ -46,6 +46,10 @@ client at each transition (a run created, parked, let go, or finished), so the d
 without subscribing to anything.
 WS: `folders.changed {}` (the folder list changed anywhere — refetch it).
 
+The sidebar's "only what's running" toggle is purely client-side: it filters on `activity` and
+needs no endpoint. It replaces the whole grouped list with one flat list of live conversations —
+a scheduled fire that is working belongs next to a chat in that answer, not behind a folder head.
+
 ## Boards (Phase 2)
 
 Sticky notes Arsen pins; every board is injected into the model's context, compactly.

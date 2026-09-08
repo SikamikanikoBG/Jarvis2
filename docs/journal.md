@@ -294,3 +294,16 @@ harness — library vs. own is an open question to settle in the design.
   is how a chat leaves every folder), so filing a chat by dropping it on a folder instantly un-filed
   it as the event bubbled. Also fixed while in there: on a touch device the row menu has no hover to
   reveal it, so it was printing on top of the timestamp.
+- 2026-09-08 (later) — And a filter to go with the dot: one toggle in the sidebar head, with a
+  badge saying how many chats are live, that swaps the whole grouped list for a flat list of
+  what is running. Flat on purpose — the view answers one question, "what is Jarvis doing right
+  now", and a scheduled fire that is working belongs in that answer next to a chat rather than
+  behind a folder head that has to be opened first; filing is not the point there. Purely
+  client-side (it filters on `activity`, no endpoint), and session-only rather than remembered:
+  a "what is happening" view restored on a quiet morning would greet him with an empty list and
+  look like every chat had gone. Empty is a normal state for it, so it says "Nothing is running"
+  and offers the way back. Two things caught while driving it: the toggle had been renaming
+  itself to "Show all chats" when active, colliding with the empty state's own button of that
+  name — a toggle keeps one name and says its state through `aria-pressed`; and dropping a chat
+  on the flat list un-files it, which is right when that list means "no folder" and wrong while
+  it means "the live ones", so the root drop is off while filtering.

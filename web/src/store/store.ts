@@ -67,6 +67,14 @@ export interface UiState {
   selectionAnchor: string | null;
   /** Folder ids collapsed by hand (per device). */
   collapsedFolders: string[];
+  /**
+   * Sidebar filter: show only the chats with a run going.
+   *
+   * Session-only on purpose — it is a "what is Jarvis doing right now" view, not a preference.
+   * Remembered across a reload it would greet him with an empty list on a quiet morning and
+   * look like every chat had vanished.
+   */
+  runningOnly: boolean;
 }
 
 export interface Actions {
@@ -118,6 +126,7 @@ export interface Actions {
   deleteFolder: (id: string) => Promise<void>;
   moveConversation: (id: string, folderId: string | null) => Promise<void>;
   toggleFolderCollapsed: (id: string) => void;
+  setRunningOnly: (on: boolean) => void;
   /** Add or remove one row from the sidebar selection (and make it the range anchor). */
   toggleSelected: (id: string) => void;
   /** Shift-click: select everything between the anchor and `id` along the rows as shown. */
@@ -177,6 +186,7 @@ export const useStore = create<AppState>()((set, get) => ({
   selection: [],
   selectionAnchor: null,
   collapsedFolders: readCollapsedFolders(),
+  runningOnly: false,
 
   boot: () => {
     const route = parseLocation();
@@ -583,6 +593,8 @@ export const useStore = create<AppState>()((set, get) => ({
       return { collapsedFolders: next };
     });
   },
+
+  setRunningOnly: (on) => set({ runningOnly: on }),
 
   toggleSelected: (id) => {
     set((s) => ({

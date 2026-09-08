@@ -40,12 +40,22 @@ export interface ChatFolderSection {
 }
 
 export interface SidebarModel {
-  /** Chats in none of Arsen's folders: flat, pinned first, then newest first. */
+  /**
+   * Chats in none of Arsen's folders: flat, pinned first, then newest first.
+   *
+   * While `runningOnly` is on this is the whole list — every live conversation, wherever it is
+   * filed — and the two folder arrays are empty.
+   */
   chats: Conversation[];
   /** Arsen's own folders, in his order — including the empty ones, which are drop targets. */
   chatFolders: ChatFolderSection[];
   /** The machine's folders (Scheduled, Triage, Meetings, Collab, Archive). */
   folders: Folder[];
+  /**
+   * Conversations with a run going, counted over everything loaded and BEFORE any filtering —
+   * so the "only what's running" toggle can show how many it would leave, while it is off.
+   */
+  live: number;
 }
 
 const byUpdatedDesc = (a: Conversation, b: Conversation) => b.updated_at.localeCompare(a.updated_at);
@@ -63,9 +73,21 @@ function folderOf(c: Conversation): FolderKind | 'chat' {
  * A chat Arsen filed in one of his own folders leaves the flat list for that folder. Archiving
  * still wins over filing: an archived chat belongs to the Archive folder no matter where it was
  * filed, so unarchiving it puts it straight back where he had it.
+ *
+ * `runningOnly` replaces all of that with one flat list of what is alive — see below.
  */
-export function selectSidebar(conversations: Record<string, Conversation>, chatFolders: ChatFolder[] = []): SidebarModel {
+export function selectSidebar(
+  conversations: Record<string, Conversation>,
+  chatFolders: ChatFolder[] = [],
+  { runningOnly = false }: { runningOnly?: boolean } = {},
+): SidebarModel {
   const all = Object.values(conversations).sort(byUpdatedDesc);
+  const alive = all.filter((c) => c.activity !== 'idle');
+  // "Only what is running" is a flat list on purpose: it answers one question — what is Jarvis
+  // doing right now — and a scheduled fire that is working belongs in that answer next to a
+  // chat, not behind a folder head that has to be opened first. Filing is not the point here.
+  if (runningOnly) return { chats: alive.sort(byPinnedThenUpdated), chatFolders: [], folders: [], live: alive.length };
+  const live = alive.length;
   const chats: Conversation[] = [];
   const filed = new Map<string, Conversation[]>(chatFolders.map((f) => [f.id, []]));
   const buckets = new Map<FolderKind, Map<string, FolderGroup>>();
@@ -109,7 +131,7 @@ export function selectSidebar(conversations: Record<string, Conversation>, chatF
       unread: list.reduce((n, g) => n + g.unread, 0),
     });
   }
-  return { chats, chatFolders: sections, folders };
+  return { chats, chatFolders: sections, folders, live };
 }
 
 /** Newest non-terminal run of a conversation, if any. */

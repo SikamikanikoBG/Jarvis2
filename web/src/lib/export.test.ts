@@ -8,6 +8,7 @@ const conv: Conversation = {
   title: 'Бюджет Q4 / plan',
   folder_key: null,
   folder_label: null,
+  folder_id: null,
   archived: false,
   unread: false,
   pinned: false,
@@ -15,6 +16,7 @@ const conv: Conversation = {
   instructions: '',
   preview: null,
   message_count: 0,
+  activity: 'idle',
   created_at: '2026-09-06T08:00:00.000Z',
   updated_at: '2026-09-06T09:00:00.000Z',
 };

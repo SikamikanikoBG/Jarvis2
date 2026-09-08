@@ -144,12 +144,42 @@ class ConversationKind(StrEnum):
     ARCHIVE = "archive"
 
 
+class ConversationActivity(StrEnum):
+    """What the sidebar's activity dot says about a conversation.
+
+    Derived from the runs table on every read, never stored: a run's status is the truth and a
+    second copy of it on the conversation row would be the thing that goes stale.
+    """
+
+    IDLE = "idle"
+    #: A run is queued or working. The dot pulses.
+    RUNNING = "running"
+    #: A run is parked on a confirmation and cannot move until Arsen answers.
+    WAITING = "waiting"
+
+
+class ChatFolder(BaseModel):
+    """A folder Arsen made himself, to file plain chats in. See ``Conversation.folder_id``."""
+
+    id: str
+    name: str
+    position: int = 0
+    #: Chats filed here (unarchived), and how many of those are unread.
+    conversation_count: int = 0
+    unread_count: int = 0
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class Conversation(BaseModel):
     id: str
     kind: ConversationKind = ConversationKind.CHAT
     title: str = "New chat"
     folder_key: str | None = None
     folder_label: str | None = None
+    # Arsen's own filing (a ChatFolder id), as opposed to folder_key/folder_label above, which
+    # the machine fills in and which group the kind-folders.
+    folder_id: str | None = None
     archived: bool = False
     unread: bool = False
     pinned: bool = False
@@ -160,6 +190,8 @@ class Conversation(BaseModel):
     instructions: str = ""
     preview: str | None = None
     message_count: int = 0
+    # Derived from the runs table on read; see ConversationActivity.
+    activity: ConversationActivity = ConversationActivity.IDLE
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

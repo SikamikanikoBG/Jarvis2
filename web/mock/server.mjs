@@ -22,9 +22,26 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const conversations = new Map();
 const messages = new Map(); // conv id → Message[]
 const runs = new Map();
+const chatFolders = new Map(); // Arsen's own chat folders, id → folder
 const runEvents = new Map(); // run id → events
 const cancelFlags = new Map();
 const confirmWaiters = new Map(); // run id → resolve(approved)
+
+function folder(name, position) {
+  const f = { id: newId('cfld'), name, position, conversation_count: 0, unread_count: 0, created_at: now(), updated_at: now() };
+  chatFolders.set(f.id, f);
+  return f;
+}
+
+/** Counts are derived, never stored: archived chats do not count towards a folder. */
+function folderList() {
+  return [...chatFolders.values()]
+    .sort((a, b) => a.position - b.position || a.created_at.localeCompare(b.created_at))
+    .map((f) => {
+      const inside = [...conversations.values()].filter((c) => c.folder_id === f.id && !c.archived);
+      return { ...f, conversation_count: inside.length, unread_count: inside.filter((c) => c.unread).length };
+    });
+}
 
 function conv(partial) {
   const c = {
@@ -33,10 +50,12 @@ function conv(partial) {
     title: 'New chat',
     folder_key: null,
     folder_label: null,
+    folder_id: null,
     archived: false,
     unread: false,
     preview: null,
     message_count: 0,
+    activity: 'idle',
     created_at: now(),
     updated_at: now(),
     ...partial,
@@ -110,7 +129,10 @@ runEvents.set(seedRun.id, [
   { type: 'run.done', ts: hoursAgo(2.98), run_id: seedRun.id, conversation_id: seed.id, seq: 5, message_id: messages.get(seed.id)[1].id, usage: seedRun.usage, steps_used: 1, summary: null },
 ]);
 
-conv({ title: 'Deck numbers for Q3', updated_at: hoursAgo(26), created_at: hoursAgo(27), preview: 'Pulled the figures from the shared folder.' });
+const workFolder = folder('Work', 0);
+folder('Home', 1);
+conv({ title: 'Deck numbers for Q3', folder_id: workFolder.id, updated_at: hoursAgo(26), created_at: hoursAgo(27), preview: 'Pulled the figures from the shared folder.' });
+conv({ title: 'DM-1234 with Rumen', folder_id: workFolder.id, updated_at: hoursAgo(52), preview: 'Waiting on Finance.' });
 conv({ kind: 'scheduled', title: '2026-09-05 07:00', folder_key: 'sch_morning', folder_label: 'Morning brief', updated_at: hoursAgo(4), preview: 'Two meetings, one flagged mail.' });
 conv({ kind: 'scheduled', title: '2026-09-04 07:00', folder_key: 'sch_morning', folder_label: 'Morning brief', updated_at: hoursAgo(28), preview: 'Quiet day.' });
 conv({ kind: 'scheduled', title: '2026-09-05 08:00', folder_key: 'sch_revolut', folder_label: 'Revolut radar', updated_at: hoursAgo(3), unread: true, preview: '2 transactions worth a look.' });
@@ -193,9 +215,23 @@ function emitRun(run, ev) {
   }
   broadcast(full, run.conversation_id);
 }
+/** Same rule as the core's SQL: parked beats working, and anything terminal does not count. */
+function refreshActivity(c) {
+  const live = [...runs.values()].filter((r) => r.conversation_id === c.id && !['done', 'failed', 'cancelled'].includes(r.status));
+  c.activity = live.some((r) => r.status === 'waiting_user') ? 'waiting' : live.length > 0 ? 'running' : 'idle';
+  return c;
+}
+
 function touchConversation(c) {
   c.updated_at = now();
+  refreshActivity(c);
   broadcast({ type: 'conversation.updated', ts: now(), conversation: c });
+}
+
+/** Re-announce a conversation without bumping its clock (an activity change is not an edit). */
+function announceActivity(conversationId) {
+  const c = conversations.get(conversationId);
+  if (c) broadcast({ type: 'conversation.updated', ts: now(), conversation: refreshActivity(c) });
 }
 
 // ---- the scripted model ------------------------------------------------------------------
@@ -364,6 +400,7 @@ async function executeRun(run, text) {
     run.waiting_reason = 'Confirm outlook.send';
     emitRun(run, { type: 'run.waiting_user', reason: 'Confirm outlook.send', call_id: 'call_send' });
     broadcast({ type: 'run.updated', ts: now(), run });
+    announceActivity(run.conversation_id);
     const decision = await new Promise((resolve) => confirmWaiters.set(run.id, resolve));
     if (decision === 'cancel') return finish(run, 'cancelled');
     emitRun(run, { type: 'tool.confirm_resolved', call_id: 'call_send', approved: decision.approved, note: decision.note });
@@ -371,6 +408,7 @@ async function executeRun(run, text) {
     run.waiting_reason = null;
     emitRun(run, { type: 'run.resumed', from_seq: run.last_seq });
     broadcast({ type: 'run.updated', ts: now(), run });
+    announceActivity(run.conversation_id);
     if (decision.approved) {
       await toolRound(run, 'call_send', 'outlook.send', { to: 'rumen@postbank.bg', subject: 'Re: DM-1234' }, { kind: 'data', text: 'Sent. EntryID 0000ABCD', count: null, total: null, cursor: null, error: null }, 900, false);
       const t2 = await modelTurn(run, { text: 'Sent to Rumen. I filed the thread under **Demands/DM-1234**.' });
@@ -499,7 +537,7 @@ const server = createServer(async (req, res) => {
       if (!id) {
         if (req.method === 'GET') {
           const archived = url.searchParams.get('archived') === '1';
-          return json(res, 200, [...conversations.values()].filter((c) => c.archived === archived).sort((a, b) => b.updated_at.localeCompare(a.updated_at)));
+          return json(res, 200, [...conversations.values()].map(refreshActivity).filter((c) => c.archived === archived).sort((a, b) => b.updated_at.localeCompare(a.updated_at)));
         }
         if (req.method === 'POST') {
           const body = await readBody(req);
@@ -508,6 +546,35 @@ const server = createServer(async (req, res) => {
           return json(res, 200, c);
         }
       }
+      if (id === 'bulk' && req.method === 'POST') {
+        const body = await readBody(req);
+        const ids = [...new Set(body.ids ?? [])].filter((x) => conversations.has(x));
+        if (body.action === 'delete') {
+          for (const cid of ids) {
+            conversations.delete(cid);
+            messages.delete(cid);
+            broadcast({ type: 'conversation.deleted', ts: now(), conversation_id: cid });
+          }
+          return json(res, 200, { deleted: ids, updated: [] });
+        }
+        const patch = {
+          archive: { archived: true },
+          unarchive: { archived: false },
+          move: { folder_id: body.folder_id ?? null },
+          read: { unread: false },
+          pin: { pinned: true },
+          unpin: { pinned: false },
+        }[body.action];
+        if (!patch) return json(res, 422, { detail: `unknown action '${body.action}'` });
+        const updated = ids.map((cid) => {
+          const target = conversations.get(cid);
+          Object.assign(target, patch);
+          broadcast({ type: 'conversation.updated', ts: now(), conversation: refreshActivity(target) });
+          return target;
+        });
+        broadcast({ type: 'folders.changed', ts: now() });
+        return json(res, 200, { deleted: [], updated });
+      }
       const c = conversations.get(id);
       if (!c) return json(res, 404, { detail: 'Conversation not found' });
       if (sub === 'messages') return json(res, 200, messages.get(id));
@@ -515,15 +582,57 @@ const server = createServer(async (req, res) => {
       if (req.method === 'GET') return json(res, 200, c);
       if (req.method === 'PATCH') {
         const body = await readBody(req);
+        if ('folder_id' in body && body.folder_id && !chatFolders.has(body.folder_id)) return json(res, 422, { detail: 'folder not found' });
         Object.assign(c, body);
         c.updated_at = now();
-        broadcast({ type: 'conversation.updated', ts: now(), conversation: c });
+        broadcast({ type: 'conversation.updated', ts: now(), conversation: refreshActivity(c) });
+        if ('folder_id' in body) broadcast({ type: 'folders.changed', ts: now() });
         return json(res, 200, c);
       }
       if (req.method === 'DELETE') {
         conversations.delete(id);
         messages.delete(id);
         broadcast({ type: 'conversation.deleted', ts: now(), conversation_id: id });
+        return json(res, 204);
+      }
+    }
+    if (resource === 'folders') {
+      if (!id) {
+        if (req.method === 'GET') return json(res, 200, folderList());
+        if (req.method === 'POST') {
+          const body = await readBody(req);
+          if (!String(body.name ?? '').trim()) return json(res, 422, { detail: 'name is required' });
+          const f = folder(String(body.name).trim().slice(0, 60), chatFolders.size);
+          broadcast({ type: 'folders.changed', ts: now() });
+          return json(res, 201, folderList().find((x) => x.id === f.id));
+        }
+      }
+      const f = chatFolders.get(id);
+      if (!f) return json(res, 404, { detail: 'folder not found' });
+      if (req.method === 'PATCH') {
+        const body = await readBody(req);
+        if (body.name !== undefined) {
+          if (!String(body.name).trim()) return json(res, 422, { detail: 'name is required' });
+          f.name = String(body.name).trim().slice(0, 60);
+        }
+        if (body.position !== undefined) {
+          const ids = folderList().map((x) => x.id).filter((x) => x !== id);
+          ids.splice(Math.max(0, Math.min(body.position, ids.length)), 0, id);
+          ids.forEach((fid, i) => (chatFolders.get(fid).position = i));
+        }
+        f.updated_at = now();
+        broadcast({ type: 'folders.changed', ts: now() });
+        return json(res, 200, folderList().find((x) => x.id === id));
+      }
+      if (req.method === 'DELETE') {
+        chatFolders.delete(id);
+        broadcast({ type: 'folders.changed', ts: now() });
+        for (const c of conversations.values()) {
+          if (c.folder_id === id) {
+            c.folder_id = null; // the chats survive the folder
+            broadcast({ type: 'conversation.updated', ts: now(), conversation: refreshActivity(c) });
+          }
+        }
         return json(res, 204);
       }
     }

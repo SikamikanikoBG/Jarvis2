@@ -2,11 +2,22 @@ import { create } from 'zustand';
 import { ApiError, api, describeError } from '../api/client';
 import { WsClient, type ConnectionState } from '../api/ws';
 import { conversationToMarkdown, downloadText, safeFilename } from '../lib/export';
+import { readCollapsedFolders, writeCollapsedFolders } from '../lib/folders';
 import { notifyDesktop, readNotifyPref, writeNotifyPref } from '../lib/notify';
 import { navigate, parseLocation, rememberConversation, type View } from '../lib/router';
 import { applyThemePref, isPanelMode, readThemePref, type ThemePref } from '../lib/theme';
 import type { ThinkChoice } from '../lib/think';
-import type { Attachment, Conversation, ConversationSummary, Message, Run, RunScopedEvent, ServerEvent } from '../protocol/types';
+import type {
+  Attachment,
+  BulkConversationAction,
+  ChatFolder,
+  Conversation,
+  ConversationSummary,
+  Message,
+  Run,
+  RunScopedEvent,
+  ServerEvent,
+} from '../protocol/types';
 import { isRunScoped, isTerminal } from '../protocol/types';
 import { applyFeatureEvents, initialFeatureState, type FeatureState } from './features';
 import { applyServerEvents } from './reducer';
@@ -48,6 +59,14 @@ export interface UiState {
   uploadingAttachments: string[];
   /** Desktop notification when a run finishes while this tab is hidden (per device). */
   notifyRuns: boolean;
+  /** Arsen's own chat folders, in their order. */
+  folders: ChatFolder[];
+  /** Sidebar multi-select: the chosen conversation ids. Empty means not selecting anything. */
+  selection: string[];
+  /** The row a shift-click measures its range from. */
+  selectionAnchor: string | null;
+  /** Folder ids collapsed by hand (per device). */
+  collapsedFolders: string[];
 }
 
 export interface Actions {
@@ -91,6 +110,22 @@ export interface Actions {
   attachText: (text: string, name?: string) => Promise<void>;
   removeAttachment: (id: string) => void;
   exportConversation: (id: string, format: 'markdown' | 'json') => Promise<void>;
+  loadFolders: () => Promise<void>;
+  /** Creates the folder and returns its id, or null when the server refused. */
+  createFolder: (name: string) => Promise<string | null>;
+  renameFolder: (id: string, name: string) => Promise<void>;
+  /** Removes the folder; the chats in it fall back into the flat list. */
+  deleteFolder: (id: string) => Promise<void>;
+  moveConversation: (id: string, folderId: string | null) => Promise<void>;
+  toggleFolderCollapsed: (id: string) => void;
+  /** Add or remove one row from the sidebar selection (and make it the range anchor). */
+  toggleSelected: (id: string) => void;
+  /** Shift-click: select everything between the anchor and `id` along the rows as shown. */
+  extendSelection: (id: string, ordered: string[]) => void;
+  setSelection: (ids: string[]) => void;
+  clearSelection: () => void;
+  /** One action over the whole selection, in one request. */
+  bulkSelected: (action: BulkConversationAction, folderId?: string | null) => Promise<void>;
 }
 
 export type AppState = ChatState & FeatureState & UiState & Actions;
@@ -98,6 +133,17 @@ export type AppState = ChatState & FeatureState & UiState & Actions;
 let ws: WsClient | null = null;
 let noticeSeq = 0;
 let clientRefSeq = 0;
+
+/** Past tense for the toast after a bulk action. */
+const BULK_DONE: Record<BulkConversationAction, string> = {
+  delete: 'Deleted',
+  archive: 'Archived',
+  unarchive: 'Unarchived',
+  move: 'Moved',
+  read: 'Marked read',
+  pin: 'Pinned',
+  unpin: 'Unpinned',
+};
 
 function errorText(e: unknown): string {
   if (e instanceof Error && 'status' in e) return describeError((e as { status: number }).status, (e as { body?: unknown }).body);
@@ -127,6 +173,10 @@ export const useStore = create<AppState>()((set, get) => ({
   pendingAttachments: [],
   uploadingAttachments: [],
   notifyRuns: readNotifyPref(),
+  folders: [],
+  selection: [],
+  selectionAnchor: null,
+  collapsedFolders: readCollapsedFolders(),
 
   boot: () => {
     const route = parseLocation();
@@ -142,12 +192,16 @@ export const useStore = create<AppState>()((set, get) => ({
           ws?.send({ type: 'subscribe', conversation_id: open });
           if (isReconnect) void get().refreshConversation(open);
         }
-        if (isReconnect) void loadConversations(set, get);
+        if (isReconnect) {
+          void loadConversations(set, get);
+          void get().loadFolders();
+        }
       },
     });
     ws.connect();
 
     void loadConversations(set, get);
+    void get().loadFolders();
     api.health()
       .then((h) => set({ version: h.version }))
       .catch(() => undefined);
@@ -173,6 +227,14 @@ export const useStore = create<AppState>()((set, get) => ({
       navigate(after.view, id, true);
       const pendingChoice = after.thinkChoice[NEW_CONVERSATION_KEY];
       if (pendingChoice) set((s) => ({ thinkChoice: { ...omit(s.thinkChoice, NEW_CONVERSATION_KEY), [id]: pendingChoice } }));
+    }
+    // Folders are Arsen's own filing and the sidebar always shows them: refetch rather than
+    // reduce, so a folder made on the phone (and its counts) appear here without a reload.
+    if (events.some((e) => e.type === 'folders.changed')) void get().loadFolders();
+    // A chat deleted anywhere (another tab, a bulk action) must not stay in this selection.
+    const gone = events.filter((e) => e.type === 'conversation.deleted').map((e) => e.conversation_id);
+    if (gone.length > 0 && after.selection.some((id) => gone.includes(id))) {
+      set({ selection: after.selection.filter((id) => !gone.includes(id)) });
     }
     // The server flags a conversation unread when a run ends; the one on screen is read.
     const open = after.openConversationId;
@@ -459,6 +521,111 @@ export const useStore = create<AppState>()((set, get) => ({
       if (get().openConversationId === null) navigate('chat', null, true);
     } catch (e) {
       get().notify(`Delete failed: ${errorText(e)}`, 'error');
+    }
+  },
+
+  loadFolders: async () => {
+    try {
+      set({ folders: await api.folders.list() });
+    } catch (e) {
+      // Not worth a toast: the sidebar simply shows the flat list until the next attempt.
+      if (!(e instanceof ApiError && e.status === 401)) console.warn('folders:', errorText(e));
+    }
+  },
+
+  createFolder: async (name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return null;
+    try {
+      const folder = await api.folders.create(trimmed);
+      set((s) => ({ folders: [...s.folders.filter((f) => f.id !== folder.id), folder] }));
+      return folder.id;
+    } catch (e) {
+      get().notify(`Could not create the folder: ${errorText(e)}`, 'error');
+      return null;
+    }
+  },
+
+  renameFolder: async (id, name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    try {
+      const folder = await api.folders.patch(id, { name: trimmed });
+      set((s) => ({ folders: s.folders.map((f) => (f.id === id ? folder : f)) }));
+    } catch (e) {
+      get().notify(`Rename failed: ${errorText(e)}`, 'error');
+    }
+  },
+
+  deleteFolder: async (id) => {
+    try {
+      await api.folders.remove(id);
+      // The chats survive; the server re-announces each one with folder_id cleared.
+      set((s) => ({ folders: s.folders.filter((f) => f.id !== id) }));
+    } catch (e) {
+      get().notify(`Could not delete the folder: ${errorText(e)}`, 'error');
+    }
+  },
+
+  moveConversation: async (id, folderId) => {
+    try {
+      upsertConversation(set, await api.conversations.patch(id, { folder_id: folderId }));
+      void get().loadFolders(); // the counts on the folder heads moved with it
+    } catch (e) {
+      get().notify(`Could not move the chat: ${errorText(e)}`, 'error');
+    }
+  },
+
+  toggleFolderCollapsed: (id) => {
+    set((s) => {
+      const next = s.collapsedFolders.includes(id) ? s.collapsedFolders.filter((f) => f !== id) : [...s.collapsedFolders, id];
+      writeCollapsedFolders(next);
+      return { collapsedFolders: next };
+    });
+  },
+
+  toggleSelected: (id) => {
+    set((s) => ({
+      selection: s.selection.includes(id) ? s.selection.filter((x) => x !== id) : [...s.selection, id],
+      selectionAnchor: id,
+    }));
+  },
+
+  extendSelection: (id, ordered) => {
+    const s = get();
+    const anchor = s.selectionAnchor ?? id;
+    const from = ordered.indexOf(anchor);
+    const to = ordered.indexOf(id);
+    if (from < 0 || to < 0) {
+      get().toggleSelected(id);
+      return;
+    }
+    const span = ordered.slice(Math.min(from, to), Math.max(from, to) + 1);
+    set({ selection: [...new Set([...s.selection, ...span])], selectionAnchor: id });
+  },
+
+  setSelection: (ids) => set({ selection: [...new Set(ids)], selectionAnchor: ids.at(-1) ?? null }),
+  clearSelection: () => set({ selection: [], selectionAnchor: null }),
+
+  bulkSelected: async (action, folderId) => {
+    const ids = get().selection;
+    if (ids.length === 0) return;
+    try {
+      const result = await api.conversations.bulk(ids, action, folderId);
+      const ts = new Date().toISOString();
+      // Through the reducer, not straight into `conversations`: a deleted chat also has
+      // messages, runs, streams and possibly the open-conversation pointer to clean up.
+      get().applyEvents([
+        ...result.deleted.map((id) => ({ type: 'conversation.deleted' as const, ts, conversation_id: id })),
+        ...result.updated.map((conversation) => ({ type: 'conversation.updated' as const, ts, conversation })),
+      ]);
+      set({ selection: [], selectionAnchor: null });
+      if (get().openConversationId === null) navigate('chat', null, true);
+      void get().loadFolders();
+      const n = action === 'delete' ? result.deleted.length : result.updated.length;
+      get().notify(`${BULK_DONE[action]} ${n} ${n === 1 ? 'chat' : 'chats'}.`);
+    } catch (e) {
+      get().notify(`Could not ${action} the selected chats: ${errorText(e)}`, 'error');
     }
   },
 

@@ -29,6 +29,7 @@ export function applyServerEvent<S extends ChatState>(state: S, event: ServerEve
       return runUpdated(state, event.run, now);
     case 'model.delta':
       return modelDelta(state, event, now);
+    case 'folders.changed':
     case 'board.changed':
     case 'kg.changed':
     case 'skills.changed':

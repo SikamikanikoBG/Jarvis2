@@ -265,3 +265,32 @@ harness — library vs. own is an open question to settle in the design.
   with download. The `data_url` an image is sent with is filled in only while building the model
   request and is excluded from serialisation, so nothing persisted or broadcast carries base64.
   Meetings can be deleted now too (rows, frames on disk, and the transcript conversation).
+- 2026-09-08 — Three things the chat list could not do. **Multi-select**: a Select button in the
+  sidebar head (ctrl-click or the row menu gets you there too, shift-click takes a range), a bar
+  that says how many are ticked, and one request for the whole gesture —
+  `POST /api/conversations/bulk {ids, action}` covers delete, archive, unarchive, move, mark read
+  and pin, de-duplicates the ids and skips the ones that are already gone, so clearing out thirty
+  dead chats is one round trip and one round of events rather than thirty of each. **Folders Arsen
+  names himself**: a `conversation_folders` table and a nullable `conversations.folder_id`,
+  deliberately separate from the `folder_key`/`folder_label` pair the *machine* fills in for
+  schedules, triage accounts and collab keys. Filed chats leave the flat list for their folder;
+  archiving still wins over filing, so unarchiving puts a chat straight back where he had it; and
+  deleting a folder never deletes the chats in it (`ON DELETE SET NULL` — they land back in the
+  flat list). Rename and delete from the folder's own menu, file a chat from the row menu, or drag
+  it — dragging a row that is part of a selection carries the whole selection, and dropping on the
+  list itself takes chats out of every folder. Collapse state is remembered per device.
+  **The activity dot**: `Conversation.activity` (`idle | running | waiting`) is derived from the
+  runs table in the same SELECT that reads the conversation, never stored — a second copy of a
+  run's status is the thing that goes stale. The sidebar could not have computed this itself: a
+  client loads runs for the conversation it is looking at and no others, which is exactly the set
+  the dot is not about. `conversation.updated` is conversation-level and reaches every client, and
+  the engine already published one when a run is created and when it ends; the two transitions in
+  between (parking on a confirmation, being let go again) now announce too. A green ring that
+  breathes for working, a steady amber one for "will not move until you answer" — amber wins, and
+  a collapsed folder shows the strongest state of what is inside it. Deliberately not the same
+  shape as the unread dot: that one means something happened, this one means something is
+  happening.
+  One real bug found by driving it: a folder sits inside the list, the list accepts drops too (that
+  is how a chat leaves every folder), so filing a chat by dropping it on a folder instantly un-filed
+  it as the event bubbled. Also fixed while in there: on a touch device the row menu has no hover to
+  reveal it, so it was printing on top of the timestamp.

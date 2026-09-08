@@ -1,6 +1,9 @@
 import type {
   Attachment,
   Board,
+  BulkConversationAction,
+  BulkResult,
+  ChatFolder,
   CollabKey,
   CollabKeyCreated,
   Conversation,
@@ -124,9 +127,20 @@ export const api = {
     get: (id: string) => request<Conversation>('GET', `/api/conversations/${encodeURIComponent(id)}`),
     patch: (
       id: string,
-      body: { title?: string; archived?: boolean; unread?: boolean; pinned?: boolean; instructions?: string },
+      body: {
+        title?: string;
+        archived?: boolean;
+        unread?: boolean;
+        pinned?: boolean;
+        instructions?: string;
+        /** `null` files the chat out of every folder; omit the key to leave it where it is. */
+        folder_id?: string | null;
+      },
     ) =>
       request<Conversation>('PATCH', `/api/conversations/${encodeURIComponent(id)}`, body),
+    /** One action over many chats: one request, one round of events. */
+    bulk: (ids: string[], action: BulkConversationAction, folderId?: string | null) =>
+      request<BulkResult>('POST', '/api/conversations/bulk', { ids, action, folder_id: folderId ?? null }),
     remove: (id: string) => request<null>('DELETE', `/api/conversations/${encodeURIComponent(id)}`),
     /** New conversation with the transcript BEFORE `upToMessageId` (null = all of it). */
     fork: (id: string, upToMessageId: string | null) =>
@@ -135,6 +149,13 @@ export const api = {
     messages: (id: string) => request<Message[]>('GET', `/api/conversations/${encodeURIComponent(id)}/messages`),
     runs: (id: string) => request<Run[]>('GET', `/api/conversations/${encodeURIComponent(id)}/runs`),
     summary: (id: string) => request<ConversationSummary | null>('GET', `/api/conversations/${encodeURIComponent(id)}/summary`),
+  },
+  folders: {
+    list: () => request<ChatFolder[]>('GET', '/api/folders'),
+    create: (name: string) => request<ChatFolder>('POST', '/api/folders', { name }),
+    patch: (id: string, body: { name?: string; position?: number }) =>
+      request<ChatFolder>('PATCH', `/api/folders/${encodeURIComponent(id)}`, body),
+    remove: (id: string) => request<null>('DELETE', `/api/folders/${encodeURIComponent(id)}`),
   },
   boards: {
     list: () => request<Board[]>('GET', '/api/boards'),

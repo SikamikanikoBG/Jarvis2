@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ValidationError
 
 from jarvis_core import __version__
 from jarvis_core.api.deps import core_of, require_token
-from jarvis_proto import Conversation, ConversationKind, Message, Run, SearchHit, Settings, ToolSpec
-from jarvis_proto.events import ConversationDeleted, ConversationUpdated
+from jarvis_proto import ChatFolder, Conversation, ConversationKind, Message, Run, SearchHit, Settings, ToolSpec
+from jarvis_proto.events import ConversationDeleted, ConversationUpdated, FoldersChanged
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
 open_router = APIRouter(prefix="/api")
@@ -67,6 +67,10 @@ class ConversationPatch(BaseModel):
     pinned: bool | None = None
     # A persona or standing rule for this chat only; "" clears it.
     instructions: str | None = None
+    # Which of Arsen's folders this chat is filed in. Sending it as null (or "") takes the chat
+    # out of every folder, which is why it is read from model_fields_set below rather than from
+    # the exclude_none dump: "leave it alone" and "clear it" must not collapse into one thing.
+    folder_id: str | None = None
 
 
 class ForkRequest(BaseModel):
@@ -104,6 +108,11 @@ async def patch_conversation(request: Request, conversation_id: str, body: Conve
     if "title" in fields:
         fields["title"] = str(fields["title"]).strip()[:80] or "New chat"
         fields["title_auto"] = 0  # a human named it; the titler leaves it alone from now on
+    if "folder_id" in body.model_fields_set:
+        target = (body.folder_id or "").strip()
+        if target and await core.store.get_folder(target) is None:
+            raise HTTPException(422, "folder not found")
+        fields["folder_id"] = target or None
     if "instructions" in fields:
         # Capped, but generously: a real persona is a document, not a sentence — the one V1 kept
         # for the "Massimo Massa" chat is 8,861 characters. It sits in the stable part of the
@@ -164,6 +173,125 @@ async def list_messages(request: Request, conversation_id: str) -> list[Message]
 async def list_runs(request: Request, conversation_id: str, limit: int = 50) -> list[Run]:
     # A negative LIMIT means "no limit" to SQLite, so the ceiling has to hold at both ends.
     return await core_of(request).store.list_runs(conversation_id, limit=min(limit, 200) if limit > 0 else 50)
+
+
+# --- chat folders and bulk edits ---------------------------------------------------
+#
+# Two halves of the same job: keeping the chat list tidy. Folders are Arsen's own filing;
+# the bulk route is what a multi-select in the sidebar sends, so clearing out thirty dead
+# chats is one request and one round of events instead of thirty of each.
+
+
+class FolderCreate(BaseModel):
+    name: str
+
+
+class FolderPatch(BaseModel):
+    name: str | None = None
+    position: int | None = None
+
+
+BulkAction = Literal["delete", "archive", "unarchive", "move", "read", "pin", "unpin"]
+
+
+class ConversationBulk(BaseModel):
+    ids: list[str]
+    action: BulkAction
+    #: For action="move": the destination folder, or null to take the chats out of all of them.
+    folder_id: str | None = None
+
+
+class BulkResult(BaseModel):
+    deleted: list[str] = []
+    updated: list[Conversation] = []
+
+
+@router.get("/folders", response_model=list[ChatFolder])
+async def list_folders(request: Request) -> list[ChatFolder]:
+    return await core_of(request).store.list_folders()
+
+
+@router.post("/folders", response_model=ChatFolder, status_code=201)
+async def create_folder(request: Request, body: FolderCreate) -> ChatFolder:
+    if not body.name.strip():
+        raise HTTPException(422, "name is required")
+    core = core_of(request)
+    folder = await core.store.create_folder(body.name)
+    core.bus.publish(FoldersChanged())
+    return folder
+
+
+@router.patch("/folders/{folder_id}", response_model=ChatFolder)
+async def patch_folder(request: Request, folder_id: str, body: FolderPatch) -> ChatFolder:
+    core = core_of(request)
+    folder = await core.store.get_folder(folder_id)
+    if folder is None:
+        raise HTTPException(404, "folder not found")
+    if body.name is not None:
+        if not body.name.strip():
+            raise HTTPException(422, "name is required")
+        folder = await core.store.rename_folder(folder_id, body.name)
+    if body.position is not None:
+        folder = await core.store.reorder_folder(folder_id, body.position)
+    if folder is None:
+        raise HTTPException(404, "folder not found")
+    core.bus.publish(FoldersChanged())
+    return folder
+
+
+@router.delete("/folders/{folder_id}", status_code=204)
+async def delete_folder(request: Request, folder_id: str) -> Response:
+    """Removes the folder, never the chats in it: they land back in the flat list."""
+    core = core_of(request)
+    if await core.store.get_folder(folder_id) is None:
+        raise HTTPException(404, "folder not found")
+    freed = await core.store.delete_folder(folder_id)
+    core.bus.publish(FoldersChanged())
+    for conv in await core.store.conversations_by_id(freed):
+        core.bus.publish(ConversationUpdated(conversation=conv))
+    return Response(status_code=204)
+
+
+@router.post("/conversations/bulk", response_model=BulkResult)
+async def bulk_conversations(request: Request, body: ConversationBulk) -> BulkResult:
+    """Apply one action to many conversations. Ids that no longer exist are skipped, not
+    errors: a stale sidebar selection must not fail the whole gesture."""
+    core = core_of(request)
+    ids = list(dict.fromkeys(body.ids))[:500]  # de-duplicated, capped
+    if not ids:
+        raise HTTPException(422, "ids is required")
+    if body.action == "move" and body.folder_id and await core.store.get_folder(body.folder_id) is None:
+        raise HTTPException(422, "folder not found")
+
+    if body.action == "delete":
+        deleted: list[str] = []
+        for conversation_id in ids:
+            if await core.store.get_conversation(conversation_id) is None:
+                continue
+            for run in await core.store.list_runs(conversation_id):
+                if not run.status.terminal:
+                    await core.engine.cancel(run.id)
+            await core.store.delete_conversation(conversation_id)
+            core.bus.publish(ConversationDeleted(conversation_id=conversation_id))
+            deleted.append(conversation_id)
+        return BulkResult(deleted=deleted)
+
+    fields: dict[str, Any] = {
+        "archive": {"archived": 1},
+        "unarchive": {"archived": 0},
+        "move": {"folder_id": body.folder_id or None},
+        "read": {"unread": 0},
+        "pin": {"pinned": 1},
+        "unpin": {"pinned": 0},
+    }[body.action]
+    updated: list[Conversation] = []
+    for conversation_id in ids:
+        conv = await core.store.update_conversation(conversation_id, **fields)
+        if conv is None:
+            continue
+        core.bus.publish(ConversationUpdated(conversation=conv))
+        updated.append(conv)
+    return BulkResult(updated=updated)
 
 
 # --- runs --------------------------------------------------------------------------

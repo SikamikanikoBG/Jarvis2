@@ -20,7 +20,7 @@ from jarvis_core.app import Core, create_app
 from jarvis_core.config import CoreConfig
 from jarvis_core.models.base import reset_endpoint_semaphores
 from jarvis_core.models.fake import FakeAdapter
-from jarvis_proto import RoleName
+from jarvis_proto import RoleName, Run, RunKind, RunStatus, new_id
 
 TOKEN = "secret"
 
@@ -290,6 +290,105 @@ def test_search_and_fork(client: TestClient):
     assert fork["id"] != conv and fork["title"].endswith("(fork)")
     ok(client.post(f"/api/conversations/{conv}/fork", json={"up_to_message_id": "msg_nope"}, headers=h()), 422)
     ok(client.post("/api/conversations/conv_missing/fork", json={}, headers=h()), 404)
+
+
+# --- chat folders, bulk edits and the activity dot -----------------------------------------
+
+
+def test_chat_folders_lifecycle_and_filing(client: TestClient):
+    work = ok(client.post("/api/folders", json={"name": "  Work  "}, headers=h()), 201).json()
+    assert work["name"] == "Work" and work["conversation_count"] == 0
+    home = ok(client.post("/api/folders", json={"name": "Home"}, headers=h()), 201).json()
+    assert [f["id"] for f in ok(client.get("/api/folders", headers=h()), 200).json()] == [work["id"], home["id"]]
+    ok(client.post("/api/folders", json={"name": "   "}, headers=h()), 422)
+
+    conv = ok(client.post("/api/conversations", json={"title": "Deck numbers"}, headers=h()), 201).json()
+    assert conv["folder_id"] is None
+    filed = ok(
+        client.patch(f"/api/conversations/{conv['id']}", json={"folder_id": work["id"]}, headers=h()), 200
+    ).json()
+    assert filed["folder_id"] == work["id"]
+    assert [f["conversation_count"] for f in client.get("/api/folders", headers=h()).json()] == [1, 0]
+    # A patch that does not mention folder_id leaves the filing alone...
+    kept = ok(client.patch(f"/api/conversations/{conv['id']}", json={"title": "Renamed"}, headers=h()), 200).json()
+    assert kept["folder_id"] == work["id"]
+    # ...and an explicit null takes it out of every folder. Both must be expressible.
+    freed = ok(client.patch(f"/api/conversations/{conv['id']}", json={"folder_id": None}, headers=h()), 200).json()
+    assert freed["folder_id"] is None
+    ok(client.patch(f"/api/conversations/{conv['id']}", json={"folder_id": "cfld_nope"}, headers=h()), 422)
+
+    ok(client.patch(f"/api/folders/{work['id']}", json={"name": "Work stuff"}, headers=h()), 200)
+    moved = ok(client.patch(f"/api/folders/{work['id']}", json={"position": 1}, headers=h()), 200).json()
+    assert moved["position"] == 1
+    assert [f["name"] for f in client.get("/api/folders", headers=h()).json()] == ["Home", "Work stuff"]
+    ok(client.patch(f"/api/folders/{work['id']}", json={"name": " "}, headers=h()), 422)
+    ok(client.patch("/api/folders/cfld_missing", json={"name": "x"}, headers=h()), 404)
+
+    # Deleting a folder must never delete the chats in it.
+    ok(client.patch(f"/api/conversations/{conv['id']}", json={"folder_id": work["id"]}, headers=h()), 200)
+    ok(client.delete(f"/api/folders/{work['id']}", headers=h()), 204)
+    ok(client.delete(f"/api/folders/{work['id']}", headers=h()), 404)
+    survivor = ok(client.get(f"/api/conversations/{conv['id']}", headers=h()), 200).json()
+    assert survivor["folder_id"] is None
+
+
+def test_bulk_conversation_actions(client: TestClient):
+    folder = ok(client.post("/api/folders", json={"name": "Filed"}, headers=h()), 201).json()
+    ids = [
+        ok(client.post("/api/conversations", json={"title": f"Chat {i}"}, headers=h()), 201).json()["id"]
+        for i in range(3)
+    ]
+    ok(client.post("/api/conversations/bulk", json={"ids": [], "action": "delete"}, headers=h()), 422)
+    ok(
+        client.post("/api/conversations/bulk", json={"ids": ids, "action": "move", "folder_id": "cfld_x"}, headers=h()),
+        422,
+    )
+
+    body = {"ids": [*ids, ids[0], "conv_gone"], "action": "move", "folder_id": folder["id"]}
+    moved = ok(client.post("/api/conversations/bulk", json=body, headers=h()), 200).json()
+    # De-duplicated, and a stale id in the selection is skipped rather than failing the gesture.
+    assert [c["id"] for c in moved["updated"]] == ids and moved["deleted"] == []
+    assert client.get("/api/folders", headers=h()).json()[0]["conversation_count"] == 3
+
+    archived = ok(
+        client.post("/api/conversations/bulk", json={"ids": ids[:2], "action": "archive"}, headers=h()), 200
+    ).json()
+    assert all(c["archived"] for c in archived["updated"])
+    assert client.get("/api/folders", headers=h()).json()[0]["conversation_count"] == 1
+    ok(client.post("/api/conversations/bulk", json={"ids": ids[:2], "action": "unarchive"}, headers=h()), 200)
+
+    deleted = ok(client.post("/api/conversations/bulk", json={"ids": ids, "action": "delete"}, headers=h()), 200).json()
+    assert sorted(deleted["deleted"]) == sorted(ids)
+    assert client.get("/api/conversations", headers=h()).json() == []
+    # Deleting what is already gone is a no-op, not a 404.
+    assert (
+        client.post("/api/conversations/bulk", json={"ids": ids, "action": "delete"}, headers=h()).json()["deleted"]
+        == []
+    )
+
+
+def test_conversation_activity_follows_its_runs(client: TestClient):
+    core = client.core  # type: ignore[attr-defined]
+    call = client.portal.call  # runs a coroutine on the app's own loop
+    conv = ok(client.post("/api/conversations", json={"title": "Live"}, headers=h()), 201).json()
+    assert conv["activity"] == "idle"
+
+    def add_run(status: RunStatus) -> None:
+        run = Run(id=new_id("run"), conversation_id=conv["id"], kind=RunKind.CHAT, input_text="x", status=status)
+        call(partial(core.store.create_run, run))
+
+    def activity() -> str:
+        return str(ok(client.get(f"/api/conversations/{conv['id']}", headers=h()), 200).json()["activity"])
+
+    add_run(RunStatus.DONE)
+    assert activity() == "idle"  # a finished run leaves no dot behind
+    add_run(RunStatus.RUNNING)
+    assert activity() == "running"
+    # A run parked on a confirmation wins: it is the one that needs Arsen.
+    add_run(RunStatus.WAITING_USER)
+    assert activity() == "waiting"
+    # The list view derives it too, not only the single-conversation read.
+    assert client.get("/api/conversations", headers=h()).json()[0]["activity"] == "waiting"
 
 
 def _get_paths(routes: object) -> list[str]:

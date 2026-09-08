@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Conversation, Message, ModelUsage, Run, ServerEvent } from '../protocol/types';
+import type { ChatFolder, Conversation, Message, ModelUsage, Run, ServerEvent } from '../protocol/types';
 import { applyServerEvent, applyServerEvents } from './reducer';
 import { selectActiveRun, selectPendingConfirm, selectSendRefusal, selectSidebar } from './selectors';
 import { initialChatState, type ChatState, type LocalMessage } from './state';
@@ -23,6 +23,7 @@ function conv(id: string, updated: number, extra: Partial<Conversation> = {}): C
     title: id,
     folder_key: null,
     folder_label: null,
+    folder_id: null,
     archived: false,
     unread: false,
     pinned: false,
@@ -30,6 +31,7 @@ function conv(id: string, updated: number, extra: Partial<Conversation> = {}): C
     instructions: '',
     preview: null,
     message_count: 0,
+    activity: 'idle',
     created_at: iso(0),
     updated_at: iso(updated),
     ...extra,
@@ -207,6 +209,34 @@ describe('applyServerEvent — conversations', () => {
     expect(folders[0]?.groups[0]?.label).toBe('Morning brief');
     expect(folders[0]?.groups[0]?.conversations.map((c) => c.id)).toEqual(['s2', 's1']);
     expect(folders[1]?.groups[0]?.label).toBe('2026-09-05');
+  });
+
+  it("files chats into Arsen's own folders, and archiving still wins over filing", () => {
+    let s = initialChatState();
+    const folders: ChatFolder[] = [
+      { id: 'cfld_work', name: 'Work', position: 0, conversation_count: 0, unread_count: 0, created_at: iso(0), updated_at: iso(0) },
+      { id: 'cfld_empty', name: 'Home', position: 1, conversation_count: 0, unread_count: 0, created_at: iso(0), updated_at: iso(0) },
+    ];
+    const evs: ServerEvent[] = [
+      { type: 'conversation.updated', ts: iso(0), conversation: conv('loose', 10) },
+      { type: 'conversation.updated', ts: iso(0), conversation: conv('filed', 20, { folder_id: 'cfld_work', activity: 'running' }) },
+      { type: 'conversation.updated', ts: iso(0), conversation: conv('unread', 30, { folder_id: 'cfld_work', unread: true }) },
+      // A folder id nobody knows any more must not swallow the chat.
+      { type: 'conversation.updated', ts: iso(0), conversation: conv('orphan', 40, { folder_id: 'cfld_gone' }) },
+      // Archived beats filed: it belongs to Archive until it comes back out.
+      { type: 'conversation.updated', ts: iso(0), conversation: conv('old', 50, { folder_id: 'cfld_work', archived: true }) },
+    ];
+    s = applyServerEvents(s, evs, T0);
+    const model = selectSidebar(s.conversations, folders);
+    expect(model.chats.map((c) => c.id)).toEqual(['orphan', 'loose']);
+    expect(model.chatFolders.map((f) => f.folder.id)).toEqual(['cfld_work', 'cfld_empty']);
+    expect(model.chatFolders[0]?.conversations.map((c) => c.id)).toEqual(['unread', 'filed']);
+    expect(model.chatFolders[0]?.unread).toBe(1);
+    expect(model.chatFolders[0]?.running).toBe(1);
+    expect(model.chatFolders[0]?.waiting).toBe(0);
+    // An empty folder is still shown — it is where the next drop lands.
+    expect(model.chatFolders[1]?.conversations).toEqual([]);
+    expect(model.folders.find((f) => f.kind === 'archive')?.count).toBe(1);
   });
 
   it('switches to the conversation the server created for a null-conversation send', () => {

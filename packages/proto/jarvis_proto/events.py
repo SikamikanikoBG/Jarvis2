@@ -202,6 +202,16 @@ class ConversationDeleted(_Base):
     conversation_id: str
 
 
+class FoldersChanged(_Base):
+    """Arsen's chat folders were added to, renamed, reordered or removed.
+
+    Conversation-level, so it reaches every client: a folder made on the phone has to appear
+    in the tab on the desk without a reload.
+    """
+
+    type: Literal["folders.changed"] = "folders.changed"
+
+
 class MessageCreated(_Base):
     type: Literal["message.created"] = "message.created"
     message: Message
@@ -290,6 +300,7 @@ ServerEvent = Annotated[
     | JudgeVerdict
     | ConversationUpdated
     | ConversationDeleted
+    | FoldersChanged
     | MessageCreated
     | RunUpdated
     | Pong

@@ -1,4 +1,4 @@
-import type { Conversation, ConversationKind, Run, ToolConfirmRequested } from '../protocol/types';
+import type { ChatFolder, Conversation, ConversationKind, Run, ToolConfirmRequested } from '../protocol/types';
 import { isTerminal } from '../protocol/types';
 import type { ChatState } from './state';
 
@@ -29,8 +29,22 @@ export interface Folder {
   unread: number;
 }
 
+/** One of Arsen's own folders, with the chats filed in it. */
+export interface ChatFolderSection {
+  folder: ChatFolder;
+  conversations: Conversation[];
+  unread: number;
+  /** Live chats inside, so a collapsed folder can still say something is moving in there. */
+  running: number;
+  waiting: number;
+}
+
 export interface SidebarModel {
+  /** Chats in none of Arsen's folders: flat, pinned first, then newest first. */
   chats: Conversation[];
+  /** Arsen's own folders, in his order — including the empty ones, which are drop targets. */
+  chatFolders: ChatFolderSection[];
+  /** The machine's folders (Scheduled, Triage, Meetings, Collab, Archive). */
   folders: Folder[];
 }
 
@@ -43,15 +57,24 @@ function folderOf(c: Conversation): FolderKind | 'chat' {
   return c.kind;
 }
 
-/** Chats flat and newest first; everything else grouped by kind, then by folder. */
-export function selectSidebar(conversations: Record<string, Conversation>): SidebarModel {
+/**
+ * Chats flat and newest first; everything else grouped by kind, then by folder.
+ *
+ * A chat Arsen filed in one of his own folders leaves the flat list for that folder. Archiving
+ * still wins over filing: an archived chat belongs to the Archive folder no matter where it was
+ * filed, so unarchiving it puts it straight back where he had it.
+ */
+export function selectSidebar(conversations: Record<string, Conversation>, chatFolders: ChatFolder[] = []): SidebarModel {
   const all = Object.values(conversations).sort(byUpdatedDesc);
   const chats: Conversation[] = [];
+  const filed = new Map<string, Conversation[]>(chatFolders.map((f) => [f.id, []]));
   const buckets = new Map<FolderKind, Map<string, FolderGroup>>();
   for (const c of all) {
     const f = folderOf(c);
     if (f === 'chat') {
-      chats.push(c);
+      // An id we do not know (the folder was deleted elsewhere) falls back to the flat list.
+      const bucket = c.folder_id ? filed.get(c.folder_id) : undefined;
+      (bucket ?? chats).push(c);
       continue;
     }
     const groups = buckets.get(f) ?? new Map<string, FolderGroup>();
@@ -63,6 +86,16 @@ export function selectSidebar(conversations: Record<string, Conversation>): Side
     groups.set(key, g);
   }
   chats.sort(byPinnedThenUpdated);
+  const sections: ChatFolderSection[] = chatFolders.map((folder) => {
+    const list = (filed.get(folder.id) ?? []).sort(byPinnedThenUpdated);
+    return {
+      folder,
+      conversations: list,
+      unread: list.filter((c) => c.unread).length,
+      running: list.filter((c) => c.activity === 'running').length,
+      waiting: list.filter((c) => c.activity === 'waiting').length,
+    };
+  });
   const folders: Folder[] = [];
   for (const kind of FOLDER_ORDER) {
     const groups = buckets.get(kind);
@@ -76,7 +109,7 @@ export function selectSidebar(conversations: Record<string, Conversation>): Side
       unread: list.reduce((n, g) => n + g.unread, 0),
     });
   }
-  return { chats, folders };
+  return { chats, chatFolders: sections, folders };
 }
 
 /** Newest non-terminal run of a conversation, if any. */

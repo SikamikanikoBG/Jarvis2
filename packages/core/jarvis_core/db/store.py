@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -11,7 +12,9 @@ import aiosqlite
 
 from jarvis_core.db.connection import Database
 from jarvis_proto import (
+    ChatFolder,
     Conversation,
+    ConversationActivity,
     ConversationKind,
     Message,
     ModelUsage,
@@ -57,6 +60,18 @@ def _snippet(text: str, query: str, width: int = 70) -> str:
     return ("…" if start > 0 else "") + flat[start:end] + ("…" if end < len(flat) else "")
 
 
+# The sidebar's activity dot, computed per row rather than stored: the runs table already holds
+# the truth and a copy on the conversation would be the thing that goes stale. A run parked on a
+# confirmation wins over one still working — only that one needs Arsen.
+_ACTIVITY_SQL = (
+    "(SELECT CASE WHEN SUM(r.status = 'waiting_user') > 0 THEN 'waiting'"
+    "             WHEN COUNT(*) > 0 THEN 'running' ELSE 'idle' END"
+    "   FROM runs r WHERE r.conversation_id = c.id"
+    "    AND r.status NOT IN ('done', 'failed', 'cancelled'))"
+)
+_CONV_SELECT = f"SELECT c.*, {_ACTIVITY_SQL} AS activity FROM conversations c"
+
+
 class Store:
     def __init__(self, db: Database) -> None:
         self.db = db
@@ -65,12 +80,17 @@ class Store:
 
     @staticmethod
     def _conversation(row: aiosqlite.Row) -> Conversation:
+        # `activity` is present only on the selects that ask for it; a row from anywhere else
+        # (a search join, a test fixture) simply reads as idle rather than blowing up.
+        # .keys() is not redundant: sqlite3.Row is a sequence, so `in row` tests the VALUES.
+        raw = row["activity"] if "activity" in row.keys() else None  # noqa: SIM118
         return Conversation(
             id=row["id"],
             kind=ConversationKind(row["kind"]),
             title=row["title"],
             folder_key=row["folder_key"],
             folder_label=row["folder_label"],
+            folder_id=row["folder_id"],
             archived=bool(row["archived"]),
             unread=bool(row["unread"]),
             pinned=bool(row["pinned"]),
@@ -78,6 +98,7 @@ class Store:
             instructions=row["instructions"] or "",
             preview=row["preview"],
             message_count=row["message_count"],
+            activity=ConversationActivity(raw) if raw else ConversationActivity.IDLE,
             created_at=_dt(row["created_at"]) or datetime.now(UTC),
             updated_at=_dt(row["updated_at"]) or datetime.now(UTC),
         )
@@ -107,14 +128,14 @@ class Store:
         return conv
 
     async def get_conversation(self, conversation_id: str) -> Conversation | None:
-        row = await self.db.fetchone("SELECT * FROM conversations WHERE id = ?", (conversation_id,))
+        row = await self.db.fetchone(f"{_CONV_SELECT} WHERE c.id = ?", (conversation_id,))
         return self._conversation(row) if row else None
 
     async def list_conversations(self, *, include_archived: bool = False) -> list[Conversation]:
-        sql = "SELECT * FROM conversations"
+        sql = _CONV_SELECT
         if not include_archived:
-            sql += " WHERE archived = 0"
-        sql += " ORDER BY updated_at DESC"
+            sql += " WHERE c.archived = 0"
+        sql += " ORDER BY c.updated_at DESC"
         return [self._conversation(r) for r in await self.db.fetchall(sql)]
 
     async def update_conversation(self, conversation_id: str, **fields: Any) -> Conversation | None:
@@ -128,6 +149,7 @@ class Store:
             "preview",
             "folder_key",
             "folder_label",
+            "folder_id",
             "kind",
         }
         sets: list[str] = []
@@ -166,7 +188,7 @@ class Store:
         hits: list[SearchHit] = []
         seen: set[str] = set()
         rows = await self.db.fetchall(
-            "SELECT * FROM conversations WHERE title LIKE ? ESCAPE '\\' ORDER BY updated_at DESC LIMIT ?",
+            f"{_CONV_SELECT} WHERE c.title LIKE ? ESCAPE '\\' ORDER BY c.updated_at DESC LIMIT ?",
             (_escape_like(like), limit),
         )
         for r in rows:
@@ -176,8 +198,8 @@ class Store:
         if len(hits) >= limit:
             return hits
         rows = await self.db.fetchall(
-            "SELECT m.id AS message_id, m.content AS content, c.* FROM messages m"
-            " JOIN conversations c ON c.id = m.conversation_id"
+            f"SELECT m.id AS message_id, m.content AS content, c.*, {_ACTIVITY_SQL} AS activity"
+            " FROM messages m JOIN conversations c ON c.id = m.conversation_id"
             " WHERE m.role IN ('user', 'assistant') AND m.name IS NULL AND m.content LIKE ? ESCAPE '\\'"
             " ORDER BY m.rowid DESC LIMIT ?",
             (_escape_like(like), limit * 4),
@@ -237,6 +259,69 @@ class Store:
                 last_preview = r["content"]
         await self.touch_conversation(fork.id, last_preview)
         return await self.get_conversation(fork.id)
+
+    # --- chat folders (Arsen's own filing) ------------------------------------------
+
+    async def list_folders(self) -> list[ChatFolder]:
+        """Every folder with what is filed in it. Archived chats are not counted: a folder
+        whose chats are all archived should read empty, not read full and open onto nothing."""
+        rows = await self.db.fetchall(
+            "SELECT f.*,"
+            " (SELECT COUNT(*) FROM conversations c WHERE c.folder_id = f.id AND c.archived = 0)"
+            "   AS conversation_count,"
+            " (SELECT COUNT(*) FROM conversations c WHERE c.folder_id = f.id AND c.archived = 0"
+            "    AND c.unread = 1) AS unread_count"
+            " FROM conversation_folders f ORDER BY f.position, f.created_at"
+        )
+        return [ChatFolder(**dict(r)) for r in rows]
+
+    async def get_folder(self, folder_id: str) -> ChatFolder | None:
+        return next((f for f in await self.list_folders() if f.id == folder_id), None)
+
+    async def create_folder(self, name: str) -> ChatFolder:
+        row = await self.db.fetchone("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM conversation_folders")
+        folder = ChatFolder(id=new_id("cfld"), name=name.strip()[:60], position=int(row["p"]) if row else 0)
+        await self.db.execute(
+            "INSERT INTO conversation_folders(id, name, position, created_at, updated_at) VALUES (?,?,?,?,?)",
+            (folder.id, folder.name, folder.position, folder.created_at.isoformat(), folder.updated_at.isoformat()),
+        )
+        return folder
+
+    async def rename_folder(self, folder_id: str, name: str) -> ChatFolder | None:
+        await self.db.execute(
+            "UPDATE conversation_folders SET name = ?, updated_at = ? WHERE id = ?",
+            (name.strip()[:60], _now(), folder_id),
+        )
+        return await self.get_folder(folder_id)
+
+    async def reorder_folder(self, folder_id: str, position: int) -> ChatFolder | None:
+        """Move a folder to a target index and renumber the rest (what the UI sends)."""
+        ids = [f.id for f in await self.list_folders()]
+        if folder_id not in ids:
+            return None
+        ids.remove(folder_id)
+        ids.insert(max(0, min(position, len(ids))), folder_id)
+        now = _now()
+        for idx, fid in enumerate(ids):
+            await self.db.execute(
+                "UPDATE conversation_folders SET position = ?, updated_at = ? WHERE id = ?", (idx, now, fid)
+            )
+        return await self.get_folder(folder_id)
+
+    async def delete_folder(self, folder_id: str) -> list[str]:
+        """Drop the folder and return the chats that fell out of it. The chats SURVIVE — the
+        foreign key is ON DELETE SET NULL, so they land back in the flat list."""
+        rows = await self.db.fetchall("SELECT id FROM conversations WHERE folder_id = ?", (folder_id,))
+        await self.db.execute("DELETE FROM conversation_folders WHERE id = ?", (folder_id,))
+        return [r["id"] for r in rows]
+
+    async def conversations_by_id(self, ids: Sequence[str]) -> list[Conversation]:
+        """The given conversations, in one query, skipping ids that no longer exist."""
+        if not ids:
+            return []
+        marks = ",".join("?" * len(ids))
+        rows = await self.db.fetchall(f"{_CONV_SELECT} WHERE c.id IN ({marks})", tuple(ids))
+        return [self._conversation(r) for r in rows]
 
     # --- messages -------------------------------------------------------------------
 

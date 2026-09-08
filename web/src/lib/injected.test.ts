@@ -9,6 +9,7 @@ const conv = (preview: string | null): Conversation => ({
   title: 't',
   folder_key: null,
   folder_label: null,
+  folder_id: null,
   archived: false,
   unread: false,
   pinned: false,
@@ -16,6 +17,7 @@ const conv = (preview: string | null): Conversation => ({
   instructions: '',
   preview,
   message_count: 0,
+  activity: 'idle',
   created_at: '2026-09-05T10:00:00.000Z',
   updated_at: '2026-09-05T10:00:00.000Z',
 });

@@ -7,9 +7,44 @@ browser extension, external collaborators. Types are the pydantic models in
 Phase-1 contracts (conversations, runs, settings, tools, `/ws`) are unchanged and listed in
 `web/README.md`.
 
-Conventions: ids are strings (`brd_…`, `note_…`, `ent_…`, `sch_…`, `mtg_…`, `key_…`); times are
+Conventions: ids are strings (`brd_…`, `note_…`, `ent_…`, `sch_…`, `mtg_…`, `key_…`, `cfld_…`); times are
 ISO-8601 UTC; every mutation is echoed on the WS as an event so all open clients converge;
 `DELETE` returns 204; validation failures are 422 `{detail: [...]}`.
+
+## Chat folders and bulk edits (wave 2)
+
+Keeping the chat list tidy. Two separate things share this section because they are the same
+job: folders Arsen names himself, and one action over a multi-selection.
+
+```
+GET    /api/folders                          → ChatFolder[]
+POST   /api/folders        {name}            → ChatFolder                  201
+PATCH  /api/folders/{id}   {name?, position?} → ChatFolder
+DELETE /api/folders/{id}                                                   204
+POST   /api/conversations/bulk {ids, action, folder_id?} → {deleted, updated}
+```
+`ChatFolder {id, name, position, conversation_count, unread_count, created_at, updated_at}`
+Counts exclude archived chats. `action` is one of `delete | archive | unarchive | move | read |
+pin | unpin`; `folder_id` is only read for `move` (null takes the chats out of every folder).
+Ids are de-duplicated, capped at 500, and ones that no longer exist are skipped rather than
+failing the request — a stale sidebar selection must not lose the whole gesture. `deleted` holds
+ids, `updated` holds the conversations as they are now.
+
+`Conversation.folder_id` is Arsen's filing and is patchable on the conversation itself:
+`PATCH /api/conversations/{id} {folder_id}` — omit the key to leave the filing alone, send
+`null` to take the chat out of every folder. It is separate from `folder_key`/`folder_label`,
+which the machine fills in (a schedule's name, a triage account, a collab key) and which group
+the kind-folders. Deleting a folder never deletes the chats in it: they fall back into the flat
+list (`ON DELETE SET NULL`).
+
+`Conversation.activity` is `idle | running | waiting`, **derived from the runs table on every
+read** and never stored. `waiting` means a run in that chat is parked on a confirmation and will
+not move until Arsen answers, and it wins over `running`. This is what the sidebar's activity dot
+reads, for every chat in the list rather than only the open one — a client has loaded runs for
+the conversation it is looking at and no others. `conversation.updated` is broadcast to every
+client at each transition (a run created, parked, let go, or finished), so the dots stay live
+without subscribing to anything.
+WS: `folders.changed {}` (the folder list changed anywhere — refetch it).
 
 ## Boards (Phase 2)
 

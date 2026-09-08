@@ -673,6 +673,7 @@ class AgentLoop:
         run.waiting_reason = reason
         await self._store.save_run(run)
         await emit(RunWaitingUser(run_id="", conversation_id="", reason=reason, call_id=call.id))
+        await ctl.emitter.announce_activity()  # the sidebar dot turns from "working" to "asks you"
         cancel_task = asyncio.create_task(ctl.cancel.wait())
         try:
             done, _ = await asyncio.wait({fut, cancel_task}, return_when=asyncio.FIRST_COMPLETED)
@@ -685,6 +686,7 @@ class AgentLoop:
         run.status = RunStatus.RUNNING
         run.waiting_reason = None
         await self._store.save_run(run)
+        await ctl.emitter.announce_activity()  # ...and back to "working"
 
     async def _recorded_decision(self, run: Run, call_id: str) -> tuple[bool, str | None] | None:
         decision: tuple[bool, str | None] | None = None

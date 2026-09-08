@@ -300,8 +300,12 @@
   opacity: 1;
 }
 @media (hover: none) {
+  /* No hover to reveal it, so it is always there — and at the top right it printed straight
+     over the timestamp. Below the time instead, where the row has room. */
   .conv-more {
     opacity: 1;
+    top: auto;
+    bottom: 5px;
   }
 }
 .conv-rename {
@@ -316,6 +320,156 @@
   border-radius: 50%;
   background: var(--accent);
   flex: none;
+}
+
+/* Activity: "this chat is alive". A ring, never the same shape as the unread dot — one means
+   something happened, the other means something is happening. */
+.activity-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  border: 2px solid var(--ok);
+}
+.activity-dot.running {
+  animation: activity-pulse 1.6s ease-out infinite;
+}
+.activity-dot.waiting {
+  border-color: var(--warn);
+  background: var(--warn);
+}
+@keyframes activity-pulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--ok-soft);
+  }
+  70% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+/* A chat that never stops moving must not become a strobe for anyone who asked it not to. */
+@media (prefers-reduced-motion: reduce) {
+  .activity-dot.running {
+    animation: none;
+    background: var(--ok);
+  }
+}
+.activity-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+}
+.activity-n {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  color: var(--ok);
+  font-variant-numeric: tabular-nums;
+}
+.activity-n.waiting {
+  color: var(--warn);
+}
+
+/* Arsen's own folders: a head that also has a menu, and takes a drop. */
+.folder-head-row {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+.folder-head-row .folder-head {
+  flex: 1;
+  min-width: 0;
+  /* Room for the absolutely-placed menu button, so the count never sits under it — on a phone
+     that button is always visible, and the two were printing on top of each other. */
+  padding-right: 26px;
+}
+.folder-icon {
+  flex: none;
+  opacity: 0.75;
+}
+.folder-more {
+  position: absolute;
+  right: 2px;
+  opacity: 0;
+}
+.folder-head-row:hover .folder-more,
+.folder-more:focus-visible {
+  opacity: 1;
+}
+@media (hover: none) {
+  .folder-more {
+    opacity: 1;
+  }
+}
+.chat-folder.dropping {
+  outline: 1px dashed var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+}
+.folder-empty {
+  padding: 6px 8px 8px 22px;
+  color: var(--fg-dim);
+}
+.folder-new {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 14px 6px;
+  color: var(--fg-muted);
+}
+.folder-new .input {
+  flex: 1;
+  min-height: 30px;
+  padding: 3px 8px;
+  font-size: var(--fs-md);
+}
+
+/* Multi-select */
+.conv-check {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  color: var(--accent-ink);
+}
+.conv-check.on {
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
+}
+.conv.selected {
+  background: var(--accent-soft);
+}
+.selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 8px 4px;
+  padding: 4px 4px 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+.selection-count {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+}
+.selection-bar .icon-btn.danger {
+  color: var(--danger);
+}
+.selection-bar .inline-confirm {
+  flex: 1;
 }
 
 /* Drawers (mobile sidebar, inspector sheet) */

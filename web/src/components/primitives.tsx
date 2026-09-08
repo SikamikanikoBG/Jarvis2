@@ -50,6 +50,10 @@ export interface MenuItem {
   label: string;
   icon?: IconName;
   danger?: boolean;
+  /** Shown but not clickable — for the one-line explanation of an empty submenu. */
+  disabled?: boolean;
+  /** Leaves the menu open, for an item that swaps the menu's contents (a submenu). */
+  keepOpen?: boolean;
   onSelect: () => void;
 }
 
@@ -101,8 +105,9 @@ export function Menu({ items, onClose, anchor }: MenuProps) {
           type="button"
           role="menuitem"
           className={it.danger ? 'menu-item danger' : 'menu-item'}
+          disabled={it.disabled}
           onClick={() => {
-            onClose();
+            if (!it.keepOpen) onClose();
             it.onSelect();
           }}
         >

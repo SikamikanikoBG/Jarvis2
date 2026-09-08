@@ -121,6 +121,25 @@ export interface Run {
 
 export type ConversationKind = 'chat' | 'scheduled' | 'collab' | 'triage' | 'meeting' | 'archive';
 
+/**
+ * What the sidebar's activity dot says about a conversation. Derived by the server from the
+ * runs table on every read, so it is right for every chat in the list — not just the open one,
+ * whose runs are the only ones this client has actually loaded.
+ */
+export type ConversationActivity = 'idle' | 'running' | 'waiting';
+
+/** A folder Arsen made himself, to file plain chats in (`Conversation.folder_id`). */
+export interface ChatFolder {
+  id: string;
+  name: string;
+  position: number;
+  /** Unarchived chats filed here, and how many of those are unread. */
+  conversation_count: number;
+  unread_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export type AttachmentKind = 'image' | 'document' | 'text' | 'email';
 
 /** A photo, a file, pasted text or an email thread handed to Jarvis with a message. */
@@ -141,6 +160,8 @@ export interface Conversation {
   title: string;
   folder_key: string | null;
   folder_label: string | null;
+  /** Arsen's own filing (a `ChatFolder` id); `folder_key`/`folder_label` above are the machine's. */
+  folder_id: string | null;
   archived: boolean;
   unread: boolean;
   pinned: boolean;
@@ -150,6 +171,7 @@ export interface Conversation {
   instructions: string;
   preview: string | null;
   message_count: number;
+  activity: ConversationActivity;
   created_at: string;
   updated_at: string;
 }
@@ -645,6 +667,10 @@ export interface ConversationDeleted extends Base {
   type: 'conversation.deleted';
   conversation_id: string;
 }
+/** Arsen's chat folders changed (added, renamed, reordered, removed) — refetch the list. */
+export interface FoldersChanged extends Base {
+  type: 'folders.changed';
+}
 export interface MessageCreated extends Base {
   type: 'message.created';
   message: Message;
@@ -729,6 +755,7 @@ export type ServerEvent =
   | RunScopedEvent
   | ConversationUpdated
   | ConversationDeleted
+  | FoldersChanged
   | MessageCreated
   | RunUpdated
   | Pong
@@ -838,6 +865,16 @@ export interface SkillContent {
 export interface ConversationSummary {
   up_to_message_id: string;
   text: string;
+}
+
+/** `POST /api/conversations/bulk` — one action applied to a multi-selection in the sidebar. */
+export type BulkConversationAction = 'delete' | 'archive' | 'unarchive' | 'move' | 'read' | 'pin' | 'unpin';
+
+export interface BulkResult {
+  /** Ids that are gone (action = "delete"). */
+  deleted: string[];
+  /** The conversations as they are now (every other action). */
+  updated: Conversation[];
 }
 
 /** `POST /api/stt` */

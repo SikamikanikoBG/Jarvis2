@@ -51,8 +51,11 @@ src/
                    routing side effects) · reducer.test.ts · features.test.ts
   chat/            ChatScreen, Transcript (autoscroll + jump pill), MessageItem, StreamBubble, ReasoningFold,
                    ToolCard, ConfirmCard, Note, RunChip, Composer
-  sidebar/         Sidebar (Chats flat + folders by kind → folder_label ?? folder_key), ConversationRow (menu,
-                   inline rename, inline delete confirm)
+  sidebar/         Sidebar (Chats flat + Arsen's own folders + folders by kind → folder_label ?? folder_key;
+                   multi-select bar, "only what's waiting for me" toggle), ConversationRow (menu, inline
+                   rename, inline delete confirm, activity dot, drag to file), ChatFolderRow, SelectionBar,
+                   SearchBox + SearchResults (local titles + server titles/messages, click a message hit to
+                   land on it), ActivityDot, dnd.ts
   runs/            RunInspector (timeline with Δt, model/tool pairs, tok/s, payload JSON), RunsScreen, timeline.ts
   settings/        SettingsScreen — roles × ModelSpec (think + level), context/behaviour, MCP servers editor,
                    triage block, collaborator keys, budgets; PATCHes only dirty top-level keys

@@ -250,6 +250,13 @@
   color: var(--fg);
   font: inherit;
 }
+/* type="search" brings its own clear button, next to the one we draw. Ours stays: it is the
+   right size, keyboard-reachable and labelled. */
+.search-input::-webkit-search-cancel-button,
+.search-input::-webkit-search-decoration {
+  appearance: none;
+  display: none;
+}
 .search-results {
   flex: 1;
   min-height: 0;
@@ -278,6 +285,11 @@
 .search-hit:focus-visible {
   background: var(--bg-elevated);
 }
+.search-hit-title {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  max-width: 100%;
+}
 .search-snippet {
   max-width: 100%;
   font-size: var(--fs-sm);
@@ -285,6 +297,32 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.search-mark {
+  background: var(--accent-soft);
+  color: var(--fg);
+  border-radius: 3px;
+  padding: 0 1px;
+  font-weight: 600;
+}
+/* The transcript scrolled here from a search hit: say so for a moment, then get out of the way. */
+.msg-flash {
+  animation: msg-flash 1.8s ease-out;
+}
+@keyframes msg-flash {
+  0%,
+  35% {
+    box-shadow: 0 0 0 2px var(--accent);
+  }
+  100% {
+    box-shadow: 0 0 0 2px transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .msg-flash {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--accent);
+  }
 }
 .conv-pin {
   flex: none;

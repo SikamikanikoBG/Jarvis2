@@ -307,3 +307,24 @@ harness — library vs. own is an open question to settle in the design.
   name — a toggle keeps one name and says its state through `aria-pressed`; and dropping a chat
   on the flat list un-files it, which is right when that list means "no folder" and wrong while
   it means "the live ones", so the root drop is off while filtering.
+- 2026-09-09 — The filter now covers the blue dot too, because running and unread are the same
+  chat five seconds apart: a run finishes, the reply lands, and having to leave the filter to go
+  and read the answer was the whole reason for turning it on. So the predicate is
+  `activity != idle || unread`, the toggle is "only what's waiting for me", and its badge counts
+  the union. One thing that only shows up when you use it: opening an unread chat marks it read,
+  which would drop the row out from under the cursor while reading it — so the conversation on
+  screen is pinned into the filtered list (and deliberately not counted in the badge).
+  Search, meanwhile, already existed and was quietly half-wired. Titles were matched locally over
+  the conversations the client happened to have loaded, and the server's answer was filtered down
+  to `matched === 'message'` — so its title half, the only thing that can find an ARCHIVED chat by
+  name, was thrown away. Both halves are used now, de-duplicated by id. A chat hit renders as a
+  real conversation row (preview, time, unread and activity dots, its menu) instead of a bare
+  line; a message hit highlights the query inside the snippet with `<mark>`; and clicking one
+  lands on the message that matched instead of at the bottom of the transcript — messages carry
+  `id="msg-<id>"` now, and the transcript unpins itself, scrolls the match into the middle and
+  flashes it for a moment, with "Jump to latest" left offered. The effect re-runs on each items
+  change, so it waits out the fetch rather than guessing a delay.
+  And the mock core had no `/api/search` at all: in dev the box could only ever do local title
+  matching, which is a good part of why the feature felt missing. It has the route now, matching
+  the core's rule (titles, then user/assistant messages that are not injected context, one hit per
+  conversation, a ~70-character window around the match).

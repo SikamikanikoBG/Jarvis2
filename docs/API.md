@@ -46,9 +46,17 @@ client at each transition (a run created, parked, let go, or finished), so the d
 without subscribing to anything.
 WS: `folders.changed {}` (the folder list changed anywhere — refetch it).
 
-The sidebar's "only what's running" toggle is purely client-side: it filters on `activity` and
-needs no endpoint. It replaces the whole grouped list with one flat list of live conversations —
-a scheduled fire that is working belongs next to a chat in that answer, not behind a folder head.
+The sidebar's "only what's waiting for me" toggle is purely client-side: it keeps the chats where
+`activity != "idle" || unread` and needs no endpoint. It replaces the whole grouped list with one
+flat list — a scheduled fire that is working belongs next to a chat in that answer, not behind a
+folder head — and the conversation on screen is pinned into it so the row being read cannot vanish
+when opening it clears its unread flag.
+
+`GET /api/search?q=&limit=` (a Phase-1 route) returns `SearchHit[]`: titles first, then message
+text, one hit per conversation, `matched: "title" | "message"` with a `snippet` and `message_id`
+on the message ones. The sidebar uses BOTH halves — the local conversation list for instant title
+narrowing, and this for the titles it has not loaded (archived) plus the message hits. It is the
+only way to find an archived chat by title, and `message_id` is what the transcript scrolls to.
 
 ## Boards (Phase 2)
 

@@ -68,13 +68,23 @@ export interface UiState {
   /** Folder ids collapsed by hand (per device). */
   collapsedFolders: string[];
   /**
-   * Sidebar filter: show only the chats with a run going.
+   * Sidebar filter: only the chats that want him — a run going, or an unread reply.
    *
-   * Session-only on purpose — it is a "what is Jarvis doing right now" view, not a preference.
+   * Unread belongs in the same view as running because they are the same chat five seconds
+   * apart: a run finishes, the blue dot appears, and having to leave the filter to go and read
+   * the answer was the whole point of turning it on.
+   *
+   * Session-only on purpose — it is a "what is waiting for me" view, not a preference.
    * Remembered across a reload it would greet him with an empty list on a quiet morning and
    * look like every chat had vanished.
    */
-  runningOnly: boolean;
+  attentionOnly: boolean;
+  /**
+   * A message the transcript should scroll to and flash once it has rendered — how a search hit
+   * inside a long conversation lands on the line that matched instead of at the bottom.
+   * Cleared by the transcript the moment it finds it.
+   */
+  scrollToMessage: string | null;
 }
 
 export interface Actions {
@@ -126,7 +136,10 @@ export interface Actions {
   deleteFolder: (id: string) => Promise<void>;
   moveConversation: (id: string, folderId: string | null) => Promise<void>;
   toggleFolderCollapsed: (id: string) => void;
-  setRunningOnly: (on: boolean) => void;
+  setAttentionOnly: (on: boolean) => void;
+  /** Open a conversation and land on one of its messages (a search hit). */
+  openConversationAt: (conversationId: string, messageId: string | null) => Promise<void>;
+  clearScrollToMessage: () => void;
   /** Add or remove one row from the sidebar selection (and make it the range anchor). */
   toggleSelected: (id: string) => void;
   /** Shift-click: select everything between the anchor and `id` along the rows as shown. */
@@ -186,7 +199,8 @@ export const useStore = create<AppState>()((set, get) => ({
   selection: [],
   selectionAnchor: null,
   collapsedFolders: readCollapsedFolders(),
-  runningOnly: false,
+  attentionOnly: false,
+  scrollToMessage: null,
 
   boot: () => {
     const route = parseLocation();
@@ -594,7 +608,16 @@ export const useStore = create<AppState>()((set, get) => ({
     });
   },
 
-  setRunningOnly: (on) => set({ runningOnly: on }),
+  setAttentionOnly: (on) => set({ attentionOnly: on }),
+
+  openConversationAt: async (conversationId, messageId) => {
+    // Set before opening: the transcript mounts pinned to the bottom and looks for this on its
+    // first render with messages, which happens inside openConversation's refresh.
+    set({ scrollToMessage: messageId });
+    await get().openConversation(conversationId);
+  },
+
+  clearScrollToMessage: () => set({ scrollToMessage: null }),
 
   toggleSelected: (id) => {
     set((s) => ({

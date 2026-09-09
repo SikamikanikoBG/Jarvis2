@@ -207,7 +207,8 @@
   padding: 18px 8px;
 }
 
-/* "Only what is running": a toggle that also says how many that would be. */
+/* "Only what is waiting for me": a toggle that also says how many that would be. Accent, not
+   green — the count is mostly unread replies, and accent is this app's "look here". */
 .live-toggle {
   position: relative;
 }
@@ -219,7 +220,7 @@
   height: 14px;
   padding: 0 3px;
   border-radius: var(--radius-pill);
-  background: var(--ok);
+  background: var(--accent-fill);
   color: var(--accent-ink);
   font-size: 9px;
   font-weight: 800;

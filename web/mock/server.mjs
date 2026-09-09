@@ -27,6 +27,16 @@ const runEvents = new Map(); // run id → events
 const cancelFlags = new Map();
 const confirmWaiters = new Map(); // run id → resolve(approved)
 
+/** A window of `text` around the first match, the way jarvis_core.db.store._snippet does it. */
+function snippetAround(text, q, width = 70) {
+  const flat = text.split(/\s+/).join(' ');
+  const at = flat.toLowerCase().indexOf(q.toLowerCase());
+  if (at < 0) return flat.slice(0, width) + (flat.length > width ? '…' : '');
+  const start = Math.max(0, at - Math.floor(width / 2));
+  const end = Math.min(flat.length, at + q.length + Math.floor(width / 2));
+  return (start > 0 ? '…' : '') + flat.slice(start, end) + (end < flat.length ? '…' : '');
+}
+
 function folder(name, position) {
   const f = { id: newId('cfld'), name, position, conversation_count: 0, unread_count: 0, created_at: now(), updated_at: now() };
   chatFolders.set(f.id, f);
@@ -595,6 +605,40 @@ const server = createServer(async (req, res) => {
         broadcast({ type: 'conversation.deleted', ts: now(), conversation_id: id });
         return json(res, 204);
       }
+    }
+    if (resource === 'search') {
+      const q = (url.searchParams.get('q') ?? '').split(/\s+/).filter(Boolean).join(' ');
+      const limit = Math.min(Number(url.searchParams.get('limit') ?? 30) || 30, 100);
+      if (!q) return json(res, 200, []);
+      const needle = q.toLowerCase();
+      const hits = [];
+      const seen = new Set();
+      for (const c of [...conversations.values()].sort((a, b) => b.updated_at.localeCompare(a.updated_at))) {
+        if (hits.length >= limit) break;
+        if (!c.title.toLowerCase().includes(needle)) continue;
+        seen.add(c.id);
+        hits.push({ conversation: refreshActivity(c), message_id: null, snippet: null, matched: 'title' });
+      }
+      if (hits.length < limit) {
+        // Newest messages first, and only what Arsen or Jarvis actually said — an injected
+        // context block matching the query is not a search result.
+        const all = [];
+        for (const [cid, list] of messages) for (const m of list) all.push([cid, m]);
+        for (const [cid, m] of all.reverse()) {
+          if (hits.length >= limit) break;
+          if (seen.has(cid) || !conversations.has(cid)) continue;
+          if (!['user', 'assistant'].includes(m.role) || m.name !== null) continue;
+          if (!(m.content ?? '').toLowerCase().includes(needle)) continue;
+          seen.add(cid);
+          hits.push({
+            conversation: refreshActivity(conversations.get(cid)),
+            message_id: m.id,
+            snippet: snippetAround(m.content, q),
+            matched: 'message',
+          });
+        }
+      }
+      return json(res, 200, hits);
     }
     if (resource === 'folders') {
       if (!id) {

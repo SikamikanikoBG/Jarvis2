@@ -23,11 +23,11 @@ export function Sidebar() {
   const createFolder = useStore((s) => s.createFolder);
   const bulk = useStore((s) => s.bulkSelected);
   const move = useStore((s) => s.moveConversation);
-  const runningOnly = useStore((s) => s.runningOnly);
-  const setRunningOnly = useStore((s) => s.setRunningOnly);
+  const attentionOnly = useStore((s) => s.attentionOnly);
+  const setAttentionOnly = useStore((s) => s.setAttentionOnly);
   const model = useMemo(
-    () => selectSidebar(conversations, chatFolders, { runningOnly }),
-    [conversations, chatFolders, runningOnly],
+    () => selectSidebar(conversations, chatFolders, { attentionOnly, keepId: openId }),
+    [conversations, chatFolders, attentionOnly, openId],
   );
   const [query, setQuery] = useState('');
   // Select mode is entered by the button and left by Done; a ctrl-click on a row also puts a
@@ -74,11 +74,11 @@ export function Sidebar() {
 
   /**
    * Dropping on the flat list files the chats out of every folder — but only when the flat list
-   * MEANS "no folder". While filtering it is just the live chats, and a stray drop there would
-   * silently un-file one.
+   * MEANS "no folder". While filtering it is just the chats that want him, and a stray drop
+   * there would silently un-file one.
    */
   const onDropToRoot = (e: DragEvent<HTMLDivElement>) => {
-    if (runningOnly || !isConversationDrag(e.dataTransfer)) return;
+    if (attentionOnly || !isConversationDrag(e.dataTransfer)) return;
     e.preventDefault();
     for (const id of readDragIds(e.dataTransfer)) void move(id, null);
   };
@@ -89,22 +89,22 @@ export function Sidebar() {
         <h2>Chats</h2>
         <button
           type="button"
-          className={`icon-btn sm live-toggle${runningOnly ? ' active' : ''}`}
+          className={`icon-btn sm live-toggle${attentionOnly ? ' active' : ''}`}
           // A toggle keeps one name and says its state through aria-pressed. Renaming it to
           // "Show all chats" while on collided with the empty state's own button of that name.
-          aria-pressed={runningOnly}
-          aria-label="Only what's running"
+          aria-pressed={attentionOnly}
+          aria-label="Only what's waiting for me"
           title={
-            runningOnly
-              ? 'Showing only what is running — click for all chats'
-              : model.live > 0
-                ? `Show only what is running (${model.live})`
-                : 'Show only what is running (nothing right now)'
+            attentionOnly
+              ? 'Showing only what is running or unread — click for all chats'
+              : model.attention > 0
+                ? `Show only what is running or unread (${model.attention})`
+                : 'Show only what is running or unread (nothing right now)'
           }
-          onClick={() => setRunningOnly(!runningOnly)}
+          onClick={() => setAttentionOnly(!attentionOnly)}
         >
           <Icon name="activity" size={16} />
-          {model.live > 0 && <span className="live-badge">{model.live}</span>}
+          {model.attention > 0 && <span className="live-badge">{model.attention}</span>}
         </button>
         <IconButton icon="folderPlus" label="New folder" size="sm" onClick={() => setNaming('idle')} />
         <IconButton
@@ -146,10 +146,10 @@ export function Sidebar() {
       ) : (
         <div
           className="sidebar-list"
-          onDragOver={(e) => !runningOnly && isConversationDrag(e.dataTransfer) && e.preventDefault()}
+          onDragOver={(e) => !attentionOnly && isConversationDrag(e.dataTransfer) && e.preventDefault()}
           onDrop={onDropToRoot}
         >
-          {loaded && <SidebarEmpty model={model} runningOnly={runningOnly} onShowAll={() => setRunningOnly(false)} />}
+          {loaded && <SidebarEmpty model={model} attentionOnly={attentionOnly} onShowAll={() => setAttentionOnly(false)} />}
           {model.chats.map((c) => (
             <ConversationRow
               key={c.id}
@@ -173,12 +173,12 @@ export function Sidebar() {
 }
 
 /** What the list says when it has nothing to show — which the filter makes a normal state. */
-function SidebarEmpty({ model, runningOnly, onShowAll }: { model: SidebarModel; runningOnly: boolean; onShowAll: () => void }) {
-  if (runningOnly) {
+function SidebarEmpty({ model, attentionOnly, onShowAll }: { model: SidebarModel; attentionOnly: boolean; onShowAll: () => void }) {
+  if (attentionOnly) {
     if (model.chats.length > 0) return null;
     return (
       <div className="empty small sidebar-empty">
-        Nothing is running.
+        Nothing running, nothing unread.
         <button type="button" className="btn btn-sm btn-ghost" onClick={onShowAll}>
           Show all chats
         </button>

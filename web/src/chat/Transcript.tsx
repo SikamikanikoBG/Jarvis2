@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Icon } from '../components/Icon';
+import { useStore } from '../store/store';
 import type { TranscriptItem } from '../store/transcript';
 import { ConfirmCard } from './ConfirmCard';
 import { InjectedNote } from './InjectedNote';
@@ -63,6 +64,26 @@ export function Transcript({ items }: Props) {
       document.removeEventListener('mouseup', up);
     };
   }, [pinToBottom]);
+
+  // A search hit: scroll to the message that matched and flash it, once it has actually
+  // rendered. The effect re-runs on every items change, so it waits out the fetch on its own
+  // rather than guessing a delay; the store field is cleared the moment the element is found.
+  const scrollTo = useStore((s) => s.scrollToMessage);
+  const clearScrollTo = useStore((s) => s.clearScrollToMessage);
+  useEffect(() => {
+    if (!scrollTo) return;
+    const el = scrollRef.current?.querySelector<HTMLElement>(`#msg-${CSS.escape(scrollTo)}`);
+    if (!el) return;
+    // Unpin first: the ResizeObserver above yanks a pinned transcript back to the bottom, which
+    // would undo this scroll a frame later.
+    atBottom.current = false;
+    setShowJump(true);
+    el.scrollIntoView({ block: 'center' });
+    el.classList.add('msg-flash');
+    clearScrollTo();
+    const t = setTimeout(() => el.classList.remove('msg-flash'), 1800);
+    return () => clearTimeout(t);
+  }, [scrollTo, items, clearScrollTo]);
 
   const markIntent = () => {
     lastIntentAt.current = Date.now();

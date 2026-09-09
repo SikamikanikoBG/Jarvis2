@@ -239,7 +239,7 @@ describe('applyServerEvent — conversations', () => {
     expect(model.folders.find((f) => f.kind === 'archive')?.count).toBe(1);
   });
 
-  it('reduces the whole sidebar to one flat list of what is running', () => {
+  it('reduces the whole sidebar to one flat list of what is running or unread', () => {
     let s = initialChatState();
     const folders: ChatFolder[] = [
       { id: 'cfld_work', name: 'Work', position: 0, conversation_count: 0, unread_count: 0, created_at: iso(0), updated_at: iso(0) },
@@ -249,7 +249,10 @@ describe('applyServerEvent — conversations', () => {
       { type: 'conversation.updated', ts: iso(0), conversation: conv('busy', 20, { activity: 'running' }) },
       { type: 'conversation.updated', ts: iso(0), conversation: conv('filed-busy', 30, { folder_id: 'cfld_work', activity: 'waiting' }) },
       { type: 'conversation.updated', ts: iso(0), conversation: conv('filed-quiet', 40, { folder_id: 'cfld_work' }) },
-      // A scheduled fire that is working is part of "what is Jarvis doing", so it comes along.
+      // A run that finished and left a blue dot: the same chat five seconds later, and the
+      // reason the filter exists — he must not have to leave it to go and read the answer.
+      { type: 'conversation.updated', ts: iso(0), conversation: conv('answered', 45, { unread: true }) },
+      // A scheduled fire that is working is part of "what is waiting for me", so it comes along.
       { type: 'conversation.updated', ts: iso(0), conversation: conv('fire', 50, { kind: 'scheduled', folder_key: 'sch_1', activity: 'running' }) },
       { type: 'conversation.updated', ts: iso(0), conversation: conv('fire-old', 60, { kind: 'scheduled', folder_key: 'sch_1' }) },
     ];
@@ -257,15 +260,32 @@ describe('applyServerEvent — conversations', () => {
 
     const off = selectSidebar(s.conversations, folders);
     // The count is over everything and does not depend on the filter being on.
-    expect(off.live).toBe(3);
-    expect(off.chats.map((c) => c.id)).toEqual(['busy', 'quiet']);
+    expect(off.attention).toBe(4);
+    expect(off.chats.map((c) => c.id)).toEqual(['answered', 'busy', 'quiet']);
 
-    const on = selectSidebar(s.conversations, folders, { runningOnly: true });
-    expect(on.live).toBe(3);
-    expect(on.chats.map((c) => c.id)).toEqual(['fire', 'filed-busy', 'busy']);
+    const on = selectSidebar(s.conversations, folders, { attentionOnly: true });
+    expect(on.attention).toBe(4);
+    expect(on.chats.map((c) => c.id)).toEqual(['fire', 'answered', 'filed-busy', 'busy']);
     // No folder chrome at all: filing is not the question this view answers.
     expect(on.chatFolders).toEqual([]);
     expect(on.folders).toEqual([]);
+  });
+
+  it('keeps the conversation on screen in the filtered list once it stops qualifying', () => {
+    let s = initialChatState();
+    const evs: ServerEvent[] = [
+      { type: 'conversation.updated', ts: iso(0), conversation: conv('read-just-now', 10) },
+      { type: 'conversation.updated', ts: iso(0), conversation: conv('busy', 20, { activity: 'running' }) },
+    ];
+    s = applyServerEvents(s, evs, T0);
+
+    // Opening an unread chat marks it read: without keepId the row being read vanishes.
+    const on = selectSidebar(s.conversations, [], { attentionOnly: true, keepId: 'read-just-now' });
+    expect(on.chats.map((c) => c.id)).toEqual(['busy', 'read-just-now']);
+    // But it is not counted — the badge says what is actually waiting.
+    expect(on.attention).toBe(1);
+    // A keepId that is not loaded (or is null) changes nothing.
+    expect(selectSidebar(s.conversations, [], { attentionOnly: true, keepId: 'conv_gone' }).chats.map((c) => c.id)).toEqual(['busy']);
   });
 
   it('switches to the conversation the server created for a null-conversation send', () => {

@@ -364,3 +364,31 @@ harness — library vs. own is an open question to settle in the design.
   same event so the shortcut is uniform. And the mock core had never seeded a meeting, so the
   Meetings screen could not be worked on at all without a host to record from; it has two finished
   ones now.
+- 2026-09-09 (night) — Why the DevBG weekly scan kept dying, and the two fixes it earned. The
+  scheduled 07:05 fire failed on a one-off vLLM disconnect (`RemoteProtocolError`, 9 steps into
+  90; two failed runs out of 138 in the whole database, so transient). But the two runs after it
+  were **killed by our own progress guard while working correctly**, and that is the real story.
+  `args_hash` was tool name + arguments, and `browser.read {"mode": "text"}` carries nothing that
+  varies — the page it reads is chosen by the `browser.open` before it. So a correct
+  open/read/open/read walk across five different Facebook searches registered as one call made
+  five times, armed the guard at `repeated_call_threshold` (3), and after two nudges `max_nudges`
+  promoted the third verdict to stop. Both runs died at the fifth read, two and a half minutes
+  in, with five completed searches thrown away.
+  The judge had no chance of catching the mistake either, because what it was shown was
+  `summary[:120]` and the first ~100 characters of every one of those results were
+  `[tab 1271060609] (20+) DevBG | Facebook — .../search/?q=`, with only percent-encoded Cyrillic
+  past the cut. It invented a story that fit — "repeatedly reading the same tab ID … not
+  correctly targeting the newly opened pages" — which is exactly backwards: `background.js` says
+  "THE Jarvis work tab. One tab, reused across every `open`", so the same tab id is right.
+  So: a repeat now means the same arguments **and** the same answer (`StepRecord.result_hash`),
+  which is what "the work did not move" actually looks like, and a genuine loop still trips it —
+  three identical failures of `outlook.send` included. And `render_steps` replaces the blind
+  truncation: the shared head is stated once, each line then carries what is its own,
+  percent-encoding is decoded (nothing can be reasoned about `%D1%81%D1%8A`), the result's size
+  is shown, and the arguments are printed instead of a hash of them, since the difference between
+  two steps is often exactly there. The judge prompt also says outright that identical arguments
+  are normal for a stateful tool and to judge by the results. `step_of()` now assembles a step in
+  one place instead of three hand-built copies in loop.py.
+  Still open from that transcript, not fixed here: no retry on a dropped model stream, and
+  `browser.read` will happily read a work tab another task navigated (one read came back as
+  GitHub's traffic page for homelab-monitor).

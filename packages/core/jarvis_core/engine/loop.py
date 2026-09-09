@@ -15,7 +15,7 @@ from jarvis_core.db import Store
 from jarvis_core.engine.bus import EventBus
 from jarvis_core.engine.context import ContextAssembler
 from jarvis_core.engine.control import RunCancelledError, RunControl
-from jarvis_core.engine.supervision import Emit, RunWatch, StepRecord, Supervisor, args_hash
+from jarvis_core.engine.supervision import Emit, RunWatch, StepRecord, Supervisor, args_hash, step_of
 from jarvis_core.features.planner import PLAN_TOOLS
 from jarvis_core.models.base import (
     ModelAdapter,
@@ -569,7 +569,7 @@ class AgentLoop:
             )
             return (
                 await self._tool_message(run, call, result, 0, emit),
-                StepRecord(call.name, args_hash(call.name, call.arguments), result.kind, result.text),
+                step_of(call.name, call.arguments, result),
             )
 
         # A call that has already failed the same way twice is not tried a third time. The
@@ -581,7 +581,7 @@ class AgentLoop:
             result = ToolResult.failure(repeat)
             return (
                 await self._tool_message(run, call, result, 0, emit),
-                StepRecord(call.name, args_hash(call.name, call.arguments), result.kind, result.text),
+                step_of(call.name, call.arguments, result),
             )
 
         # Sending: anyone not on the approved list gets a draft instead. This rewrites the
@@ -646,7 +646,7 @@ class AgentLoop:
             await self._store.record_idempotent_result(key, result.model_dump_json())
         return (
             await self._tool_message(run, call, result, duration, emit),
-            StepRecord(call.name, args_hash(call.name, call.arguments), result.kind, result.text),
+            step_of(call.name, call.arguments, result),
         )
 
     async def _tool_message(

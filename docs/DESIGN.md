@@ -158,8 +158,11 @@ Rules that are code, not prompt:
   execute the same key twice.
 - **Budgets per run kind** (steps, tokens, wall-clock). Exhaustion ends the run with a summary
   event, never with silence.
-- **Supervision with power.** Structural signals (identical tool call repeated, tool-error
-  streak, no new information in N steps) *summon* a judge call (cheap role, thinking off).
+- **Supervision with power.** Structural signals (a tool call repeated with the same arguments
+  AND the same result, tool-error streak, no new information in N steps) *summon* a judge call
+  (cheap role, thinking off). Identical arguments alone are not a repeat: a tool that acts on
+  state its arguments do not name — a browser tab, a cursor — answers the same call differently
+  each time, and only the answer says whether the work moved.
   The judge's verdict — `continue | nudge | stop` — is executed by the engine. A verdict is an
   event; a guard that arms emits `guard.armed`; the test suite asserts every guard is consumed
   in at least one scenario. No stacked counters, no guard nobody can see.

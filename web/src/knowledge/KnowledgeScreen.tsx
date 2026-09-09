@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { Icon } from '../components/Icon';
 import { IconButton, InlineConfirm, RelativeTime } from '../components/primitives';
@@ -28,6 +28,17 @@ export function KnowledgeScreen() {
   const desktop = useMediaQuery(DESKTOP_QUERY);
   const showList = desktop || selected === null;
   const showDetail = selected !== null;
+  // Ctrl/⌘+K focuses the search of whatever screen is showing; this one has its own box, so it
+  // answers the same event as the sidebar's and the list screens' filters.
+  const searchRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const focus = () => {
+      searchRef.current?.focus();
+      searchRef.current?.select();
+    };
+    window.addEventListener('jarvis:focus-search', focus);
+    return () => window.removeEventListener('jarvis:focus-search', focus);
+  }, []);
 
   return (
     <div className="screen">
@@ -37,7 +48,7 @@ export function KnowledgeScreen() {
             <h1>Knowledge</h1>
             <label className="kg-search">
               <Icon name="search" size={16} className="muted" />
-              <input className="input" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search people, projects, places…" aria-label="Search entities" />
+              <input ref={searchRef} className="input" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search people, projects, places…" aria-label="Search entities" />
             </label>
             {error && <div className="field-error">{error}</div>}
             {!loading && data?.length === 0 && (

@@ -1,8 +1,11 @@
 import { useCallback, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { Icon } from '../components/Icon';
+import { Highlight } from '../components/Highlight';
 import { IconButton, InlineConfirm, RelativeTime } from '../components/primitives';
+import { ScreenFilter } from '../components/ScreenFilter';
 import { useTicker } from '../components/useTicker';
+import { matchesQuery } from '../lib/filter';
 import { formatDuration } from '../lib/format';
 import { errorText, useLoader } from '../lib/useLoader';
 import type { Meeting, MeetingStatus } from '../protocol/types';
@@ -26,7 +29,10 @@ export function MeetingsScreen() {
   const [selected, setSelected] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const desktop = useMediaQuery(DESKTOP_QUERY);
-  const meetings = [...(data ?? [])].sort((a, b) => b.started_at.localeCompare(a.started_at));
+  const [query, setQuery] = useState('');
+  const all = [...(data ?? [])].sort((a, b) => b.started_at.localeCompare(a.started_at));
+  const q = query.trim();
+  const meetings = all.filter((m) => matchesQuery(q, m.title, m.host, m.status));
   const showList = desktop || selected === null;
 
   return (
@@ -52,24 +58,35 @@ export function MeetingsScreen() {
               />
             )}
             {error && <div className="field-error">{error}</div>}
-            {!loading && meetings.length === 0 && !starting && (
+            {all.length > 0 && (
+              <ScreenFilter query={query} onQuery={setQuery} placeholder="Search meetings" shown={meetings.length} total={all.length} noun="meeting" />
+            )}
+            {!loading && all.length === 0 && !starting && (
               <div className="empty">
                 <strong>No meetings recorded</strong>
                 <span>Start one: the host mixes mic and system audio, Jarvis transcribes live and summarises when you stop.</span>
+              </div>
+            )}
+            {!loading && all.length > 0 && meetings.length === 0 && (
+              <div className="empty">
+                <strong>Nothing matches</strong>
+                <span>No meeting matches “{q}”. Titles, hosts and status are searched.</span>
               </div>
             )}
             <div className="kg-entities">
               {meetings.map((m) => (
                 <button key={m.id} type="button" className={`kg-entity${selected === m.id ? ' active' : ''}`} onClick={() => setSelected(m.id)}>
                   <span className="row">
-                    <span className="kg-name truncate">{m.title}</span>
+                    <span className="kg-name truncate">
+                      <Highlight text={m.title} query={q} />
+                    </span>
                     <span className={`chip ${STATUS_CHIP[m.status]}`}>
                       {m.status === 'recording' && <span className="dot dot-danger dot-pulse" />}
                       {m.status}
                     </span>
                   </span>
                   <span className="xs muted">
-                    {m.host} · <RelativeTime ts={m.started_at} />
+                    <Highlight text={m.host} query={q} /> · <RelativeTime ts={m.started_at} />
                   </span>
                 </button>
               ))}

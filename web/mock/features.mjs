@@ -74,6 +74,23 @@ export function createFeatures(ctx) {
   const triageState = [{ account: 'aapostolov@postbank.bg', cursor: '2026-09-05T08:40:11Z#00A1', day: '2026-09-05', processed_today: 14, routed_today: 2, last_run_at: hoursAgo(1), last_error: null }];
   const meetings = new Map();
   const meetingDetail = new Map(); // id → {segments, frames}
+  // Two finished meetings, so the screen (and its search) can be worked on without a host to
+  // record from. Starting one still goes through the live path above.
+  for (const [title, host, ago] of [
+    ['Q3 steering committee', 'laptop', 26],
+    ['Card-limit rollout with Rumen', 'ardi', 74],
+  ]) {
+    const c = conv({ kind: 'meeting', title, updated_at: hoursAgo(ago) });
+    const m = { id: newId('mtg'), conversation_id: c.id, title, host, status: 'done', started_at: hoursAgo(ago), ended_at: hoursAgo(ago - 1), summary_run_id: null };
+    meetings.set(m.id, m);
+    meetingDetail.set(m.id, {
+      segments: [
+        { seq: 1, t0: 0, t1: 6.2, text: 'Finance обещаха експорта до четвъртък.' },
+        { seq: 2, t0: 6.2, t1: 14.8, text: 'Rumen: the DM-1234 reply goes out today after the numbers land.' },
+      ],
+      frames: [],
+    });
+  }
   const keys = [{ id: 'key_cc', name: 'claude-code', created_at: hoursAgo(300), last_used_at: hoursAgo(50) }];
 
   // ---- helpers -----------------------------------------------------------------------------

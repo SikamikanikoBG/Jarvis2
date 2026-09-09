@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { api } from '../api/client';
 import { Icon } from '../components/Icon';
+import { Highlight } from '../components/Highlight';
 import { IconButton, InlineConfirm, Menu, RelativeTime } from '../components/primitives';
+import { ScreenFilter } from '../components/ScreenFilter';
+import { matchesQuery } from '../lib/filter';
 import { errorText, useLoader } from '../lib/useLoader';
 import { NOTE_COLORS, type Board, type Note, type NoteColor } from '../protocol/types';
 import { useStore } from '../store/store';
@@ -12,9 +15,23 @@ export function BoardsScreen() {
   const notify = useStore((s) => s.notify);
   const load = useCallback(() => api.boards.list(), []);
   const { data, error, loading, reload } = useLoader(load, version);
-  const boards = [...(data ?? [])].sort((a, b) => a.position - b.position);
+  const all = [...(data ?? [])].sort((a, b) => a.position - b.position);
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState('');
+  const [query, setQuery] = useState('');
+  /**
+   * How many notes each column has matching the query. The notes live in the columns (one
+   * request each), so only they can answer this — the parent needs it to drop the columns that
+   * hold nothing, and to tell Arsen when none of them hold anything.
+   */
+  const [hits, setHits] = useState<Record<string, number>>({});
+  const q = query.trim();
+  const onHits = useCallback((id: string, n: number) => {
+    setHits((prev) => (prev[id] === n ? prev : { ...prev, [id]: n }));
+  }, []);
+  // A board whose NAME matches is itself the hit and keeps all its notes.
+  const boards = q ? all.filter((b) => matchesQuery(q, b.name) || (hits[b.id] ?? 0) > 0) : all;
+  const noteHits = all.reduce((n, b) => n + (matchesQuery(q, b.name) ? 0 : (hits[b.id] ?? 0)), 0);
 
   const addBoard = () => {
     const n = name.trim();
@@ -62,15 +79,31 @@ export function BoardsScreen() {
             </button>
           </form>
         )}
-        {!loading && boards.length === 0 && !adding && (
+        {all.length > 0 && (
+          <ScreenFilter query={query} onQuery={setQuery} placeholder="Search boards and notes" shown={boards.length} total={all.length} noun="board" />
+        )}
+        {q && noteHits > 0 && (
+          <p className="small muted" style={{ margin: 0 }}>
+            {noteHits} matching {noteHits === 1 ? 'note' : 'notes'}.
+          </p>
+        )}
+        {!loading && all.length === 0 && !adding && (
           <div className="empty">
             <strong>No boards yet</strong>
             <span>Add one, then pin replies from the chat or write notes here.</span>
           </div>
         )}
+        {!loading && all.length > 0 && boards.length === 0 && (
+          <div className="empty">
+            <strong>Nothing matches</strong>
+            <span>No board name and no note matches the search.</span>
+          </div>
+        )}
         <div className="boards-row">
-          {boards.map((b, i) => (
-            <BoardColumn key={b.id} board={b} boards={boards} index={i} version={version} reloadAll={reload} />
+          {boards.map((b) => (
+            // `all` for the neighbours and the index: reordering must mean the real position,
+            // never a position inside a filtered view.
+            <BoardColumn key={b.id} board={b} boards={all} index={all.indexOf(b)} query={q} onHits={onHits} version={version} reloadAll={reload} />
           ))}
         </div>
       </div>
@@ -82,11 +115,15 @@ interface ColumnProps {
   board: Board;
   boards: Board[];
   index: number;
+  /** Trimmed filter query; "" shows everything. */
+  query: string;
+  /** Report how many of this column's notes match, so the parent can hide an empty column. */
+  onHits: (boardId: string, n: number) => void;
   version: number;
   reloadAll: () => void;
 }
 
-function BoardColumn({ board, boards, index, version, reloadAll }: ColumnProps) {
+function BoardColumn({ board, boards, index, query, onHits, version, reloadAll }: ColumnProps) {
   const notify = useStore((s) => s.notify);
   const load = useCallback(() => api.boards.notes(board.id), [board.id]);
   const { data: notes, reload } = useLoader(load, `${version}:${board.updated_at}`);
@@ -101,6 +138,14 @@ function BoardColumn({ board, boards, index, version, reloadAll }: ColumnProps) 
   useEffect(() => {
     if (renaming) renameRef.current?.select();
   }, [renaming]);
+
+  const nameMatches = matchesQuery(query, board.name);
+  // A board found by its own name keeps all of its notes; otherwise only the notes that matched.
+  const shown = !query || nameMatches ? (notes ?? []) : (notes ?? []).filter((n) => matchesQuery(query, n.text));
+  const matching = (notes ?? []).filter((n) => matchesQuery(query, n.text)).length;
+  useEffect(() => {
+    if (notes) onHits(board.id, matching);
+  }, [notes, matching, board.id, onHits]);
 
   const fail = (what: string) => (e: unknown) => notify(`${what} failed: ${errorText(e)}`, 'error');
 
@@ -157,9 +202,11 @@ function BoardColumn({ board, boards, index, version, reloadAll }: ColumnProps) 
         ) : (
           <>
             <h2 className="truncate" onDoubleClick={() => setRenaming(true)}>
-              {board.name}
+              <Highlight text={board.name} query={query} />
             </h2>
-            <span className="chip chip-outline">{notes?.length ?? board.note_count}</span>
+            <span className="chip chip-outline">
+              {notes && shown.length !== notes.length ? `${shown.length}/${notes.length}` : (notes?.length ?? board.note_count)}
+            </span>
             <IconButton icon="more" label={`${board.name} menu`} size="sm" aria-haspopup="menu" aria-expanded={Boolean(menu)} onClick={(e) => setMenu(menu ? null : e.currentTarget)} />
             {menu && (
               <Menu
@@ -183,8 +230,9 @@ function BoardColumn({ board, boards, index, version, reloadAll }: ColumnProps) 
       )}
       <div className="board-notes">
         {notes?.length === 0 && <div className="empty small" style={{ padding: '14px 8px' }}>Nothing pinned here yet.</div>}
-        {(notes ?? []).map((n) => (
-          <NoteCard key={n.id} note={n} boards={boards} onChanged={() => (reload(), reloadAll())} />
+        {notes && notes.length > 0 && shown.length === 0 && <div className="filter-none">No note here matches.</div>}
+        {shown.map((n) => (
+          <NoteCard key={n.id} note={n} boards={boards} query={query} onChanged={() => (reload(), reloadAll())} />
         ))}
       </div>
       <div className="note-composer">
@@ -211,7 +259,7 @@ function ColorPicker({ value, onChange }: { value: NoteColor; onChange: (c: Note
   );
 }
 
-function NoteCard({ note, boards, onChanged }: { note: Note; boards: Board[]; onChanged: () => void }) {
+function NoteCard({ note, boards, query, onChanged }: { note: Note; boards: Board[]; query: string; onChanged: () => void }) {
   const notify = useStore((s) => s.notify);
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(note.text);
@@ -232,7 +280,7 @@ function NoteCard({ note, boards, onChanged }: { note: Note; boards: Board[]; on
         <textarea className="note-edit" value={text} onChange={(e) => setText(e.target.value)} onBlur={save} autoFocus rows={Math.min(10, Math.max(3, text.split('\n').length + 1))} aria-label="Note text" />
       ) : (
         <button type="button" className="note-text" onClick={() => setEditing(true)} title="Click to edit">
-          {note.text}
+          <Highlight text={note.text} query={query} />
         </button>
       )}
       <footer className="note-foot">

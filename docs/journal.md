@@ -342,3 +342,25 @@ harness — library vs. own is an open question to settle in the design.
   bumped for this release too (2.0.0a31): the image it ships includes the SPA, so the number the
   app shows should move whenever what is deployed moves.
   Also: `web/package-lock.json` had been stuck at 2.0.0-alpha.1 for eleven releases. Synced.
+- 2026-09-09 (later still) — The same filter bar on every screen that holds a list. One
+  `ScreenFilter` (search box + toggle chips + an "n of N" count) and one `matchesQuery` — every
+  word of the query has to appear somewhere in the row's fields, in any order, case-insensitive —
+  now serve Schedules, Meetings, Skills and Boards. Client-side, deliberately: unlike the
+  sidebar's search, these lists are already fully loaded, so there is nothing to ask the core for.
+  Schedules also gets the **Active only** toggle Arsen asked for, with the enabled count on the
+  chip, and searches the prompt as well as the name (a schedule is named once and then remembered
+  by what it does — the prompt is shown under the name only when the prompt is what matched).
+  Skills search names, descriptions and triggers; Meetings titles, hosts and status. Boards are
+  the odd one: the notes live in the columns, one request each, so only a column can say how many
+  of its notes match. Each reports its count up, the parent drops the columns holding nothing and
+  can say "nothing matches" when none of them do, and a board found by its own NAME keeps all of
+  its notes rather than being filtered down to none.
+  Three things that only showed up once it was on screen. The highlight was `color: var(--fg)`,
+  which on a pastel sticky note (always dark ink, whatever the theme) rendered the matched word in
+  near-white on pink — invisible; a `--mark` token and `color: inherit` fixed it, and the wash is
+  translucent amber so it works on any surface the theme does not own. Ctrl/⌘+K was hard-wired to
+  jump to Chat, so pressing it on Schedules took you off the very screen whose search you wanted —
+  it now focuses the filter of the screen you are on, and Knowledge's own search box answers the
+  same event so the shortcut is uniform. And the mock core had never seeded a meeting, so the
+  Meetings screen could not be worked on at all without a host to record from; it has two finished
+  ones now.

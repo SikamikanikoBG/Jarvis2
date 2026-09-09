@@ -1,9 +1,12 @@
 import { useCallback, useState } from 'react';
 import { api } from '../api/client';
 import { Icon } from '../components/Icon';
+import { Highlight } from '../components/Highlight';
 import { IconButton, InlineConfirm, RelativeTime, Switch } from '../components/primitives';
+import { ScreenFilter } from '../components/ScreenFilter';
 import { useTicker } from '../components/useTicker';
 import { describeCron, isValidCron } from '../lib/cron';
+import { matchesQuery } from '../lib/filter';
 import { formatDuration } from '../lib/format';
 import { THINK_CHOICES, thinkChoiceKey } from '../lib/think';
 import { errorText, useLoader } from '../lib/useLoader';
@@ -42,8 +45,16 @@ export function SchedulesScreen() {
   const [editing, setEditing] = useState<Schedule | 'new' | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [activeOnly, setActiveOnly] = useState(false);
   const now = useTicker(30_000);
-  const schedules = [...(data ?? [])].sort((a, b) => (a.next_fire ?? '9').localeCompare(b.next_fire ?? '9'));
+  const all = [...(data ?? [])].sort((a, b) => (a.next_fire ?? '9').localeCompare(b.next_fire ?? '9'));
+  const q = query.trim();
+  // The prompt is searched too: a schedule is named once and then remembered by what it does.
+  const schedules = all.filter(
+    (s) => (!activeOnly || s.enabled) && matchesQuery(q, s.name, s.prompt, s.cron, s.tz, s.last_status),
+  );
+  const enabledCount = all.filter((s) => s.enabled).length;
 
   const fail = (what: string) => (e: unknown) => notify(`${what} failed: ${errorText(e)}`, 'error');
   const toggle = (s: Schedule, enabled: boolean) => api.schedules.patch(s.id, { enabled }).then(reload).catch(fail('Update'));
@@ -68,11 +79,38 @@ export function SchedulesScreen() {
           </button>
         </div>
         {error && <div className="field-error">{error}</div>}
+        {all.length > 0 && (
+          <ScreenFilter
+            query={query}
+            onQuery={setQuery}
+            placeholder="Search schedules"
+            shown={schedules.length}
+            total={all.length}
+            noun="schedule"
+            toggles={[
+              {
+                label: 'Active only',
+                active: activeOnly,
+                count: enabledCount,
+                title: 'Only the schedules that are enabled and will fire',
+                onChange: setActiveOnly,
+              },
+            ]}
+          />
+        )}
         {editing === 'new' && <ScheduleForm onClose={() => setEditing(null)} onSaved={reload} />}
-        {!loading && schedules.length === 0 && editing !== 'new' && (
+        {!loading && all.length === 0 && editing !== 'new' && (
           <div className="empty">
             <strong>No schedules</strong>
             <span>A schedule is a prompt that fires on a cron or once at a time; each fire opens its own conversation under Scheduled.</span>
+          </div>
+        )}
+        {!loading && all.length > 0 && schedules.length === 0 && (
+          <div className="empty">
+            <strong>Nothing matches</strong>
+            <span>
+              {activeOnly && q ? `No active schedule matches “${q}”.` : activeOnly ? 'No schedule is active.' : `No schedule matches “${q}”.`}
+            </span>
           </div>
         )}
         <div className="sched-list">
@@ -85,9 +123,17 @@ export function SchedulesScreen() {
                   <Switch checked={s.enabled} onChange={(v) => void toggle(s, v)} label={`Enable ${s.name}`} />
                   <div className="grow" style={{ minWidth: 0 }}>
                     <div className="row">
-                      <span className="sched-name truncate">{s.name}</span>
+                      <span className="sched-name truncate">
+                        <Highlight text={s.name} query={q} />
+                      </span>
                       {s.last_status && <span className={`chip ${statusChip(s.last_status)}`}>{s.last_status}</span>}
                     </div>
+                    {/* Only when the prompt is what matched — otherwise the row stays as it was. */}
+                    {q && !matchesQuery(q, s.name) && matchesQuery(q, s.prompt) && (
+                      <div className="small muted truncate">
+                        <Highlight text={s.prompt} query={q} />
+                      </div>
+                    )}
                     <div className="small muted">
                       {s.cron ? describeCron(s.cron) : s.at ? `Once at ${new Date(s.at).toLocaleString()}` : '—'} · {s.tz}
                       {s.next_fire && s.enabled && (

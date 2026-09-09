@@ -15,6 +15,7 @@ import { SkillsScreen } from '../skills/SkillsScreen';
 import { StatusScreen } from '../status/StatusScreen';
 import { useStore } from '../store/store';
 import { TriageScreen } from '../triage/TriageScreen';
+import type { View } from '../lib/router';
 import { NAV_ALL } from './nav';
 import { BottomNav, MoreSheet, TopBar } from './TopBar';
 import { DESKTOP_QUERY, useMediaQuery } from './useMediaQuery';
@@ -31,6 +32,9 @@ const SCREENS = {
   meetings: MeetingsScreen,
   triage: TriageScreen,
 } as const;
+
+/** Screens with a search box of their own, so Ctrl/⌘+K focuses that instead of leaving. */
+const FILTERED_VIEWS = new Set<View>(['schedules', 'meetings', 'skills', 'boards', 'knowledge']);
 
 export function App() {
   const view = useStore((s) => s.view);
@@ -65,8 +69,12 @@ export function App() {
         newChat();
       } else if (mod && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        useStore.getState().setView('chat');
-        if (!desktop) setSidebarOpen(true);
+        // The screen already showing a filter bar owns the shortcut: jumping to Chat to focus a
+        // different search than the one being asked for is the wrong answer.
+        if (!FILTERED_VIEWS.has(useStore.getState().view)) {
+          useStore.getState().setView('chat');
+          if (!desktop) setSidebarOpen(true);
+        }
         setTimeout(() => window.dispatchEvent(new CustomEvent('jarvis:focus-search')), 0);
       } else if (e.key === 'Escape' && e.shiftKey) {
         e.preventDefault();

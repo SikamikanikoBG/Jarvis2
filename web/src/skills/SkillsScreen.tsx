@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { Icon } from '../components/Icon';
+import { Highlight } from '../components/Highlight';
 import { IconButton, InlineConfirm, RelativeTime, Switch } from '../components/primitives';
+import { ScreenFilter } from '../components/ScreenFilter';
+import { matchesQuery } from '../lib/filter';
 import { errorText, useLoader } from '../lib/useLoader';
 import type { Skill } from '../protocol/types';
 import { useStore } from '../store/store';
@@ -32,7 +35,11 @@ export function SkillsScreen() {
   const { data, error, loading, reload } = useLoader(load, version);
   /** null = closed; { name: null } = new skill; { name } = editing an existing one. */
   const [editing, setEditing] = useState<{ name: string | null } | null>(null);
-  const skills = [...(data ?? [])].sort((a, b) => a.name.localeCompare(b.name));
+  const [query, setQuery] = useState('');
+  const all = [...(data ?? [])].sort((a, b) => a.name.localeCompare(b.name));
+  const q = query.trim();
+  // Triggers are searched too: what a skill fires on is often how Arsen remembers it.
+  const skills = all.filter((s) => matchesQuery(q, s.name, s.description, s.triggers.join(' ')));
 
   const toggle = (s: Skill, enabled: boolean) => api.skills.patch(s.name, enabled).then(reload).catch((e: unknown) => notify(`Could not update ${s.name}: ${errorText(e)}`, 'error'));
 
@@ -51,10 +58,19 @@ export function SkillsScreen() {
             Markdown with YAML frontmatter. Detected per message by the classifier; only enabled skills are offered.
           </p>
           {error && <div className="field-error">{error}</div>}
-          {!loading && skills.length === 0 && (
+          {all.length > 0 && (
+            <ScreenFilter query={query} onQuery={setQuery} placeholder="Search skills" shown={skills.length} total={all.length} noun="skill" />
+          )}
+          {!loading && all.length === 0 && (
             <div className="empty">
               <strong>No skills yet</strong>
               <span>Create one, or import the V1 skills folder.</span>
+            </div>
+          )}
+          {!loading && all.length > 0 && skills.length === 0 && (
+            <div className="empty">
+              <strong>Nothing matches</strong>
+              <span>No skill matches “{q}”. Names, descriptions and triggers are searched.</span>
             </div>
           )}
           <div className="skills-rows">
@@ -64,11 +80,15 @@ export function SkillsScreen() {
                 <button type="button" className="skill-main" onClick={() => setEditing({ name: s.name })}>
                   <span className="row">
                     <span className="mono" style={{ fontWeight: 600 }}>
-                      {s.name}
+                      <Highlight text={s.name} query={q} />
                     </span>
                     <span className="xs muted">{formatBytes(s.size)}</span>
                   </span>
-                  {s.description && <span className="small muted truncate">{s.description}</span>}
+                  {s.description && (
+                    <span className="small muted truncate">
+                      <Highlight text={s.description} query={q} />
+                    </span>
+                  )}
                   {s.triggers.length > 0 && (
                     <span className="row" style={{ flexWrap: 'wrap', gap: 4 }}>
                       {s.triggers.slice(0, 6).map((t) => (

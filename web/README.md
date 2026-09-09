@@ -61,6 +61,8 @@ src/
                    triage block, collaborator keys, budgets; PATCHes only dirty top-level keys
   status/          StatusScreen — core + web versions, endpoint cards, tool providers + Reload, grouped Tools
                    list, phone pairing (QR)
+  components/      ScreenFilter (one search + toggle-chip bar for the list screens), Highlight (<mark> the
+                   query), Icon, primitives (IconButton, Switch, Menu, InlineConfirm, Drawer, RelativeTime)
   boards/          BoardsScreen — boards as columns, sticky notes (colour, move, inline edit), live via board.changed
   knowledge/       KnowledgeScreen + GraphView — search, entity detail (aliases, edges, mentions), edit/merge/delete,
                    SVG neighbourhood graph; live via kg.changed

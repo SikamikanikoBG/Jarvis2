@@ -230,6 +230,54 @@
   border-radius: 0;
 }
 
+/* --- one filter bar for the list screens (schedules, meetings, skills, boards) --- */
+.screen-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+.screen-filter .search-box {
+  flex: 1;
+  min-width: 180px;
+  max-width: 380px;
+  margin: 0;
+}
+.screen-filter-count {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.chip-toggle {
+  gap: 4px;
+  cursor: pointer;
+  border: 1px solid var(--border-strong);
+  background: none;
+  color: var(--fg-2);
+}
+.chip-toggle:hover {
+  background: var(--bg-elevated);
+  color: var(--fg);
+}
+.chip-toggle.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.chip-count {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+/* A row the filter kept but that has nothing to show inside it (a board with no matching note). */
+.filter-none {
+  padding: 8px 2px;
+  font-size: var(--fs-sm);
+  color: var(--fg-dim);
+}
+
 /* --- sidebar search --- */
 .search-box {
   display: flex;
@@ -299,8 +347,10 @@
   text-overflow: ellipsis;
 }
 .search-mark {
-  background: var(--accent-soft);
-  color: var(--fg);
+  background: var(--mark);
+  /* `inherit`, never a theme colour: a highlight inside a sticky note has to keep the note's
+     own dark ink, and setting --fg there made the matched word invisible. */
+  color: inherit;
   border-radius: 3px;
   padding: 0 1px;
   font-weight: 600;

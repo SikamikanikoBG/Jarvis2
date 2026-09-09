@@ -39,6 +39,9 @@
   --info-soft: rgba(90, 176, 255, 0.14);
   --reasoning: #e0b34a;
   --reasoning-soft: rgba(224, 179, 74, 0.08);
+  /* Search highlight. A translucent wash rather than a colour pair, because it lands on
+     surfaces this theme does not own — a pastel sticky note keeps its own dark ink. */
+  --mark: rgba(255, 179, 71, 0.34);
 
   /* Chat */
   --msg-user: #16315a;
@@ -118,6 +121,7 @@
     --info-soft: rgba(37, 99, 235, 0.1);
     --reasoning: #92400e;
     --reasoning-soft: rgba(146, 64, 14, 0.07);
+    --mark: rgba(250, 204, 21, 0.55);
     --msg-user: #d6e8fb;
     --msg-bot: #ffffff;
     --code-bg: #f1f4f9;
@@ -155,6 +159,7 @@
   --info-soft: rgba(37, 99, 235, 0.1);
   --reasoning: #92400e;
   --reasoning-soft: rgba(146, 64, 14, 0.07);
+  --mark: rgba(250, 204, 21, 0.55);
   --msg-user: #d6e8fb;
   --msg-bot: #ffffff;
   --code-bg: #f1f4f9;

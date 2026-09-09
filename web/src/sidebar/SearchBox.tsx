@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
+import { Highlight } from '../components/Highlight';
 import { Icon } from '../components/Icon';
 import { IconButton } from '../components/primitives';
 import type { Conversation, SearchHit } from '../protocol/types';
@@ -47,27 +48,6 @@ interface Remote {
   q: string;
   hits: SearchHit[] | null;
   error: string | null;
-}
-
-/** The query's occurrences in `text` wrapped in <mark>, so the eye lands on the match. */
-function highlight(text: string, q: string): ReactNode {
-  if (!q) return text;
-  const lower = text.toLowerCase();
-  const needle = q.toLowerCase();
-  const out: ReactNode[] = [];
-  let at = 0;
-  for (let found = lower.indexOf(needle); found >= 0; found = lower.indexOf(needle, at)) {
-    if (found > at) out.push(text.slice(at, found));
-    out.push(
-      <mark key={found} className="search-mark">
-        {text.slice(found, found + q.length)}
-      </mark>,
-    );
-    at = found + q.length;
-  }
-  if (at === 0) return text;
-  if (at < text.length) out.push(text.slice(at));
-  return out;
 }
 
 /**
@@ -148,7 +128,11 @@ export function SearchResults({ query }: { query: string }) {
           onClick={() => void openAt(h.conversation.id, h.message_id)}
         >
           <span className="truncate search-hit-title">{h.conversation.title}</span>
-          {h.snippet && <span className="search-snippet">{highlight(h.snippet, q)}</span>}
+          {h.snippet && (
+            <span className="search-snippet">
+              <Highlight text={h.snippet} query={q} />
+            </span>
+          )}
         </button>
       ))}
       {pending && chats.length === 0 && <div className="empty small">Searching…</div>}

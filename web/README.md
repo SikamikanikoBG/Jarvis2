@@ -59,7 +59,8 @@ src/
   runs/            RunInspector (timeline with Δt, model/tool pairs, tok/s, payload JSON), RunsScreen, timeline.ts
   settings/        SettingsScreen — roles × ModelSpec (think + level), context/behaviour, MCP servers editor,
                    triage block, collaborator keys, budgets; PATCHes only dirty top-level keys
-  status/          StatusScreen — endpoint cards, tool providers + Reload, grouped Tools list, phone pairing (QR)
+  status/          StatusScreen — core + web versions, endpoint cards, tool providers + Reload, grouped Tools
+                   list, phone pairing (QR)
   boards/          BoardsScreen — boards as columns, sticky notes (colour, move, inline edit), live via board.changed
   knowledge/       KnowledgeScreen + GraphView — search, entity detail (aliases, edges, mentions), edit/merge/delete,
                    SVG neighbourhood graph; live via kg.changed

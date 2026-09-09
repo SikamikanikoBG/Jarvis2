@@ -328,3 +328,17 @@ harness — library vs. own is an open question to settle in the design.
   matching, which is a good part of why the feature felt missing. It has the route now, matching
   the core's rule (titles, then user/assistant messages that are not injected context, one hit per
   conversation, a ~70-character window around the match).
+- 2026-09-09 (later) — "But the version is not bumped." Correct, and the reason is worth
+  writing down: the number the UI shows is the CORE's, read from `/api/health`. Two releases of
+  new sidebar behaviour went out bumping only `web/package.json`, which nothing in the running
+  app displays — so from inside Jarvis the version sat at 2.0.0a30 across both, with no way to
+  tell whether the new UI had actually landed. Bumping a version nobody can see is not a
+  release marker.
+  Fixed at both ends. The SPA's own version is baked into the bundle at build time (a `define`
+  in vite.config.ts reading package.json) and shown in two places: under the core's number in
+  the header, and as its own `web` stat next to `core` on the Status screen. Being compiled in
+  rather than fetched is the point — it says which bundle the browser actually loaded, not what
+  the server has on disk, so a stale cache is visible instead of invisible. And the core is
+  bumped for this release too (2.0.0a31): the image it ships includes the SPA, so the number the
+  app shows should move whenever what is deployed moves.
+  Also: `web/package-lock.json` had been stuck at 2.0.0-alpha.1 for eleven releases. Synced.

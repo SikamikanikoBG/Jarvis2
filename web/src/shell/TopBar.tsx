@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { Icon } from '../components/Icon';
 import { Drawer, IconButton } from '../components/primitives';
 import { effectiveTheme } from '../lib/theme';
+import { WEB_VERSION, shortWebVersion } from '../lib/version';
 import { selectUnreadCount } from '../store/selectors';
 import { useStore } from '../store/store';
 import { ConversationMenu } from './ConversationMenu';
@@ -38,7 +39,10 @@ export function TopBar({ desktop }: { desktop: boolean }) {
           <div className="brand">
             <Icon name="radio" />
             <span>Jarvis</span>
-            {version && <span className="brand-version">{version}</span>}
+            <span className="brand-version" title={`core ${version ?? '?'} · web ${WEB_VERSION}`}>
+              {version ?? '…'}
+              <span className="brand-web">web {shortWebVersion()}</span>
+            </span>
           </div>
           <nav className="nav-desktop" aria-label="Primary">
             {NAV_DESKTOP.map((n) => (

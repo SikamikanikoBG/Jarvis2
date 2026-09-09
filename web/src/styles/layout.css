@@ -66,10 +66,18 @@
   height: 20px;
 }
 .brand-version {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
   font-size: var(--fs-xs);
   font-weight: 500;
   color: var(--fg-muted);
   margin-left: 2px;
+}
+/* The SPA's own version under the core's: a web-only release has to be visible from inside the
+   running app, which is the one place the core's number never moves. */
+.brand-web {
+  color: var(--fg-dim);
 }
 
 .nav-desktop {

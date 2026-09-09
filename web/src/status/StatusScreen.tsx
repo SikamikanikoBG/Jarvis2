@@ -3,6 +3,7 @@ import { ApiError, api, describeError } from '../api/client';
 import { Icon } from '../components/Icon';
 import { IconButton } from '../components/primitives';
 import { formatDuration } from '../lib/format';
+import { WEB_VERSION } from '../lib/version';
 import type { EndpointStatus, StatusResponse, ToolProviderStatus, ToolSpec } from '../protocol/types';
 import { useStore } from '../store/store';
 import { PairPanel } from './PairPanel';
@@ -97,6 +98,12 @@ export function StatusScreen() {
           <div className="stat">
             <div className="k">core</div>
             <div className="v">{status?.version ?? version ?? '—'}</div>
+          </div>
+          <div className="stat">
+            <div className="k">web</div>
+            {/* Baked into the bundle at build time, so this says which SPA is actually loaded —
+                not what the server happens to be serving from disk. */}
+            <div className="v">{WEB_VERSION}</div>
           </div>
           <div className="stat">
             <div className="k">events</div>

@@ -220,6 +220,18 @@ class AttachmentStore:
         await self.core.db.execute("DELETE FROM attachments WHERE id = ?", (att_id,))
         return True
 
+    async def delete_for_conversation(self, conversation_id: str) -> int:
+        """Unlink every file a conversation's attachments own. The rows go with the conversation
+        (ON DELETE CASCADE); the files on disk would not, and a chat that promised to leave
+        nothing behind must not leave its photos in data/attachments."""
+        rows = await self.core.db.fetchall(
+            "SELECT path FROM attachments WHERE conversation_id = ? AND path IS NOT NULL", (conversation_id,)
+        )
+        for row in rows:
+            with contextlib.suppress(OSError):
+                Path(row["path"]).unlink()
+        return len(rows)
+
     async def thumbnail(self, att_id: str) -> tuple[bytes, str] | None:
         """A small JPEG for the transcript; None when the attachment is not an image."""
         stored = await self.get(att_id)

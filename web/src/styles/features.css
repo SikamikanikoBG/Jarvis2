@@ -374,9 +374,16 @@
     box-shadow: 0 0 0 2px var(--accent);
   }
 }
-.conv-pin {
+.conv-pin,
+.conv-privacy {
   flex: none;
   color: var(--fg-muted);
+}
+.conv.conv-incognito .conv-title {
+  color: var(--fg-2);
+}
+.conv.conv-incognito .conv-preview {
+  font-style: italic;
 }
 
 /* --- triage: one rules editor per mailbox --- */

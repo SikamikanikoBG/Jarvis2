@@ -58,6 +58,43 @@ on the message ones. The sidebar uses BOTH halves — the local conversation lis
 narrowing, and this for the titles it has not loaded (archived) plus the message hits. It is the
 only way to find an archived chat by title, and `message_id` is what the transcript scrolls to.
 
+## Incognito and disappearing chats (wave 2)
+
+Two flags on `Conversation`, both readable by every client:
+
+- `incognito: bool` — a private chat. Nothing from it is remembered anywhere else: the knowledge
+  learner skips it, the titler never reads it (the title stays "Incognito chat" unless Arsen
+  renames it), `GET /api/search` never returns it, `preview` is always `null`, and the model is
+  offered no `notes.*` / `kg.*` writing tools in it — a call to one anyway fails with a result
+  saying why, and the stable system prefix carries a "Private conversation" block so the model
+  does not promise to remember what it cannot. Decided at creation — `POST /api/conversations
+  {incognito: true}`, or the first `run.create {conversation_id: null, incognito: true}` on the
+  WS — and never switched on later: what an ordinary chat has already taught the graph cannot be
+  un-learned. Always has a `ttl_seconds` (default `3600`). A fork of an incognito chat is one too.
+- `ttl_seconds: int | null` — a disappearing chat. The core deletes it once it has sat idle this
+  long; `expires_at` (last message + ttl, re-armed on every message) says when. One of
+  `3600 | 86400 | 604800`; anything else is 422 on REST and dropped on the WS. `null` = kept.
+  Patchable at any time: `PATCH /api/conversations/{id} {ttl_seconds}` — omit the key to leave
+  the timer alone, send `null` to keep the chat (422 on an incognito chat, which is never kept).
+  Changing it restarts the clock from now.
+
+```
+POST   /api/conversations {kind?, title?, incognito?, ttl_seconds?} → Conversation   201
+PATCH  /api/conversations/{id} {ttl_seconds}                        → Conversation
+WS →   run.create {conversation_id: null, text, incognito?, ttl_seconds?, ...}
+```
+
+The sweep runs in the core once a minute (`features/expiry.py`): every conversation with
+`expires_at <= now` and no run still working is removed exactly as a `DELETE` removes one —
+runs cancelled, attachment files unlinked (the rows cascade, the files did not), then
+`conversation.deleted` on the WS so every open client drops the row. `DELETE` and the bulk delete
+go through the same path now, so a deleted chat no longer leaves its photos in `data/attachments`.
+
+What the messages of an incognito chat still are: rows in SQLite on the core, for as long as the
+chat lives — the engine resumes runs from the database, so there is no way around that. The
+promise is about what leaves the chat (nothing) and how long it stays (its ttl), not about the
+disk it sits on while alive.
+
 ## Boards (Phase 2)
 
 Sticky notes Arsen pins; every board is injected into the model's context, compactly.

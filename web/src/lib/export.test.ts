@@ -17,6 +17,9 @@ const conv: Conversation = {
   preview: null,
   message_count: 0,
   activity: 'idle',
+  incognito: false,
+  ttl_seconds: null,
+  expires_at: null,
   created_at: '2026-09-06T08:00:00.000Z',
   updated_at: '2026-09-06T09:00:00.000Z',
 };

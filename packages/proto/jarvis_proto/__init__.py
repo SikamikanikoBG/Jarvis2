@@ -72,6 +72,9 @@ from jarvis_proto.messages import (
     ToolResultKind,
 )
 from jarvis_proto.runs import (
+    INCOGNITO_DEFAULT_TTL,
+    INCOGNITO_TITLE,
+    TTL_CHOICES,
     ChatFolder,
     Conversation,
     ConversationActivity,
@@ -105,6 +108,9 @@ from jarvis_proto.settings import (
 from jarvis_proto.tools import ToolSpec
 
 __all__ = [
+    "INCOGNITO_DEFAULT_TTL",
+    "INCOGNITO_TITLE",
+    "TTL_CHOICES",
     "Attachment",
     "AttachmentKind",
     "Board",

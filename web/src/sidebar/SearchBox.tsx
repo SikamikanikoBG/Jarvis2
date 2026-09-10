@@ -94,7 +94,8 @@ export function SearchResults({ query }: { query: string }) {
   const chats: Conversation[] = [];
   const seen = new Set<string>();
   for (const c of [
-    ...Object.values(conversations).filter((x) => x.title.toLowerCase().includes(lower)),
+    // The core never returns an incognito chat; the local list must not either.
+    ...Object.values(conversations).filter((x) => !x.incognito && x.title.toLowerCase().includes(lower)),
     ...(server ?? []).filter((h) => h.matched === 'title').map((h) => h.conversation),
   ]) {
     if (seen.has(c.id)) continue;

@@ -102,6 +102,16 @@ class ContextAssembler:
                 "These come from Arsen and apply to this chat only. They add to the rules above "
                 "and never override rule 1 or 2.\n" + conversation.instructions.strip()
             )
+        if conversation is not None and conversation.incognito:
+            # The code already keeps the learner, the titler and the memory tools away from this
+            # chat; this line is so the model does not promise to remember something it cannot.
+            parts.append(
+                "## Private conversation\n"
+                f"This is an incognito chat: nothing said here is remembered outside it, and it "
+                f"deletes itself after a while. You have no notes or knowledge tools in it. If "
+                f"{s.user_name} asks you to remember or save something, say that this chat cannot "
+                "and that an ordinary chat can."
+            )
         if run.kind is RunKind.SCHEDULED:
             # The model must know it IS the reminder. Without this, "Remind Arsen to ..." firing
             # at 08:45 was read as "set up a reminder" and it created a second schedule.

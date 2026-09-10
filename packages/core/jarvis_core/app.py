@@ -30,6 +30,7 @@ from jarvis_core.features.attachments import AttachmentStore
 from jarvis_core.features.boards import BoardStore, NotesTools
 from jarvis_core.features.collab import CollabAuthMiddleware, CollabKeys, build_mcp_server
 from jarvis_core.features.compaction import Compactor
+from jarvis_core.features.expiry import Reaper, delete_conversation
 from jarvis_core.features.knowledge import KnowledgeLearner, KnowledgeStore, KnowledgeTools
 from jarvis_core.features.meetings import MeetingService
 from jarvis_core.features.notify import NotifyTools
@@ -134,6 +135,11 @@ class Core:
             attachments=self.attachments,
         )
         self.scheduler = Scheduler(self.schedules, self._fire_schedule)
+        self.reaper = Reaper(self)
+
+    async def delete_conversation(self, conversation_id: str) -> None:
+        """Remove a conversation and everything it owns; see features.expiry."""
+        await delete_conversation(self, conversation_id)
 
     async def _fire_schedule(
         self,
@@ -166,6 +172,7 @@ class Core:
         await self.scheduler.start()
         await self.triage.start()
         await self.rsvp.start()
+        await self.reaper.start()
         self._mcp_watch = asyncio.create_task(self._watch_mcp(), name="mcp-watch")
         log.info("jarvis-core %s ready (db=%s, tools=%d)", __version__, self.db.path, len(self.registry.specs()))
 
@@ -191,6 +198,7 @@ class Core:
             watch.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await watch
+        await self.reaper.stop()
         await self.triage.stop()
         await self.rsvp.stop()
         await self.meetings.stop_all()

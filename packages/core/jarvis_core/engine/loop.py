@@ -77,6 +77,18 @@ log = logging.getLogger(__name__)
 
 _UNATTENDED = {RunKind.SCHEDULED, RunKind.TRIAGE, RunKind.MEETING, RunKind.SYSTEM}
 _CONTEXT_KINDS = {RunKind.CHAT, RunKind.COLLAB, RunKind.SCHEDULED}
+
+# The tools whose whole purpose is to remember: the notes boards and the knowledge graph. An
+# incognito chat offers neither (reading them is fine - it is what goes OUT that must stop).
+# Everything else stays, including schedules and mail: those are things Arsen asks for by
+# name, and a private chat is not a crippled one.
+_MEMORY_NAMESPACES = {"notes", "kg"}
+
+
+def is_memory_writer(spec: ToolSpec) -> bool:
+    return spec.namespace in _MEMORY_NAMESPACES and not spec.read_only
+
+
 _TOOL_TIMEOUT_S = 120.0
 
 
@@ -114,14 +126,21 @@ class AgentLoop:
         self._skills = skills
         self._learner = learner
 
-    def _exposed_tools(self, plan_active: bool) -> list[ToolSpec]:
+    def _exposed_tools(self, plan_active: bool, *, incognito: bool = False) -> list[ToolSpec]:
         s = self._settings()
         self._policy.mode = s.tool_exposure
         self._policy.threshold = s.facade_threshold
-        tools = self._policy.expose(self._registry.specs())
+        specs = self._registry.specs()
+        if incognito:
+            specs = [t for t in specs if not is_memory_writer(t)]
+        tools = self._policy.expose(specs)
         if plan_active:
             tools = [*tools, *PLAN_TOOLS]
         return tools
+
+    async def _is_incognito(self, run: Run) -> bool:
+        conv = await self._store.get_conversation(run.conversation_id)
+        return bool(conv is not None and conv.incognito)
 
     # --- entry ---------------------------------------------------------------------
 
@@ -183,7 +202,8 @@ class AgentLoop:
                     await emit(PlanStepStarted(run_id="", conversation_id="", index=0, title=plan.steps[0].title))
 
         messages = await self._context.assemble(run, skill_names=skill_names)
-        tools = self._exposed_tools(run.plan is not None)
+        incognito = await self._is_incognito(run)
+        tools = self._exposed_tools(run.plan is not None, incognito=incognito)
         plan_trailer: Message | None = None  # ephemeral, always the last message
         think_off_once = False  # set for ONE step when reasoning ate the whole output allowance
         # Adaptive thinking: the first step of a run always reasons, and after that only a step
@@ -377,7 +397,14 @@ class AgentLoop:
                     await emit(GuardConsumed(run_id="", conversation_id="", guard="open_plan", detail="nudged"))
                     continue
                 await self._done(run, ctl, message_id=assistant.id)
-                if self._learner is not None and run.kind in _CONTEXT_KINDS and self._settings().kg_learning:
+                # The knowledge graph learns from every ordinary exchange; an incognito chat is
+                # the one place it must not look. Decided in code, not in the prompt.
+                if (
+                    self._learner is not None
+                    and run.kind in _CONTEXT_KINDS
+                    and self._settings().kg_learning
+                    and not incognito
+                ):
                     self._learner.schedule(run.conversation_id, run.input_text, text, assistant.id)
                 return
 
@@ -554,6 +581,12 @@ class AgentLoop:
             key = f"{key}:retry"
 
         error = self._registry.validate(call.name, call.arguments)
+        if error is None and spec is not None and is_memory_writer(spec) and await self._is_incognito(run):
+            # Hidden from the list, but a model can still name a tool it was not offered.
+            error = (
+                f"{call.name} is not available in an incognito chat: nothing from this conversation "
+                "is stored anywhere. Tell Arsen you cannot save it here."
+            )
         if error is not None:
             result = ToolResult.failure(error)
             await emit(

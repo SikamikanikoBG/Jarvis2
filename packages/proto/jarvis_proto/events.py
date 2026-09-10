@@ -339,6 +339,11 @@ class RunCreateRequest(BaseModel):
     budget_kind: RunKind | None = None
     # Attachments uploaded before sending (POST /api/attachments), tied to this message.
     attachment_ids: list[str] = Field(default_factory=list)
+    # Read only when conversation_id is None, i.e. when this message opens a new chat: an
+    # incognito chat has to be one from its very first word (see Conversation.incognito), and
+    # a disappearing one gets its idle time here rather than by a second request.
+    incognito: bool = False
+    ttl_seconds: int | None = None
 
 
 class RunCancelRequest(BaseModel):

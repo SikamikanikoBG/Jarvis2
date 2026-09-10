@@ -192,8 +192,25 @@ class Conversation(BaseModel):
     message_count: int = 0
     # Derived from the runs table on read; see ConversationActivity.
     activity: ConversationActivity = ConversationActivity.IDLE
+    # A private chat: nothing from it is remembered anywhere else. No knowledge is learned from
+    # it, its title is never made from its words, search never returns it and the sidebar shows
+    # no preview. Decided at creation and never switched on later - what an ordinary chat has
+    # already taught the knowledge graph cannot be un-learned. Always has a ttl (below).
+    incognito: bool = False
+    # A disappearing chat: the core deletes it once it has sat idle this long. None = kept.
+    # "Idle" is measured from the last message (updated_at), not from the last time it was read.
+    ttl_seconds: int | None = None
+    # updated_at + ttl_seconds, maintained by the store; what the sweeper reads.
+    expires_at: datetime | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+#: The idle times a disappearing chat may be given, in seconds: an hour, a day, a week.
+TTL_CHOICES: tuple[int, ...] = (3_600, 86_400, 604_800)
+#: What an incognito chat gets when no ttl is asked for: an hour of quiet, then gone.
+INCOGNITO_DEFAULT_TTL = 3_600
+INCOGNITO_TITLE = "Incognito chat"
 
 
 class SearchHit(BaseModel):

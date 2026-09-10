@@ -172,6 +172,16 @@ export interface Conversation {
   preview: string | null;
   message_count: number;
   activity: ConversationActivity;
+  /**
+   * A private chat: nothing from it is remembered anywhere else (no knowledge learned, no title
+   * from its words, never a search hit, no preview, no notes/knowledge tools). Set when the chat
+   * is opened, never later. Always has a `ttl_seconds`.
+   */
+  incognito: boolean;
+  /** A disappearing chat: deleted by the core after this long idle. `null` = kept. */
+  ttl_seconds: number | null;
+  /** When the core will delete it (last message + ttl); `null` when kept. */
+  expires_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -780,6 +790,9 @@ export interface RunCreateRequest {
   think_level: ThinkLevel | null;
   /** Ids of attachments uploaded before sending, tied to this message. */
   attachment_ids?: string[];
+  /** Read only when `conversation_id` is null: how the chat this message opens should behave. */
+  incognito?: boolean;
+  ttl_seconds?: number | null;
 }
 export interface RunCancelRequest {
   type: 'run.cancel';

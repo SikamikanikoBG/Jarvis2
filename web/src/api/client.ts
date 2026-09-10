@@ -123,7 +123,8 @@ export const api = {
   status: () => request<StatusResponse>('GET', '/api/status'),
   conversations: {
     list: (archived: boolean) => request<Conversation[]>('GET', `/api/conversations?archived=${archived ? 1 : 0}`),
-    create: (body: { kind?: string; title?: string }) => request<Conversation>('POST', '/api/conversations', body),
+    create: (body: { kind?: string; title?: string; incognito?: boolean; ttl_seconds?: number | null }) =>
+      request<Conversation>('POST', '/api/conversations', body),
     get: (id: string) => request<Conversation>('GET', `/api/conversations/${encodeURIComponent(id)}`),
     patch: (
       id: string,
@@ -135,6 +136,8 @@ export const api = {
         instructions?: string;
         /** `null` files the chat out of every folder; omit the key to leave it where it is. */
         folder_id?: string | null;
+        /** Idle time before the chat deletes itself; `null` keeps it. Omit to leave the timer alone. */
+        ttl_seconds?: number | null;
       },
     ) =>
       request<Conversation>('PATCH', `/api/conversations/${encodeURIComponent(id)}`, body),

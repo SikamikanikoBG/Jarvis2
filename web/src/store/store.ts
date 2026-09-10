@@ -6,6 +6,7 @@ import { readCollapsedFolders, writeCollapsedFolders } from '../lib/folders';
 import { notifyDesktop, readNotifyPref, writeNotifyPref } from '../lib/notify';
 import { navigate, parseLocation, rememberConversation, type View } from '../lib/router';
 import { applyThemePref, isPanelMode, readThemePref, type ThemePref } from '../lib/theme';
+import { DRAFT_NORMAL, ttlLabel, type DraftPrivacy } from '../lib/privacy';
 import type { ThinkChoice } from '../lib/think';
 import type {
   Attachment,
@@ -47,6 +48,12 @@ export interface UiState {
   version: string | null;
   /** Per-conversation thinking override for new messages (absent = role default). */
   thinkChoice: Record<string, ThinkChoice | undefined>;
+  /**
+   * How the NEXT new chat opens: normal, incognito, or disappearing after an idle time. Picked
+   * in the composer before the first message and sent with it — an incognito chat has to be one
+   * from its very first word. Reset once that chat exists.
+   */
+  draftPrivacy: DraftPrivacy;
   /** Compaction summary per conversation; `undefined` = not fetched, `null` = none. */
   summaries: Record<string, ConversationSummary | null | undefined>;
   /** Mobile "More" navigation sheet. */
@@ -109,6 +116,9 @@ export interface Actions {
   setSidebarOpen: (open: boolean) => void;
   setTheme: (pref: ThemePref) => void;
   setThinkChoice: (choice: ThinkChoice) => void;
+  setDraftPrivacy: (privacy: DraftPrivacy) => void;
+  /** How long an existing chat may sit idle before it deletes itself; `null` keeps it. */
+  setConversationTtl: (id: string, ttlSeconds: number | null) => Promise<void>;
   setMoreOpen: (open: boolean) => void;
   notify: (text: string, level?: Notice['level']) => void;
   dismissNotice: () => void;
@@ -189,6 +199,7 @@ export const useStore = create<AppState>()((set, get) => ({
   panelMode: isPanelMode(),
   version: null,
   thinkChoice: {},
+  draftPrivacy: DRAFT_NORMAL,
   summaries: {},
   moreOpen: false,
   editing: null,
@@ -251,6 +262,8 @@ export const useStore = create<AppState>()((set, get) => ({
       navigate(after.view, id, true);
       const pendingChoice = after.thinkChoice[NEW_CONVERSATION_KEY];
       if (pendingChoice) set((s) => ({ thinkChoice: { ...omit(s.thinkChoice, NEW_CONVERSATION_KEY), [id]: pendingChoice } }));
+      // The draft's privacy went out with the first message; the chat now says it itself.
+      if (before.pendingNewConversation) set({ draftPrivacy: DRAFT_NORMAL });
     }
     // Folders are Arsen's own filing and the sidebar always shows them: refetch rather than
     // reduce, so a folder made on the phone (and its counts) appear here without a reload.
@@ -307,6 +320,7 @@ export const useStore = create<AppState>()((set, get) => ({
       view: 'chat',
       sidebarOpen: false,
       pendingNewConversation: null,
+      draftPrivacy: DRAFT_NORMAL,
       messages: omit(s.messages, NEW_CONVERSATION_KEY),
     }));
     rememberConversation(null);
@@ -389,6 +403,8 @@ export const useStore = create<AppState>()((set, get) => ({
       think: choice?.think ?? null,
       think_level: choice?.think ? (choice.think_level ?? null) : null,
       attachment_ids: attachments.map((a) => a.id),
+      // Only a first message opens a chat, so only then does the draft's privacy travel.
+      ...(open ? {} : { incognito: s.draftPrivacy.incognito, ttl_seconds: s.draftPrivacy.ttlSeconds }),
     });
   },
 
@@ -705,6 +721,18 @@ export const useStore = create<AppState>()((set, get) => ({
   setThinkChoice: (choice) => {
     const key = get().openConversationId ?? NEW_CONVERSATION_KEY;
     set((s) => ({ thinkChoice: choice.think === null ? omit(s.thinkChoice, key) : { ...s.thinkChoice, [key]: choice } }));
+  },
+
+  setDraftPrivacy: (privacy) => set({ draftPrivacy: privacy }),
+
+  setConversationTtl: async (id, ttlSeconds) => {
+    try {
+      const conv = await api.conversations.patch(id, { ttl_seconds: ttlSeconds });
+      upsertConversation(set, conv);
+      get().notify(ttlSeconds === null ? 'This chat is kept.' : `This chat disappears after ${ttlLabel(ttlSeconds)} of quiet.`);
+    } catch (e) {
+      get().notify(`Could not change when the chat disappears: ${errorText(e)}`, 'error');
+    }
   },
 
   notify: (text, level = 'info') => set({ notice: { id: ++noticeSeq, level, text } }),

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { InstructionsDialog } from '../chat/InstructionsDialog';
-import { IconButton, InlineConfirm, Menu } from '../components/primitives';
+import { IconButton, InlineConfirm, Menu, type MenuItem } from '../components/primitives';
+import { TTL_CHOICES, ttlLabel } from '../lib/privacy';
 import { useStore } from '../store/store';
 
 /**
@@ -17,7 +18,10 @@ export function ConversationMenu() {
   const pin = useStore((s) => s.pinConversation);
   const exportConv = useStore((s) => s.exportConversation);
   const setInstructions = useStore((s) => s.setConversationInstructions);
+  const setTtl = useStore((s) => s.setConversationTtl);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  // Two-level like the sidebar row: the actions, and the idle-time picker swaps in.
+  const [menuMode, setMenuMode] = useState<'main' | 'ttl'>('main');
   const [confirm, setConfirm] = useState(false);
   const [editing, setEditing] = useState(false);
   const [instructing, setInstructing] = useState(false);
@@ -62,6 +66,46 @@ export function ConversationMenu() {
   if (editing) {
     return <input ref={inputRef} className="input conv-rename" value={title} onChange={(e) => setTitle(e.target.value)} onBlur={commit} onKeyDown={onKey} aria-label="Conversation title" />;
   }
+  const mainItems: MenuItem[] = [
+    {
+      label: 'Rename',
+      icon: 'edit',
+      onSelect: () => {
+        setTitle(conv.title);
+        setEditing(true);
+      },
+    },
+    {
+      label: conv.instructions.trim() ? 'Instructions ✓' : 'Instructions…',
+      icon: 'brain',
+      onSelect: () => setInstructing(true),
+    },
+    { label: conv.pinned ? 'Unpin' : 'Pin', icon: 'pin', onSelect: () => void pin(id, !conv.pinned) },
+    ...(conv.kind === 'chat'
+      ? [
+          {
+            label: conv.ttl_seconds === null ? 'Disappear after…' : `Disappears after ${ttlLabel(conv.ttl_seconds)}…`,
+            icon: 'hourglass' as const,
+            keepOpen: true,
+            onSelect: () => setMenuMode('ttl'),
+          },
+        ]
+      : []),
+    { label: conv.archived ? 'Unarchive' : 'Archive', icon: conv.archived ? 'unarchive' : 'archive', onSelect: () => void archive(id, !conv.archived) },
+    { label: 'Export as Markdown', icon: 'download', onSelect: () => void exportConv(id, 'markdown') },
+    { label: 'Export as JSON', icon: 'download', onSelect: () => void exportConv(id, 'json') },
+    { label: 'Delete', icon: 'trash', danger: true, onSelect: () => setConfirm(true) },
+  ];
+  const ttlItems: MenuItem[] = [
+    ...(conv.incognito ? [] : [{ label: 'Keep this chat', ...(conv.ttl_seconds === null ? { icon: 'check' as const } : {}), onSelect: () => void setTtl(id, null) }]),
+    ...TTL_CHOICES.map(
+      (t): MenuItem => ({
+        label: `After ${t.label} of quiet`,
+        icon: conv.ttl_seconds === t.seconds ? 'check' : 'hourglass',
+        onSelect: () => void setTtl(id, t.seconds),
+      }),
+    ),
+  ];
   return (
     <>
       {instructing && (
@@ -71,33 +115,17 @@ export function ConversationMenu() {
           onSave={(text) => void setInstructions(id, text)}
         />
       )}
-      <IconButton icon="more" label="Conversation menu" aria-haspopup="menu" aria-expanded={Boolean(anchor)} onClick={(e) => setAnchor(anchor ? null : e.currentTarget)} />
-      {anchor && (
-        <Menu
-          anchor={anchor}
-          onClose={() => setAnchor(null)}
-          items={[
-            {
-              label: 'Rename',
-              icon: 'edit',
-              onSelect: () => {
-                setTitle(conv.title);
-                setEditing(true);
-              },
-            },
-            {
-              label: conv.instructions.trim() ? 'Instructions ✓' : 'Instructions…',
-              icon: 'brain',
-              onSelect: () => setInstructing(true),
-            },
-            { label: conv.pinned ? 'Unpin' : 'Pin', icon: 'pin', onSelect: () => void pin(id, !conv.pinned) },
-            { label: conv.archived ? 'Unarchive' : 'Archive', icon: conv.archived ? 'unarchive' : 'archive', onSelect: () => void archive(id, !conv.archived) },
-            { label: 'Export as Markdown', icon: 'download', onSelect: () => void exportConv(id, 'markdown') },
-            { label: 'Export as JSON', icon: 'download', onSelect: () => void exportConv(id, 'json') },
-            { label: 'Delete', icon: 'trash', danger: true, onSelect: () => setConfirm(true) },
-          ]}
-        />
-      )}
+      <IconButton
+        icon="more"
+        label="Conversation menu"
+        aria-haspopup="menu"
+        aria-expanded={Boolean(anchor)}
+        onClick={(e) => {
+          setMenuMode('main');
+          setAnchor(anchor ? null : e.currentTarget);
+        }}
+      />
+      {anchor && <Menu anchor={anchor} onClose={() => setAnchor(null)} items={menuMode === 'main' ? mainItems : ttlItems} />}
     </>
   );
 }

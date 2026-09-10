@@ -63,16 +63,33 @@ function conv(partial) {
     folder_id: null,
     archived: false,
     unread: false,
+    pinned: false,
+    title_auto: true,
+    instructions: '',
     preview: null,
     message_count: 0,
     activity: 'idle',
+    incognito: false,
+    ttl_seconds: null,
+    expires_at: null,
     created_at: now(),
     updated_at: now(),
     ...partial,
   };
+  // An incognito chat is never kept: it gets the default hour when no idle time was asked for.
+  if (c.incognito && c.ttl_seconds === null) c.ttl_seconds = 3600;
+  armExpiry(c);
   conversations.set(c.id, c);
   messages.set(c.id, []);
   return c;
+}
+/** The core's rule: expires_at = now + ttl, re-armed on every message; null when kept. */
+function armExpiry(c) {
+  c.expires_at = c.ttl_seconds === null ? null : new Date(Date.now() + c.ttl_seconds * 1000).toISOString();
+}
+/** One of the three idle times the core accepts, else null (dropped, not an error). */
+function validTtl(v) {
+  return [3600, 86400, 604800].includes(v) ? v : null;
 }
 function msg(convId, partial) {
   const m = {
@@ -92,10 +109,12 @@ function msg(convId, partial) {
   messages.get(convId).push(m);
   const c = conversations.get(convId);
   c.message_count += 1;
-  // Injected user-role messages (context, plan, …) never become the sidebar preview.
+  // Injected user-role messages (context, plan, …) never become the sidebar preview - and an
+  // incognito chat has no preview at all.
   const injected = m.role === 'user' && m.name !== null;
-  c.preview = m.role === 'tool' || injected ? c.preview : m.content.slice(0, 80) || c.preview;
+  c.preview = c.incognito ? null : m.role === 'tool' || injected ? c.preview : m.content.slice(0, 80) || c.preview;
   c.updated_at = m.created_at;
+  armExpiry(c);
   return m;
 }
 
@@ -551,9 +570,16 @@ const server = createServer(async (req, res) => {
         }
         if (req.method === 'POST') {
           const body = await readBody(req);
-          const c = conv({ kind: body.kind ?? 'chat', title: body.title ?? 'New chat' });
+          if (body.ttl_seconds != null && validTtl(body.ttl_seconds) === null) return json(res, 422, { detail: 'ttl_seconds must be one of 3600, 86400, 604800' });
+          const incognito = Boolean(body.incognito);
+          const c = conv({
+            kind: body.kind ?? 'chat',
+            title: incognito && (body.title ?? 'New chat') === 'New chat' ? 'Incognito chat' : body.title ?? 'New chat',
+            incognito,
+            ttl_seconds: body.ttl_seconds ?? null,
+          });
           broadcast({ type: 'conversation.updated', ts: now(), conversation: c });
-          return json(res, 200, c);
+          return json(res, 201, c);
         }
       }
       if (id === 'bulk' && req.method === 'POST') {
@@ -593,7 +619,12 @@ const server = createServer(async (req, res) => {
       if (req.method === 'PATCH') {
         const body = await readBody(req);
         if ('folder_id' in body && body.folder_id && !chatFolders.has(body.folder_id)) return json(res, 422, { detail: 'folder not found' });
+        if ('ttl_seconds' in body) {
+          if (body.ttl_seconds === null && c.incognito) return json(res, 422, { detail: 'an incognito chat is never kept; pick an idle time instead' });
+          if (body.ttl_seconds !== null && validTtl(body.ttl_seconds) === null) return json(res, 422, { detail: 'ttl_seconds must be one of 3600, 86400, 604800' });
+        }
         Object.assign(c, body);
+        if ('ttl_seconds' in body) armExpiry(c);
         c.updated_at = now();
         broadcast({ type: 'conversation.updated', ts: now(), conversation: refreshActivity(c) });
         if ('folder_id' in body) broadcast({ type: 'folders.changed', ts: now() });
@@ -615,7 +646,7 @@ const server = createServer(async (req, res) => {
       const seen = new Set();
       for (const c of [...conversations.values()].sort((a, b) => b.updated_at.localeCompare(a.updated_at))) {
         if (hits.length >= limit) break;
-        if (!c.title.toLowerCase().includes(needle)) continue;
+        if (c.incognito || !c.title.toLowerCase().includes(needle)) continue;
         seen.add(c.id);
         hits.push({ conversation: refreshActivity(c), message_id: null, snippet: null, matched: 'title' });
       }
@@ -626,7 +657,7 @@ const server = createServer(async (req, res) => {
         for (const [cid, list] of messages) for (const m of list) all.push([cid, m]);
         for (const [cid, m] of all.reverse()) {
           if (hits.length >= limit) break;
-          if (seen.has(cid) || !conversations.has(cid)) continue;
+          if (seen.has(cid) || !conversations.has(cid) || conversations.get(cid).incognito) continue;
           if (!['user', 'assistant'].includes(m.role) || m.name !== null) continue;
           if (!(m.content ?? '').toLowerCase().includes(needle)) continue;
           seen.add(cid);
@@ -729,7 +760,11 @@ wss.on('connection', (ws) => {
       case 'run.create': {
         let c = m.conversation_id ? conversations.get(m.conversation_id) : null;
         if (!c) {
-          c = conv({ title: m.text.trim().slice(0, 40) || 'New chat' });
+          c = conv({
+            title: m.incognito ? 'Incognito chat' : m.text.trim().slice(0, 40) || 'New chat',
+            incognito: Boolean(m.incognito),
+            ttl_seconds: validTtl(m.ttl_seconds ?? null),
+          });
           subs.add(c.id); // the creating socket is auto-subscribed
           broadcast({ type: 'conversation.updated', ts: now(), conversation: c });
         }

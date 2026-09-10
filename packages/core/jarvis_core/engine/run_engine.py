@@ -151,7 +151,7 @@ class RunEngine:
                 folder_label=folder_label,
             )
             self._bus.publish(ConversationUpdated(conversation=conv))
-        elif conv.title == "New chat" and conv.message_count == 0:
+        elif conv.title == "New chat" and conv.message_count == 0 and not conv.incognito:
             conv = await self._store.update_conversation(conv.id, title=_title_from(text)) or conv
             self._bus.publish(ConversationUpdated(conversation=conv))
 
@@ -330,6 +330,8 @@ class RunEngine:
             and run.status is RunStatus.DONE
             and conv.title_auto
             and conv.kind is ConversationKind.CHAT
+            # Its words go nowhere - not to the classifier for a name either.
+            and not conv.incognito
         ):
             await self._maybe_title(run, conv)
 

@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import aiosqlite
 
 from jarvis_core.db.connection import Database
 from jarvis_proto import (
+    INCOGNITO_DEFAULT_TTL,
     ChatFolder,
     Conversation,
     ConversationActivity,
@@ -41,6 +42,13 @@ def _now() -> str:
 
 def _dt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
+
+
+def _expires(ttl_seconds: int | None, *, now: datetime | None = None) -> str | None:
+    """When a chat touched now will have sat idle for ``ttl_seconds``; None when it is kept."""
+    if ttl_seconds is None:
+        return None
+    return ((now or datetime.now(UTC)) + timedelta(seconds=ttl_seconds)).isoformat()
 
 
 def _escape_like(pattern: str) -> str:
@@ -99,6 +107,9 @@ class Store:
             preview=row["preview"],
             message_count=row["message_count"],
             activity=ConversationActivity(raw) if raw else ConversationActivity.IDLE,
+            incognito=bool(row["incognito"]),
+            ttl_seconds=row["ttl_seconds"],
+            expires_at=_dt(row["expires_at"]),
             created_at=_dt(row["created_at"]) or datetime.now(UTC),
             updated_at=_dt(row["updated_at"]) or datetime.now(UTC),
         )
@@ -110,17 +121,36 @@ class Store:
         title: str = "New chat",
         folder_key: str | None = None,
         folder_label: str | None = None,
+        incognito: bool = False,
+        ttl_seconds: int | None = None,
     ) -> Conversation:
-        conv = Conversation(id=new_id("conv"), kind=kind, title=title, folder_key=folder_key, folder_label=folder_label)
+        # An incognito chat is never kept: with no idle time asked for it gets the default one.
+        if incognito and ttl_seconds is None:
+            ttl_seconds = INCOGNITO_DEFAULT_TTL
+        conv = Conversation(
+            id=new_id("conv"),
+            kind=kind,
+            title=title,
+            folder_key=folder_key,
+            folder_label=folder_label,
+            incognito=incognito,
+            ttl_seconds=ttl_seconds,
+        )
+        expires = _expires(ttl_seconds, now=conv.created_at)
+        conv.expires_at = _dt(expires)
         await self.db.execute(
             "INSERT INTO conversations(id, kind, title, folder_key, folder_label, archived, unread,"
-            " preview, message_count, created_at, updated_at) VALUES (?,?,?,?,?,0,0,NULL,0,?,?)",
+            " preview, message_count, incognito, ttl_seconds, expires_at, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,0,0,NULL,0,?,?,?,?,?)",
             (
                 conv.id,
                 conv.kind.value,
                 conv.title,
                 conv.folder_key,
                 conv.folder_label,
+                int(incognito),
+                ttl_seconds,
+                expires,
                 conv.created_at.isoformat(),
                 conv.updated_at.isoformat(),
             ),
@@ -151,7 +181,13 @@ class Store:
             "folder_label",
             "folder_id",
             "kind",
+            "ttl_seconds",
+            "expires_at",
         }
+        # Giving a chat a (new) idle time starts the clock now, not from its last message: "gone
+        # in an hour" said at 15:00 means 16:00, whatever time the last reply came.
+        if "ttl_seconds" in fields and "expires_at" not in fields:
+            fields = {**fields, "expires_at": _expires(fields["ttl_seconds"])}
         sets: list[str] = []
         params: list[Any] = []
         for key, value in fields.items():
@@ -168,12 +204,34 @@ class Store:
         return await self.get_conversation(conversation_id)
 
     async def touch_conversation(self, conversation_id: str, preview: str | None) -> None:
+        """A message landed: bump the clock, the preview and the count - and push the expiry of
+        a disappearing chat out by its ttl, since idle time is counted from here. An incognito
+        chat keeps no preview at all: the sidebar row must not quote it."""
+        now = datetime.now(UTC)
         await self.db.execute(
-            "UPDATE conversations SET updated_at = ?, preview = COALESCE(?, preview),"
-            " message_count = (SELECT COUNT(*) FROM messages WHERE conversation_id = ?)"
+            "UPDATE conversations SET updated_at = ?,"
+            " preview = CASE WHEN incognito THEN NULL ELSE COALESCE(?, preview) END,"
+            " message_count = (SELECT COUNT(*) FROM messages WHERE conversation_id = ?),"
+            " expires_at = CASE WHEN ttl_seconds IS NULL THEN NULL"
+            "   ELSE strftime('%Y-%m-%dT%H:%M:%f+00:00', ?, '+' || ttl_seconds || ' seconds') END"
             " WHERE id = ?",
-            (_now(), (preview or "")[:160] or None, conversation_id, conversation_id),
+            (
+                now.isoformat(),
+                (preview or "")[:160] or None,
+                conversation_id,
+                # strftime reads "YYYY-MM-DD HH:MM:SS.SSS" as UTC; the +00:00 form above is output only.
+                now.strftime("%Y-%m-%d %H:%M:%S.") + f"{now.microsecond // 1000:03d}",
+                conversation_id,
+            ),
         )
+
+    async def expired_conversations(self, now: datetime | None = None) -> list[Conversation]:
+        """Disappearing chats whose idle time is up, oldest first. The sweeper's question."""
+        at = (now or datetime.now(UTC)).isoformat()
+        rows = await self.db.fetchall(
+            f"{_CONV_SELECT} WHERE c.expires_at IS NOT NULL AND c.expires_at <= ? ORDER BY c.expires_at", (at,)
+        )
+        return [self._conversation(r) for r in rows]
 
     async def delete_conversation(self, conversation_id: str) -> None:
         await self.db.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
@@ -187,8 +245,10 @@ class Store:
         like = f"%{q}%"
         hits: list[SearchHit] = []
         seen: set[str] = set()
+        # An incognito chat is never a hit, by title or by text: being found from another screen
+        # is exactly the "considered elsewhere" it promises not to be.
         rows = await self.db.fetchall(
-            f"{_CONV_SELECT} WHERE c.title LIKE ? ESCAPE '\\' ORDER BY c.updated_at DESC LIMIT ?",
+            f"{_CONV_SELECT} WHERE c.incognito = 0 AND c.title LIKE ? ESCAPE '\\' ORDER BY c.updated_at DESC LIMIT ?",
             (_escape_like(like), limit),
         )
         for r in rows:
@@ -200,7 +260,8 @@ class Store:
         rows = await self.db.fetchall(
             f"SELECT m.id AS message_id, m.content AS content, c.*, {_ACTIVITY_SQL} AS activity"
             " FROM messages m JOIN conversations c ON c.id = m.conversation_id"
-            " WHERE m.role IN ('user', 'assistant') AND m.name IS NULL AND m.content LIKE ? ESCAPE '\\'"
+            " WHERE c.incognito = 0 AND m.role IN ('user', 'assistant') AND m.name IS NULL"
+            " AND m.content LIKE ? ESCAPE '\\'"
             " ORDER BY m.rowid DESC LIMIT ?",
             (_escape_like(like), limit * 4),
         )
@@ -235,7 +296,13 @@ class Store:
             if cut is None:
                 raise ValueError("up_to_message_id is not in this conversation")
             rows = rows[:cut]
-        fork = await self.create_conversation(kind=ConversationKind.CHAT, title=f"{src.title} (fork)")
+        # A fork of a private chat is as private as the original - anything else would be a leak.
+        fork = await self.create_conversation(
+            kind=ConversationKind.CHAT,
+            title=f"{src.title} (fork)",
+            incognito=src.incognito,
+            ttl_seconds=src.ttl_seconds,
+        )
         await self.db.execute("UPDATE conversations SET title_auto = 0 WHERE id = ?", (fork.id,))
         last_preview: str | None = None
         for r in rows:

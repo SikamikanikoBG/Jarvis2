@@ -14,7 +14,9 @@ from pydantic import ValidationError
 
 from jarvis_core.api.deps import core_of_ws, ws_token_ok
 from jarvis_core.engine.bus import Subscriber
+from jarvis_core.features.expiry import valid_ttl
 from jarvis_proto import (
+    INCOGNITO_TITLE,
     Pong,
     RunCancelRequest,
     RunCreateRequest,
@@ -81,8 +83,13 @@ async def _ui_leg(ws: WebSocket) -> None:
                 conversation_id = msg.conversation_id
                 if conversation_id is None:
                     # Subscribe before the run exists so run.queued and the user message
-                    # reach this client; the engine titles the conversation on first message.
-                    conv = await core.store.create_conversation()
+                    # reach this client; the engine titles the conversation on first message
+                    # (an incognito one keeps its fixed name).
+                    conv = await core.store.create_conversation(
+                        title=INCOGNITO_TITLE if msg.incognito else "New chat",
+                        incognito=msg.incognito,
+                        ttl_seconds=valid_ttl(msg.ttl_seconds),
+                    )
                     core.bus.publish(ConversationUpdated(conversation=conv))
                     conversation_id = conv.id
                 sub.conversations.add(conversation_id)

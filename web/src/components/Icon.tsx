@@ -66,6 +66,19 @@ const PATHS = {
     'M12 11v6M9 14h6',
   ],
   checkSquare: ['M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z', 'm8.5 12 2.5 2.5 5-5'],
+  // A crossed-out eye: the incognito chat, which nothing else gets to look at.
+  incognito: [
+    'M9.88 9.88a3 3 0 1 0 4.24 4.24',
+    'M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68',
+    'M6.61 6.61A13.53 13.53 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61',
+    'm2 2 20 20',
+  ],
+  // The disappearing chat's timer.
+  hourglass: [
+    'M5 22h14M5 2h14',
+    'M17 22v-4.17a2 2 0 0 0-.59-1.42L12 12l-4.41 4.41A2 2 0 0 0 7 17.83V22',
+    'M7 2v4.17a2 2 0 0 0 .59 1.42L12 12l4.41-4.41A2 2 0 0 0 17 6.17V2',
+  ],
 } as const;
 
 export type IconName = keyof typeof PATHS;

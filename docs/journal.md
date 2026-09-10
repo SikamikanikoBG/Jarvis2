@@ -392,3 +392,52 @@ harness — library vs. own is an open question to settle in the design.
   Still open from that transcript, not fixed here: no retry on a dropped model stream, and
   `browser.read` will happily read a work tab another task navigated (one read came back as
   GitHub's traffic page for homelab-monitor).
+
+- 2026-09-10 — Two more kinds of chat: incognito, and disappearing. Arsen's ask, in his words:
+  a chat "where i can with great confidence share super personal stuff without the fear that
+  this will be stored somewhere and will be considered in the chat in general", and a chat for
+  the small tasks he then has to delete from the navigation pane by hand — "after X time
+  inactive - it deletes itself".
+  First the audit: what does an ordinary chat actually leak into the rest of Jarvis? Five
+  things. The knowledge learner reads every finished exchange and writes entities and mentions
+  into the graph (gated only by `kg_learning`). The titler sends the first exchange to the
+  classifier and stores what comes back. `Store.search()` walks every title and every message.
+  The sidebar row quotes the last message as a preview. And the model itself can be asked to
+  pin a note or `kg.remember` a fact. A sixth, found along the way: attachment ROWS cascade when
+  a chat is deleted, the FILES in `data/attachments` did not — every deleted chat left its photos
+  behind. Fixed for every delete, not only these.
+  Incognito is a flag on the conversation and a code-level no at each of those five doors: the
+  learner is skipped, the titler is skipped (the title is the constant "Incognito chat" until
+  Arsen renames it), search adds `incognito = 0` to both queries, `touch_conversation` keeps
+  the preview NULL, and the `notes.*` / `kg.*` writers are filtered out of the tool list the
+  model is offered — and refused with a reason if it names one anyway. The stable system prefix
+  gets one short "Private conversation" block so the model does not promise what it cannot do.
+  Nothing else is taken away: schedules, mail, the web, the boards for READING all still work —
+  a private chat is not a crippled one. What the prompt cannot enforce the code does; what the
+  code cannot know (that Arsen explicitly wants something saved) stays possible in a normal chat.
+  Decided against: turning an existing chat incognito. What it already taught the graph cannot
+  be un-learned, so the flag is set at birth or not at all — the SPA says so in the menu.
+  Disappearing is `ttl_seconds` plus a derived `expires_at` the store re-arms on every message,
+  and a `Reaper` in the core that asks once a minute for what is due and removes it the way
+  Delete does (runs cancelled, files unlinked, row gone, `conversation.deleted` to every client).
+  A chat with a run still working is left for the next round: its reply re-arms the timer anyway.
+  Three idle times only — an hour, a day, a week — refused rather than rounded, because a ttl is
+  a promise about when something is gone. An incognito chat always has one (an hour by default)
+  and can never be given "keep": that is what makes it vanish without Arsen doing anything.
+  Decided against: "gone when you close it", the browser's incognito model. There is no window
+  here — the same chat is open on the phone and the laptop, the PWA is suspended and resumed,
+  a tab crashes — so "closed" is not a thing the core can see. A server-side idle timer is.
+  In the SPA the choice lives in one chip next to the thinking chip in the composer: on a fresh
+  chat it picks what the first message will open (kept / incognito / gone after 1 h, 1 d, 1 w)
+  and travels with that `run.create`; on an existing chat it shows the state — "Incognito · 58
+  min left", "Disappears in 23 h" — and changes the timer. The row menu and the top-bar menu get
+  "Disappear after…" as a second-level picker like "Move to folder…". An incognito chat is said
+  out loud on the chat itself, in a banner above the transcript, because the chip is small and
+  this is the one thing to be sure of before typing; its sidebar row shows a crossed-out eye and
+  "Incognito · gone in 58 min" instead of a preview, and never a quote of what was said - the
+  client-side preview fallback (newest loaded message) is bypassed for it too, as is the local
+  title narrowing in search.
+  Said honestly in API.md: while it lives, an incognito chat IS rows in SQLite on ardi — the
+  engine resumes runs from the database, there is no way round that. The promise is about what
+  leaves the chat (nothing) and how long it stays (its ttl), not about the disk under it.
+  (core 2.0.0a34, web alpha.14; migration 0009; 13 new core tests, 3 new web tests.)

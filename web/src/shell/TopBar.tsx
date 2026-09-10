@@ -13,6 +13,7 @@ export function TopBar({ desktop }: { desktop: boolean }) {
   const setView = useStore((s) => s.setView);
   const openId = useStore((s) => s.openConversationId);
   const title = useStore((s) => (s.openConversationId ? s.conversations[s.openConversationId]?.title : undefined));
+  const draftIncognito = useStore((s) => !s.openConversationId && s.draftPrivacy.incognito);
   const connection = useStore((s) => s.connection);
   const version = useStore((s) => s.version);
   const unread = useStore((s) => selectUnreadCount(s.conversations));
@@ -25,7 +26,7 @@ export function TopBar({ desktop }: { desktop: boolean }) {
   const setNotifyRuns = useStore((s) => s.setNotifyRuns);
 
   const theme = effectiveTheme(themePref);
-  const heading = view === 'chat' ? (title ?? 'New chat') : NAV_ALL.find((n) => n.view === view)?.label;
+  const heading = view === 'chat' ? (title ?? (draftIncognito ? 'Incognito chat' : 'New chat')) : NAV_ALL.find((n) => n.view === view)?.label;
 
   // Tab badge: "(2) Jarvis" while replies wait unread, like every mail client.
   useEffect(() => {

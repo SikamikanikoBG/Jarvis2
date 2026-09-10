@@ -3,6 +3,7 @@ import { Icon } from '../components/Icon';
 import { IconButton, InlineConfirm, Menu, RelativeTime, type MenuItem } from '../components/primitives';
 import { stripMarkdown } from '../lib/format';
 import { previewFor } from '../lib/injected';
+import { TTL_CHOICES, timeLeft, ttlLabel } from '../lib/privacy';
 import type { Conversation } from '../protocol/types';
 import { useStore } from '../store/store';
 import { ActivityDot } from './ActivityDot';
@@ -20,7 +21,10 @@ interface Props {
 
 export function ConversationRow({ conversation: c, active, selecting = false, selected = false, ordered = [] }: Props) {
   const open = useStore((s) => s.openConversation);
-  const preview = useStore((s) => previewFor(c, s.messages[c.id]));
+  // An incognito row never quotes the chat - not from the server's preview (there is none) and
+  // not from the messages this client has loaded either.
+  const preview = useStore((s) => (c.incognito ? null : previewFor(c, s.messages[c.id])));
+  const setTtl = useStore((s) => s.setConversationTtl);
   const rename = useStore((s) => s.renameConversation);
   const archive = useStore((s) => s.archiveConversation);
   const remove = useStore((s) => s.deleteConversation);
@@ -32,8 +36,9 @@ export function ConversationRow({ conversation: c, active, selecting = false, se
   const toggleSelected = useStore((s) => s.toggleSelected);
   const extendSelection = useStore((s) => s.extendSelection);
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
-  // The row menu is two-level: the actions, and the folder picker "Move to…" swaps in.
-  const [menuMode, setMenuMode] = useState<'main' | 'move'>('main');
+  // The row menu is two-level: the actions, and a picker - folders for "Move to…", idle times
+  // for "Disappear after…" - swaps in.
+  const [menuMode, setMenuMode] = useState<'main' | 'move' | 'ttl'>('main');
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [title, setTitle] = useState(c.title);
@@ -87,19 +92,27 @@ export function ConversationRow({ conversation: c, active, selecting = false, se
   }
 
   const archived = c.archived;
-  // Only plain chats are Arsen's to file; a scheduled fire or a meeting belongs to its own folder.
-  const fileable = c.kind === 'chat' && !archived;
+  // Only plain chats are Arsen's to file; a scheduled fire or a meeting belongs to its own folder,
+  // and an incognito chat is about to leave anyway.
+  const fileable = c.kind === 'chat' && !archived && !c.incognito;
   const moveItem: MenuItem = {
     label: c.folder_id ? 'Move to another folder…' : 'Move to folder…',
     icon: 'folder',
     keepOpen: true, // swaps this menu for the folder picker rather than closing it
     onSelect: () => setMenuMode('move'),
   };
+  const ttlItem: MenuItem = {
+    label: c.ttl_seconds === null ? 'Disappear after…' : `Disappears after ${ttlLabel(c.ttl_seconds)}…`,
+    icon: 'hourglass',
+    keepOpen: true,
+    onSelect: () => setMenuMode('ttl'),
+  };
   const mainItems: MenuItem[] = [
     { label: 'Select', icon: 'checkSquare', onSelect: () => toggleSelected(c.id) },
     { label: 'Rename', icon: 'edit', onSelect: () => setEditing(true) },
     { label: c.pinned ? 'Unpin' : 'Pin', icon: 'pin', onSelect: () => void pin(c.id, !c.pinned) },
     ...(fileable ? [moveItem] : []),
+    ...(c.kind === 'chat' ? [ttlItem] : []),
     { label: archived ? 'Unarchive' : 'Archive', icon: archived ? 'unarchive' : 'archive', onSelect: () => void archive(c.id, !archived) },
     { label: 'Export as Markdown', icon: 'download', onSelect: () => void exportConv(c.id, 'markdown') },
     { label: 'Export as JSON', icon: 'download', onSelect: () => void exportConv(c.id, 'json') },
@@ -112,6 +125,17 @@ export function ConversationRow({ conversation: c, active, selecting = false, se
     ...(c.folder_id ? [{ label: 'Out of every folder', icon: 'x' as const, onSelect: () => void move(c.id, null) }] : []),
     ...(folders.length === 0 ? [{ label: 'No folders yet — make one first', icon: 'info' as const, disabled: true, onSelect: () => undefined }] : []),
   ];
+  // An incognito chat is never kept, so "Keep" is not on its list.
+  const ttlItems: MenuItem[] = [
+    ...(c.incognito ? [] : [{ label: 'Keep this chat', ...(c.ttl_seconds === null ? { icon: 'check' as const } : {}), onSelect: () => void setTtl(c.id, null) }]),
+    ...TTL_CHOICES.map(
+      (t): MenuItem => ({
+        label: `After ${t.label} of quiet`,
+        icon: c.ttl_seconds === t.seconds ? 'check' : 'hourglass',
+        onSelect: () => void setTtl(c.id, t.seconds),
+      }),
+    ),
+  ];
 
   const cls = [
     'conv',
@@ -119,6 +143,7 @@ export function ConversationRow({ conversation: c, active, selecting = false, se
     c.unread ? 'unread' : '',
     menuAnchor ? 'menu-open' : '',
     selected ? 'selected' : '',
+    c.incognito ? 'conv-incognito' : '',
   ]
     .filter(Boolean)
     .join(' ');
@@ -146,9 +171,18 @@ export function ConversationRow({ conversation: c, active, selecting = false, se
               <ActivityDot activity={c.activity} />
               {c.unread && <span className="unread-dot" aria-label="Unread" />}
               {c.pinned && <Icon name="pin" size={12} className="conv-pin" aria-label="Pinned" />}
+              {c.incognito ? (
+                <Icon name="incognito" size={12} className="conv-privacy" aria-label="Incognito" />
+              ) : (
+                c.expires_at && <Icon name="hourglass" size={12} className="conv-privacy" aria-label={`Disappears in ${timeLeft(c.expires_at)}`} />
+              )}
               <span className="truncate">{c.title}</span>
             </div>
-            {preview && <div className="conv-preview">{stripMarkdown(preview)}</div>}
+            {c.incognito ? (
+              <div className="conv-preview">Incognito{c.expires_at ? ` · gone in ${timeLeft(c.expires_at)}` : ''}</div>
+            ) : (
+              preview && <div className="conv-preview">{stripMarkdown(preview)}</div>
+            )}
           </button>
           <span className="conv-time">
             <RelativeTime ts={c.updated_at} />
@@ -169,7 +203,7 @@ export function ConversationRow({ conversation: c, active, selecting = false, se
             <Menu
               anchor={menuAnchor}
               onClose={() => setMenuAnchor(null)}
-              items={menuMode === 'main' ? mainItems : moveItems}
+              items={menuMode === 'main' ? mainItems : menuMode === 'move' ? moveItems : ttlItems}
             />
           )}
         </>

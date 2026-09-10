@@ -631,6 +631,30 @@
   border-color: transparent;
   background: var(--accent-soft);
 }
+.privacy-chip.chip-warn {
+  color: var(--warn);
+  border-color: transparent;
+  background: var(--warn-soft);
+}
+
+/* Said on the chat itself, above the transcript: the one thing to be sure of before typing. */
+.privacy-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  align-self: center;
+  width: min(100% - 24px, var(--composer-max));
+  margin: 8px 0 0;
+  padding: 6px 12px;
+  border-radius: var(--radius-xs);
+  background: var(--warn-soft);
+  color: var(--fg-2);
+  font-size: var(--fs-sm);
+}
+.privacy-banner > svg {
+  flex: none;
+  color: var(--warn);
+}
 
 .jump {
   position: absolute;

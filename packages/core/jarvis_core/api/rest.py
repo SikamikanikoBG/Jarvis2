@@ -10,8 +10,19 @@ from pydantic import BaseModel, ValidationError
 
 from jarvis_core import __version__
 from jarvis_core.api.deps import core_of, require_token
-from jarvis_proto import ChatFolder, Conversation, ConversationKind, Message, Run, SearchHit, Settings, ToolSpec
-from jarvis_proto.events import ConversationDeleted, ConversationUpdated, FoldersChanged
+from jarvis_core.features.expiry import valid_ttl
+from jarvis_proto import (
+    INCOGNITO_TITLE,
+    ChatFolder,
+    Conversation,
+    ConversationKind,
+    Message,
+    Run,
+    SearchHit,
+    Settings,
+    ToolSpec,
+)
+from jarvis_proto.events import ConversationUpdated, FoldersChanged
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
 open_router = APIRouter(prefix="/api")
@@ -58,6 +69,10 @@ async def status(request: Request) -> dict[str, Any]:
 class ConversationCreate(BaseModel):
     kind: ConversationKind = ConversationKind.CHAT
     title: str = "New chat"
+    # Private: nothing remembered, gone after its idle time. Only settable here, at birth.
+    incognito: bool = False
+    # Disappearing: deleted after this long idle (one of TTL_CHOICES). Null = kept.
+    ttl_seconds: int | None = None
 
 
 class ConversationPatch(BaseModel):
@@ -67,6 +82,10 @@ class ConversationPatch(BaseModel):
     pinned: bool | None = None
     # A persona or standing rule for this chat only; "" clears it.
     instructions: str | None = None
+    # How long the chat may sit idle before it deletes itself. Read from model_fields_set like
+    # folder_id: null means "keep it", absent means "leave the timer alone". An incognito chat
+    # cannot be given null - it is never kept.
+    ttl_seconds: int | None = None
     # Which of Arsen's folders this chat is filed in. Sending it as null (or "") takes the chat
     # out of every folder, which is why it is read from model_fields_set below rather than from
     # the exclude_none dump: "leave it alone" and "clear it" must not collapse into one thing.
@@ -88,7 +107,12 @@ async def list_conversations(request: Request, archived: int = 0) -> list[Conver
 @router.post("/conversations", response_model=Conversation, status_code=201)
 async def create_conversation(request: Request, body: ConversationCreate) -> Conversation:
     core = core_of(request)
-    conv = await core.store.create_conversation(kind=body.kind, title=body.title)
+    if body.ttl_seconds is not None and valid_ttl(body.ttl_seconds) is None:
+        raise HTTPException(422, "ttl_seconds must be one of 3600, 86400, 604800")
+    title = INCOGNITO_TITLE if body.incognito and body.title == "New chat" else body.title
+    conv = await core.store.create_conversation(
+        kind=body.kind, title=title, incognito=body.incognito, ttl_seconds=body.ttl_seconds
+    )
     core.bus.publish(ConversationUpdated(conversation=conv))
     return conv
 
@@ -113,6 +137,17 @@ async def patch_conversation(request: Request, conversation_id: str, body: Conve
         if target and await core.store.get_folder(target) is None:
             raise HTTPException(422, "folder not found")
         fields["folder_id"] = target or None
+    if "ttl_seconds" in body.model_fields_set:
+        fields.pop("ttl_seconds", None)
+        if body.ttl_seconds is None:
+            current = await core.store.get_conversation(conversation_id)
+            if current is not None and current.incognito:
+                raise HTTPException(422, "an incognito chat is never kept; pick an idle time instead")
+            fields["ttl_seconds"] = None
+        elif valid_ttl(body.ttl_seconds) is None:
+            raise HTTPException(422, "ttl_seconds must be one of 3600, 86400, 604800")
+        else:
+            fields["ttl_seconds"] = body.ttl_seconds
     if "instructions" in fields:
         # Capped, but generously: a real persona is a document, not a sentence — the one V1 kept
         # for the "Massimo Massa" chat is 8,861 characters. It sits in the stable part of the
@@ -149,12 +184,7 @@ async def search(request: Request, q: str, limit: int = 30) -> list[SearchHit]:
 
 @router.delete("/conversations/{conversation_id}", status_code=204)
 async def delete_conversation(request: Request, conversation_id: str) -> Response:
-    core = core_of(request)
-    for run in await core.store.list_runs(conversation_id):
-        if not run.status.terminal:
-            await core.engine.cancel(run.id)
-    await core.store.delete_conversation(conversation_id)
-    core.bus.publish(ConversationDeleted(conversation_id=conversation_id))
+    await core_of(request).delete_conversation(conversation_id)
     return Response(status_code=204)
 
 
@@ -268,11 +298,7 @@ async def bulk_conversations(request: Request, body: ConversationBulk) -> BulkRe
         for conversation_id in ids:
             if await core.store.get_conversation(conversation_id) is None:
                 continue
-            for run in await core.store.list_runs(conversation_id):
-                if not run.status.terminal:
-                    await core.engine.cancel(run.id)
-            await core.store.delete_conversation(conversation_id)
-            core.bus.publish(ConversationDeleted(conversation_id=conversation_id))
+            await core.delete_conversation(conversation_id)
             deleted.append(conversation_id)
         return BulkResult(deleted=deleted)
 

@@ -5,8 +5,8 @@
 -- incognito: nothing about this chat is remembered anywhere else. The knowledge learner skips
 -- it, the titler never reads it (the title stays "Incognito chat"), search never returns it,
 -- and the sidebar shows no preview of it. The messages themselves still have to be stored
--- while the chat is alive - the engine resumes runs from the database - which is why an
--- incognito chat always has a ttl as well: it burns on its own.
+-- while the chat is alive - the engine resumes runs from the database. Independent of the
+-- timer below: an incognito chat stays until it is deleted, by hand or by a ttl it was given.
 --
 -- ttl_seconds: how long the chat may sit idle before the core deletes it. NULL = kept.
 -- expires_at: updated_at + ttl_seconds, maintained on every touch so the sweep is one indexed

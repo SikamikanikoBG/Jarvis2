@@ -107,8 +107,8 @@ class ContextAssembler:
             # chat; this line is so the model does not promise to remember something it cannot.
             parts.append(
                 "## Private conversation\n"
-                f"This is an incognito chat: nothing said here is remembered outside it, and it "
-                f"deletes itself after a while. You have no notes or knowledge tools in it. If "
+                f"This is an incognito chat: nothing said here is remembered outside it. "
+                f"You have no notes or knowledge tools in it. If "
                 f"{s.user_name} asks you to remember or save something, say that this chat cannot "
                 "and that an ordinary chat can."
             )

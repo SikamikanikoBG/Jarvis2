@@ -12,7 +12,6 @@ import aiosqlite
 
 from jarvis_core.db.connection import Database
 from jarvis_proto import (
-    INCOGNITO_DEFAULT_TTL,
     ChatFolder,
     Conversation,
     ConversationActivity,
@@ -48,7 +47,10 @@ def _expires(ttl_seconds: int | None, *, now: datetime | None = None) -> str | N
     """When a chat touched now will have sat idle for ``ttl_seconds``; None when it is kept."""
     if ttl_seconds is None:
         return None
-    return ((now or datetime.now(UTC)) + timedelta(seconds=ttl_seconds)).isoformat()
+    at = (now or datetime.now(UTC)) + timedelta(seconds=ttl_seconds)
+    # Millisecond precision, like the strftime in touch_conversation, so the two never disagree
+    # about the same instant by a few hundred microseconds.
+    return at.replace(microsecond=(at.microsecond // 1000) * 1000).isoformat()
 
 
 def _escape_like(pattern: str) -> str:
@@ -124,9 +126,6 @@ class Store:
         incognito: bool = False,
         ttl_seconds: int | None = None,
     ) -> Conversation:
-        # An incognito chat is never kept: with no idle time asked for it gets the default one.
-        if incognito and ttl_seconds is None:
-            ttl_seconds = INCOGNITO_DEFAULT_TTL
         conv = Conversation(
             id=new_id("conv"),
             kind=kind,

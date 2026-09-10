@@ -441,3 +441,14 @@ harness — library vs. own is an open question to settle in the design.
   engine resumes runs from the database, there is no way round that. The promise is about what
   leaves the chat (nothing) and how long it stays (its ttl), not about the disk under it.
   (core 2.0.0a34, web alpha.14; migration 0009; 13 new core tests, 3 new web tests.)
+- 2026-09-10 (later) — Incognito no longer implies disappearing. Arsen, ten minutes after the
+  deploy: "why incognito is also disappearing? I am selecting only incognito and it still
+  disappears". My coupling, and the wrong one. The reasoning had been that the transcript is rows
+  in SQLite while the chat lives, so a chat that promised to keep nothing should not sit there
+  forever - but that conflates two questions Arsen wants answered separately: what is remembered
+  (incognito) and how long the chat stays (the timer). Now they are independent. An incognito
+  chat has no timer unless given one, "Keep this chat" is on its menu like any other, the draft
+  chip is a toggle plus a timer so the two can be combined, and the banner says "It stays until
+  you delete it" or names the timer. `INCOGNITO_DEFAULT_TTL` is gone from proto and SPA; the 422
+  for keeping an incognito chat is gone from REST and the mock; the migration's comment is
+  corrected (comment only - the schema it applied is unchanged). (core 2.0.0a35, web alpha.15)

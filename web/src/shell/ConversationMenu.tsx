@@ -97,7 +97,7 @@ export function ConversationMenu() {
     { label: 'Delete', icon: 'trash', danger: true, onSelect: () => setConfirm(true) },
   ];
   const ttlItems: MenuItem[] = [
-    ...(conv.incognito ? [] : [{ label: 'Keep this chat', ...(conv.ttl_seconds === null ? { icon: 'check' as const } : {}), onSelect: () => void setTtl(id, null) }]),
+    { label: 'Keep this chat', ...(conv.ttl_seconds === null ? { icon: 'check' as const } : {}), onSelect: () => void setTtl(id, null) },
     ...TTL_CHOICES.map(
       (t): MenuItem => ({
         label: `After ${t.label} of quiet`,

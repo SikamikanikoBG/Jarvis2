@@ -21,7 +21,7 @@ from jarvis_core.engine.loop import is_memory_writer
 from jarvis_core.features.expiry import valid_ttl
 from jarvis_core.models.base import reset_endpoint_semaphores
 from jarvis_core.models.fake import FakeAdapter, FakeTurn
-from jarvis_proto import INCOGNITO_DEFAULT_TTL, INCOGNITO_TITLE, TTL_CHOICES, Message, RoleName, ToolCall, ToolSpec
+from jarvis_proto import INCOGNITO_TITLE, TTL_CHOICES, Message, RoleName, ToolCall, ToolSpec
 from tests.conftest import Harness
 
 # --- store -------------------------------------------------------------------------------
@@ -52,10 +52,13 @@ async def test_a_ttl_sets_an_expiry_and_every_message_pushes_it_out(harness: Har
     assert plain.ttl_seconds is None and plain.expires_at is None and plain.incognito is False
 
 
-async def test_an_incognito_chat_is_never_kept_previewed_or_found(harness: Harness):
+async def test_an_incognito_chat_is_never_previewed_or_found_and_stays_unless_timed(harness: Harness):
     store = harness.core.store
     conv = await store.create_conversation(title=INCOGNITO_TITLE, incognito=True)
-    assert conv.incognito and conv.ttl_seconds == INCOGNITO_DEFAULT_TTL and conv.expires_at is not None
+    # Incognito is about memory, not lifetime: no timer unless one is asked for.
+    assert conv.incognito and conv.ttl_seconds is None and conv.expires_at is None
+    timed = await store.create_conversation(title=INCOGNITO_TITLE, incognito=True, ttl_seconds=3_600)
+    assert timed.incognito and timed.ttl_seconds == 3_600 and timed.expires_at is not None
 
     await store.add_message(Message.user("my secret mango allergy", conversation_id=conv.id))
     await store.add_message(Message.assistant("Noted for this chat only.", conversation_id=conv.id))
@@ -69,9 +72,11 @@ async def test_an_incognito_chat_is_never_kept_previewed_or_found(harness: Harne
     assert [h.conversation.id for h in hits] == [other.id]
     assert await store.search("secret") == []
 
-    # A fork of a private chat is private too, and on the same timer.
+    # A fork of a private chat is private too, and on the same timer (or none).
+    fork = await store.fork_conversation(timed.id, up_to_message_id=None)
+    assert fork and fork.incognito and fork.ttl_seconds == 3_600 and fork.preview is None
     fork = await store.fork_conversation(conv.id, up_to_message_id=None)
-    assert fork and fork.incognito and fork.ttl_seconds == conv.ttl_seconds and fork.preview is None
+    assert fork and fork.incognito and fork.ttl_seconds is None
 
 
 async def test_expired_conversations_are_the_ones_past_their_time(harness: Harness):
@@ -229,12 +234,13 @@ def test_rest_creates_patches_and_refuses_the_right_things(client: TestClient):
     r = client.post("/api/conversations", json={"incognito": True}, headers=_h())
     assert r.status_code == 201
     inc = r.json()
-    assert inc["incognito"] is True and inc["title"] == INCOGNITO_TITLE and inc["ttl_seconds"] == INCOGNITO_DEFAULT_TTL
-    assert inc["expires_at"] is not None
-    # Its timer can be changed to another offered value, but it can never be kept.
+    assert inc["incognito"] is True and inc["title"] == INCOGNITO_TITLE
+    assert inc["ttl_seconds"] is None and inc["expires_at"] is None  # kept, unless a timer is asked for
+    # A timer can be added and taken away again like on any other chat.
     r = client.patch(f"/api/conversations/{inc['id']}", json={"ttl_seconds": 86_400}, headers=_h())
-    assert r.status_code == 200 and r.json()["ttl_seconds"] == 86_400
-    assert client.patch(f"/api/conversations/{inc['id']}", json={"ttl_seconds": None}, headers=_h()).status_code == 422
+    assert r.status_code == 200 and r.json()["ttl_seconds"] == 86_400 and r.json()["incognito"] is True
+    r = client.patch(f"/api/conversations/{inc['id']}", json={"ttl_seconds": None}, headers=_h())
+    assert r.status_code == 200 and r.json()["ttl_seconds"] is None and r.json()["expires_at"] is None
     # Renaming is allowed - the name is Arsen's, not the classifier's - and does not un-incognito it.
     r = client.patch(f"/api/conversations/{inc['id']}", json={"title": "Just us"}, headers=_h())
     assert r.json()["title"] == "Just us" and r.json()["incognito"] is True
@@ -280,7 +286,7 @@ def test_ws_first_message_opens_an_incognito_or_disappearing_chat(client: TestCl
     with client.websocket_connect("/ws?token=secret") as ws:
         ws.send_text(json.dumps({"type": "run.create", "text": "hi", "incognito": True}))
         conv = _new_conversation(ws, known)
-        assert conv["incognito"] is True and conv["title"] == INCOGNITO_TITLE and conv["ttl_seconds"] == 3_600
+        assert conv["incognito"] is True and conv["title"] == INCOGNITO_TITLE and conv["ttl_seconds"] is None
         _until_done(ws)
         after = client.get(f"/api/conversations/{conv['id']}", headers=_h()).json()
         assert after["title"] == INCOGNITO_TITLE and after["preview"] is None  # untouched by the first message

@@ -51,8 +51,8 @@ export function ChatScreen() {
         <div className="privacy-banner" role="status">
           <Icon name="incognito" size={14} />
           <span>
-            Incognito — nothing said here is learned or remembered, no notes are kept, and search will not find it. It deletes itself
-            after {ttlLabel(ttl)} of quiet.
+            Incognito — nothing said here is learned or remembered, no notes are kept, and search will not find it.{' '}
+            {ttl === null ? 'It stays until you delete it.' : `It deletes itself after ${ttlLabel(ttl)} of quiet.`}
           </span>
         </div>
       )}

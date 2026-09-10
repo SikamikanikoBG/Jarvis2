@@ -76,8 +76,6 @@ function conv(partial) {
     updated_at: now(),
     ...partial,
   };
-  // An incognito chat is never kept: it gets the default hour when no idle time was asked for.
-  if (c.incognito && c.ttl_seconds === null) c.ttl_seconds = 3600;
   armExpiry(c);
   conversations.set(c.id, c);
   messages.set(c.id, []);
@@ -620,7 +618,6 @@ const server = createServer(async (req, res) => {
         const body = await readBody(req);
         if ('folder_id' in body && body.folder_id && !chatFolders.has(body.folder_id)) return json(res, 422, { detail: 'folder not found' });
         if ('ttl_seconds' in body) {
-          if (body.ttl_seconds === null && c.incognito) return json(res, 422, { detail: 'an incognito chat is never kept; pick an idle time instead' });
           if (body.ttl_seconds !== null && validTtl(body.ttl_seconds) === null) return json(res, 422, { detail: 'ttl_seconds must be one of 3600, 86400, 604800' });
         }
         Object.assign(c, body);

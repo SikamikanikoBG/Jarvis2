@@ -7,7 +7,8 @@ way a Delete from the sidebar does - runs cancelled, attachment files unlinked, 
 open client drops the row. A chat with a run still working is left for the next round: the
 reply that is about to land will push its expiry out again anyway.
 
-Incognito chats always have a ttl, so this is also what makes them vanish.
+An incognito chat is only swept if Arsen gave it a timer too: incognito is about what is
+remembered, not about how long the chat stays.
 """
 
 from __future__ import annotations

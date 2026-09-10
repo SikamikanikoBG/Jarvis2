@@ -3,7 +3,7 @@ import { Icon, type IconName } from '../components/Icon';
 import { IconButton, Menu, type MenuItem } from '../components/primitives';
 import { useTicker } from '../components/useTicker';
 import { cameraSupport, readCameraEnv } from '../lib/camera';
-import { DRAFT_NORMAL, INCOGNITO_DEFAULT_TTL, TTL_CHOICES, privacyOf, timeLeft, ttlLabel, type PrivacyKind } from '../lib/privacy';
+import { TTL_CHOICES, privacyOf, timeLeft, ttlLabel, type PrivacyKind } from '../lib/privacy';
 import { THINK_CHOICES, THINK_DEFAULT, thinkChoiceKey } from '../lib/think';
 import { selectSendRefusal } from '../store/selectors';
 import { NEW_CONVERSATION_KEY } from '../store/state';
@@ -269,10 +269,11 @@ export function Composer({ runActive, stopping }: Props) {
 /**
  * What kind of chat this is — or, before the first message, what kind it will be.
  *
- * On a draft it picks the mode for the chat the first message opens: normal, incognito (nothing
- * remembered, gone after an hour of quiet), or disappearing after an hour / a day / a week. On an
- * existing chat it shows the state and changes the timer; incognito cannot be switched on later,
- * because what an ordinary chat has already taught the knowledge graph cannot be un-learned.
+ * Two independent things, one chip: incognito (nothing remembered) and a timer (gone after an
+ * hour / a day / a week of quiet). On a draft both are picked here and travel with the first
+ * message; on an existing chat the chip shows the state and changes the timer. Incognito cannot
+ * be switched on later, because what an ordinary chat has already taught the knowledge graph
+ * cannot be un-learned.
  */
 function PrivacyChip() {
   const openId = useStore((s) => s.openConversationId);
@@ -287,16 +288,9 @@ function PrivacyChip() {
   const kind: PrivacyKind = conv ? privacyOf(conv) : draft.incognito ? 'incognito' : draft.ttlSeconds !== null ? 'disappearing' : 'normal';
   const ttl = conv ? conv.ttl_seconds : draft.ttlSeconds;
   const left = conv?.expires_at ? timeLeft(conv.expires_at, now) : null;
-  const label =
-    kind === 'incognito'
-      ? left
-        ? `Incognito · ${left} left`
-        : 'Incognito'
-      : kind === 'disappearing'
-        ? left
-          ? `Disappears in ${left}`
-          : `Disappears after ${ttlLabel(ttl)}`
-        : 'Kept';
+  // "gone in 58 min" on a live chat, "after 1 day" on a draft that will have a timer.
+  const timer = ttl === null ? null : left ? `gone in ${left}` : `after ${ttlLabel(ttl)}`;
+  const label = kind === 'incognito' ? (timer ? `Incognito · ${timer}` : 'Incognito') : timer ? `Disappears ${timer}` : 'Kept';
   const icon: IconName = kind === 'incognito' ? 'incognito' : kind === 'disappearing' ? 'hourglass' : 'clock';
   const title = conv
     ? kind === 'incognito'
@@ -308,9 +302,7 @@ function PrivacyChip() {
 
   const items: MenuItem[] = conv
     ? [
-        ...(conv.incognito
-          ? []
-          : [{ label: 'Keep this chat', ...check(ttl === null), onSelect: () => void setTtl(conv.id, null) }]),
+        { label: 'Keep this chat', ...check(ttl === null), onSelect: () => void setTtl(conv.id, null) },
         ...TTL_CHOICES.map(
           (t): MenuItem => ({
             label: `Disappear after ${t.label} of quiet`,
@@ -323,17 +315,19 @@ function PrivacyChip() {
           : [{ label: 'Incognito is only for a new chat', icon: 'incognito' as const, disabled: true, onSelect: () => undefined }]),
       ]
     : [
-        { label: 'Normal chat — kept', ...check(kind === 'normal'), onSelect: () => setDraft(DRAFT_NORMAL) },
+        // A toggle, then a timer: the two can be combined.
         {
-          label: `Incognito — remembers nothing, gone after ${ttlLabel(INCOGNITO_DEFAULT_TTL)} of quiet`,
-          ...check(kind === 'incognito', 'incognito'),
-          onSelect: () => setDraft({ incognito: true, ttlSeconds: INCOGNITO_DEFAULT_TTL }),
+          label: draft.incognito ? 'Incognito — remembers nothing ✓' : 'Incognito — remembers nothing',
+          icon: 'incognito',
+          keepOpen: true,
+          onSelect: () => setDraft({ ...draft, incognito: !draft.incognito }),
         },
+        { label: 'Kept until deleted', ...check(ttl === null), onSelect: () => setDraft({ ...draft, ttlSeconds: null }) },
         ...TTL_CHOICES.map(
           (t): MenuItem => ({
             label: `Disappears after ${t.label} of quiet`,
-            ...check(kind === 'disappearing' && ttl === t.seconds, 'hourglass'),
-            onSelect: () => setDraft({ incognito: false, ttlSeconds: t.seconds }),
+            ...check(ttl === t.seconds, 'hourglass'),
+            onSelect: () => setDraft({ ...draft, ttlSeconds: t.seconds }),
           }),
         ),
       ];

@@ -70,13 +70,13 @@ Two flags on `Conversation`, both readable by every client:
   does not promise to remember what it cannot. Decided at creation — `POST /api/conversations
   {incognito: true}`, or the first `run.create {conversation_id: null, incognito: true}` on the
   WS — and never switched on later: what an ordinary chat has already taught the graph cannot be
-  un-learned. Always has a `ttl_seconds` (default `3600`). A fork of an incognito chat is one too.
+  un-learned. Says nothing about lifetime: an incognito chat stays until deleted unless it is
+  also given a `ttl_seconds`. A fork of an incognito chat is one too.
 - `ttl_seconds: int | null` — a disappearing chat. The core deletes it once it has sat idle this
   long; `expires_at` (last message + ttl, re-armed on every message) says when. One of
   `3600 | 86400 | 604800`; anything else is 422 on REST and dropped on the WS. `null` = kept.
   Patchable at any time: `PATCH /api/conversations/{id} {ttl_seconds}` — omit the key to leave
-  the timer alone, send `null` to keep the chat (422 on an incognito chat, which is never kept).
-  Changing it restarts the clock from now.
+  the timer alone, send `null` to keep the chat. Changing it restarts the clock from now.
 
 ```
 POST   /api/conversations {kind?, title?, incognito?, ttl_seconds?} → Conversation   201

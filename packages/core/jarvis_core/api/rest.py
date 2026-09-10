@@ -83,8 +83,7 @@ class ConversationPatch(BaseModel):
     # A persona or standing rule for this chat only; "" clears it.
     instructions: str | None = None
     # How long the chat may sit idle before it deletes itself. Read from model_fields_set like
-    # folder_id: null means "keep it", absent means "leave the timer alone". An incognito chat
-    # cannot be given null - it is never kept.
+    # folder_id: null means "keep it", absent means "leave the timer alone".
     ttl_seconds: int | None = None
     # Which of Arsen's folders this chat is filed in. Sending it as null (or "") takes the chat
     # out of every folder, which is why it is read from model_fields_set below rather than from
@@ -140,9 +139,6 @@ async def patch_conversation(request: Request, conversation_id: str, body: Conve
     if "ttl_seconds" in body.model_fields_set:
         fields.pop("ttl_seconds", None)
         if body.ttl_seconds is None:
-            current = await core.store.get_conversation(conversation_id)
-            if current is not None and current.incognito:
-                raise HTTPException(422, "an incognito chat is never kept; pick an idle time instead")
             fields["ttl_seconds"] = None
         elif valid_ttl(body.ttl_seconds) is None:
             raise HTTPException(422, "ttl_seconds must be one of 3600, 86400, 604800")

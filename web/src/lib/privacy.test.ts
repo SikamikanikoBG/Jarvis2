@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { INCOGNITO_DEFAULT_TTL, TTL_CHOICES, privacyOf, timeLeft, ttlLabel } from './privacy';
+import { TTL_CHOICES, privacyOf, timeLeft, ttlLabel } from './privacy';
 
 describe('privacy', () => {
   it('names the three offered idle times and falls back to plain units', () => {
@@ -8,7 +8,6 @@ describe('privacy', () => {
     expect(ttlLabel(120)).toBe('2 min');
     expect(ttlLabel(7_200)).toBe('2 h');
     expect(ttlLabel(172_800)).toBe('2 d');
-    expect(TTL_CHOICES.some((c) => c.seconds === INCOGNITO_DEFAULT_TTL)).toBe(true);
   });
 
   it('says how long is left in the unit that reads best', () => {

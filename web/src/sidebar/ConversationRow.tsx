@@ -125,9 +125,8 @@ export function ConversationRow({ conversation: c, active, selecting = false, se
     ...(c.folder_id ? [{ label: 'Out of every folder', icon: 'x' as const, onSelect: () => void move(c.id, null) }] : []),
     ...(folders.length === 0 ? [{ label: 'No folders yet — make one first', icon: 'info' as const, disabled: true, onSelect: () => undefined }] : []),
   ];
-  // An incognito chat is never kept, so "Keep" is not on its list.
   const ttlItems: MenuItem[] = [
-    ...(c.incognito ? [] : [{ label: 'Keep this chat', ...(c.ttl_seconds === null ? { icon: 'check' as const } : {}), onSelect: () => void setTtl(c.id, null) }]),
+    { label: 'Keep this chat', ...(c.ttl_seconds === null ? { icon: 'check' as const } : {}), onSelect: () => void setTtl(c.id, null) },
     ...TTL_CHOICES.map(
       (t): MenuItem => ({
         label: `After ${t.label} of quiet`,

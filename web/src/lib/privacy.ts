@@ -6,7 +6,7 @@ import type { Conversation } from '../protocol/types';
  * - **Incognito** (`incognito`): nothing from it is remembered anywhere else — no knowledge is
  *   learned, the title is never made from its words, search never returns it, the sidebar shows
  *   no preview, and the model has no notes or knowledge tools in it. Decided when the chat is
- *   opened and never switched on later. Always disappears too.
+ *   opened and never switched on later. Says nothing about how long the chat stays.
  * - **Disappearing** (`ttl_seconds`): an ordinary chat the core deletes once it has sat idle for
  *   that long. `expires_at` says when; every message pushes it out again.
  */
@@ -17,9 +17,6 @@ export const TTL_CHOICES: readonly { seconds: number; label: string }[] = [
   { seconds: 86_400, label: '1 day' },
   { seconds: 604_800, label: '1 week' },
 ];
-
-/** What an incognito chat gets when no idle time is picked (mirrors the core). */
-export const INCOGNITO_DEFAULT_TTL = 3_600;
 
 /** How the NEXT new chat should open. Session-only; reset once that chat exists. */
 export interface DraftPrivacy {

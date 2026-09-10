@@ -175,7 +175,7 @@ export interface Conversation {
   /**
    * A private chat: nothing from it is remembered anywhere else (no knowledge learned, no title
    * from its words, never a search hit, no preview, no notes/knowledge tools). Set when the chat
-   * is opened, never later. Always has a `ttl_seconds`.
+   * is opened, never later. Independent of `ttl_seconds`: it stays unless given a timer.
    */
   incognito: boolean;
   /** A disappearing chat: deleted by the core after this long idle. `null` = kept. */

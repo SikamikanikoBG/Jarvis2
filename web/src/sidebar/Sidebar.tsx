@@ -17,6 +17,7 @@ export function Sidebar() {
   const loaded = useStore((s) => s.conversationsLoaded);
   const openId = useStore((s) => s.openConversationId);
   const newChat = useStore((s) => s.newChat);
+  const setDraftPrivacy = useStore((s) => s.setDraftPrivacy);
   const collapsed = useStore((s) => s.collapsedFolders);
   const selection = useStore((s) => s.selection);
   const clearSelection = useStore((s) => s.clearSelection);
@@ -113,6 +114,14 @@ export function Sidebar() {
           size="sm"
           active={selecting}
           onClick={() => (selecting ? exitSelect() : setSelectMode(true))}
+        />
+        <IconButton
+          icon="incognito"
+          label="New incognito chat"
+          onClick={() => {
+            newChat(); // resets the draft to normal, so the flag goes on after it
+            setDraftPrivacy({ incognito: true, ttlSeconds: null });
+          }}
         />
         <IconButton icon="plus" label="New chat" onClick={newChat} />
       </div>

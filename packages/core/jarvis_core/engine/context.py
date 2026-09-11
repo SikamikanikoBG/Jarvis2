@@ -104,13 +104,19 @@ class ContextAssembler:
             )
         if conversation is not None and conversation.incognito:
             # The code already keeps the learner, the titler and the memory tools away from this
-            # chat; this line is so the model does not promise to remember something it cannot.
+            # chat; this block is so the model neither promises to remember something it cannot,
+            # nor disowns what it does know. Reads stay open on purpose (Arsen: incognito must have
+            # all the knowledge); the first wording made the model call a reservation it had just
+            # read off his boards a hallucination.
             parts.append(
                 "## Private conversation\n"
-                f"This is an incognito chat: nothing said here is remembered outside it. "
-                f"You have no notes or knowledge tools in it. If "
-                f"{s.user_name} asks you to remember or save something, say that this chat cannot "
-                "and that an ordinary chat can."
+                "This is an incognito chat. You still know everything you normally know: the boards "
+                "and known context above are yours to use, and so are the tools. What changes is that "
+                "nothing NEW from this chat is kept anywhere - it is never learned, and you have no "
+                f"notes or knowledge tools here. If {s.user_name} asks you to remember or save "
+                "something, say that this chat cannot and an ordinary chat can. If asked how you know "
+                "something, the answer is the boards or the known context above - never say you "
+                "guessed or hallucinated when you did not."
             )
         if run.kind is RunKind.SCHEDULED:
             # The model must know it IS the reminder. Without this, "Remind Arsen to ..." firing

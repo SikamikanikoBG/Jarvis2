@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
-import { Icon, type IconName } from '../components/Icon';
-import { IconButton, Menu, type MenuItem } from '../components/primitives';
+import { Icon } from '../components/Icon';
+import { IconButton, Menu } from '../components/primitives';
 import { useTicker } from '../components/useTicker';
 import { cameraSupport, readCameraEnv } from '../lib/camera';
-import { TTL_CHOICES, privacyOf, timeLeft, ttlLabel, type PrivacyKind } from '../lib/privacy';
+import { DISAPPEAR_DEFAULT_TTL, timeLeft, ttlLabel } from '../lib/privacy';
 import { THINK_CHOICES, THINK_DEFAULT, thinkChoiceKey } from '../lib/think';
 import { selectSendRefusal } from '../store/selectors';
 import { NEW_CONVERSATION_KEY } from '../store/state';
@@ -251,7 +251,7 @@ export function Composer({ runActive, stopping }: Props) {
       <div className="composer-hint" aria-live="polite">
         <span className="row">
           <ThinkChip />
-          <PrivacyChip />
+          <PrivacyToggles />
           <span>{connection === 'open' ? '' : connection === 'connecting' ? 'Connecting…' : 'Reconnecting…'}</span>
         </span>
         <span className="desktop-only">
@@ -267,87 +267,66 @@ export function Composer({ runActive, stopping }: Props) {
 }
 
 /**
- * What kind of chat this is — or, before the first message, what kind it will be.
- *
- * Two independent things, one chip: incognito (nothing remembered) and a timer (gone after an
- * hour / a day / a week of quiet). On a draft both are picked here and travel with the first
- * message; on an existing chat the chip shows the state and changes the timer. Incognito cannot
- * be switched on later, because what an ordinary chat has already taught the knowledge graph
- * cannot be un-learned.
+ * Two one-tap toggles, not a menu: Arsen flips these often. The eye marks the chat incognito
+ * (nothing new from it is remembered) - chosen before the first message, and read-only once the
+ * chat exists, since a chat that has already taught the graph cannot be made private after the
+ * fact. The hourglass makes the chat disappear after a day of quiet, on a draft or a live chat
+ * alike; the ⋯ menus still offer an hour or a week instead.
  */
-function PrivacyChip() {
+function PrivacyToggles() {
   const openId = useStore((s) => s.openConversationId);
   const conv = useStore((s) => (s.openConversationId ? s.conversations[s.openConversationId] : undefined));
   const draft = useStore((s) => s.draftPrivacy);
   const setDraft = useStore((s) => s.setDraftPrivacy);
   const setTtl = useStore((s) => s.setConversationTtl);
-  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const notify = useStore((s) => s.notify);
   const now = useTicker(30_000, Boolean(conv?.expires_at));
   if (openId && !conv) return null;
 
-  const kind: PrivacyKind = conv ? privacyOf(conv) : draft.incognito ? 'incognito' : draft.ttlSeconds !== null ? 'disappearing' : 'normal';
+  const incognito = conv ? conv.incognito : draft.incognito;
   const ttl = conv ? conv.ttl_seconds : draft.ttlSeconds;
   const left = conv?.expires_at ? timeLeft(conv.expires_at, now) : null;
-  // "gone in 58 min" on a live chat, "after 1 day" on a draft that will have a timer.
-  const timer = ttl === null ? null : left ? `gone in ${left}` : `after ${ttlLabel(ttl)}`;
-  const label = kind === 'incognito' ? (timer ? `Incognito · ${timer}` : 'Incognito') : timer ? `Disappears ${timer}` : 'Kept';
-  const icon: IconName = kind === 'incognito' ? 'incognito' : kind === 'disappearing' ? 'hourglass' : 'clock';
-  const title = conv
-    ? kind === 'incognito'
-      ? 'Nothing from this chat is remembered anywhere else. Click to change how long it stays.'
-      : 'How long this chat stays. Click to make it disappear after a quiet period.'
-    : 'How the new chat behaves: kept, incognito (remembers nothing), or gone after a quiet period.';
-  // `icon` is optional-and-never-undefined (exactOptionalPropertyTypes), so it is spread in.
-  const check = (on: boolean, fallback?: IconName): Pick<MenuItem, 'icon'> => (on ? { icon: 'check' } : fallback ? { icon: fallback } : {});
-
-  const items: MenuItem[] = conv
-    ? [
-        { label: 'Keep this chat', ...check(ttl === null), onSelect: () => void setTtl(conv.id, null) },
-        ...TTL_CHOICES.map(
-          (t): MenuItem => ({
-            label: `Disappear after ${t.label} of quiet`,
-            ...check(ttl === t.seconds, 'hourglass'),
-            onSelect: () => void setTtl(conv.id, t.seconds),
-          }),
-        ),
-        ...(conv.incognito
-          ? []
-          : [{ label: 'Incognito is only for a new chat', icon: 'incognito' as const, disabled: true, onSelect: () => undefined }]),
-      ]
-    : [
-        // A toggle, then a timer: the two can be combined.
-        {
-          label: draft.incognito ? 'Incognito — remembers nothing ✓' : 'Incognito — remembers nothing',
-          icon: 'incognito',
-          keepOpen: true,
-          onSelect: () => setDraft({ ...draft, incognito: !draft.incognito }),
-        },
-        { label: 'Kept until deleted', ...check(ttl === null), onSelect: () => setDraft({ ...draft, ttlSeconds: null }) },
-        ...TTL_CHOICES.map(
-          (t): MenuItem => ({
-            label: `Disappears after ${t.label} of quiet`,
-            ...check(ttl === t.seconds, 'hourglass'),
-            onSelect: () => setDraft({ ...draft, ttlSeconds: t.seconds }),
-          }),
-        ),
-      ];
-  const tone = kind === 'incognito' ? ' chip-warn' : kind === 'disappearing' ? ' chip-accent' : '';
+  const eyeLabel = conv
+    ? incognito
+      ? 'Incognito: nothing new from this chat is remembered anywhere'
+      : 'Incognito is chosen before the first message - start a new chat for that'
+    : incognito
+      ? 'Incognito on: nothing from this chat will be remembered. Tap to turn off.'
+      : 'Make this chat incognito: nothing from it will be remembered';
+  const timerLabel =
+    ttl === null
+      ? `Make this chat disappear after ${ttlLabel(DISAPPEAR_DEFAULT_TTL)} of quiet`
+      : `Disappears ${left ? `in ${left}` : `after ${ttlLabel(ttl)} of quiet`}. Tap to keep it.`;
+  const toggleEye = () => {
+    if (conv) notify(eyeLabel);
+    else setDraft({ ...draft, incognito: !draft.incognito });
+  };
+  const toggleTimer = () => {
+    const next = ttl === null ? DISAPPEAR_DEFAULT_TTL : null;
+    if (conv) void setTtl(conv.id, next);
+    else setDraft({ ...draft, ttlSeconds: next });
+  };
   return (
-    <>
-      <button
-        type="button"
-        className={`chip think-chip privacy-chip${tone}`}
-        onClick={(e) => setAnchor(anchor ? null : e.currentTarget)}
-        aria-haspopup="menu"
-        aria-expanded={Boolean(anchor)}
-        title={title}
-      >
-        <Icon name={icon} size={12} />
-        {label}
-        <Icon name="chevronDown" size={11} />
-      </button>
-      {anchor && <Menu anchor={anchor} onClose={() => setAnchor(null)} items={items} />}
-    </>
+    <span className="privacy-toggles">
+      <IconButton
+        icon="incognito"
+        label={eyeLabel}
+        size="sm"
+        className={`privacy-toggle${incognito ? ' on-incognito' : ''}`}
+        aria-pressed={incognito}
+        onClick={toggleEye}
+      />
+      {incognito && <span className="privacy-state">Incognito</span>}
+      <IconButton
+        icon="hourglass"
+        label={timerLabel}
+        size="sm"
+        className={`privacy-toggle${ttl !== null ? ' on-timer' : ''}`}
+        aria-pressed={ttl !== null}
+        onClick={toggleTimer}
+      />
+      {ttl !== null && <span className="privacy-state">{left ? `gone in ${left}` : `after ${ttlLabel(ttl)}`}</span>}
+    </span>
   );
 }
 

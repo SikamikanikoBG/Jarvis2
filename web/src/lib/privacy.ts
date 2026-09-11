@@ -11,6 +11,9 @@ import type { Conversation } from '../protocol/types';
  *   that long. `expires_at` says when; every message pushes it out again.
  */
 
+/** What one tap on the hourglass gives a chat: a day of quiet, then gone. The menus offer the rest. */
+export const DISAPPEAR_DEFAULT_TTL = 86_400;
+
 /** The idle times a disappearing chat may be given — the core refuses anything else. */
 export const TTL_CHOICES: readonly { seconds: number; label: string }[] = [
   { seconds: 3_600, label: '1 hour' },

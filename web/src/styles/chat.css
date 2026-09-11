@@ -631,10 +631,26 @@
   border-color: transparent;
   background: var(--accent-soft);
 }
-.privacy-chip.chip-warn {
+/* The two one-tap privacy toggles in the composer's hint row. Pressed = tinted, so the state
+   reads at a glance without a label - the label appears only while it is on. */
+.privacy-toggles {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.privacy-toggle.on-incognito {
   color: var(--warn);
-  border-color: transparent;
   background: var(--warn-soft);
+}
+.privacy-toggle.on-timer {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.privacy-state {
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+  margin: 0 6px 0 2px;
+  white-space: nowrap;
 }
 
 /* Said on the chat itself, above the transcript: the one thing to be sure of before typing. */

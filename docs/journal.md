@@ -452,3 +452,22 @@ harness — library vs. own is an open question to settle in the design.
   you delete it" or names the timer. `INCOGNITO_DEFAULT_TTL` is gone from proto and SPA; the 422
   for keeping an incognito chat is gone from REST and the mock; the migration's comment is
   corrected (comment only - the schema it applied is unchanged). (core 2.0.0a35, web alpha.15)
+- 2026-09-10 (evening) — First real incognito session, and three lessons. Jarvis reminded Arsen
+  of a dinner reservation he had made in another chat; asked how it knew, it said it must have
+  hallucinated. It had not: the reservation is a note on his boards and an entity in the graph,
+  both injected into every prompt, incognito included - by design, and Arsen confirmed the
+  design ("инкогнито ТРЯБВА да има всички знания. Но се притеснявам да не пише нещо някъде").
+  So the private-conversation block now says the reads are open and only what is NEW goes
+  nowhere, and tells the model never to claim a guess for something it read off the boards.
+  The lag he felt was not the release: one chat spent 8 minutes generating 16,384 tokens of
+  reasoning until the cap (finish=length; the guard then turned thinking off and it answered in
+  14 s), while a continued Burnout Prevention run carried 47-75k-token prompts and fired 35
+  calendar_create calls in one step - the two of them held the endpoint's concurrent slots, and
+  the incognito chat's pre-flight waited 2.5 minutes for one. Zero warnings in the core log.
+  And the dropdown was the wrong control: "искам иконките ... да не са дроп довн мену под чата
+  а отделни иконки някъде, за да мога по-лесно и с един клик/тап да ги отбелязвам. доста често
+  ще ги ползвам." Two toggles now sit where the chip was - the eye (incognito, before the first
+  message) and the hourglass (a day of quiet, on a draft or a live chat; the ⋯ menus still offer
+  an hour or a week) - pressed means tinted, and a small label appears only while on. The
+  sidebar head gets a "New incognito chat" button next to "+", one tap from anywhere.
+  (core 2.0.0a36, web alpha.16)

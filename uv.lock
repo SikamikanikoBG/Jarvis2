@@ -355,7 +355,7 @@ wheels = [
 
 [[package]]
 name = "jarvis-core"
-version = "2.0.0a36"
+version = "2.0.0a37"
 source = { editable = "packages/core" }
 dependencies = [
     { name = "aiosqlite" },

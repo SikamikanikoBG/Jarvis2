@@ -97,9 +97,15 @@ class Compactor:
 
 
 def _cut_index(history: list[Message]) -> int:
-    """Index of a user message near the middle so no tool result is separated from its call."""
+    """Index of the message ARSEN wrote nearest the middle, so a turn is summarised whole.
+
+    Only his own messages qualify (``name`` is None): the context block the core injects right
+    after each of them is a user-role message too, and cutting there summarised his question and
+    left its answer to be trimmed (2026-09-11 - a 340-character summary of "find the mail", and
+    the mail hunted for again next turn). 0 means there is nothing older to fold.
+    """
     target = len(history) // 2
     for i in range(target, 0, -1):
-        if history[i].role is Role.USER and history[i].name != "supervisor":
+        if history[i].role is Role.USER and history[i].name is None:
             return i
     return 0

@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from jarvis_core.db import Store
 from jarvis_core.engine.bus import EventBus
-from jarvis_core.engine.context import ContextAssembler
+from jarvis_core.engine.context import ContextAssembler, tool_result_head
 from jarvis_core.engine.control import RunCancelledError, RunControl
 from jarvis_core.engine.supervision import Emit, RunWatch, StepRecord, Supervisor, args_hash, step_of
 from jarvis_core.features.planner import PLAN_TOOLS
@@ -905,8 +905,6 @@ def _repeated_failure(watch: RunWatch, call: ToolCall) -> str | None:
     )
 
 
-_OLD_TOOL_RESULT_HEAD = 700
-_OLD_TOOL_RESULT_MIN = 1_200
 _CHARS_PER_TOKEN = 3.2
 # Come back to this fraction of the budget, not merely under it. Rewriting a message the model
 # has already been sent is the one thing that costs a FULL re-prefill: everything after it has
@@ -940,21 +938,11 @@ def _compress_old_tool_results(messages: list[Message], budget_tokens: int) -> N
         if i >= last_assistant:
             break  # the current step's results are what the model is answering
         m = messages[i]
-        if len(m.content) <= _OLD_TOOL_RESULT_MIN or "[truncated" in m.content[-160:]:
-            continue
-        full = len(m.content)
-        head = m.content[:_OLD_TOOL_RESULT_HEAD].rstrip()
-        # The ref is what makes the rest reachable. Telling the model to "note it down now or
-        # re-read it once" was advice it could not act on: the full text is in the DB and there
-        # was no tool that could fetch it, so a long research run reached the step that had to
-        # write with 8.4% of what it had found (measured 2026-09-07, "бизнес презентация").
-        marker = (
-            f"[truncated to save context: {full:,} chars in full."
-            + (f' Read the rest with jarvis.result_read(ref="{m.tool_call_id}").' if m.tool_call_id else "")
-            + "]"
-        )
-        messages[i] = m.model_copy(update={"content": head + "\n" + marker})
-        total -= full - len(messages[i].content)
+        shrunk = tool_result_head(m)
+        if shrunk is m:
+            continue  # short, or already a head
+        messages[i] = shrunk
+        total -= len(m.content) - len(shrunk.content)
         if total <= target:
             break
 

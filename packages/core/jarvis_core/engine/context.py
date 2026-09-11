@@ -37,6 +37,66 @@ PRECEDENCE: when rules conflict, the lower-numbered rule wins.
 
 _CHARS_PER_TOKEN = 3.2
 
+# A tool result from an earlier step or turn rides along as this much of its head; the DB keeps
+# the full text and jarvis.result_read hands it back on request. Results at or under the minimum
+# are left whole - shortening them would cost more marker than it saves.
+OLD_TOOL_RESULT_HEAD = 700
+OLD_TOOL_RESULT_MIN = 1_200
+
+
+def tool_result_head(message: Message) -> Message:
+    """The head of a tool result plus the marker that says how to read the rest. Idempotent: a
+    message already carrying the marker comes back unchanged, and so does a short one."""
+    if len(message.content) <= OLD_TOOL_RESULT_MIN or "[truncated" in message.content[-160:]:
+        return message
+    full = len(message.content)
+    head = message.content[:OLD_TOOL_RESULT_HEAD].rstrip()
+    # The ref is what makes the rest reachable. Telling the model to "note it down now or re-read
+    # it once" was advice it could not act on: the full text is in the DB and there was no tool
+    # that could fetch it, so a long research run reached the step that had to write with 8.4%
+    # of what it had found (measured 2026-09-07, "бизнес презентация").
+    marker = (
+        f"[truncated to save context: {full:,} chars in full."
+        + (f' Read the rest with jarvis.result_read(ref="{message.tool_call_id}").' if message.tool_call_id else "")
+        + "]"
+    )
+    return message.model_copy(update={"content": head + "\n" + marker})
+
+
+def _skill_names(context_text: str) -> list[str]:
+    return [ln[len("## Skill: ") :].strip() for ln in context_text.splitlines() if ln.startswith("## Skill: ")]
+
+
+def earlier_turn_view(history: list[Message], current_run_id: str) -> list[Message]:
+    """The history as the model should see it: earlier turns kept, but at the size they are worth.
+
+    A finished turn's tool results were acted on when they arrived; what matters now is the
+    answer the model wrote from them, so they ride as heads. The context block injected for an
+    earlier request (skills, knowledge, a browser page) served that request and is a stub here,
+    naming the skills it carried. The current run is untouched: its results are what the model
+    is answering, and its context is what this request needs.
+
+    This runs BEFORE compaction and trimming so both count what will actually be sent. Counting
+    the full 41k-character folder dump of an earlier turn - when the model would only ever have
+    been shown 700 characters of it - made the trim throw the whole previous turn away, answer
+    included, and the next question was answered from scratch (2026-09-11, the AI Masterclass
+    chat: three turns, the mail hunted for three times).
+    """
+    out: list[Message] = []
+    for m in history:
+        if m.run_id == current_run_id:
+            out.append(m)
+        elif m.role is Role.TOOL:
+            out.append(tool_result_head(m))
+        elif m.role is Role.USER and m.name == "context":
+            names = _skill_names(m.content)
+            note = "[Context for the request above was injected for an earlier turn and is omitted here"
+            note += f"; the skills it carried: {', '.join(names)}]" if names else "]"
+            out.append(m.model_copy(update={"content": note}))
+        else:
+            out.append(m)
+    return out
+
 
 class BlockProvider(Protocol):
     """Anything that can contribute a block of text to the system message."""
@@ -187,7 +247,7 @@ class ContextAssembler:
     async def assemble(self, run: Run, *, skill_names: list[str] | None = None) -> list[Message]:
         """[stable system] [history incl. earlier turns' context messages] [input] [this run's context]."""
         await self.context_message(run, skill_names=skill_names or [])  # persisted; comes back in history
-        history = await self._store.list_messages(run.conversation_id)
+        history = earlier_turn_view(await self._store.list_messages(run.conversation_id), run.id)
         if self._compactor is not None and run.kind is not RunKind.TRIAGE:
             history = await self._compactor.prepare(run.conversation_id, history, self.budget_chars)  # type: ignore[attr-defined]
         system = await self.system_message(run)

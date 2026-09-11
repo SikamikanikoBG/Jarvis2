@@ -159,6 +159,15 @@ summarised into `conversation_summaries(conversation_id, up_to_message_id, text)
 context is `[system, summary, messages after up_to]`. UI shows a thin "earlier messages
 summarised" divider at `up_to_message_id` (`GET /api/conversations/{id}/summary`).
 
+**Earlier turns are sent at the size they are worth.** Before the budget is applied, a tool
+result from an earlier step or turn is cut to a 700-character head with a
+`[truncated … jarvis.result_read(ref=…)]` marker (the DB keeps the full text), and the context
+block injected for an earlier request is a one-line stub naming the skills it carried. The
+current run is never touched. This is what keeps the previous turn's *answer* in the prompt: the
+trim used to count a 41k-character folder dump at full size, throw the whole turn away, and the
+next question was answered from scratch (2026-09-11). Compaction cuts only at a message Arsen
+wrote, never at an injected context block, so a summary covers a turn whole.
+
 ## Hosts = MCP servers (Phase 3)
 
 There is no separate hosts table. A machine that offers capabilities runs `jarvis-host`,

@@ -471,3 +471,26 @@ harness — library vs. own is an open question to settle in the design.
   an hour or a week) - pressed means tinted, and a small label appears only while on. The
   sidebar head gets a "New incognito chat" button next to "+", one tap from anywhere.
   (core 2.0.0a36, web alpha.16)
+- 2026-09-11 — "От 2 дни много започна да се разфокусира." The AI Masterclass chat, read end to
+  end. Turn one found a mail after thirty searches - triage had filed it into Action Hub/
+  Reference and outlook_search looks only in the inbox - and dumped a 41k-character folder tree
+  and a 13k-character account list on the way. Turn two asked for a business card "for the
+  event" and the model had never heard of the event: the planner planned from the new sentence
+  alone, it listed 21 days of calendar, found a Qorus webinar and chased that. Turn three hunted
+  the mail from scratch again, PowerShell COM hacks included.
+  The amnesia was ours. `trim()` counted every tool result at its stored size, while the model
+  would only ever have been shown a 700-character head of an old one - so a turn with 110k
+  characters of tool output against a 76.8k budget was thrown away whole, answer included. The
+  compaction that should have bridged it summarised only the question, because `_cut_index`
+  accepted the injected context message as a boundary. And every earlier turn's 6-10k of skill
+  text rode along in full: four turns, 32k characters of repeated instructions.
+  Now `earlier_turn_view()` runs before compaction and trimming: earlier turns' tool results are
+  heads (same marker, same `jarvis.result_read` ref), earlier turns' context blocks are one-line
+  stubs naming their skills, the current run is untouched. The head logic lives in context.py
+  and the in-run compressor reuses it. `_cut_index` cuts only at a message Arsen wrote. Five
+  tests, the Masterclass shape as the fixture: a 41k dump one turn back, the answer survives.
+  Not a regression of a release: the trim rule is from 2026-09-05. What made it bite in the last
+  three days is the environment - 82 tools per call since 09-08 (was 56), triage filing 58-124
+  mails a day out of the inbox since 09-06, and the host's folder/account dumps. Still open,
+  host-side: outlook_search across all folders by default, names-only folder and account lists;
+  core-side: the planner seeing the previous reply. (core 2.0.0a37)

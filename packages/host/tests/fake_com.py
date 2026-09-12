@@ -7,8 +7,9 @@ name fails here exactly as it failed in production.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 
@@ -46,6 +47,39 @@ class Attachment:
         self.FileName = name
         self.DisplayName = name
         self.Size = size
+
+
+class Attachments(Collection):
+    """``Attachments.Add(path)`` reads the file like Outlook does: a missing file is a COM error."""
+
+    def Add(self, value: Any) -> Any:
+        if isinstance(value, str):
+            path = Path(value)
+            if not path.is_file():
+                raise FakeComError(
+                    -2147024894, f"Cannot find this file. Verify the path and file name are correct: {value}"
+                )
+            value = Attachment(path.name, path.stat().st_size)
+        self._items.append(value)
+        return value
+
+
+class OleObj:
+    """The raw IDispatch pywin32 hides behind ``_oleobj_``.
+
+    Real Outlook ignores a by-value ``mail.SendUsingAccount = acct`` (a PROPERTYPUT) and only
+    honours a PROPERTYPUTREF invoke on dispid 64209; the fake does the same so the test proves
+    the backend uses the form that works.
+    """
+
+    def __init__(self, mail: Mail) -> None:
+        self._mail = mail
+
+    def Invoke(self, dispid: int, lcid: int, flags: int, ret: int, *args: Any) -> None:
+        if dispid == 64209 and flags == 8:
+            self._mail._send_using_account = args[0]
+            return
+        raise FakeComError(-2147352573, f"Member not found (dispid {dispid}, flags {flags})")
 
 
 class Recipient:
@@ -94,13 +128,22 @@ class Mail:
         self.Importance = 1
         self.Categories = ""
         self.ConversationID = f"CONV{n:04d}"
-        self.Attachments = Collection(attachments)
+        self.Attachments = Attachments(attachments)
         self.Recipients = Collection()
         self.Parent: Folder | None = None
-        self.SendUsingAccount: Any = None
+        self._send_using_account: Any = None
+        self._oleobj_ = OleObj(self)
         self.saved = 0
         self.sent = False
         self.calls: list[str] = []
+
+    @property
+    def SendUsingAccount(self) -> Any:
+        return self._send_using_account
+
+    @SendUsingAccount.setter
+    def SendUsingAccount(self, value: Any) -> None:
+        pass  # what Outlook does with a by-value put: nothing, silently
 
     @property
     def FlagStatus(self) -> int:
@@ -521,6 +564,7 @@ class Application:
         self._ns = ns
         self.created: list[Mail] = []
         self.dispatch_count = 0
+        self.create_hook: Callable[[Mail], None] | None = None
 
     def GetNamespace(self, kind: str) -> Namespace:
         assert kind == "MAPI"
@@ -531,6 +575,8 @@ class Application:
         mail = Mail("", "me@example.bg", datetime.now(UTC))
         mail.To = ""
         mail.Parent = self._ns.DefaultStore.defaults[6]
+        if self.create_hook is not None:
+            self.create_hook(mail)
         self.created.append(mail)
         return mail
 
@@ -577,7 +623,7 @@ class World:
             m = Mail(subject, sender, when, **kw)
             self.inbox.add(m)
             self.mails.append(m)
-        self.mails[0].Attachments = Collection([Attachment("invoice.pdf", 88_000)])
+        self.mails[0].Attachments = Attachments([Attachment("invoice.pdf", 88_000)])
         self.mails[0].Body = "Please pay invoice 4471.\r\nRegards"
 
         gm = Store("arsen@gmail.com", "GM", exchange_type=3, modern=False)

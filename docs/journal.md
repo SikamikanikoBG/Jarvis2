@@ -494,3 +494,20 @@ harness — library vs. own is an open question to settle in the design.
   mails a day out of the inbox since 09-06, and the host's folder/account dumps. Still open,
   host-side: outlook_search across all folders by default, names-only folder and account lists;
   core-side: the planner seeing the previous reply. (core 2.0.0a37)
+- 2026-09-12 — "Сложих Мими в алоуд лист. Изпрати мейла." The host said `sent: true`, the chat
+  said "Изпратено ✅", and the Gmail Sent Mail folder stayed empty. The mail was in the
+  corporate store: a draft under AApostolov@postbank.bg and a "sent" copy in its Outbox with the
+  Exchange sender and `SendUsingAccount = None`. pywin32's `mail.SendUsingAccount = acct` is a
+  by-value PROPERTYPUT that Outlook accepts and ignores for this object property; it wants
+  PROPERTYPUTREF on dispid 64209. No exception, no warning, so nothing told anyone the mail
+  was leaving through the wrong account. Now the host invokes the PUTREF form, reads the
+  property back and refuses to send when it does not match - never a silent fall-back to the
+  default account - and the reply carries `sent_via`. Recipients are resolved before a draft
+  is saved (an unresolved draft grew a second copy of the address when Arsen opened it). And
+  the mail can carry files: `attachments` = paths under fs.roots, fenced like fs_read.
+  The fake COM ignores the plain assignment the way Outlook does, so the test proves the form
+  that works. Verified against the real Outlook: Gmail → Gmail with a file, `sent_via` gmail,
+  delivered.
+  Found on the way, not ours: Outlook had been half-closed since ~19:20 behind two "empty
+  Deleted Items on exit?" prompts, so no account's Outbox moved at all; and an Outlook started
+  headless by COM un-submits Outbox items touched after a restart. (host 2.0.0a11)

@@ -254,8 +254,40 @@ def test_send_new_mail_sets_subject_account_and_semicolon_recipients(backend: Ou
     assert mail.To == "a@x.example;b@y.example" and mail.CC == "c@z.example" and mail.Subject == "Hello"
     assert mail.Body == "Body text" and mail.sent and mail.SendUsingAccount.SmtpAddress == "aapostolov@postbank.bg"
     assert res["sent"] is True and res["threaded"] is False and res["to"] == "a@x.example;b@y.example"
+    assert res["sent_via"] == "aapostolov@postbank.bg" and "attachments" not in res
     with pytest.raises(OutlookError, match="no recipient"):
         backend.send("", "", "x", "y")
+
+
+def test_send_from_a_secondary_account_really_uses_that_account(backend: OutlookBackend, world: World):
+    # 2026-09-12: a mail asked from the Gmail store reported sent:true and left through the
+    # default Exchange account, because pywin32's plain assignment is a PROPERTYPUT that Outlook
+    # ignores. The fake ignores it the same way; only the PUTREF invoke sets the account.
+    res = backend.send("arsen@gmail.com", "mimi@example.com", "Hi", "text")
+    mail = world.app.created[-1]
+    assert mail.SendUsingAccount.SmtpAddress == "arsen@gmail.com" and mail.sent
+    assert res["account"] == "arsen@gmail.com" and res["sent_via"] == "arsen@gmail.com"
+
+
+def test_send_refuses_rather_than_fall_back_to_the_default_account(backend: OutlookBackend, world: World):
+    def broken_invoke(dispid: int, lcid: int, flags: int, ret: int, *args: object) -> None:
+        return None  # accepted, ignored — the account never sticks
+
+    world.app.create_hook = lambda mail: setattr(mail._oleobj_, "Invoke", broken_invoke)
+    with pytest.raises(OutlookError, match="refusing to send from the default account"):
+        backend.send("arsen@gmail.com", "mimi@example.com", "Hi", "text")
+    assert not world.app.created[-1].sent
+
+
+def test_send_attaches_files_and_reports_them(backend: OutlookBackend, world: World, tmp_path):
+    report = tmp_path / "report.pdf"
+    report.write_bytes(b"%PDF-1.4 " + b"x" * 100)
+    res = backend.send("", "a@x.example", "With file", "see attached", attachments=[str(report)])
+    mail = world.app.created[-1]
+    assert mail.Attachments.Count == 1 and mail.sent
+    assert res["attachments"] == [{"name": "report.pdf", "size": 109}]
+    with pytest.raises(OutlookError, match=r"attaching .*missing.pdf"):
+        backend.send("", "a@x.example", "With file", "see attached", attachments=[str(tmp_path / "missing.pdf")])
 
 
 def test_send_reply_keeps_the_threaded_subject_and_quotes_the_original(backend: OutlookBackend, world: World):

@@ -17,6 +17,7 @@ import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -33,7 +34,7 @@ from jarvis_host import __version__
 from jarvis_host.audio import Audio
 from jarvis_host.com import ComWorker
 from jarvis_host.config import HostConfig
-from jarvis_host.files import Files
+from jarvis_host.files import Files, FsError
 from jarvis_host.meetings import MeetingCapture
 from jarvis_host.onenote import OneNoteBackend, OneNoteError, OneNoteService, onenote_dispatch
 from jarvis_host.outlook import OutlookBackend, OutlookError, OutlookService, outlook_dispatch
@@ -155,6 +156,13 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
             raise OneNoteError("OneNote is only available on a Windows host")
         return deps.onenote
 
+    def _attachment_path(raw: str) -> Path:
+        # Same fence as fs_read: the model can only attach what it could read.
+        path = deps.files.resolve(raw)
+        if not path.is_file():
+            raise FsError(f"attachment {raw!r} is not a file")
+        return path
+
     def tool(name: str, annotations: ToolAnnotations) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         return mcp.tool(name=name, annotations=annotations, structured_output=False)
 
@@ -234,12 +242,14 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
         reply_to_entry_id: str = "",
         html: bool = False,
         draft: bool = False,
+        attachments: list[str] | None = None,
     ) -> str:
-        """Send an email from `account`, or save it as a draft with `draft=true`. With `reply_to_entry_id` the message is built with Reply() so it stays in the thread — the inherited 'RE:' subject is kept and the body goes above the quoted original. Recipients may be comma- or semicolon-separated. The reply says whether it was sent or drafted."""
+        """Send an email from `account`, or save it as a draft with `draft=true`. With `reply_to_entry_id` the message is built with Reply() so it stays in the thread — the inherited 'RE:' subject is kept and the body goes above the quoted original. Recipients may be comma- or semicolon-separated. `attachments` = absolute file paths under the allowed fs roots (see fs_list); each must exist. The reply says whether it was sent or drafted, `sent_via` is the address Outlook actually sends from, and `attachments` lists what was attached."""
+        paths = [str(_attachment_path(p)) for p in (attachments or [])]
         return json_text(
             await _run(
                 "outlook_send",
-                lambda: outlook().call("send", account, to, subject, body, cc, reply_to_entry_id, html, draft),
+                lambda: outlook().call("send", account, to, subject, body, cc, reply_to_entry_id, html, draft, paths),
             )
         )
 

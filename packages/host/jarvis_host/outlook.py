@@ -32,6 +32,7 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any
 
 from jarvis_host.com import ComWorker
@@ -82,6 +83,9 @@ BUSY_STATUS = {0: "free", 1: "tentative", 2: "busy", 3: "out_of_office", 4: "wor
 IMPORTANCE = {0: "low", 1: "normal", 2: "high"}
 
 OL_MAIL_ITEM = 0
+# MailItem.SendUsingAccount: dispid + the PROPERTYPUTREF flag pywin32's plain assignment omits.
+SEND_USING_ACCOUNT_DISPID = 64209
+DISPATCH_PROPERTYPUTREF = 8
 OL_APPOINTMENT_ITEM = 1
 OL_APPOINTMENT_CLASS = 26
 OL_MARK_NO_DATE = 0
@@ -1120,6 +1124,39 @@ class OutlookBackend:
             "is_task": is_task,
         }
 
+    def _set_send_account(self, mail: Any, acct: Any) -> str:
+        """Make Outlook send ``mail`` through ``acct`` and return the address it will use.
+
+        ``mail.SendUsingAccount = acct`` on a late-bound pywin32 object is a by-value
+        PROPERTYPUT, which Outlook accepts and ignores for this object-typed property: on
+        2026-09-12 a mail asked from the Gmail store reported ``sent: true`` and went out of the
+        default (corporate Exchange) account instead — no error, no warning, the Gmail Sent Mail
+        folder simply stayed empty. Outlook wants PROPERTYPUTREF (``DISPATCH_PROPERTYPUTREF``,
+        flag 8) on dispid 64209, so that is what we do, and then we read the property back:
+        an account that did not stick is a hard error, never a silent send from the wrong one.
+        """
+        wanted = _text(_prop(acct, "SmtpAddress", "")).lower()
+        errors: list[str] = []
+        oleobj = getattr(mail, "_oleobj_", None)
+        if oleobj is not None:
+            try:
+                oleobj.Invoke(SEND_USING_ACCOUNT_DISPID, 0, DISPATCH_PROPERTYPUTREF, 0, acct)
+            except Exception as exc:
+                errors.append(f"PUTREF: {describe_com_error(exc)}")
+        else:
+            try:
+                mail.SendUsingAccount = acct
+            except Exception as exc:
+                errors.append(f"assignment: {describe_com_error(exc)}")
+        got = _text(_prop(_prop(mail, "SendUsingAccount"), "SmtpAddress", "")).lower()
+        if not got or (wanted and got != wanted):
+            raise OutlookError(
+                f"could not make Outlook send from {wanted or 'the requested account'} "
+                f"(SendUsingAccount reads back as {got or 'none'}); refusing to send from the default account"
+                + ("; " + "; ".join(errors) if errors else "")
+            )
+        return got
+
     def send(
         self,
         account: str,
@@ -1130,6 +1167,7 @@ class OutlookBackend:
         reply_to_entry_id: str = "",
         html_body: bool = False,
         draft: bool = False,
+        attachments: Sequence[str] = (),
     ) -> dict[str, Any]:
         self._session()
         store = self._store(account)
@@ -1146,10 +1184,12 @@ class OutlookBackend:
             mail.Subject = subject or ""
         acct = self._account_for_store(store)
         if acct is not None:
-            try:
-                mail.SendUsingAccount = acct
-            except Exception as exc:
-                log.warning("outlook: SendUsingAccount failed (%s); Outlook picks the account", describe_com_error(exc))
+            sent_via = self._set_send_account(mail, acct)
+        else:
+            # A store with no account of its own (a shared mailbox, an archive) goes out through
+            # the default account; say so instead of implying the store's name is the sender.
+            default_acct = self._account_for_store(_prop(self._session(), "DefaultStore"))
+            sent_via = _text(_prop(default_acct, "SmtpAddress", "")) if default_acct is not None else ""
         if to:
             mail.To = semicolons(to)
         if cc:
@@ -1158,6 +1198,10 @@ class OutlookBackend:
             raise OutlookError(
                 "no recipient: pass `to` (a reply inherits the original sender only when `to` is empty and Reply() filled it)"
             )
+        # A draft saved with unresolved recipients gets a second, resolved copy of each the moment
+        # Outlook opens it ("a@x; a@x"); resolving here keeps the draft exactly what was asked.
+        with contextlib.suppress(Exception):
+            mail.Recipients.ResolveAll()
         if threaded:
             new_html = body if html_body else text_to_html(body)
             mail.HTMLBody = merge_reply_html(_text(_prop(mail, "HTMLBody", "")), new_html)
@@ -1165,17 +1209,32 @@ class OutlookBackend:
             mail.HTMLBody = body
         else:
             mail.Body = body
+        attached: list[dict[str, Any]] = []
+        for path in attachments:
+            try:
+                att = mail.Attachments.Add(str(path))
+            except Exception as exc:
+                raise OutlookError(f"attaching {path}: {describe_com_error(exc)}") from exc
+            attached.append(
+                {
+                    "name": _text(_prop(att, "FileName", "")) or Path(str(path)).name,
+                    "size": int(_prop(att, "Size", 0) or 0),
+                }
+            )
         final_subject = _text(_prop(mail, "Subject", ""))
         final: dict[str, Any] = {
             "sent": not draft,
             "drafted": draft,
             "account": _text(_prop(store, "DisplayName", "")),
+            "sent_via": sent_via,
             "to": _text(_prop(mail, "To", "")),
             "cc": _text(_prop(mail, "CC", "")),
             "subject": final_subject,
             "threaded": threaded,
             "conversation_id": _text(_prop(mail, "ConversationID", "")),
         }
+        if attached:
+            final["attachments"] = attached
         if threaded and subject and subject.strip() != final_subject.strip():
             final["note"] = f"kept the threaded subject {final_subject!r}; changing it would fork the conversation"
         try:

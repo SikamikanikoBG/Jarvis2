@@ -185,7 +185,8 @@ outlook_read(entry_id)                      → headers + body text (+ attachmen
 outlook_search(account, query, days_back=30, cursor?)
 outlook_move(entry_id, folder)              [destructiveHint=false, readOnly=false]
 outlook_flag(entry_id, flag: bool)
-outlook_send(account, to, subject, body, cc?, reply_to_entry_id?)  [destructiveHint=true]
+outlook_send(account, to, subject, body, cc?, reply_to_entry_id?, html?, draft?, attachments?)  [destructiveHint=true]
+    attachments = file paths under fs.roots; reply carries `sent_via` (the account Outlook really sends from)
 calendar_list(account, days=7)              calendar_create(...) [destructiveHint=true]
 fs_list(path) fs_read(path) fs_write(path, text) [destructive] fs_search(root, glob)
 shell_run(command, cwd?, timeout_s=60)      [destructiveHint=true]

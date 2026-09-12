@@ -164,6 +164,34 @@ async def test_tools_annotations_and_calls(server: tuple[str, BearerAuth], world
         outside = await session.call_tool("fs_read", {"path": str(tmp_path.parent / "nope.txt")})
         assert outside.isError and "outside the allowed roots" in outside.content[0].text  # type: ignore[union-attr]
 
+        # Attachments walk through the same fence as fs_read, and a sent mail says what it carried.
+        fenced = await session.call_tool(
+            "outlook_send",
+            {
+                "account": "",
+                "to": "a@x.example",
+                "subject": "s",
+                "body": "b",
+                "attachments": [str(tmp_path.parent / "secret.txt")],
+            },
+        )
+        assert fenced.isError and "outside the allowed roots" in fenced.content[0].text  # type: ignore[union-attr]
+        assert not world.app.created, "nothing was created in Outlook for a refused attachment"
+        sent = await session.call_tool(
+            "outlook_send",
+            {
+                "account": "",
+                "to": "a@x.example",
+                "subject": "s",
+                "body": "b",
+                "attachments": [str(tmp_path / "hello.txt")],
+            },
+        )
+        assert not sent.isError
+        payload = json.loads(sent.content[0].text)  # type: ignore[union-attr]
+        assert payload["sent"] is True and payload["attachments"] == [{"name": "hello.txt", "size": 2}]
+        assert payload["sent_via"] == "aapostolov@postbank.bg"
+
         shell = json.loads(
             (
                 await session.call_tool(

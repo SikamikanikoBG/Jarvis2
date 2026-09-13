@@ -116,6 +116,10 @@ class AttachmentStore:
 
         if is_video:
             kind = AttachmentKind.VIDEO
+            # The sound first, from the ORIGINAL bytes: the sampled clip below has no audio track.
+            # Frames are what the model sees; what Arsen said in the clip is what he meant, and a
+            # vision model cannot read lips — "Е не успя ли да чуеш какво ти казвам във видеото".
+            text, meta = await self._transcribe_video(data, meta)
             # Sampled down to the frames the model will actually be shown, once, here — so the
             # stored file IS what it watches and nothing re-decodes a 200 MB clip per turn.
             data, mime, meta = _prepare_video(data, mime, meta)
@@ -138,6 +142,29 @@ class AttachmentStore:
         att = Attachment(id=att_id, kind=kind, name=name, mime=mime, bytes=len(data), text=text, meta=meta)
         await self._insert(att, conversation_id=conversation_id, path=path)
         return att
+
+    async def _transcribe_video(self, data: bytes, meta: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+        """The clip's audio through the same Whisper the microphone uses, as the attachment's
+        text. A clip with no audio track, no STT configured, or a Whisper that is down is not an
+        error — the frames still go — but the reason is written into ``meta`` so the message can
+        say the sound was NOT heard rather than letting the model pretend."""
+        audio = _extract_audio(data)
+        if audio is None:
+            meta["audio"] = "none"
+            return None, meta
+        try:
+            result = await self.core.transcriber.transcribe(audio, filename="clip.wav", mime="audio/wav")
+        except Exception as exc:  # SttError or anything the backend threw: the frames still go
+            log.warning("video transcription failed: %s", exc)
+            meta["audio"] = f"not transcribed ({str(exc).splitlines()[0][:120]})"
+            return None, meta
+        if not result.text:
+            meta["audio"] = "silent"
+            return None, meta
+        meta["audio"] = "transcribed"
+        if result.language:
+            meta["language"] = result.language
+        return result.text, meta
 
     async def add_text(
         self,
@@ -466,6 +493,38 @@ def _prepare_video(data: bytes, mime: str, meta: dict[str, Any]) -> tuple[bytes,
     meta["width"], meta["height"] = width, height
     meta["sampled"] = f"{len(frames)} frames over {meta['duration_s']}s"
     return out.getvalue(), "video/mp4", meta
+
+
+def _extract_audio(data: bytes) -> bytes | None:
+    """The clip's audio track as 16 kHz mono WAV — what Whisper wants — or None when there is
+    no audio track (a screen recording, a muted clip). Decoding errors are None too: the frames
+    are the attachment, the sound is a bonus."""
+    import io
+
+    try:
+        import av
+    except ImportError:  # pragma: no cover - av is a declared dependency
+        return None
+    try:
+        with av.open(io.BytesIO(data), mode="r") as src:
+            stream = next((s for s in src.streams.audio), None)
+            if stream is None:
+                return None
+            out = io.BytesIO()
+            with av.open(out, mode="w", format="wav") as dst:
+                stream_out = dst.add_stream("pcm_s16le", rate=16000, layout="mono")
+                resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
+                for frame in src.decode(stream):
+                    for resampled in resampler.resample(frame):
+                        for packet in stream_out.encode(resampled):
+                            dst.mux(packet)
+                for packet in stream_out.encode():
+                    dst.mux(packet)
+            wav = out.getvalue()
+            return wav if len(wav) > 44 else None  # a WAV header alone is not audio
+    except Exception as exc:
+        log.warning("video audio extraction failed: %s", exc)
+        return None
 
 
 def _video_poster(data: bytes, edge: int) -> tuple[bytes, str] | None:

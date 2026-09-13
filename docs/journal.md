@@ -565,3 +565,12 @@ harness — library vs. own is an open question to settle in the design.
   "in the attachment button i see only Take a photo and Photo or file." Now four: Take a
   photo · Record a video (phone) · Photo or video · Document or file.
   (core 2.0.0a38, proto 2.0.0a17, web alpha.18)
+- 2026-09-13 (evening) — "Е не успя ли да чуеш какво ти казвам във видеото." No: the frames
+  carry no sound, and a vision model cannot read lips. The video pipeline dropped the audio
+  track on the way in and the model, honestly, said so. Now the clip's audio is pulled out
+  with PyAV as 16 kHz mono WAV - from the ORIGINAL bytes, the sampled clip has no audio -
+  and goes through the same WhisperX the microphone uses; the words land as the attachment's
+  `text`, and the message reads "[video attached … shown as 5 frames over 5.0s; what is said
+  in it (bg):]" followed by the transcript. A clip with no audio track says "it has no audio
+  track"; a Whisper that is down says "its sound was NOT heard" - the frames still go, but
+  the model is never left to pretend. (core 2.0.0a39)

@@ -202,8 +202,9 @@ async def test_a_portrait_photo_reaches_the_model_the_right_way_up(harness: Harn
         assert img.size == (200, 300)
 
 
-def clip(seconds: float, fps: int, width: int = 640, height: int = 480) -> bytes:
-    """A real encoded video, made here so the test needs no ffmpeg binary and no fixture file."""
+def clip(seconds: float, fps: int, width: int = 640, height: int = 480, *, audio: bool = False) -> bytes:
+    """A real encoded video, made here so the test needs no ffmpeg binary and no fixture file.
+    With ``audio`` it carries a 440 Hz tone: an audio TRACK, which is what the extraction needs."""
     import av
     from PIL import Image
 
@@ -212,10 +213,30 @@ def clip(seconds: float, fps: int, width: int = 640, height: int = 480) -> bytes
         stream = dst.add_stream("mpeg4", rate=fps)
         stream.width, stream.height = width, height
         stream.pix_fmt = "yuv420p"
+        sound = dst.add_stream("aac", rate=44100, layout="mono") if audio else None
         for i in range(int(seconds * fps)):
             shade = (i * 7) % 256
             frame = av.VideoFrame.from_image(Image.new("RGB", (width, height), (shade, 40, 200 - shade)))
             for packet in stream.encode(frame):
+                dst.mux(packet)
+        if sound is not None:
+            import array
+            import math
+
+            # 1024-sample frames of a 440 Hz tone, built without numpy (not a core dependency).
+            per_frame = 1024
+            for n in range(int(seconds * 44100) // per_frame):
+                pcm = array.array(
+                    "h",
+                    (int(9000 * math.sin(2 * math.pi * 440 * (n * per_frame + i) / 44100)) for i in range(per_frame)),
+                )
+                aframe = av.AudioFrame(format="s16", layout="mono", samples=per_frame)
+                aframe.planes[0].update(pcm.tobytes())
+                aframe.sample_rate = 44100
+                aframe.pts = n * per_frame
+                for packet in sound.encode(aframe):
+                    dst.mux(packet)
+            for packet in sound.encode():
                 dst.mux(packet)
         for packet in stream.encode():
             dst.mux(packet)
@@ -246,6 +267,9 @@ async def test_a_video_is_sampled_to_frames_and_reaches_the_model_as_a_video_par
     assert long_att.meta["frames"] == 32
     assert "over 60" in long_att.meta["sampled"]
 
+    # No audio track: the message says so, rather than the model guessing what was said.
+    assert att.text is None and att.meta["audio"] == "none"
+
     # The transcript gets a poster frame, not a grey box.
     poster = await core.attachments.thumbnail(att.id)
     assert poster is not None and poster[1] == "image/jpeg" and len(poster[0]) > 0
@@ -258,7 +282,9 @@ async def test_a_video_is_sampled_to_frames_and_reaches_the_model_as_a_video_par
     await harness.wait_for(sub, "run.done")
     sent = harness.chat.calls[-1][0]
     parts = [p for m in sent if isinstance(m.attachments, list) for p in m.attachments]
-    assert any(p.kind is AttachmentKind.VIDEO and (p.data_url or "").startswith("data:video/mp4;base64,") for p in parts)
+    assert any(
+        p.kind is AttachmentKind.VIDEO and (p.data_url or "").startswith("data:video/mp4;base64,") for p in parts
+    )
 
     from jarvis_core.models.openai_compat import to_openai_messages
 
@@ -272,6 +298,51 @@ async def test_a_video_is_sampled_to_frames_and_reaches_the_model_as_a_video_par
     ]
     assert video_parts, "the adapter sends a video_url part, which is what vLLM takes"
     assert video_parts[0]["video_url"]["url"].startswith("data:video/mp4;base64,")
+
+
+async def test_what_is_said_in_a_video_reaches_the_model_as_text(harness: Harness, monkeypatch: pytest.MonkeyPatch):
+    """ "Е не успя ли да чуеш какво ти казвам във видеото." The frames carry no sound and a vision
+    model cannot read lips. The clip's audio goes through the same Whisper the microphone uses,
+    and the words land in the message next to the frames — or, when Whisper is down, the message
+    says the sound was NOT heard instead of letting the model pretend."""
+    from jarvis_core.engine.context import _with_attachment_note
+    from jarvis_core.features.stt import SttError, SttResult
+    from jarvis_proto import Message, Role
+
+    core = harness.core
+    heard: list[tuple[str, str, int]] = []
+
+    async def fake_transcribe(audio: bytes, *, filename: str, mime: str, language: str | None = None) -> SttResult:
+        heard.append((filename, mime, len(audio)))
+        return SttResult(text="колко време е, сърбеж, отделяне", language="bg", backend="fake", duration_ms=5)
+
+    monkeypatch.setattr(core.transcriber, "transcribe", fake_transcribe)
+    att = await core.attachments.add_file(
+        data=clip(2, 10, audio=True), filename="v.mp4", mime="video/mp4", conversation_id=None
+    )
+    assert heard and heard[0][0] == "clip.wav" and heard[0][1] == "audio/wav" and heard[0][2] > 44
+    assert (
+        att.text == "колко време е, сърбеж, отделяне"
+        and att.meta["audio"] == "transcribed"
+        and att.meta["language"] == "bg"
+    )
+    note = _with_attachment_note(
+        Message(role=Role.USER, content="виж"), [att.model_copy(update={"data_url": "data:video/mp4;base64,x"})]
+    )
+    assert "what is said in it (bg):]" in note and note.endswith("колко време е, сърбеж, отделяне")
+
+    async def whisper_down(audio: bytes, *, filename: str, mime: str, language: str | None = None) -> SttResult:
+        raise SttError("STT backend unreachable: ConnectError")
+
+    monkeypatch.setattr(core.transcriber, "transcribe", whisper_down)
+    deaf = await core.attachments.add_file(
+        data=clip(2, 10, audio=True), filename="v2.mp4", mime="video/mp4", conversation_id=None
+    )
+    assert deaf.text is None and deaf.meta["audio"].startswith("not transcribed")
+    note = _with_attachment_note(
+        Message(role=Role.USER, content="виж"), [deaf.model_copy(update={"data_url": "data:video/mp4;base64,x"})]
+    )
+    assert "its sound was NOT heard" in note
 
 
 async def test_a_document_becomes_text_the_model_can_read(harness: Harness):

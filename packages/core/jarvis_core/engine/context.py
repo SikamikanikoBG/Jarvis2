@@ -311,11 +311,23 @@ def _with_attachment_note(message: Message, attachments: list[Attachment]) -> st
         elif att.kind is AttachmentKind.VIDEO:
             # What it was sampled to is part of the content: an answer about "the whole video"
             # is only as good as the frames, and the model should know what it is looking at.
+            # And whether it HEARD it: the frames carry no sound, so the transcript is the only
+            # way what was said in the clip reaches the model — or the reason it did not.
             shape = att.meta.get("sampled") or f"{att.meta.get('frames', '?')} frames"
             note = f"[video attached: {att.name}, {size}, shown as {shape}"
             if not att.data_url:
                 note += " — this model cannot be shown video, so describe what you need instead"
-            parts.append(note + "]")
+            audio = str(att.meta.get("audio") or "")
+            if att.text:
+                lang = f" ({att.meta['language']})" if att.meta.get("language") else ""
+                parts.append(note + f"; what is said in it{lang}:]\n{att.text}")
+            elif audio == "none":
+                parts.append(note + "; it has no audio track]")
+            elif audio == "silent":
+                parts.append(note + "; nothing was said in it]")
+            else:
+                why = audio or "audio not transcribed"
+                parts.append(note + f"; its sound was NOT heard ({why}) — say so if it matters]")
         elif att.text:
             label = "email thread" if att.kind is AttachmentKind.EMAIL else att.name
             parts.append(f"[attached {label} ({size})]\n{att.text}")

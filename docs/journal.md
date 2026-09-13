@@ -535,3 +535,33 @@ harness — library vs. own is an open question to settle in the design.
   after a jump; and every "is it at the top of the page" band is really reading the strip hidden
   behind the sticky rail. The spy now measures against the rail's own bottom edge on scroll.
   (web alpha.17)
+- 2026-09-13 (later) — Four from the phone, and one the model could already do.
+  "on mobile when i write a new message the footer menu overlaps the chat inbox." The textarea
+  capped itself at 40% of `window.innerHeight` - which, with the keyboard up, is 40% of a
+  screen two thirds of which is keyboard - and only re-measured on a keystroke. And the empty
+  "Talk to Jarvis" block had no `min-height: 0`, so on a new chat it kept its full height and
+  shoved the composer under the nav. Now the box measures the room the chat column actually
+  has (minus its own chrome, minus a floor for the transcript), listens to `visualViewport`
+  resize, and the CSS fallback is `40dvh`. Playwright at 400×360 with a 14-line message:
+  overlap 75 px before, 0 after.
+  "take photo - не мога да променям резолюцията, винаги е като широка лупа. не мога да
+  фокусирам ... моделът много често казва - снимката е много размазана." Three things, and
+  the first was policy: on a phone with https the in-app getUserMedia preview won, and it is
+  one fixed wide-angle frame with no tap-to-focus and no zoom. A phone now ALWAYS hands the
+  job to its camera app (`capture=environment`); the in-app preview stays for a desktop, where
+  `capture` is ignored. The other two were on the way in: re-encoding dropped EXIF, so a
+  portrait photo reached the model lying on its side; and Pillow's default resample from 4000
+  to 1568 px is soft, which reads as out-of-focus in an answer. `exif_transpose` first (even
+  under the size limit), LANCZOS with `reducing_gap=3.0` after.
+  "qwen3 27b поддържа и видео." Checked, not assumed: the served checkpoint's config carries
+  `video_token_id` and a `temporal_patch_size`, and a test-pattern mp4 as a base64 `video_url`
+  part came back described correctly from vader, no server flags changed. So: a `video`
+  attachment kind. A clip is re-sampled ONCE on the way in (PyAV) - one frame a second, 32 at
+  most, spread across the whole length so five minutes is 32 frames ten seconds apart - and
+  re-encoded MJPEG-in-MP4 at 768 px, because every decoder reads that and `libx264` is exactly
+  what was missing on ardi's ffmpeg. The message says what was shown ("32 frames over 90.0s").
+  A poster frame in the transcript, playable in the lightbox, "Record a video" in the "+" menu
+  on a phone. 90 s of 720p: 8.8 MB in, 356 kB out.
+  "in the attachment button i see only Take a photo and Photo or file." Now four: Take a
+  photo · Record a video (phone) · Photo or video · Document or file.
+  (core 2.0.0a38, proto 2.0.0a17, web alpha.18)

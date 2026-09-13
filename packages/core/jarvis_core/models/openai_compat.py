@@ -25,7 +25,7 @@ from jarvis_core.models.base import (
     endpoint_semaphore,
 )
 from jarvis_core.models.http import Stopwatch, make_client, stream_lines
-from jarvis_proto import Message, ModelSpec, ModelUsage, Role, ToolCall, ToolSpec, new_id
+from jarvis_proto import AttachmentKind, Message, ModelSpec, ModelUsage, Role, ToolCall, ToolSpec, new_id
 
 log = logging.getLogger(__name__)
 
@@ -36,14 +36,21 @@ def to_openai_messages(messages: list[Message]) -> list[dict[str, Any]]:
         if m.role is Role.TOOL:
             out.append({"role": "tool", "content": m.content, "tool_call_id": m.tool_call_id or ""})
             continue
-        images = [a.data_url for a in m.attachments if a.data_url]
-        if images:
-            # OpenAI-style multimodal content: the text first, then the pictures.
+        shown = [a for a in m.attachments if a.data_url]
+        if shown:
+            # OpenAI-style multimodal content: the text first, then what there is to look at.
+            # A clip goes in a `video_url` part — the shape vLLM takes for a video, verified
+            # against the qwen3.8 endpoint on 2026-09-13 (an mp4 data: URI, answered correctly).
             item = {
                 "role": m.role.value,
                 "content": [
                     *([{"type": "text", "text": m.content}] if m.content else []),
-                    *({"type": "image_url", "image_url": {"url": url}} for url in images),
+                    *(
+                        {"type": "video_url", "video_url": {"url": a.data_url}}
+                        if a.kind is AttachmentKind.VIDEO
+                        else {"type": "image_url", "image_url": {"url": a.data_url}}
+                        for a in shown
+                    ),
                 ],
             }
             out.append(item)

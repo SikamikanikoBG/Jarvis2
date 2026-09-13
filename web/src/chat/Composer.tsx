@@ -15,6 +15,11 @@ import { MicButton } from './MicButton';
 /** Pasted text longer than this becomes an attachment instead of filling the input. */
 const PASTE_AS_FILE_CHARS = 2000;
 
+/** However long the message is, this much of the conversation stays on screen behind it. */
+const TRANSCRIPT_FLOOR = 72;
+/** One line: the box never collapses to nothing, even on a screen with no room at all. */
+const MIN_COMPOSER_H = 24;
+
 interface Props {
   runActive: boolean;
   stopping: boolean;
@@ -38,7 +43,9 @@ export function Composer({ runActive, stopping }: Props) {
   const attachText = useStore((s) => s.attachText);
   const removeAttachment = useStore((s) => s.removeAttachment);
   const fileInput = useRef<HTMLInputElement>(null);
+  const mediaInput = useRef<HTMLInputElement>(null);
   const cameraInput = useRef<HTMLInputElement>(null);
+  const videoInput = useRef<HTMLInputElement>(null);
   const [attachMenu, setAttachMenu] = useState<HTMLElement | null>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
   const notify = useStore((s) => s.notify);
@@ -54,14 +61,45 @@ export function Composer({ runActive, stopping }: Props) {
     }),
   );
 
+  /**
+   * Grow the box to the text, but never past the room the chat column actually has.
+   *
+   * It used to stop at 40% of `window.innerHeight`, which is not the same thing on a phone: with
+   * the keyboard up, two thirds of that viewport is keyboard, and 40% of the whole screen plus
+   * the composer's own chrome is more than what is left between the top bar and the bottom nav.
+   * The overflow was painted over by the nav — "on mobile when i write a new message the footer
+   * menu overlaps the chat inbox". Worse, this only ran on a keystroke, so a box measured before
+   * the keyboard opened kept a height the screen no longer had.
+   */
   const resize = useCallback(() => {
     const el = ref.current;
     if (!el) return;
     el.style.height = '0px';
-    el.style.height = `${Math.min(el.scrollHeight, window.innerHeight * 0.4)}px`;
+    const viewport = window.visualViewport?.height ?? window.innerHeight;
+    let room = viewport * 0.4;
+    const chat = el.closest('.chat');
+    const wrap = el.closest('.composer-wrap');
+    if (chat instanceof HTMLElement && wrap instanceof HTMLElement) {
+      // Measured with the box collapsed: everything the wrap holds besides the text itself —
+      // padding, the send/mic row, the hint line under it.
+      const chrome = wrap.offsetHeight - el.offsetHeight;
+      room = Math.min(room, chat.clientHeight - chrome - TRANSCRIPT_FLOOR);
+    }
+    el.style.height = `${Math.max(MIN_COMPOSER_H, Math.min(el.scrollHeight, room))}px`;
   }, []);
 
   useEffect(resize, [text, resize]);
+  // The keyboard opening is a viewport resize, not a keystroke, and it is the moment the room
+  // changes most.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    window.addEventListener('resize', resize);
+    vv?.addEventListener('resize', resize);
+    return () => {
+      window.removeEventListener('resize', resize);
+      vv?.removeEventListener('resize', resize);
+    };
+  }, [resize]);
   useEffect(() => {
     if (!runActive && !coarsePointer()) ref.current?.focus();
   }, [runActive]);
@@ -121,14 +159,19 @@ export function Composer({ runActive, stopping }: Props) {
     setAttachMenu(null);
     input?.click();
   };
-  // Taking a photo is offered on every device. Where a live preview is possible it opens in the
-  // app; on a phone without one (the core is served over plain http on the tailnet, and
-  // getUserMedia needs a secure context) the OS camera app still works through the file input.
+  // Taking a photo is offered on every device: a phone always hands the job to its own camera
+  // app (focus, zoom, the right lens, full resolution — see lib/camera.ts), a desktop opens the
+  // in-app preview, since a desktop browser ignores `capture` and would just show a file dialog.
   const takePhoto = () => {
     setAttachMenu(null);
     if (camera.mode === 'stream') setCameraOpen(true);
     else if (camera.mode === 'os') cameraInput.current?.click();
     else notify(camera.reason, 'error');
+  };
+  // Recording has no in-app equivalent — the camera app records, we take the file.
+  const recordVideo = () => {
+    setAttachMenu(null);
+    videoInput.current?.click();
   };
   return (
     <div
@@ -153,9 +196,32 @@ export function Composer({ runActive, stopping }: Props) {
         }}
       />
       <input
+        ref={mediaInput}
+        type="file"
+        accept="image/*,video/*"
+        multiple
+        hidden
+        onChange={(e) => {
+          void attachFiles([...(e.target.files ?? [])]);
+          e.target.value = '';
+        }}
+      />
+      <input
         ref={cameraInput}
         type="file"
         accept="image/*"
+        capture="environment"
+        hidden
+        onChange={(e) => {
+          void attachFiles([...(e.target.files ?? [])]);
+          e.target.value = '';
+        }}
+      />
+      {/* The camera app again, in video mode: `capture` on a video input opens the recorder. */}
+      <input
+        ref={videoInput}
+        type="file"
+        accept="video/*"
         capture="environment"
         hidden
         onChange={(e) => {
@@ -212,7 +278,11 @@ export function Composer({ runActive, stopping }: Props) {
             onClose={() => setAttachMenu(null)}
             items={[
               { label: 'Take a photo', icon: 'camera', onSelect: takePhoto },
-              { label: 'Photo or file', icon: 'image', onSelect: () => pick(fileInput.current) },
+              // Recording is the camera app's job, so it is offered only where `capture` means
+              // something: on a desktop the same input is a file dialog, which "Video" already is.
+              ...(camera.mode === 'os' ? [{ label: 'Record a video', icon: 'video' as const, onSelect: recordVideo }] : []),
+              { label: 'Photo or video', icon: 'image', onSelect: () => pick(mediaInput.current) },
+              { label: 'Document or file', icon: 'paperclip', onSelect: () => pick(fileInput.current) },
             ]}
           />
         )}

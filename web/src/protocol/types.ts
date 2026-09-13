@@ -140,9 +140,9 @@ export interface ChatFolder {
   updated_at: string;
 }
 
-export type AttachmentKind = 'image' | 'document' | 'text' | 'email';
+export type AttachmentKind = 'image' | 'video' | 'document' | 'text' | 'email';
 
-/** A photo, a file, pasted text or an email thread handed to Jarvis with a message. */
+/** A photo, a clip, a file, pasted text or an email thread handed to Jarvis with a message. */
 export interface Attachment {
   id: string;
   kind: AttachmentKind;

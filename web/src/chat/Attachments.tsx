@@ -5,7 +5,13 @@ import { IconButton } from '../components/primitives';
 import { sizeLabel } from '../lib/format';
 import type { Attachment } from '../protocol/types';
 
-const ICON: Record<Attachment['kind'], IconName> = { image: 'image', document: 'file', text: 'file', email: 'inbox' };
+const ICON: Record<Attachment['kind'], IconName> = { image: 'image', video: 'video', document: 'file', text: 'file', email: 'inbox' };
+
+/** "8 frames over 4.2s" — what the model was actually shown of a clip, as the core sampled it. */
+function sampledLabel(a: Attachment): string {
+  const sampled = a.meta.sampled;
+  return typeof sampled === 'string' ? sampled : 'video';
+}
 
 /** Attachments as they appear ON a sent message: thumbnails for photos, chips for the rest. */
 export function MessageAttachments({ attachments }: { attachments: Attachment[] }) {
@@ -14,9 +20,16 @@ export function MessageAttachments({ attachments }: { attachments: Attachment[] 
   return (
     <div className="att-row">
       {attachments.map((a) =>
-        a.kind === 'image' ? (
-          <button key={a.id} type="button" className="att-thumb" onClick={() => setZoom(a)} title={`${a.name} · ${sizeLabel(a.bytes)}`}>
+        a.kind === 'image' || a.kind === 'video' ? (
+          <button
+            key={a.id}
+            type="button"
+            className={a.kind === 'video' ? 'att-thumb att-video' : 'att-thumb'}
+            onClick={() => setZoom(a)}
+            title={[a.name, sizeLabel(a.bytes), a.kind === 'video' ? sampledLabel(a) : ''].filter(Boolean).join(' · ')}
+          >
             <img src={api.attachments.url(a.id, { thumb: true })} alt={a.name} loading="lazy" />
+            {a.kind === 'video' && <Icon name="play" size={18} className="att-play" />}
           </button>
         ) : (
           <a key={a.id} className="att-chip" href={api.attachments.url(a.id)} target="_blank" rel="noopener noreferrer" title={a.name}>
@@ -41,7 +54,11 @@ function Lightbox({ attachment, onClose }: { attachment: Attachment; onClose: ()
   }, [onClose]);
   return (
     <div className="lightbox" role="dialog" aria-label={attachment.name} onClick={onClose}>
-      <img src={api.attachments.url(attachment.id)} alt={attachment.name} onClick={(e) => e.stopPropagation()} />
+      {attachment.kind === 'video' ? (
+        <video src={api.attachments.url(attachment.id)} controls autoPlay loop onClick={(e) => e.stopPropagation()} />
+      ) : (
+        <img src={api.attachments.url(attachment.id)} alt={attachment.name} onClick={(e) => e.stopPropagation()} />
+      )}
       <div className="lightbox-bar" onClick={(e) => e.stopPropagation()}>
         <span className="truncate">
           {attachment.name} · {sizeLabel(attachment.bytes)}
@@ -71,7 +88,7 @@ export function PendingAttachments({
     <div className="att-row att-pending">
       {pending.map((a) => (
         <span key={a.id} className="att-chip">
-          {a.kind === 'image' ? (
+          {a.kind === 'image' || a.kind === 'video' ? (
             <img className="att-chip-thumb" src={api.attachments.url(a.id, { thumb: true })} alt="" />
           ) : (
             <Icon name={ICON[a.kind]} size={13} />

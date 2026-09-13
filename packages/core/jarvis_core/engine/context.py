@@ -270,7 +270,8 @@ class ContextAssembler:
                 continue
             hydrated = []
             for att in atts:
-                url = await self._attachments.data_url(att.id) if att.kind is AttachmentKind.IMAGE else None
+                shown = att.kind in (AttachmentKind.IMAGE, AttachmentKind.VIDEO)
+                url = await self._attachments.data_url(att.id) if shown else None
                 hydrated.append(att.model_copy(update={"data_url": url}) if url else att)
             out.append(m.model_copy(update={"attachments": hydrated, "content": _with_attachment_note(m, hydrated)}))
         return out
@@ -306,6 +307,14 @@ def _with_attachment_note(message: Message, attachments: list[Attachment]) -> st
             note = f"[image attached: {att.name}, {size}"
             if not att.data_url:
                 note += " — this model cannot be shown images, so describe what you need instead"
+            parts.append(note + "]")
+        elif att.kind is AttachmentKind.VIDEO:
+            # What it was sampled to is part of the content: an answer about "the whole video"
+            # is only as good as the frames, and the model should know what it is looking at.
+            shape = att.meta.get("sampled") or f"{att.meta.get('frames', '?')} frames"
+            note = f"[video attached: {att.name}, {size}, shown as {shape}"
+            if not att.data_url:
+                note += " — this model cannot be shown video, so describe what you need instead"
             parts.append(note + "]")
         elif att.text:
             label = "email thread" if att.kind is AttachmentKind.EMAIL else att.name

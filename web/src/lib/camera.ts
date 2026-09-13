@@ -10,8 +10,13 @@
  *   so it is the one that still works on a phone over http — but a desktop browser ignores
  *   `capture` and just opens a file picker, which is not taking a photo.
  *
- * So: prefer the in-app camera, fall back to the OS camera on a touch device, and otherwise say
- * plainly why there is no camera rather than showing a button that opens a file dialog.
+ * **A phone uses its own camera app, always.** The in-app stream gets whichever lens the browser
+ * hands over — on Arsen's phone the wide one, "винаги е като широка лупа" — at whatever
+ * resolution it feels like, with no tap-to-focus and no zoom, and the model kept answering that
+ * the photo was too blurry to read. The camera app focuses, zooms, uses the right lens and
+ * returns the full-size photo; there is nothing the web preview does better on a touch screen.
+ * So: OS camera on a phone, the in-app preview on a desktop (where `capture` is ignored and a
+ * file dialog is not a camera), and otherwise say plainly why there is none.
  */
 export type CameraMode = 'stream' | 'os' | 'unavailable';
 
@@ -36,8 +41,8 @@ export function readCameraEnv(): CameraEnv {
 }
 
 export function cameraSupport(env: CameraEnv): CameraSupport {
-  if (env.hasUserMedia) return { mode: 'stream', reason: '' };
   if (env.coarsePointer) return { mode: 'os', reason: '' };
+  if (env.hasUserMedia) return { mode: 'stream', reason: '' };
   return {
     mode: 'unavailable',
     reason: env.isSecureContext

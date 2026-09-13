@@ -27,7 +27,8 @@ async def upload(
     file: UploadFile = File(...),
     conversation_id: str | None = Form(default=None),
 ) -> Attachment:
-    """One file: a photo, a document, anything. Images are resized, documents are read to text."""
+    """One file: a photo, a clip, a document, anything. Images are resized, videos are sampled
+    down to the frames the model is shown, documents are read to text."""
     core = core_of(request)
     try:
         return await core.attachments.add_file(

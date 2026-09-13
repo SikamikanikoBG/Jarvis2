@@ -560,7 +560,9 @@
 .composer textarea {
   flex: 1;
   min-width: 0;
-  max-height: 40vh;
+  /* dvh, not vh: with the on-screen keyboard up, vh is still the height of the whole screen.
+     The real cap is measured in Composer.tsx; this is what holds until it runs. */
+  max-height: 40dvh;
   min-height: 24px;
   padding: 7px 0;
   border: 0;
@@ -691,8 +693,13 @@
   z-index: 5;
 }
 
+/* min-height: 0 or the "Talk to Jarvis" block keeps its full height on a phone with the keyboard
+   up and pushes the composer under the bottom nav — a flex item's automatic minimum is its
+   content, and this one is the whole reason a NEW chat overlapped while the rest did not. */
 .chat-empty {
   flex: 1;
+  min-height: 0;
+  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;

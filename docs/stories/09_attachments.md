@@ -22,8 +22,16 @@ one `attachment` with one ingestion path and one place in the prompt.
    "[image attached: name, 1.2 MB — this model cannot see images]" and Jarvis tells me.
 7. **The prompt cache survives.** Text extracted from files and threads goes into the persisted
    `context` message after my input, never into the system prefix.
-8. **Uploads are bounded**: 25 MB per file, chunked so a phone on a bad link can finish; the
-   store lives under `JARVIS_HOME/attachments/` and is deleted with the conversation.
+8. **Uploads are bounded**: 25 MB per file (200 MB for a video, which is sampled down at once);
+   the store lives under `JARVIS_HOME/attachments/` and is deleted with the conversation.
+9. **A video** (2026-09-13): I record a clip with the phone's camera or pick one, and Jarvis
+   watches it. The vision tower reads frames and pays per frame, so a clip is re-sampled once on
+   the way in — a frame a second, 32 at most, spread across the WHOLE clip so a five-minute video
+   arrives as 32 frames one every ten seconds rather than the first half-minute. What was shown
+   is in the message ("shown as 32 frames over 90.0s"), because an answer about "the whole video"
+   is only as good as the frames. It reaches vLLM as a `video_url` part with an mp4 data URI —
+   verified against the qwen3.8 endpoint, which has the video token and the temporal patch size
+   in its config and answers correctly.
 
 ## Definition of done
 

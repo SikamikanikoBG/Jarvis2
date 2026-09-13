@@ -28,6 +28,7 @@ class ToolCall(BaseModel):
 
 class AttachmentKind(StrEnum):
     IMAGE = "image"
+    VIDEO = "video"  # a clip the vision model watches, sampled down on the way in
     DOCUMENT = "document"  # a file whose text was extracted (pdf, office, code, csv…)
     TEXT = "text"  # pasted text
     EMAIL = "email"  # an Outlook thread
@@ -37,7 +38,7 @@ class Attachment(BaseModel):
     """Something handed to Jarvis alongside a message: a photo, a file, pasted text, a thread.
 
     One concept for all of them (docs/stories/09_attachments.md): ``kind`` decides how it reaches
-    the model — an image becomes an image part, everything else becomes text.
+    the model — an image becomes an image part, a video a video part, everything else text.
     """
 
     id: str

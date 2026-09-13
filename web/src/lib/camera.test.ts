@@ -17,16 +17,15 @@ const cam = (deviceId: string, kind: MediaDeviceKind = 'videoinput'): MediaDevic
 });
 
 describe('cameraSupport', () => {
-  it('prefers the in-app preview wherever getUserMedia exists — desktop as much as phone', () => {
-    expect(cameraSupport(env()).mode).toBe('stream');
-    expect(cameraSupport(env({ coarsePointer: true })).mode).toBe('stream');
+  it('gives a phone its own camera app even where getUserMedia would work', () => {
+    // The in-app stream is one fixed wide-angle frame that cannot be focused or zoomed, and the
+    // model kept calling the result blurry. The camera app has the lenses and the autofocus.
+    expect(cameraSupport(env({ coarsePointer: true })).mode).toBe('os');
+    expect(cameraSupport(env({ hasUserMedia: false, isSecureContext: false, coarsePointer: true })).mode).toBe('os');
   });
 
-  it('falls back to the OS camera on a phone with no getUserMedia', () => {
-    // The core is served over plain http on the tailnet, so navigator.mediaDevices is undefined.
-    // A file input with `capture` still opens the camera app, which is why the phone keeps
-    // working where the desktop cannot.
-    expect(cameraSupport(env({ hasUserMedia: false, isSecureContext: false, coarsePointer: true })).mode).toBe('os');
+  it('uses the in-app preview on a desktop, where `capture` is ignored and a file dialog is not a camera', () => {
+    expect(cameraSupport(env()).mode).toBe('stream');
   });
 
   it('says why rather than opening a file picker and calling it a camera', () => {

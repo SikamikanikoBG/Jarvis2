@@ -165,6 +165,115 @@ async def test_an_oversized_image_is_scaled_down_even_when_that_makes_the_file_b
     assert kept_stored.path.read_bytes() == small and "resized_from" not in kept.meta
 
 
+async def test_a_portrait_photo_reaches_the_model_the_right_way_up(harness: Harness):
+    """A phone does not rotate the pixels, it writes EXIF Orientation and leaves them sideways.
+
+    Re-encoding drops EXIF, and a vision model reads pixels, not tags — so a photo held upright
+    arrived lying on its side, one of the reasons the answer kept being that it could not be
+    read. Now the rotation is baked in, whatever the size: even an image already inside the
+    limit is re-encoded when its orientation is not 1.
+    """
+    from PIL import Image
+
+    def portrait(width: int, height: int, orientation: int) -> bytes:
+        buf = io.BytesIO()
+        img = Image.new("RGB", (width, height), (30, 90, 200))
+        exif = img.getexif()
+        exif[0x0112] = orientation
+        img.save(buf, format="JPEG", exif=exif)
+        return buf.getvalue()
+
+    core = harness.core
+    # 6 = "rotate 90° clockwise to view": stored landscape, meant to be seen as portrait.
+    shot = portrait(2400, 1600, 6)
+    att = await core.attachments.add_file(data=shot, filename="IMG_9001.jpg", mime="image/jpeg", conversation_id=None)
+    stored = await core.attachments.get(att.id)
+    assert stored is not None and stored.path is not None
+    with Image.open(stored.path) as img:
+        assert img.height > img.width, "the photo is stored upright, not on its side"
+        assert max(img.size) == MAX_IMAGE_EDGE
+
+    # Small enough to skip the resize, but still not upright: it must be turned all the same.
+    small = portrait(300, 200, 6)
+    turned = await core.attachments.add_file(data=small, filename="small.jpg", mime="image/jpeg", conversation_id=None)
+    turned_stored = await core.attachments.get(turned.id)
+    assert turned_stored is not None and turned_stored.path is not None
+    with Image.open(turned_stored.path) as img:
+        assert img.size == (200, 300)
+
+
+def clip(seconds: float, fps: int, width: int = 640, height: int = 480) -> bytes:
+    """A real encoded video, made here so the test needs no ffmpeg binary and no fixture file."""
+    import av
+    from PIL import Image
+
+    buf = io.BytesIO()
+    with av.open(buf, mode="w", format="mp4") as dst:
+        stream = dst.add_stream("mpeg4", rate=fps)
+        stream.width, stream.height = width, height
+        stream.pix_fmt = "yuv420p"
+        for i in range(int(seconds * fps)):
+            shade = (i * 7) % 256
+            frame = av.VideoFrame.from_image(Image.new("RGB", (width, height), (shade, 40, 200 - shade)))
+            for packet in stream.encode(frame):
+                dst.mux(packet)
+        for packet in stream.encode():
+            dst.mux(packet)
+    return buf.getvalue()
+
+
+async def test_a_video_is_sampled_to_frames_and_reaches_the_model_as_a_video_part(harness: Harness):
+    """A clip is frames to the model, and frames are what it pays for.
+
+    Ten seconds at 30 fps is 300 pictures; shown whole it is a context blown by one message. The
+    clip is re-sampled once on the way in — a frame a second, 32 at most — and the stored file is
+    what the model watches. Verified against the qwen3.8 endpoint on 2026-09-13: an mp4 data URI
+    in a `video_url` part, answered correctly.
+    """
+    core = harness.core
+    att = await core.attachments.add_file(
+        data=clip(6, 30), filename="VID_20260913.mp4", mime="video/mp4", conversation_id=None
+    )
+    assert att.kind is AttachmentKind.VIDEO
+    assert att.meta["frames"] == 6 and att.meta["duration_s"] == pytest.approx(6.0, abs=0.5)
+    assert att.bytes < att.meta["original_bytes"], "the stored clip is the sampled one"
+    assert att.mime == "video/mp4"
+
+    # A long clip is spread across its whole length rather than cut off after 32 seconds.
+    long_att = await core.attachments.add_file(
+        data=clip(60, 15), filename="long.mp4", mime="video/mp4", conversation_id=None
+    )
+    assert long_att.meta["frames"] == 32
+    assert "over 60" in long_att.meta["sampled"]
+
+    # The transcript gets a poster frame, not a grey box.
+    poster = await core.attachments.thumbnail(att.id)
+    assert poster is not None and poster[1] == "image/jpeg" and len(poster[0]) > 0
+
+    # And it reaches the model as a video part, next to the text.
+    harness.chat.push(FakeTurn(text="A colour fade."))
+    conv = await core.store.create_conversation()
+    await core.engine.create_run(text="what happens here?", conversation_id=conv.id, attachment_ids=[att.id])
+    sub = harness.subscribe(conv.id)
+    await harness.wait_for(sub, "run.done")
+    sent = harness.chat.calls[-1][0]
+    parts = [p for m in sent if isinstance(m.attachments, list) for p in m.attachments]
+    assert any(p.kind is AttachmentKind.VIDEO and (p.data_url or "").startswith("data:video/mp4;base64,") for p in parts)
+
+    from jarvis_core.models.openai_compat import to_openai_messages
+
+    payload = to_openai_messages(sent)
+    video_parts = [
+        part
+        for m in payload
+        if isinstance(m.get("content"), list)
+        for part in m["content"]
+        if isinstance(part, dict) and part.get("type") == "video_url"
+    ]
+    assert video_parts, "the adapter sends a video_url part, which is what vLLM takes"
+    assert video_parts[0]["video_url"]["url"].startswith("data:video/mp4;base64,")
+
+
 async def test_a_document_becomes_text_the_model_can_read(harness: Harness):
     core = harness.core
     att = await core.attachments.add_file(

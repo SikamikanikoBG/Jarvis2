@@ -31,11 +31,24 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 MAX_BYTES = 25 * 1024 * 1024  # one upload; the phone chunks nothing below this
+# A video is the one thing that arrives bigger than that as a matter of course — a minute of
+# 1080p off a phone is 100 MB+ — and it is sampled down to a handful of frames anyway.
+MAX_VIDEO_BYTES = 200 * 1024 * 1024
 # Anthropic and vLLM both stop gaining accuracy above ~1568 px on the long edge, and a 4000 px
 # photo costs several times the tokens for the same answer.
 MAX_IMAGE_EDGE = 1568
 THUMB_EDGE = 320
+EXIF_ORIENTATION = 0x0112  # the tag a phone writes instead of rotating the pixels
 IMAGE_MIME = {"image/jpeg", "image/png", "image/webp", "image/gif", "image/bmp"}
+VIDEO_MIME = {"video/mp4", "video/quicktime", "video/webm", "video/x-matroska", "video/x-msvideo", "video/3gpp"}
+# What the model is shown of a clip. The vision tower reads frames, and every frame is roughly a
+# picture's worth of tokens, so the sampling is the whole design: 1 frame a second, at most 32 of
+# them, 768 px on the long edge. That is ~32 s of a clip watched evenly, for about the token cost
+# of a handful of photos. Longer clips are not refused — they are sampled across their length, so
+# a 5-minute video becomes 32 frames spread over 5 minutes.
+VIDEO_FPS = 1.0
+VIDEO_MAX_FRAMES = 32
+VIDEO_EDGE = 768
 TEXT_SUFFIXES = {
     ".txt",
     ".md",
@@ -89,17 +102,24 @@ class AttachmentStore:
     async def add_file(self, *, data: bytes, filename: str, mime: str, conversation_id: str | None) -> Attachment:
         if not data:
             raise AttachmentError("the file is empty")
-        if len(data) > MAX_BYTES:
-            raise AttachmentError(
-                f"{filename} is {len(data) // 1024 // 1024} MB; the limit is {MAX_BYTES // 1024 // 1024} MB"
-            )
         name = Path(filename or "attachment").name
         mime = (mime or mimetypes.guess_type(name)[0] or "application/octet-stream").split(";")[0].strip()
+        is_video = mime in VIDEO_MIME or mime.startswith("video/")
+        cap = MAX_VIDEO_BYTES if is_video else MAX_BYTES
+        if len(data) > cap:
+            raise AttachmentError(
+                f"{filename} is {len(data) // 1024 // 1024} MB; the limit is {cap // 1024 // 1024} MB"
+            )
         att_id = new_id("att")
         meta: dict[str, Any] = {}
         text: str | None = None
 
-        if mime in IMAGE_MIME or mime.startswith("image/"):
+        if is_video:
+            kind = AttachmentKind.VIDEO
+            # Sampled down to the frames the model will actually be shown, once, here — so the
+            # stored file IS what it watches and nothing re-decodes a 200 MB clip per turn.
+            data, mime, meta = _prepare_video(data, mime, meta)
+        elif mime in IMAGE_MIME or mime.startswith("image/"):
             kind = AttachmentKind.IMAGE
             # Resizing can re-encode (a 4000 px RGBA screenshot comes back as JPEG), so the mime
             # is whatever the BYTES are now — the name stays the one Arsen sent.
@@ -233,26 +253,34 @@ class AttachmentStore:
         return len(rows)
 
     async def thumbnail(self, att_id: str) -> tuple[bytes, str] | None:
-        """A small JPEG for the transcript; None when the attachment is not an image."""
+        """A small JPEG for the transcript: the picture, or a video's first frame. None for
+        anything with nothing to show."""
         stored = await self.get(att_id)
-        if stored is None or stored.attachment.kind is not AttachmentKind.IMAGE or stored.path is None:
+        if stored is None or stored.path is None:
+            return None
+        kind = stored.attachment.kind
+        if kind not in (AttachmentKind.IMAGE, AttachmentKind.VIDEO):
             return None
         cache = stored.path.with_suffix(".thumb.jpg")
         if cache.exists():
             return cache.read_bytes(), "image/jpeg"
-        thumb = _resize(stored.path.read_bytes(), THUMB_EDGE, jpeg=True)
+        raw = stored.path.read_bytes()
+        thumb = _video_poster(raw, THUMB_EDGE) if kind is AttachmentKind.VIDEO else _resize(raw, THUMB_EDGE, jpeg=True)
         if thumb is None:
-            return stored.path.read_bytes(), stored.attachment.mime
+            return None if kind is AttachmentKind.VIDEO else (raw, stored.attachment.mime)
         with contextlib.suppress(OSError):
             cache.write_bytes(thumb[0])
         return thumb[0], thumb[1]
 
     async def data_url(self, att_id: str) -> str | None:
-        """The image as a data: URL for a model request, or None if it is not an image."""
+        """The picture or the clip as a data: URL for a model request; None for anything the
+        model is not shown."""
         import base64
 
         stored = await self.get(att_id)
-        if stored is None or stored.attachment.kind is not AttachmentKind.IMAGE or stored.path is None:
+        if stored is None or stored.path is None:
+            return None
+        if stored.attachment.kind not in (AttachmentKind.IMAGE, AttachmentKind.VIDEO):
             return None
         raw = stored.path.read_bytes()
         return f"data:{stored.attachment.mime};base64,{base64.b64encode(raw).decode('ascii')}"
@@ -292,20 +320,32 @@ def _resize(data: bytes, edge: int, *, jpeg: bool = False) -> tuple[bytes, str] 
     alpha flattened), so the common case neither changes mime nor pays JPEG's price on the flat
     areas a screenshot is made of. None when Pillow is missing, the file is not an image, or it
     is already inside ``edge``.
+
+    Two things a phone photo needs and a screenshot does not. Its orientation lives in EXIF, and
+    re-encoding drops EXIF — so a portrait photo reached the model lying on its side, which is
+    most of the way to "I cannot read this". And the step from 4000 px to 1568 px is a big one:
+    Pillow's default resample softens it, which reads as out-of-focus in an answer.
     """
     try:
         import io
 
-        from PIL import Image
+        from PIL import Image, ImageOps
     except ImportError:  # pragma: no cover - Pillow is a declared dependency
         return None
     try:
-        with Image.open(io.BytesIO(data)) as img:
-            img.load()
-            if max(img.size) <= edge and not jpeg:
+        with Image.open(io.BytesIO(data)) as opened:
+            opened.load()
+            source_format = (opened.format or "PNG").upper()
+            # Every orientation but "1" has to be baked into the pixels: a vision model decodes
+            # the pixels and never reads the EXIF tag that says which way up they go.
+            upright = opened.getexif().get(EXIF_ORIENTATION, 1) in (0, 1)
+            img = ImageOps.exif_transpose(opened) or opened
+            if max(img.size) <= edge and not jpeg and upright:
                 return None
-            img.thumbnail((edge, edge))
-            fmt = "JPEG" if jpeg else (img.format or "PNG").upper()
+            # LANCZOS with a wide reducing_gap: the sharpest of Pillow's down-scalers, and the
+            # difference is visible exactly where it matters — small text in a photo of a page.
+            img.thumbnail((edge, edge), Image.Resampling.LANCZOS, reducing_gap=3.0)
+            fmt = "JPEG" if jpeg else source_format
             try:
                 return _encode(img, fmt)
             except Exception:  # a format Pillow reads but cannot write back (rare): fall to JPEG
@@ -353,6 +393,104 @@ def _prepare_image(data: bytes, mime: str, meta: dict[str, Any]) -> tuple[bytes,
     if smaller[1] != mime:
         meta["reencoded_from"] = mime
     return smaller[0], smaller[1], meta
+
+
+def _prepare_video(data: bytes, mime: str, meta: dict[str, Any]) -> tuple[bytes, str, dict[str, Any]]:
+    """Re-sample a clip into the few frames the model is actually shown.
+
+    The vision tower reads a video as frames and pays per frame, so what matters is not the file
+    size but how many pictures come out of it. A phone clip is 30 fps: shown whole, ten seconds
+    of it is 300 images and a context blown in one message. Here it becomes at most
+    ``VIDEO_MAX_FRAMES`` frames at ``VIDEO_FPS``, spread evenly across the WHOLE clip when it is
+    longer than that — so a five-minute video still arrives as 32 frames, one every ten seconds,
+    rather than the first half-minute and nothing after it.
+
+    Re-encoded to MJPEG in an MP4 container: every decoder in the chain (PyAV here, whatever vLLM
+    uses there) reads it, the frames stay crisp because each one is a JPEG, and nothing depends
+    on an H.264 encoder being compiled into the wheel — ``libx264`` is exactly what was missing
+    on the machine this was first tried on.
+    """
+    import io
+
+    try:
+        import av
+    except ImportError:  # pragma: no cover - av is a declared dependency
+        return data, mime, meta
+    try:
+        with av.open(io.BytesIO(data), mode="r") as src:
+            stream = next((s for s in src.streams.video), None)
+            if stream is None:
+                raise AttachmentError("no video track in this file")
+            duration = float(src.duration / av.time_base) if src.duration else 0.0
+            meta["duration_s"] = round(duration, 2)
+            meta["source_size"] = f"{stream.width}x{stream.height}"
+            meta["original_bytes"] = len(data)
+            # One frame a second, but never more than the cap: a long clip is sampled across its
+            # whole length instead of being cut off partway.
+            wanted = VIDEO_MAX_FRAMES if duration * VIDEO_FPS > VIDEO_MAX_FRAMES else max(1, int(duration * VIDEO_FPS))
+            step = duration / wanted if duration > 0 and wanted else 0.0
+            frames: list[Any] = []
+            next_at = 0.0
+            for frame in src.decode(stream):
+                at = float(frame.time or 0.0)
+                if step and at + 1e-3 < next_at:
+                    continue
+                frames.append(frame.to_image())
+                next_at = at + step if step else next_at
+                if len(frames) >= wanted:
+                    break
+    except AttachmentError:
+        raise
+    except Exception as exc:
+        raise AttachmentError(f"this video could not be read ({exc.__class__.__name__}); try an MP4") from exc
+    if not frames:
+        raise AttachmentError("no frames could be read from this video")
+
+    first = frames[0]
+    scale = min(1.0, VIDEO_EDGE / max(first.width, first.height))
+    width = max(2, int(first.width * scale)) & ~1  # even dimensions: encoders insist
+    height = max(2, int(first.height * scale)) & ~1
+    out = io.BytesIO()
+    with av.open(out, mode="w", format="mp4") as dst:
+        stream_out = dst.add_stream("mjpeg", rate=int(VIDEO_FPS) or 1)
+        stream_out.width, stream_out.height = width, height
+        stream_out.pix_fmt = "yuvj420p"
+        for image in frames:
+            picture = av.VideoFrame.from_image(image.resize((width, height)))
+            for packet in stream_out.encode(picture):
+                dst.mux(packet)
+        for packet in stream_out.encode():
+            dst.mux(packet)
+    meta["frames"] = len(frames)
+    meta["fps"] = VIDEO_FPS
+    meta["width"], meta["height"] = width, height
+    meta["sampled"] = f"{len(frames)} frames over {meta['duration_s']}s"
+    return out.getvalue(), "video/mp4", meta
+
+
+def _video_poster(data: bytes, edge: int) -> tuple[bytes, str] | None:
+    """The first frame of a clip as a small JPEG, so a video row in the transcript shows the
+    thing itself rather than a grey box."""
+    import io
+
+    try:
+        import av
+    except ImportError:  # pragma: no cover - av is a declared dependency
+        return None
+    try:
+        with av.open(io.BytesIO(data), mode="r") as src:
+            stream = next((s for s in src.streams.video), None)
+            if stream is None:
+                return None
+            for frame in src.decode(stream):
+                image = frame.to_image()
+                image.thumbnail((edge, edge))
+                out = io.BytesIO()
+                image.convert("RGB").save(out, format="JPEG", quality=85)
+                return out.getvalue(), "image/jpeg"
+    except Exception as exc:
+        log.warning("video poster failed: %s", exc)
+    return None
 
 
 def _suffix_for(name: str, mime: str) -> str:

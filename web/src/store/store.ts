@@ -377,6 +377,7 @@ export const useStore = create<AppState>()((set, get) => ({
       name: null,
       partial: false,
       attachments,
+      channel: 'text',
       created_at: new Date().toISOString(),
       optimistic: true,
     };

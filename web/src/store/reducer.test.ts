@@ -53,6 +53,7 @@ function msg(partial: Partial<Message> & { role: Message['role'] }): Message {
     name: null,
     partial: false,
     attachments: [],
+    channel: 'text',
     created_at: iso(0),
     ...partial,
   };

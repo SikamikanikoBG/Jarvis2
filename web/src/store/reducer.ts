@@ -232,6 +232,7 @@ function partialFromStream(s: StreamState, ev: Extract<RunScopedEvent, { type: '
     name: null,
     partial: true,
     attachments: [],
+    channel: 'text',
     created_at: ev.ts,
   };
 }

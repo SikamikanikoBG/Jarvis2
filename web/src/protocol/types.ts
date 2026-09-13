@@ -18,6 +18,9 @@ export interface ToolCall {
   arguments: Record<string, unknown>;
 }
 
+/** How a turn was held: typed, or spoken on a call. The same conversation either way. */
+export type Channel = 'text' | 'voice';
+
 export interface Message {
   id: string | null;
   conversation_id: string | null;
@@ -31,6 +34,8 @@ export interface Message {
   partial: boolean;
   /** Photos and files sent with this message (empty for everything else). */
   attachments: Attachment[];
+  /** Spoken on a call, or typed. Both sides of a call turn carry "voice". */
+  channel: Channel;
   created_at: string;
 }
 
@@ -337,6 +342,13 @@ export interface EmailPolicy {
 
 export type SttKind = 'openai' | 'asr';
 
+/** A call with Jarvis: what he may use on it, whether he thinks first, how he is told to speak. */
+export interface VoiceSettings {
+  namespaces: string[];
+  think: boolean;
+  style: string;
+}
+
 export interface Settings {
   assistant_name: string;
   user_name: string;
@@ -359,6 +371,7 @@ export interface Settings {
   kg_learning: boolean;
   triage: TriageSettings;
   rsvp: MeetingRsvpSettings;
+  voice: VoiceSettings;
   /** The address people reach this core on; used for pairing/QR. Normally https. */
   public_url: string | null;
   stt_url: string | null;
@@ -793,6 +806,8 @@ export interface RunCreateRequest {
   /** Read only when `conversation_id` is null: how the chat this message opens should behave. */
   incognito?: boolean;
   ttl_seconds?: number | null;
+  /** "voice": from the microphone on a call; the reply is spoken, brief, and tool-limited. */
+  channel?: Channel;
 }
 export interface RunCancelRequest {
   type: 'run.cancel';
@@ -804,6 +819,8 @@ export interface RunSteerRequest {
   run_id: string;
   text: string;
   client_ref?: string | null;
+  /** A cut-in on a call; arriving late, it becomes a voice run of its own. */
+  channel?: Channel;
 }
 export interface ToolConfirmRequest {
   type: 'tool.confirm';

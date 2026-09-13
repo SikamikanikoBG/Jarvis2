@@ -37,6 +37,7 @@ const m = (role: LocalMessage['role'], content: string, name: string | null = nu
   name,
   partial: false,
   attachments: [],
+  channel: 'text',
   created_at: '2026-09-05T10:00:00.000Z',
 });
 

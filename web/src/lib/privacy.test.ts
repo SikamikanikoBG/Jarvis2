@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TTL_CHOICES, privacyOf, timeLeft, ttlLabel } from './privacy';
+import { DISAPPEAR_DEFAULT_TTL, TTL_CHOICES, nextTtl, privacyOf, timeLeft, ttlLabel } from './privacy';
 
 describe('privacy', () => {
   it('names the three offered idle times and falls back to plain units', () => {
@@ -26,5 +26,13 @@ describe('privacy', () => {
     expect(privacyOf({ incognito: false, ttl_seconds: null })).toBe('normal');
     expect(privacyOf({ incognito: false, ttl_seconds: 86_400 })).toBe('disappearing');
     expect(privacyOf({ incognito: true, ttl_seconds: 3_600 })).toBe('incognito');
+  });
+
+  it('cycles the timer toggle off -> 1h -> 1d -> 1w -> 1h -> ..., never back to off on its own', () => {
+    expect(DISAPPEAR_DEFAULT_TTL).toBe(3_600); // first tap from off
+    expect(nextTtl(null)).toBe(3_600);
+    expect(nextTtl(3_600)).toBe(86_400);
+    expect(nextTtl(86_400)).toBe(604_800);
+    expect(nextTtl(604_800)).toBe(3_600);
   });
 });

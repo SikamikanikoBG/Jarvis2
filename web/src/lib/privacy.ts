@@ -11,15 +11,23 @@ import type { Conversation } from '../protocol/types';
  *   that long. `expires_at` says when; every message pushes it out again.
  */
 
-/** What one tap on the hourglass gives a chat: a day of quiet, then gone. The menus offer the rest. */
-export const DISAPPEAR_DEFAULT_TTL = 86_400;
+/** What one tap on the timer gives a chat, from off: the shortest idle time. Further taps cycle. */
+export const DISAPPEAR_DEFAULT_TTL = 3_600;
 
-/** The idle times a disappearing chat may be given — the core refuses anything else. */
+/** The idle times a disappearing chat may be given — the core refuses anything else. Order is
+ * the tap cycle: off → 1 hour → 1 day → 1 week → 1 hour → … */
 export const TTL_CHOICES: readonly { seconds: number; label: string }[] = [
   { seconds: 3_600, label: '1 hour' },
   { seconds: 86_400, label: '1 day' },
   { seconds: 604_800, label: '1 week' },
 ];
+
+/** One tap forward in the cycle: off → 1h → 1d → 1w → 1h → … The ⋯ menu is still how it goes off. */
+export function nextTtl(current: number | null): number {
+  if (current === null) return DISAPPEAR_DEFAULT_TTL;
+  const i = TTL_CHOICES.findIndex((c) => c.seconds === current);
+  return TTL_CHOICES[(i + 1) % TTL_CHOICES.length].seconds;
+}
 
 /** How the NEXT new chat should open. Session-only; reset once that chat exists. */
 export interface DraftPrivacy {

@@ -385,6 +385,15 @@
 .conv.conv-incognito .conv-preview {
   font-style: italic;
 }
+/* A disappearing chat wears the same accent as the composer's timer toggle, and its countdown
+   is text, not just a glyph — muted grey next to the pin is not a marking. */
+.conv.conv-disappearing .conv-privacy {
+  color: var(--accent);
+}
+.conv-ttl {
+  color: var(--accent);
+  font-weight: 600;
+}
 
 /* --- triage: one rules editor per mailbox --- */
 .rules-editor {

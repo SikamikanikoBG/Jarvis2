@@ -34,7 +34,7 @@ const SCREENS = {
 } as const;
 
 /** Screens with a search box of their own, so Ctrl/⌘+K focuses that instead of leaving. */
-const FILTERED_VIEWS = new Set<View>(['schedules', 'meetings', 'skills', 'boards', 'knowledge']);
+const FILTERED_VIEWS = new Set<View>(['schedules', 'meetings', 'skills', 'boards', 'knowledge', 'settings']);
 
 export function App() {
   const view = useStore((s) => s.view);

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { Icon } from '../components/Icon';
 import { IconButton } from '../components/primitives';
+import { DISAPPEAR_DEFAULT_TTL, ttlLabel } from '../lib/privacy';
 import type { Conversation } from '../protocol/types';
 import { selectSidebar, type Folder, type SidebarModel } from '../store/selectors';
 import { useStore } from '../store/store';
@@ -121,6 +122,14 @@ export function Sidebar() {
           onClick={() => {
             newChat(); // resets the draft to normal, so the flag goes on after it
             setDraftPrivacy({ incognito: true, ttlSeconds: null });
+          }}
+        />
+        <IconButton
+          icon="chatDots"
+          label={`New disappearing chat (gone after ${ttlLabel(DISAPPEAR_DEFAULT_TTL)} of quiet)`}
+          onClick={() => {
+            newChat();
+            setDraftPrivacy({ incognito: false, ttlSeconds: DISAPPEAR_DEFAULT_TTL });
           }}
         />
         <IconButton icon="plus" label="New chat" onClick={newChat} />

@@ -85,7 +85,7 @@ export function ConversationMenu() {
       ? [
           {
             label: conv.ttl_seconds === null ? 'Disappear after…' : `Disappears after ${ttlLabel(conv.ttl_seconds)}…`,
-            icon: 'hourglass' as const,
+            icon: 'chatDots' as const,
             keepOpen: true,
             onSelect: () => setMenuMode('ttl'),
           },
@@ -101,7 +101,7 @@ export function ConversationMenu() {
     ...TTL_CHOICES.map(
       (t): MenuItem => ({
         label: `After ${t.label} of quiet`,
-        icon: conv.ttl_seconds === t.seconds ? 'check' : 'hourglass',
+        icon: conv.ttl_seconds === t.seconds ? 'check' : 'chatDots',
         onSelect: () => void setTtl(id, t.seconds),
       }),
     ),

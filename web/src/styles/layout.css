@@ -626,6 +626,47 @@
   font-size: var(--fs-sm);
 }
 
+/* Settings: a sticky table of contents above a one-page form (see settings/SettingsNav.tsx). */
+.settings-nav {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-2) 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+/* One scrolling row on a phone, where vertical space is the scarce thing; wrapped to as many
+   rows as it takes on a desktop, where a chip you cannot see is a chip you will not use. */
+.settings-nav-rail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+@media (min-width: 900px) {
+  .settings-nav-rail {
+    flex-wrap: wrap;
+    overflow-x: visible;
+    row-gap: 4px;
+  }
+}
+.settings-nav-sub {
+  opacity: 0.8;
+}
+.settings-nav-empty {
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+/* --settings-nav-h is measured and published by SettingsNav while it is mounted. */
+.settings-anchor {
+  scroll-margin-top: calc(var(--settings-nav-h, 96px) + var(--s-3));
+}
+
 /* ---- breakpoints ----------------------------------------------------------------------- */
 
 @media (max-width: 899.98px) {

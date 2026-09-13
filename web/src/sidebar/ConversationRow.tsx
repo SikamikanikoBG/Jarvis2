@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from 'react';
 import { Icon } from '../components/Icon';
 import { IconButton, InlineConfirm, Menu, RelativeTime, type MenuItem } from '../components/primitives';
+import { useTicker } from '../components/useTicker';
 import { stripMarkdown } from '../lib/format';
 import { previewFor } from '../lib/injected';
 import { TTL_CHOICES, timeLeft, ttlLabel } from '../lib/privacy';
@@ -43,6 +44,8 @@ export function ConversationRow({ conversation: c, active, selecting = false, se
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [title, setTitle] = useState(c.title);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Only a row that is actually counting down subscribes to the clock.
+  const now = useTicker(30_000, Boolean(c.expires_at));
 
   useEffect(() => {
     if (editing) {
@@ -103,7 +106,7 @@ export function ConversationRow({ conversation: c, active, selecting = false, se
   };
   const ttlItem: MenuItem = {
     label: c.ttl_seconds === null ? 'Disappear after…' : `Disappears after ${ttlLabel(c.ttl_seconds)}…`,
-    icon: 'hourglass',
+    icon: 'chatDots',
     keepOpen: true,
     onSelect: () => setMenuMode('ttl'),
   };
@@ -130,7 +133,7 @@ export function ConversationRow({ conversation: c, active, selecting = false, se
     ...TTL_CHOICES.map(
       (t): MenuItem => ({
         label: `After ${t.label} of quiet`,
-        icon: c.ttl_seconds === t.seconds ? 'check' : 'hourglass',
+        icon: c.ttl_seconds === t.seconds ? 'check' : 'chatDots',
         onSelect: () => void setTtl(c.id, t.seconds),
       }),
     ),
@@ -143,6 +146,7 @@ export function ConversationRow({ conversation: c, active, selecting = false, se
     menuAnchor ? 'menu-open' : '',
     selected ? 'selected' : '',
     c.incognito ? 'conv-incognito' : '',
+    !c.incognito && c.expires_at ? 'conv-disappearing' : '',
   ]
     .filter(Boolean)
     .join(' ');
@@ -173,14 +177,22 @@ export function ConversationRow({ conversation: c, active, selecting = false, se
               {c.incognito ? (
                 <Icon name="incognito" size={12} className="conv-privacy" aria-label="Incognito" />
               ) : (
-                c.expires_at && <Icon name="hourglass" size={12} className="conv-privacy" aria-label={`Disappears in ${timeLeft(c.expires_at)}`} />
+                c.expires_at && <Icon name="chatDots" size={12} className="conv-privacy" aria-label={`Disappears in ${timeLeft(c.expires_at, now)}`} />
               )}
               <span className="truncate">{c.title}</span>
             </div>
+            {/* A disappearing chat says so in words, not only as a 12px glyph: the icon alone read
+                as unmarked next to the pin, which is the same muted grey. */}
             {c.incognito ? (
-              <div className="conv-preview">Incognito{c.expires_at ? ` · gone in ${timeLeft(c.expires_at)}` : ''}</div>
+              <div className="conv-preview">Incognito{c.expires_at ? ` · gone in ${timeLeft(c.expires_at, now)}` : ''}</div>
             ) : (
-              preview && <div className="conv-preview">{stripMarkdown(preview)}</div>
+              (c.expires_at ?? preview) && (
+                <div className="conv-preview">
+                  {c.expires_at && <span className="conv-ttl">gone in {timeLeft(c.expires_at, now)}</span>}
+                  {c.expires_at && preview ? ' · ' : ''}
+                  {preview ? stripMarkdown(preview) : ''}
+                </div>
+              )
             )}
           </button>
           <span className="conv-time">

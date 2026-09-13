@@ -9,6 +9,7 @@ import { McpServersSection } from './McpServersSection';
 import { PersonalitySection } from './PersonalitySection';
 import { ConfirmationsSection, EmailSection } from './SafetySections';
 import { RsvpSection } from './RsvpSection';
+import { SettingsNav } from './SettingsNav';
 import { TriageSection } from './TriageSection';
 
 const PROVIDERS: Provider[] = ['ollama', 'vllm'];
@@ -116,7 +117,9 @@ export function SettingsScreen() {
       >
         <h1>Settings</h1>
 
-        <section className="card role-card">
+        <SettingsNav />
+
+        <section id="settings-appearance" className="card role-card settings-anchor">
           <div className="section-head">
             <h2>Appearance</h2>
             <p>Stored in this browser only.</p>
@@ -130,7 +133,7 @@ export function SettingsScreen() {
           </div>
         </section>
 
-        <section className="card role-card">
+        <section id="settings-general" className="card role-card settings-anchor">
           <div className="section-head">
             <h2>General</h2>
           </div>
@@ -186,13 +189,19 @@ export function SettingsScreen() {
           </div>
         </section>
 
-        <PersonalitySection value={draft.personality} onChange={(p) => patch('personality', p)} error={errors.personality} />
+        <div id="settings-personality" className="settings-anchor">
+          <PersonalitySection value={draft.personality} onChange={(p) => patch('personality', p)} error={errors.personality} />
+        </div>
 
-        <ConfirmationsSection value={draft.confirmations} onChange={(c) => patch('confirmations', c)} error={errors.confirmations} />
+        <div id="settings-confirmations" className="settings-anchor">
+          <ConfirmationsSection value={draft.confirmations} onChange={(c) => patch('confirmations', c)} error={errors.confirmations} />
+        </div>
 
-        <EmailSection value={draft.email} onChange={(e) => patch('email', e)} error={errors.email} />
+        <div id="settings-email" className="settings-anchor">
+          <EmailSection value={draft.email} onChange={(e) => patch('email', e)} error={errors.email} />
+        </div>
 
-        <section className="card role-card">
+        <section id="settings-behaviour" className="card role-card settings-anchor">
           <div className="section-head">
             <h2>Context and behaviour</h2>
             <p>What goes into the prompt, and how tools are exposed to the model.</p>
@@ -230,7 +239,7 @@ export function SettingsScreen() {
           </div>
         </section>
 
-        <section style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <section id="settings-roles" className="settings-anchor" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div className="section-head">
             <h2>Model roles</h2>
             <p>Which endpoint serves each role. No fallbacks: a missing model stays missing.</p>
@@ -241,15 +250,23 @@ export function SettingsScreen() {
           ))}
         </section>
 
-        <McpServersSection servers={draft.mcp_servers} onChange={(list) => patch('mcp_servers', list)} error={errors.mcp_servers} />
+        <div id="settings-mcp" className="settings-anchor">
+          <McpServersSection servers={draft.mcp_servers} onChange={(list) => patch('mcp_servers', list)} error={errors.mcp_servers} />
+        </div>
 
-        <TriageSection value={draft.triage} hosts={draft.mcp_servers.map((s) => s.name)} onChange={(t) => patch('triage', t)} error={errors.triage} />
+        <div id="settings-triage" className="settings-anchor">
+          <TriageSection value={draft.triage} hosts={draft.mcp_servers.map((s) => s.name)} onChange={(t) => patch('triage', t)} error={errors.triage} />
+        </div>
 
-        <RsvpSection value={draft.rsvp} hosts={draft.mcp_servers.map((s) => s.name)} onChange={(r) => patch('rsvp', r)} error={errors.rsvp} />
+        <div id="settings-rsvp" className="settings-anchor">
+          <RsvpSection value={draft.rsvp} hosts={draft.mcp_servers.map((s) => s.name)} onChange={(r) => patch('rsvp', r)} error={errors.rsvp} />
+        </div>
 
-        <CollabSection />
+        <div id="settings-collab" className="settings-anchor">
+          <CollabSection />
+        </div>
 
-        <section className="card role-card">
+        <section id="settings-budgets" className="card role-card settings-anchor">
           <div className="section-head">
             <h2>Budgets per run kind</h2>
             <p>Exhaustion ends the run with a summary, never silently.</p>
@@ -371,7 +388,7 @@ function RoleCard({ role, spec, onChange }: { role: RoleName; spec: ModelSpec; o
   const mayThink = role === 'chat';
   const ollama = spec.provider === 'ollama';
   return (
-    <div className="card role-card">
+    <div id={`role-${role}`} className="card role-card settings-anchor">
       <div className="role-head">
         <h3>{role}</h3>
         <span className="field-hint">{ROLE_HINTS[role]}</span>

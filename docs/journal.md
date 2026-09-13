@@ -511,3 +511,27 @@ harness — library vs. own is an open question to settle in the design.
   Found on the way, not ours: Outlook had been half-closed since ~19:20 behind two "empty
   Deleted Items on exit?" prompts, so no account's Outbox moved at all; and an Outlook started
   headless by COM un-submits Outbox items touched after a restart. (host 2.0.0a11)
+- 2026-09-13 — Three things about a disappearing chat, from Arsen reading the screen. The timer
+  toggle gave one idle time (a day) and a second tap took it away; he wanted the tap to walk the
+  choices instead: off → 1 hour → 1 day → 1 week → 1 hour → …, one per tap, the default now the
+  shortest one. `nextTtl()` owns that walk and the ⋯ menu keeps "Keep this chat", which is now
+  the only way back to off. The hourglass became a dotted chat bubble — a chat that is not
+  staying — everywhere the disappearing state is drawn.
+  And the marking was not a marking: a 12px glyph in the same muted grey as the pin, no words,
+  while an incognito row gets its own class and says "Incognito" in the preview line. "the
+  disappearing sessions are not marked in the list with chats." Now the row carries
+  `conv-disappearing`, the glyph takes the accent the composer's timer toggle already uses, and
+  the preview line leads with "gone in 58 min" — ticking, because only a row that is counting
+  down subscribes to the clock. The sidebar head gets a third starter next to "+": one tap for a
+  new chat that is gone after an hour of quiet.
+  Settings had grown past one screenful, so it gets a table of contents: a sticky rail of
+  section chips (click to jump), a search box that narrows them by section name or by the field
+  words each section holds ("timeout" → Model roles), Enter jumping to the best match, and
+  Ctrl/⌘+K focusing it like every other screen's filter bar. The rail wraps to two rows on a
+  desktop and scrolls as one row on a phone, and it measures its own height into
+  `--settings-nav-h` so a jumped-to heading never lands underneath it.
+  Two things the screenshots caught that the code looked fine for: an IntersectionObserver hands
+  you only what CHANGED, so reading one callback's entries left the rail with nothing marked
+  after a jump; and every "is it at the top of the page" band is really reading the strip hidden
+  behind the sticky rail. The spy now measures against the rail's own bottom edge on scroll.
+  (web alpha.17)

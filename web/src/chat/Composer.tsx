@@ -3,7 +3,7 @@ import { Icon } from '../components/Icon';
 import { IconButton, Menu } from '../components/primitives';
 import { useTicker } from '../components/useTicker';
 import { cameraSupport, readCameraEnv } from '../lib/camera';
-import { DISAPPEAR_DEFAULT_TTL, timeLeft, ttlLabel } from '../lib/privacy';
+import { nextTtl, timeLeft, ttlLabel } from '../lib/privacy';
 import { THINK_CHOICES, THINK_DEFAULT, thinkChoiceKey } from '../lib/think';
 import { selectSendRefusal } from '../store/selectors';
 import { NEW_CONVERSATION_KEY } from '../store/state';
@@ -270,8 +270,9 @@ export function Composer({ runActive, stopping }: Props) {
  * Two one-tap toggles, not a menu: Arsen flips these often. The eye marks the chat incognito
  * (nothing new from it is remembered) - chosen before the first message, and read-only once the
  * chat exists, since a chat that has already taught the graph cannot be made private after the
- * fact. The hourglass makes the chat disappear after a day of quiet, on a draft or a live chat
- * alike; the ⋯ menus still offer an hour or a week instead.
+ * fact. The dotted bubble makes the chat disappear, on a draft or a live chat alike: off → 1
+ * hour → 1 day → 1 week → 1 hour → …, one idle time per tap; the ⋯ menu is still how it goes
+ * back off.
  */
 function PrivacyToggles() {
   const openId = useStore((s) => s.openConversationId);
@@ -295,14 +296,14 @@ function PrivacyToggles() {
       : 'Make this chat incognito: nothing from it will be remembered';
   const timerLabel =
     ttl === null
-      ? `Make this chat disappear after ${ttlLabel(DISAPPEAR_DEFAULT_TTL)} of quiet`
-      : `Disappears ${left ? `in ${left}` : `after ${ttlLabel(ttl)} of quiet`}. Tap to keep it.`;
+      ? `Make this chat disappear after ${ttlLabel(nextTtl(null))} of quiet`
+      : `Disappears ${left ? `in ${left}` : `after ${ttlLabel(ttl)} of quiet`}. Tap for ${ttlLabel(nextTtl(ttl))}; use the menu to keep it.`;
   const toggleEye = () => {
     if (conv) notify(eyeLabel);
     else setDraft({ ...draft, incognito: !draft.incognito });
   };
   const toggleTimer = () => {
-    const next = ttl === null ? DISAPPEAR_DEFAULT_TTL : null;
+    const next = nextTtl(ttl);
     if (conv) void setTtl(conv.id, next);
     else setDraft({ ...draft, ttlSeconds: next });
   };
@@ -318,7 +319,7 @@ function PrivacyToggles() {
       />
       {incognito && <span className="privacy-state">Incognito</span>}
       <IconButton
-        icon="hourglass"
+        icon="chatDots"
         label={timerLabel}
         size="sm"
         className={`privacy-toggle${ttl !== null ? ' on-timer' : ''}`}

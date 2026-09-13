@@ -20,6 +20,14 @@ class Role(StrEnum):
     TOOL = "tool"
 
 
+class Channel(StrEnum):
+    """How a turn was held. The same conversation either way; the transcript marks a spoken
+    turn with a headset, and a voice run answers the way a person on the phone would."""
+
+    TEXT = "text"
+    VOICE = "voice"
+
+
 class ToolCall(BaseModel):
     id: str
     name: str
@@ -71,6 +79,9 @@ class Message(BaseModel):
     name: str | None = None
     partial: bool = False
     attachments: list[Attachment] = Field(default_factory=list)
+    # Spoken or typed. Set on the user turn from the request, and on the assistant's reply from
+    # the run that produced it, so both sides of a call read as a call in the transcript.
+    channel: Channel = Channel.TEXT
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @classmethod

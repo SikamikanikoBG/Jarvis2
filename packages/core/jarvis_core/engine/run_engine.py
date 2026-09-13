@@ -22,6 +22,7 @@ from jarvis_core.engine.emit import RunEmitter
 from jarvis_core.engine.loop import AgentLoop
 from jarvis_core.models.base import ModelError
 from jarvis_proto import (
+    Channel,
     Conversation,
     ConversationKind,
     Message,
@@ -139,6 +140,7 @@ class RunEngine:
         think_level: ThinkLevel | None = None,
         budget_kind: RunKind | None = None,
         attachment_ids: list[str] | None = None,
+        channel: Channel = Channel.TEXT,
     ) -> tuple[Run, Conversation]:
         conv: Conversation | None = None
         if conversation_id:
@@ -155,7 +157,7 @@ class RunEngine:
             conv = await self._store.update_conversation(conv.id, title=_title_from(text)) or conv
             self._bus.publish(ConversationUpdated(conversation=conv))
 
-        user_msg = await self._store.add_message(Message.user(text, conversation_id=conv.id))
+        user_msg = await self._store.add_message(Message.user(text, conversation_id=conv.id, channel=channel))
         if attachment_ids and self._attachments is not None:
             # Bind before publishing: the transcript must show the photo with the message it came
             # with, not a bare line of text followed by a picture appearing later.
@@ -165,6 +167,8 @@ class RunEngine:
         self._bus.publish(MessageCreated(message=user_msg))
 
         settings = self._settings()
+        if channel is Channel.VOICE and think is None and not settings.voice.think:
+            think = False  # every second of reasoning is a second of silence on the line
         run = Run(
             id=new_id("run"),
             conversation_id=conv.id,
@@ -174,6 +178,7 @@ class RunEngine:
             priority=_PRIORITY[kind],
             think=think,
             think_level=think_level,
+            channel=channel,
         )
         await self._store.create_run(run)
         # run_id must be set on the user message so resume can find the run's messages.

@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 from jarvis_core.db import Store
 from jarvis_core.features.personality import personality_block
-from jarvis_proto import Attachment, AttachmentKind, Message, Plan, Role, Run, RunKind, Settings
+from jarvis_proto import Attachment, AttachmentKind, Channel, Message, Plan, Role, Run, RunKind, Settings
 
 # One numbered list behind a precedence block. Count, not length, is what degrades the
 # local model (V1 lesson), so keep this short and add rules only when a test demands one.
@@ -367,6 +367,24 @@ class KnowledgeBlock:
 
     async def context_block(self, run: Run, *, skill_names: list[str]) -> str | None:
         return await self._knowledge.context_block(run.input_text)  # type: ignore[attr-defined]
+
+
+class VoiceBlock:
+    """The "you are on a call" instructions, for voice runs only.
+
+    Per-turn context, never the stable prefix: the prefix is cached across every run of every
+    conversation, and a block that is there for one turn in ten would invalidate it for the
+    other nine. Here it costs the same tokens as a skill and rides at the same place.
+    """
+
+    def __init__(self, settings: Callable[[], Settings]) -> None:
+        self._settings = settings
+
+    async def context_block(self, run: Run, *, skill_names: list[str]) -> str | None:
+        if run.channel is not Channel.VOICE:
+            return None
+        style = self._settings().voice.style.strip()
+        return "## Voice call\n" + style if style else None
 
 
 class BrowserBlock:

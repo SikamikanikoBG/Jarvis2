@@ -65,6 +65,7 @@ from jarvis_proto.ids import new_id
 from jarvis_proto.messages import (
     Attachment,
     AttachmentKind,
+    Channel,
     Message,
     Role,
     ToolCall,
@@ -103,6 +104,7 @@ from jarvis_proto.settings import (
     TriageAlert,
     TriageRules,
     TriageSettings,
+    VoiceSettings,
 )
 from jarvis_proto.tools import ToolSpec
 
@@ -112,6 +114,7 @@ __all__ = [
     "Attachment",
     "AttachmentKind",
     "Board",
+    "Channel",
     "ChatFolder",
     "ClientMessage",
     "CollabKey",
@@ -195,6 +198,7 @@ __all__ = [
     "TriageSettings",
     "TriageState",
     "Unsubscribe",
+    "VoiceSettings",
     "new_id",
     "parse_client_message",
 ]

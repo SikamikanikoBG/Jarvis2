@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
 
-from jarvis_proto.messages import Message, ToolResult
+from jarvis_proto.messages import Channel, Message, ToolResult
 from jarvis_proto.runs import Conversation, ModelUsage, Plan, Run, RunKind, ThinkLevel
 
 
@@ -344,6 +344,9 @@ class RunCreateRequest(BaseModel):
     # a disappearing one gets its idle time here rather than by a second request.
     incognito: bool = False
     ttl_seconds: int | None = None
+    # "voice": the text came from the microphone on a call and the reply will be spoken — the
+    # run answers briefly and plainly and is offered only the tools a call may use.
+    channel: Channel = Channel.TEXT
 
 
 class RunCancelRequest(BaseModel):
@@ -363,6 +366,9 @@ class RunSteerRequest(BaseModel):
     run_id: str
     text: str
     client_ref: str | None = None  # echoed back so the UI can match its optimistic bubble
+    # A cut-in on a call is a steer too; when the run has already finished it becomes a voice
+    # run of its own, and either way the words are marked as spoken in the transcript.
+    channel: Channel = Channel.TEXT
 
 
 class ToolConfirmRequest(BaseModel):

@@ -389,6 +389,36 @@ class Personality(BaseModel):
     )
 
 
+VOICE_STYLE_DEFAULT = (
+    "You are on a voice call: what you write is read aloud by a speech synthesiser, and the "
+    "person listening cannot see it. Answer the way a person on the phone would - short spoken "
+    "sentences, plain words, one question at a time. No markdown, no headings, no bullet or "
+    "numbered lists, no tables, no code, no links or file paths read out; spell nothing that "
+    "sounds wrong aloud. Two or three sentences unless asked for more. If a proper answer needs "
+    "to be long or needs a list, say so in a sentence and offer to write it in the chat. On a "
+    "call you think and remember; you do not act: if asked to send, run, open or change "
+    "something, say you will do it once the call is over and ask for the word in the chat."
+)
+
+
+class VoiceSettings(BaseModel):
+    """A call with Jarvis (docs/stories/10_voice.md): the same conversation, one more channel.
+
+    ``namespaces`` is what a voice run is offered as tools - his own head, the notes and the
+    knowledge graph by default, never mail or the shell: half-duplex audio and a misheard word
+    are a bad place for an irreversible action. ``think`` is off because every second of
+    reasoning is a second of silence on the line. ``style`` is the block the per-turn context
+    carries so the reply is speakable; editable, like the persona.
+    """
+
+    namespaces: list[str] = Field(default_factory=lambda: ["notes", "kg", "jarvis"])
+    think: bool = False
+    style: str = VOICE_STYLE_DEFAULT
+
+    def allows(self, namespace: str) -> bool:
+        return namespace in self.namespaces
+
+
 class Settings(BaseModel):
     assistant_name: str = "Jarvis"
     user_name: str = "Arsen"
@@ -441,6 +471,7 @@ class Settings(BaseModel):
     kg_learning: bool = True
     triage: TriageSettings = Field(default_factory=TriageSettings)
     rsvp: MeetingRsvpSettings = Field(default_factory=MeetingRsvpSettings)
+    voice: VoiceSettings = Field(default_factory=VoiceSettings)
     # The address people actually reach this core on (e.g. the Tailscale Serve HTTPS URL).
     # Used for pairing/QR; without it the URL is derived from the request. The phone's mic and
     # the PWA need a secure context, so this is normally an https:// URL.

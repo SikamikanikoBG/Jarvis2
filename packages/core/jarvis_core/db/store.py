@@ -12,6 +12,7 @@ import aiosqlite
 
 from jarvis_core.db.connection import Database
 from jarvis_proto import (
+    Channel,
     ChatFolder,
     Conversation,
     ConversationActivity,
@@ -307,7 +308,7 @@ class Store:
         for r in rows:
             await self.db.execute(
                 "INSERT INTO messages(id, conversation_id, run_id, role, content, reasoning, tool_calls,"
-                " tool_call_id, name, partial, created_at) VALUES (?,?,NULL,?,?,?,?,?,?,?,?)",
+                " tool_call_id, name, partial, channel, created_at) VALUES (?,?,NULL,?,?,?,?,?,?,?,?,?)",
                 (
                     new_id("msg"),
                     fork.id,
@@ -318,6 +319,7 @@ class Store:
                     r["tool_call_id"],
                     r["name"],
                     r["partial"],
+                    r["channel"],
                     r["created_at"],
                 ),
             )
@@ -405,6 +407,7 @@ class Store:
             tool_call_id=row["tool_call_id"],
             name=row["name"],
             partial=bool(row["partial"]),
+            channel=Channel(row["channel"]) if row["channel"] else Channel.TEXT,
             created_at=_dt(row["created_at"]) or datetime.now(UTC),
         )
 
@@ -415,7 +418,7 @@ class Store:
             raise ValueError("message needs a conversation_id")
         await self.db.execute(
             "INSERT INTO messages(id, conversation_id, run_id, role, content, reasoning, tool_calls,"
-            " tool_call_id, name, partial, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " tool_call_id, name, partial, channel, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 message.id,
                 message.conversation_id,
@@ -427,6 +430,7 @@ class Store:
                 message.tool_call_id,
                 message.name,
                 int(message.partial),
+                message.channel.value,
                 message.created_at.isoformat(),
             ),
         )
@@ -477,6 +481,7 @@ class Store:
             last_seq=row["last_seq"],
             error=row["error"],
             waiting_reason=row["waiting_reason"],
+            channel=Channel(row["channel"]) if row["channel"] else Channel.TEXT,
             created_at=_dt(row["created_at"]) or datetime.now(UTC),
             started_at=_dt(row["started_at"]),
             finished_at=_dt(row["finished_at"]),
@@ -485,8 +490,8 @@ class Store:
     async def create_run(self, run: Run) -> Run:
         await self.db.execute(
             "INSERT INTO runs(id, conversation_id, kind, status, input_text, plan, budget, priority,"
-            " steps_used, usage, last_seq, error, waiting_reason, created_at, started_at, finished_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " steps_used, usage, last_seq, error, waiting_reason, channel, created_at, started_at, finished_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 run.id,
                 run.conversation_id,
@@ -501,6 +506,7 @@ class Store:
                 run.last_seq,
                 run.error,
                 run.waiting_reason,
+                run.channel.value,
                 run.created_at.isoformat(),
                 run.started_at.isoformat() if run.started_at else None,
                 run.finished_at.isoformat() if run.finished_at else None,

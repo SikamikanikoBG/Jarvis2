@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from jarvis_proto.messages import Channel
+
 ThinkLevel = Literal["low", "medium", "high"]
 
 
@@ -130,6 +132,9 @@ class Run(BaseModel):
     # Per-run thinking override (None = use the role's setting).
     think: bool | None = None
     think_level: ThinkLevel | None = None
+    # A voice run: the reply is spoken, so it is short and plain, and the tools on offer are the
+    # ones a call may use (settings.voice.namespaces). Stored so a resumed run stays a call.
+    channel: Channel = Channel.TEXT
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     started_at: datetime | None = None
     finished_at: datetime | None = None

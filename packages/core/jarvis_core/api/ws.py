@@ -101,15 +101,19 @@ async def _ui_leg(ws: WebSocket) -> None:
                     think_level=msg.think_level,
                     budget_kind=msg.budget_kind,
                     attachment_ids=msg.attachment_ids,
+                    channel=msg.channel,
                 )
             elif isinstance(msg, RunSteerRequest):
                 # Too late is not an error: if the run finished between Arsen pressing enter and
                 # this arriving, the message becomes an ordinary new turn rather than vanishing.
+                # A cut-in on a call that arrives late becomes a voice run of its own.
                 if not core.engine.steer(msg.run_id, msg.text):
                     run = await core.store.get_run(msg.run_id)
                     if run is not None:
                         sub.conversations.add(run.conversation_id)
-                        await core.engine.create_run(text=msg.text, conversation_id=run.conversation_id)
+                        await core.engine.create_run(
+                            text=msg.text, conversation_id=run.conversation_id, channel=msg.channel
+                        )
             elif isinstance(msg, RunCancelRequest):
                 await core.engine.cancel(msg.run_id)
             elif isinstance(msg, ToolConfirmRequest):

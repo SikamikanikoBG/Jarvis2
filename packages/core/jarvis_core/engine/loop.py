@@ -27,6 +27,7 @@ from jarvis_core.models.base import (
 from jarvis_core.tools import ToolRegistry
 from jarvis_core.tools.facades import ExposurePolicy
 from jarvis_proto import (
+    Channel,
     Message,
     ModelUsage,
     Role,
@@ -126,13 +127,16 @@ class AgentLoop:
         self._skills = skills
         self._learner = learner
 
-    def _exposed_tools(self, plan_active: bool, *, incognito: bool = False) -> list[ToolSpec]:
+    def _exposed_tools(self, plan_active: bool, *, incognito: bool = False, voice: bool = False) -> list[ToolSpec]:
         s = self._settings()
         self._policy.mode = s.tool_exposure
         self._policy.threshold = s.facade_threshold
         specs = self._registry.specs()
         if incognito:
             specs = [t for t in specs if not is_memory_writer(t)]
+        if voice:
+            # On a call he thinks and remembers; he does not act (settings.voice.namespaces).
+            specs = [t for t in specs if s.voice.allows(t.namespace)]
         tools = self._policy.expose(specs)
         if plan_active:
             tools = [*tools, *PLAN_TOOLS]
@@ -163,12 +167,14 @@ class AgentLoop:
         # limit, which is why `max_concurrent_runs_per_endpoint` below 2 makes this a no-op
         # rather than a bug.
         wants_skills = self._skills is not None and run.kind in _CONTEXT_KINDS and not ctl.resumed
+        voice = run.channel is Channel.VOICE
         wants_tier = (
             self._planner is not None
             and run.plan is None
             and not ctl.resumed
             and run.kind in _CONTEXT_KINDS
             and self._settings().planning_enabled
+            and not voice  # a call is a conversation, never a multi-step plan
         )
         skill_names: list[str] = []
         pre: Preflight | None = None
@@ -203,7 +209,7 @@ class AgentLoop:
 
         messages = await self._context.assemble(run, skill_names=skill_names)
         incognito = await self._is_incognito(run)
-        tools = self._exposed_tools(run.plan is not None, incognito=incognito)
+        tools = self._exposed_tools(run.plan is not None, incognito=incognito, voice=voice)
         plan_trailer: Message | None = None  # ephemeral, always the last message
         think_off_once = False  # set for ONE step when reasoning ate the whole output allowance
         # Adaptive thinking: the first step of a run always reasons, and after that only a step
@@ -231,7 +237,8 @@ class AgentLoop:
             # it stays in the conversation afterwards. Appended, never inserted: the cached
             # prefix in front of it survives.
             for said in ctl.take_steers():
-                messages.append(await self._persist(run, Message.user(said)))
+                # A cut-in on a call is spoken too: it wears the run's channel.
+                messages.append(await self._persist(run, Message.user(said, channel=run.channel)))
                 await emit(RunSteered(run_id="", conversation_id="", text=said[:400]))
                 think_next = True  # Arsen just changed the task; work it out properly
 
@@ -581,6 +588,13 @@ class AgentLoop:
             key = f"{key}:retry"
 
         error = self._registry.validate(call.name, call.arguments)
+        if spec is not None and run.channel is Channel.VOICE and not self._settings().voice.allows(spec.namespace):
+            # Before the argument check: what the model needs to hear is "not on a call", not
+            # which field it forgot in a call it should not have made at all.
+            error = (
+                f"{call.name} is not available on a call: on a call you think and remember, you do not act. "
+                "Tell Arsen in one sentence that you will do it once the call is over, if he says so in the chat."
+            )
         if error is None and spec is not None and is_memory_writer(spec) and await self._is_incognito(run):
             # Hidden from the list, but a model can still name a tool it was not offered.
             error = (
@@ -857,6 +871,10 @@ class AgentLoop:
     async def _persist(self, run: Run, message: Message) -> Message:
         message.conversation_id = run.conversation_id
         message.run_id = run.id
+        # A voice run's own messages - the reply, a cut-in - are spoken; a context or summary
+        # note is neither and keeps "text", so the transcript marks only what was actually said.
+        if run.channel is Channel.VOICE and message.name is None and message.role in (Role.USER, Role.ASSISTANT):
+            message.channel = Channel.VOICE
         await self._store.add_message(message)
         # Conversation-level, so it bypasses the run emitter's seq and is not persisted twice.
         self._bus.publish(MessageCreated(message=message))

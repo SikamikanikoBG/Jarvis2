@@ -23,7 +23,14 @@ from jarvis_core.api.deps import require_token, token_matches
 from jarvis_core.config import CoreConfig
 from jarvis_core.db import Database, Store
 from jarvis_core.engine import EventBus, RunEngine
-from jarvis_core.engine.context import BoardsBlock, BrowserBlock, ContextAssembler, KnowledgeBlock, SkillsBlock
+from jarvis_core.engine.context import (
+    BoardsBlock,
+    BrowserBlock,
+    ContextAssembler,
+    KnowledgeBlock,
+    SkillsBlock,
+    VoiceBlock,
+)
 from jarvis_core.engine.loop import AgentLoop
 from jarvis_core.engine.supervision import Supervisor
 from jarvis_core.features.attachments import AttachmentStore
@@ -106,6 +113,7 @@ class Core:
                 SkillsBlock(self.skill_detector, settings),
                 KnowledgeBlock(self.knowledge),
                 BrowserBlock(self.browser),
+                VoiceBlock(settings),
             ],
             compactor=self.compactor,
             attachments=self.attachments,

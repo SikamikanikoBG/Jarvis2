@@ -49,6 +49,7 @@ from jarvis_core.features.skills import SkillDetector, SkillsTools, SkillStore
 from jarvis_core.features.stt import Transcriber
 from jarvis_core.features.titles import Titler
 from jarvis_core.features.triage import TriageJob
+from jarvis_core.features.tts import Synthesizer
 from jarvis_core.features.web import WebTools
 from jarvis_core.models import AdapterFactory
 from jarvis_core.tools import CoreTools, ToolRegistry
@@ -90,6 +91,7 @@ class Core:
         self.web = WebTools(settings)
         self.collab_keys = CollabKeys(self.db)
         self.transcriber = Transcriber(settings)
+        self.synthesizer = Synthesizer(settings, self.config.home)
         self.mcp_server = build_mcp_server(self)
         self.attachments = AttachmentStore(self)
         self.triage = TriageJob(self)

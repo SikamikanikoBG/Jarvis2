@@ -47,7 +47,7 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   {
     id: 'settings-voice',
     label: 'Voice',
-    keywords: ['call', 'headset', 'speak', 'spoken', 'tools on a call', 'think', 'microphone', 'tts', 'style', 'namespaces'],
+    keywords: ['call', 'headset', 'speak', 'spoken', 'tools on a call', 'think', 'microphone', 'tts', 'style', 'namespaces', 'neural', 'borislav', 'kalina', 'rate', 'his voice', 'earpiece', 'speaker'],
   },
   {
     id: 'settings-confirmations',

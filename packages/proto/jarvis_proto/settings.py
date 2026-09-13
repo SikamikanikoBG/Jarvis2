@@ -414,9 +414,23 @@ class VoiceSettings(BaseModel):
     namespaces: list[str] = Field(default_factory=lambda: ["notes", "kg", "jarvis"])
     think: bool = False
     style: str = VOICE_STYLE_DEFAULT
+    # Whose voice. "server": the core synthesises each sentence (Microsoft's neural voices
+    # through edge-tts - natural Bulgarian, natural English, and the audio is the page's own so
+    # the browser's echo canceller can hear it and Android keeps it on one route) and the
+    # browser falls back to the device voice when the core cannot. "device": speechSynthesis
+    # only - offline, and on Android and Windows the voices are what they are.
+    tts: Literal["server", "device"] = "server"
+    # Neural voice per language for the server synthesiser (edge-tts short names).
+    voices: dict[str, str] = Field(default_factory=lambda: {"bg": "bg-BG-BorislavNeural", "en": "en-GB-RyanNeural"})
+    # Speaking rate as edge-tts takes it: "+0%", "+10%", "-5%".
+    rate: str = "+0%"
 
     def allows(self, namespace: str) -> bool:
         return namespace in self.namespaces
+
+    def voice_for(self, lang: str) -> str | None:
+        short = (lang or "").split("-")[0].lower()
+        return self.voices.get(short) or self.voices.get("en")
 
 
 class Settings(BaseModel):

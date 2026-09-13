@@ -1,6 +1,6 @@
 [project]
 name = "jarvis-core"
-version = "2.0.0a40"
+version = "2.0.0a41"
 description = "Jarvis V2 core: run engine, agent loop, model adapters, web server"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -24,6 +24,7 @@ dependencies = [
     "pillow>=10.4",
     "pypdf>=5.0",
     "av>=13.0",
+    "edge-tts>=7.0",
 ]
 
 [project.scripts]

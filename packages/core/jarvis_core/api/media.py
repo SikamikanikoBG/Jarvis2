@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from jarvis_core.api.deps import core_of, require_token
 from jarvis_core.features.stt import SttError
+from jarvis_core.features.tts import TtsError
 from jarvis_proto import Meeting, MeetingDetail, TriageState
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
@@ -39,6 +40,25 @@ async def stt(
         "duration_ms": result.duration_ms,
         "warning": result.warning,
     }
+
+
+class TtsRequest(BaseModel):
+    text: str
+    lang: str = "bg"
+
+
+@router.post("/tts")
+async def tts(request: Request, body: TtsRequest) -> Response:
+    """One sentence as MP3, in the neural voice configured for its language. 502 when the voice
+    service cannot be reached - the browser then says the sentence with the device's own voice."""
+    core = core_of(request)
+    try:
+        audio, mime = await core.synthesizer.synthesize(body.text, body.lang)
+    except TtsError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(504, "the voice service took too long") from exc
+    return Response(content=audio, media_type=mime, headers={"Cache-Control": "private, max-age=86400"})
 
 
 # --- meetings -------------------------------------------------------------------------------

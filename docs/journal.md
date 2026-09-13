@@ -614,3 +614,25 @@ harness — library vs. own is an open question to settle in the design.
   chat. Not yet done: the phone in the hand with a real headset - that is the sign-off the
   story asks for before the button counts as shipped. (core 2.0.0a40, proto 2.0.0a18, web
   alpha.20)
+- 2026-09-14 — Three from the first calls. On Android "тегаво превключва между спийкър и
+  слушалка"; on the laptop "стт слуша и отговорът на Джарвис"; and the voices: "на андройд
+  звучи супер зле, на уиндовс е като робот". One root under the first two: while he speaks, the
+  microphone hears him, and `speechSynthesis` plays outside the browser's audio path, so the
+  echo canceller has nothing to subtract. Three answers.
+  A route, since the web cannot pick the earpiece by name but CAN hold or release the
+  microphone - which on Android is what puts Chrome in the phone's call mode (earpiece) or out
+  of it (speaker). Earpiece is the default and holds the mic throughout; speaker lets it go
+  while he speaks and takes it back when he stops - no echo possible, no cut-in either. A
+  button, on the locked screen a hold, remembered per device.
+  A gate that learns the echo instead of guessing at it: while he speaks it tracks the loudest
+  the microphone has been (a slowly decaying peak, learned from what is NOT a cut-in), and only
+  a voice 2.5× over that, held 450 ms, counts. Six tests with a synthetic TTS envelope: the
+  echo never leaks, syllables and all; a voice over it does; the bar does not chase him up.
+  And his voice: the core synthesises each sentence with Microsoft's neural voices (edge-tts -
+  Borislav or Kalina for Bulgarian, Ryan for English; ~500 ms to first audio, cached on disk by
+  sentence) and the page plays the bytes through WebAudio, fetching the next sentence while the
+  current one plays. That last part is the real fix for the first two problems: audio the page
+  plays is audio the echo canceller knows about, and it stays on the call's route. The device
+  voice is the fallback when the core cannot, and a Settings choice. Said plainly in the
+  setting: the text of each sentence goes to Microsoft. (core 2.0.0a41, proto 2.0.0a19, web
+  alpha.21)

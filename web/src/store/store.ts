@@ -9,8 +9,8 @@ import { applyThemePref, isPanelMode, readThemePref, type ThemePref } from '../l
 import { DRAFT_NORMAL, ttlLabel, type DraftPrivacy } from '../lib/privacy';
 import type { ThinkChoice } from '../lib/think';
 import { MicListener } from '../voice/listener';
-import { CallSession, type CallState } from '../voice/session';
-import { DeviceSpeaker } from '../voice/speaker';
+import { CallSession, type CallRoute, type CallState } from '../voice/session';
+import { DeviceSpeaker, ServerSpeaker } from '../voice/speaker';
 import type {
   Attachment,
   BulkConversationAction,
@@ -130,6 +130,8 @@ export interface Actions {
   startCall: () => Promise<void>;
   endCall: () => void;
   setCallMuted: (muted: boolean) => void;
+  /** Earpiece or speaker; remembered on this device for the next call. */
+  setCallRoute: (route: CallRoute) => void;
   notify: (text: string, level?: Notice['level']) => void;
   dismissNotice: () => void;
   pinConversation: (id: string, pinned: boolean) => Promise<void>;
@@ -177,6 +179,23 @@ let noticeSeq = 0;
 let clientRefSeq = 0;
 /** The call in progress. One at a time; the store's `call` mirrors its state. */
 let session: CallSession | null = null;
+let speaker: DeviceSpeaker | ServerSpeaker | null = null;
+
+const ROUTE_KEY = 'jarvis_call_route';
+function readRoute(): CallRoute {
+  try {
+    return localStorage.getItem(ROUTE_KEY) === 'speaker' ? 'speaker' : 'earpiece';
+  } catch {
+    return 'earpiece';
+  }
+}
+function writeRoute(route: CallRoute): void {
+  try {
+    localStorage.setItem(ROUTE_KEY, route);
+  } catch {
+    /* private mode: the choice lasts the session */
+  }
+}
 
 /** Past tense for the toast after a bulk action. */
 const BULK_DONE: Record<BulkConversationAction, string> = {
@@ -327,7 +346,15 @@ export const useStore = create<AppState>()((set, get) => ({
       s.notify('Not connected to Jarvis.', 'error');
       return;
     }
-    const speaker = new DeviceSpeaker();
+    // Whose voice: the core's neural one unless the settings say the device's. Read here, at
+    // the tap, so a change in Settings takes effect on the next call without a reload.
+    let tts: 'server' | 'device' = 'server';
+    try {
+      tts = (await api.settings.get()).voice.tts;
+    } catch {
+      /* the default stands; the server voice falls back to the device on its own */
+    }
+    speaker = tts === 'server' ? new ServerSpeaker() : new DeviceSpeaker();
     session = new CallSession({
       listener: new MicListener(),
       speaker,
@@ -361,6 +388,7 @@ export const useStore = create<AppState>()((set, get) => ({
       },
       language: 'bg',
       conversationId: open,
+      route: readRoute(),
       onChange: (call) => set({ call: { ...call } }),
     });
     if (open) socket.send({ type: 'subscribe', conversation_id: open });
@@ -377,10 +405,17 @@ export const useStore = create<AppState>()((set, get) => ({
   endCall: () => {
     session?.end();
     session = null;
+    if (speaker instanceof ServerSpeaker) speaker.close();
+    speaker = null;
     set({ call: null });
   },
 
   setCallMuted: (muted) => session?.setMuted(muted),
+
+  setCallRoute: (route) => {
+    writeRoute(route);
+    session?.setRoute(route);
+  },
 
   openConversation: async (id, opts = {}) => {
     const prev = get().openConversationId;

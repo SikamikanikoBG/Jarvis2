@@ -163,3 +163,37 @@ def test_ws_voice_create_and_a_late_cut_in_are_both_spoken(client: TestClient):
     spoken = [m for m in msgs if m["channel"] == "voice"]
     assert [m["role"] for m in spoken] == ["user", "assistant", "user", "assistant"]
     assert [m["content"] for m in spoken if m["role"] == "user"] == ["здравей", "и още нещо"]
+
+
+# --- /api/tts: his voice, one sentence at a time ----------------------------------------------
+
+
+def test_tts_synthesises_caches_and_says_when_it_cannot(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from jarvis_core.features import tts
+
+    calls: list[tuple[str, str, str]] = []
+
+    async def fake_edge(text: str, voice: str, rate: str) -> bytes:
+        calls.append((text, voice, rate))
+        return b"ID3fake-mp3-" + text.encode()
+
+    monkeypatch.setattr(tts, "_edge", fake_edge)
+    r = client.post("/api/tts", json={"text": "Три дни е малко.", "lang": "bg"}, headers=_h())
+    assert r.status_code == 200 and r.headers["content-type"].startswith("audio/mpeg")
+    assert r.content.startswith(b"ID3fake-mp3-")
+    assert calls == [("Три дни е малко.", "bg-BG-BorislavNeural", "+0%")]
+    # The same sentence again is served from the cache: no second synthesis.
+    r2 = client.post("/api/tts", json={"text": "Три дни е малко.", "lang": "bg"}, headers=_h())
+    assert r2.status_code == 200 and r2.content == r.content and len(calls) == 1
+    # English gets the English voice; a language with no voice falls back to it.
+    client.post("/api/tts", json={"text": "Fine.", "lang": "en"}, headers=_h())
+    client.post("/api/tts", json={"text": "Bien.", "lang": "fr"}, headers=_h())
+    assert [c[1] for c in calls[1:]] == ["en-GB-RyanNeural", "en-GB-RyanNeural"]
+
+    async def down(text: str, voice: str, rate: str) -> bytes:
+        raise tts.TtsError("voice service failed: ConnectError")
+
+    monkeypatch.setattr(tts, "_edge", down)
+    r = client.post("/api/tts", json={"text": "Нещо ново.", "lang": "bg"}, headers=_h())
+    assert r.status_code == 502 and "voice service" in r.json()["detail"]
+    assert client.post("/api/tts", json={"text": "   ", "lang": "bg"}, headers=_h()).status_code == 502

@@ -12,6 +12,7 @@
  * ardi) is another implementation of the same three methods.
  */
 
+import { api } from '../api/client';
 import type { Speaker } from './session';
 
 export const ttsSupported = (): boolean => typeof speechSynthesis !== 'undefined' && typeof SpeechSynthesisUtterance !== 'undefined';
@@ -74,5 +75,98 @@ export class DeviceSpeaker implements Speaker {
     // Not every engine fires `end` (or anything) for a cancelled utterance.
     cur?.resolve();
     this.current = null;
+  }
+}
+
+/**
+ * The core's voice: each sentence fetched as MP3 from `/api/tts` and played through WebAudio.
+ *
+ * Why the page plays it rather than an <audio> element or the device engine: audio the page
+ * plays is audio the browser's echo canceller knows about, so the microphone stops hearing him
+ * (the laptop bug); and on Android it stays on the call's route instead of the TTS engine's.
+ * The next sentence is fetched while the current one plays (`prepare`), so the gap between
+ * sentences is the network only once, at the first. When the core cannot synthesise, the
+ * device voice says that sentence instead — and the call goes on.
+ */
+export class ServerSpeaker implements Speaker {
+  private ctx: AudioContext | null = null;
+  private current: { source: AudioBufferSourceNode; resolve: () => void } | null = null;
+  private prepared = new Map<string, Promise<AudioBuffer | null>>();
+  private readonly fallback = new DeviceSpeaker();
+  /** Set once the server has failed, so the screen can say the voice is the device's. */
+  fellBack = false;
+
+  available(): boolean {
+    return typeof AudioContext !== 'undefined';
+  }
+
+  /** Start fetching a sentence now; `speak` will find it ready. */
+  prepare(text: string, lang: string): void {
+    const key = `${lang}|${text}`;
+    if (this.prepared.has(key)) return;
+    this.prepared.set(key, this.fetch(text, lang));
+  }
+
+  private context(): AudioContext {
+    this.ctx ??= new AudioContext();
+    if (this.ctx.state === 'suspended') void this.ctx.resume();
+    return this.ctx;
+  }
+
+  private async fetch(text: string, lang: string): Promise<AudioBuffer | null> {
+    try {
+      const bytes = await api.tts(text, lang);
+      return await this.context().decodeAudioData(bytes);
+    } catch {
+      return null;
+    }
+  }
+
+  async speak(text: string, lang: string): Promise<void> {
+    const key = `${lang}|${text}`;
+    const pending = this.prepared.get(key) ?? this.fetch(text, lang);
+    this.prepared.delete(key);
+    const buffer = await pending;
+    if (!buffer) {
+      this.fellBack = true;
+      return this.fallback.speak(text, lang);
+    }
+    const ctx = this.context();
+    return new Promise<void>((resolve) => {
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        if (this.current?.source === source) this.current = null;
+        resolve();
+      };
+      source.onended = finish;
+      this.current = { source, resolve: finish };
+      source.start();
+    });
+  }
+
+  cancel(): void {
+    const cur = this.current;
+    this.current = null;
+    if (cur) {
+      try {
+        cur.source.stop();
+      } catch {
+        /* already ended */
+      }
+      cur.resolve();
+    }
+    this.prepared.clear();
+    this.fallback.cancel();
+  }
+
+  close(): void {
+    this.cancel();
+    void this.ctx?.close();
+    this.ctx = null;
   }
 }

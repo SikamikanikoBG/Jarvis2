@@ -33,6 +33,7 @@ export function CallScreen() {
   const call = useStore((s) => s.call);
   const endCall = useStore((s) => s.endCall);
   const setMuted = useStore((s) => s.setCallMuted);
+  const setRoute = useStore((s) => s.setCallRoute);
   const conv = useStore((s) => (s.openConversationId ? s.conversations[s.openConversationId] : undefined));
   const touch = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
   const [locked, setLocked] = useState(touch);
@@ -76,12 +77,26 @@ export function CallScreen() {
       {locked ? (
         <div className="call-controls">
           <HoldButton label="Hold to unlock" icon="chevronDown" onHeld={() => setLocked(false)} />
+          <HoldButton
+            label={call.route === 'speaker' ? 'Hold for earpiece' : 'Hold for speaker'}
+            icon={call.route === 'speaker' ? 'headphones' : 'speaker'}
+            onHeld={() => setRoute(call.route === 'speaker' ? 'earpiece' : 'speaker')}
+          />
           <HoldButton label="Hold to hang up" icon="phoneOff" danger onHeld={endCall} />
         </div>
       ) : (
         <div className="call-controls">
           <button type="button" className={`call-btn${call.muted ? ' on' : ''}`} onClick={() => setMuted(!call.muted)} aria-pressed={call.muted} aria-label={call.muted ? 'Unmute' : 'Mute'}>
             <Icon name={call.muted ? 'micOff' : 'mic'} size={22} />
+          </button>
+          <button
+            type="button"
+            className={`call-btn${call.route === 'speaker' ? ' on-accent' : ''}`}
+            onClick={() => setRoute(call.route === 'speaker' ? 'earpiece' : 'speaker')}
+            aria-pressed={call.route === 'speaker'}
+            aria-label={call.route === 'speaker' ? 'Speaker on — switch to earpiece' : 'Switch to speaker'}
+          >
+            <Icon name="speaker" size={22} />
           </button>
           {touch ? (
             <HoldButton label="Hold to hang up" icon="phoneOff" danger onHeld={endCall} />
@@ -97,7 +112,15 @@ export function CallScreen() {
           )}
         </div>
       )}
-      {touch && !locked && <div className="call-hint">Speakerphone unless a headset is connected.</div>}
+      {!locked && (
+        <div className="call-hint">
+          {call.route === 'speaker'
+            ? 'Speaker: he cannot hear you while he talks — wait for him to finish.'
+            : touch
+              ? 'Earpiece (or your headset). Talk over him to cut in.'
+              : 'Talk over him to cut in.'}
+        </div>
+      )}
       {/* The guard: under the controls, over everything else. Every touch on it goes nowhere. */}
       {locked && <div className="call-guard" aria-hidden="true" onTouchMove={(e) => e.preventDefault()} />}
     </div>
@@ -145,7 +168,7 @@ function Captions({ call }: { call: CallState }) {
  * A control that acts only after a hold: a tap does nothing, a cheek does nothing. The fill
  * shows the hold progressing so a held finger knows it is being counted.
  */
-function HoldButton({ label, icon, danger, onHeld }: { label: string; icon: 'chevronDown' | 'phoneOff'; danger?: boolean; onHeld: () => void }) {
+function HoldButton({ label, icon, danger, onHeld }: { label: string; icon: 'chevronDown' | 'phoneOff' | 'speaker' | 'headphones'; danger?: boolean; onHeld: () => void }) {
   const [progress, setProgress] = useState(0);
   const timer = useRef<number | null>(null);
   const startedAt = useRef(0);

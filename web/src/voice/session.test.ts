@@ -5,6 +5,7 @@ import { CallSession, type CallState, type Listener, type ListenerHandlers, type
 class FakeListener implements Listener {
   h: ListenerHandlers | null = null;
   gated = false;
+  route = 'earpiece';
   muted = false;
   stopped = false;
   failStart = false;
@@ -16,8 +17,11 @@ class FakeListener implements Listener {
   stop(): void {
     this.stopped = true;
   }
-  setGated(g: boolean): void {
+  setSpeaking(g: boolean): void {
     this.gated = g;
+  }
+  setRoute(r: 'earpiece' | 'speaker'): void {
+    this.route = r;
   }
   setMuted(m: boolean): void {
     this.muted = m;
@@ -243,6 +247,16 @@ describe('CallSession', () => {
     expect(t.session.state.phase).toBe('ended');
     t.session.onDelta('r1', 'Четири. Пет.'); // late deltas change nothing
     expect(t.speaker.spoken).toHaveLength(1);
+  });
+
+  it('the route is the listener to act on, and the screen to show', async () => {
+    const t = build();
+    await t.session.start();
+    expect(t.listener.route).toBe('earpiece');
+    expect(t.session.state.route).toBe('earpiece');
+    t.session.setRoute('speaker');
+    expect(t.listener.route).toBe('speaker');
+    expect(t.session.state.route).toBe('speaker');
   });
 
   it('a mixed reply switches voice per sentence', async () => {

@@ -15,6 +15,16 @@ import { SentenceSplitter, scriptLanguage, speakable } from './sentences';
 
 export type CallPhase = 'idle' | 'connecting' | 'listening' | 'transcribing' | 'thinking' | 'speaking' | 'ended';
 
+/**
+ * Where his voice comes out. The web cannot pick the earpiece or the speaker by name; what it
+ * can do is hold or release the microphone. On Android, an open microphone puts Chrome in the
+ * phone's call mode — audio to the earpiece; a released one leaves it — audio to the speaker.
+ * "earpiece" holds the microphone throughout (so a cut-in by voice works, through the echo
+ * gate); "speaker" lets go of it while he speaks and takes it back when he stops, which is
+ * also the only route where a loudspeaker and a microphone cannot feed each other at all.
+ */
+export type CallRoute = 'earpiece' | 'speaker';
+
 export interface CallState {
   phase: CallPhase;
   /** What Arsen last said, as recognised. */
@@ -29,14 +39,17 @@ export interface CallState {
   /** Live level from the microphone (0..1), for the ring. */
   level: number;
   muted: boolean;
+  route: CallRoute;
   startedAt: number;
 }
 
 export interface Listener {
   start(handlers: ListenerHandlers): Promise<void>;
   stop(): void;
-  /** While Jarvis speaks the listener is gated: only a clear cut-in gets through. */
-  setGated(gated: boolean): void;
+  /** Jarvis started or stopped speaking: the listener gates itself (earpiece) or lets the
+   *  microphone go and takes it back (speaker). */
+  setSpeaking(on: boolean): void;
+  setRoute(route: CallRoute): void;
   setMuted(muted: boolean): void;
 }
 
@@ -55,6 +68,8 @@ export interface Speaker {
   cancel(): void;
   /** Whether this device can speak at all (and in what). */
   available(): boolean;
+  /** Start getting a sentence ready before its turn (a server voice fetches it now). */
+  prepare?(text: string, lang: string): void;
 }
 
 export interface Transcriber {
@@ -77,6 +92,8 @@ export interface SessionOptions {
   /** The language the settings prefer when the script does not decide (usually "bg"). */
   language: string;
   conversationId: string | null;
+  /** The route the call opens on; the screen's toggle changes it live. */
+  route?: CallRoute;
   onChange(state: CallState): void;
   now?: () => number;
 }
@@ -90,6 +107,7 @@ const INITIAL: CallState = {
   problem: null,
   level: 0,
   muted: false,
+  route: 'earpiece',
   startedAt: 0,
 };
 
@@ -112,10 +130,12 @@ export class CallSession {
   // --- lifecycle --------------------------------------------------------------------------
 
   async start(): Promise<void> {
-    this.set({ ...INITIAL, phase: 'connecting', startedAt: this.now() });
+    const route = this.o.route ?? 'earpiece';
+    this.set({ ...INITIAL, phase: 'connecting', startedAt: this.now(), route });
     if (!this.o.speaker.available()) {
       this.set({ problem: 'This device has no voice to speak with.' });
     }
+    this.o.listener.setRoute(route);
     try {
       await this.o.listener.start({
         onLevel: (level) => this.set({ level }),
@@ -143,6 +163,11 @@ export class CallSession {
   setMuted(muted: boolean): void {
     this.o.listener.setMuted(muted);
     this.set({ muted });
+  }
+
+  setRoute(route: CallRoute): void {
+    this.o.listener.setRoute(route);
+    this.set({ route });
   }
 
   // --- from the listener -------------------------------------------------------------------
@@ -233,13 +258,14 @@ export class CallSession {
     const clean = speakable(sentence);
     if (!clean) return;
     this.queue.push(clean);
+    this.o.speaker.prepare?.(clean, scriptLanguage(clean, this.o.language));
     this.set({ saying: [...this.state.saying, clean] });
     this.speaking ??= this.drain();
   }
 
   private async drain(): Promise<void> {
     this.cutIn = false;
-    this.o.listener.setGated(true);
+    this.o.listener.setSpeaking(true);
     this.set({ phase: 'speaking' });
     try {
       while (this.queue.length > 0 && !this.cutIn && this.state.phase !== 'ended') {
@@ -250,7 +276,7 @@ export class CallSession {
       }
     } finally {
       this.speaking = null;
-      this.o.listener.setGated(false);
+      this.o.listener.setSpeaking(false);
     }
     if (this.state.phase === 'ended') return;
     if (this.cutIn) return; // already listening; the cut-in's words are on their way

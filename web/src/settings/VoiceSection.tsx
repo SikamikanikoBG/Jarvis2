@@ -38,6 +38,50 @@ export function VoiceSection({ value, namespaces, onChange, error }: Props) {
           a misheard word to be able to send something.
         </div>
       </div>
+      <div className="field">
+        <span className="field-label" id="seg-tts">
+          His voice
+        </span>
+        <div className="seg" role="radiogroup" aria-labelledby="seg-tts">
+          {(['server', 'device'] as const).map((o) => (
+            <button key={o} type="button" role="radio" aria-checked={value.tts === o} className={value.tts === o ? 'active' : ''} onClick={() => patch({ tts: o })}>
+              {o === 'server' ? 'Neural (core)' : 'Device'}
+            </button>
+          ))}
+        </div>
+        <div className="field-hint">
+          Neural: the core synthesises each sentence with Microsoft's neural voices (natural Bulgarian and English; the text of each
+          sentence goes to Microsoft), and the device voice steps in if the core cannot. Device: the phone's or laptop's own voice,
+          offline, such as it is.
+        </div>
+      </div>
+      <div className="form-grid">
+        <div className="field">
+          <label htmlFor="voice-bg">Bulgarian voice</label>
+          <select id="voice-bg" className="select" value={value.voices.bg ?? ''} onChange={(e) => patch({ voices: { ...value.voices, bg: e.target.value } })} disabled={value.tts !== 'server'}>
+            <option value="bg-BG-BorislavNeural">Borislav (male)</option>
+            <option value="bg-BG-KalinaNeural">Kalina (female)</option>
+          </select>
+        </div>
+        <div className="field">
+          <label htmlFor="voice-en">English voice</label>
+          <select id="voice-en" className="select" value={value.voices.en ?? ''} onChange={(e) => patch({ voices: { ...value.voices, en: e.target.value } })} disabled={value.tts !== 'server'}>
+            <option value="en-GB-RyanNeural">Ryan (British, male)</option>
+            <option value="en-GB-SoniaNeural">Sonia (British, female)</option>
+            <option value="en-US-GuyNeural">Guy (American, male)</option>
+            <option value="en-US-AriaNeural">Aria (American, female)</option>
+          </select>
+        </div>
+        <div className="field">
+          <label htmlFor="voice-rate">Rate</label>
+          <select id="voice-rate" className="select" value={value.rate} onChange={(e) => patch({ rate: e.target.value })} disabled={value.tts !== 'server'}>
+            <option value="-10%">Slower</option>
+            <option value="+0%">Normal</option>
+            <option value="+10%">Faster</option>
+            <option value="+20%">Fast</option>
+          </select>
+        </div>
+      </div>
       <div className="think-row">
         <Switch checked={value.think} onChange={(v) => patch({ think: v })} label="Think before answering on a call" />
         <span className="small">Thinking</span>

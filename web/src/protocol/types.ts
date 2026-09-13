@@ -347,6 +347,12 @@ export interface VoiceSettings {
   namespaces: string[];
   think: boolean;
   style: string;
+  /** "server": the core's neural voices, the device voice as fallback; "device": speechSynthesis only. */
+  tts: 'server' | 'device';
+  /** Neural voice per language (edge-tts short names), e.g. { bg: 'bg-BG-BorislavNeural' }. */
+  voices: Record<string, string>;
+  /** Speaking rate as the synthesiser takes it: "+0%", "+10%", "-5%". */
+  rate: string;
 }
 
 export interface Settings {

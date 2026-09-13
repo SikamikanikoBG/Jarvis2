@@ -9,23 +9,34 @@
  * first syllable arrives before the segmenter is sure — is written out as 16 kHz mono WAV, the
  * one format every Whisper takes without a transcode.
  *
- * Gating: while Jarvis speaks, his own voice reaches the microphone through the loudspeaker (a
- * headset makes this moot). Echo cancellation takes most of it; what is left is judged against a
- * much higher bar, so only a clear voice over his counts as a cut-in.
+ * While Jarvis speaks, his own voice reaches the microphone — and echo cancellation does NOT
+ * catch it, because `speechSynthesis` plays outside the browser's audio path (on the laptop
+ * the answer came back as the next question). Two routes, two answers (see CallRoute):
+ *
+ * - earpiece: the microphone is held throughout, and an `EchoGate` learns how loud he is in it
+ *   so that only a voice clearly over his counts — a cut-in, not his own sentence;
+ * - speaker: the microphone is released while he speaks and taken back when he stops. Nothing
+ *   can be heard back, and on Android letting go of the microphone is what puts the phone out
+ *   of call mode, so the audio goes to the loudspeaker.
  */
 
+import { EchoGate } from './gate';
 import { rmsOf, Segmenter, type SegmentEvent } from './segmenter';
-import type { Listener, ListenerHandlers } from './session';
+import type { CallRoute, Listener, ListenerHandlers } from './session';
 
 const TARGET_RATE = 16_000;
 /** Samples kept: the last minute at 16 kHz. An utterance is capped at 30 s by the segmenter. */
 const RING_SECONDS = 60;
 /** Audio kept from before the segmenter called speech, so the first syllable is not lost. */
 const PRE_ROLL_MS = 300;
-/** While gated (Jarvis speaking), speech must clear the floor by this much more to count. */
-const GATED_RATIO = 5;
+/** A cut-in has to hold for longer than an ordinary utterance's onset: a cough over him is not a cut-in. */
+const CUT_IN_ATTACK_MS = 450;
 /** The worklet that taps the samples; served with the SPA (web/public/pcm-worklet.js). */
 const WORKLET_URL = '/pcm-worklet.js';
+
+const MIC_CONSTRAINTS: MediaStreamConstraints = {
+  audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+};
 
 export const micSupported = (): boolean =>
   typeof navigator !== 'undefined' &&
@@ -35,48 +46,94 @@ export const micSupported = (): boolean =>
 
 export class MicListener implements Listener {
   private stream: MediaStream | null = null;
+  private source: MediaStreamAudioSourceNode | null = null;
   private ctx: AudioContext | null = null;
   private tap: AudioWorkletNode | null = null;
   private seg = new Segmenter();
+  private gate = new EchoGate();
   private ring = new Int16Array(TARGET_RATE * RING_SECONDS);
   /** Absolute index (in 16 kHz samples) of the next sample to be written. */
   private written = 0;
   private utteranceStartSample = 0;
-  private gated = false;
+  private speaking = false;
+  private route: CallRoute = 'earpiece';
   private muted = false;
   private handlers: ListenerHandlers | null = null;
   private t0 = 0;
+  private acquiring: Promise<void> | null = null;
 
   async start(handlers: ListenerHandlers): Promise<void> {
     this.handlers = handlers;
-    this.stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
-    });
     this.ctx = new AudioContext();
     if (this.ctx.state === 'suspended') await this.ctx.resume();
     await this.ctx.audioWorklet.addModule(WORKLET_URL);
-    const source = this.ctx.createMediaStreamSource(this.stream);
     this.tap = new AudioWorkletNode(this.ctx, 'pcm-tap', { numberOfInputs: 1, numberOfOutputs: 0, channelCount: 1 });
     const rate = this.ctx.sampleRate;
     this.tap.port.onmessage = (e: MessageEvent<Float32Array>) => this.onAudio(e.data, rate);
-    source.connect(this.tap);
     this.t0 = performance.now();
+    await this.acquire();
   }
 
   stop(): void {
+    this.release();
     this.tap?.port.close();
     this.tap?.disconnect();
     this.tap = null;
-    this.stream?.getTracks().forEach((t) => t.stop());
-    this.stream = null;
     void this.ctx?.close();
     this.ctx = null;
     this.seg = new Segmenter();
+    this.gate = new EchoGate();
     this.written = 0;
   }
 
-  setGated(gated: boolean): void {
-    this.gated = gated;
+  /** Take the microphone (again). Idempotent; a second call while one is in flight joins it. */
+  private acquire(): Promise<void> {
+    if (this.stream) return Promise.resolve();
+    this.acquiring ??= (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
+        if (!this.ctx || !this.tap) {
+          stream.getTracks().forEach((t) => t.stop()); // stopped while we were asking
+          return;
+        }
+        this.stream = stream;
+        this.source = this.ctx.createMediaStreamSource(stream);
+        this.source.connect(this.tap);
+        // A fresh microphone is a fresh room: the floor warms up again before anything counts.
+        this.seg = new Segmenter(this.seg.opts);
+      } finally {
+        this.acquiring = null;
+      }
+    })();
+    return this.acquiring;
+  }
+
+  private release(): void {
+    this.source?.disconnect();
+    this.source = null;
+    this.stream?.getTracks().forEach((t) => t.stop());
+    this.stream = null;
+  }
+
+  setSpeaking(on: boolean): void {
+    this.speaking = on;
+    const now = performance.now() - this.t0;
+    if (this.route === 'speaker') {
+      // Let go of the microphone while he speaks; take it back when he stops.
+      if (on) this.release();
+      else void this.acquire().catch((e: unknown) => this.handlers?.onError(e instanceof Error ? e.message : 'The microphone could not be reopened.'));
+      return;
+    }
+    this.gate.setSpeaking(on, now, this.seg.noiseFloor);
+    this.seg.setAttack(on ? CUT_IN_ATTACK_MS : null);
+  }
+
+  setRoute(route: CallRoute): void {
+    if (route === this.route) return;
+    this.route = route;
+    // Switching mid-sentence: apply the new route's rule to the moment we are in.
+    if (this.speaking) this.setSpeaking(true);
+    else if (route === 'earpiece' && !this.stream) void this.acquire().catch(() => undefined);
   }
 
   setMuted(muted: boolean): void {
@@ -98,8 +155,8 @@ export class MicListener implements Listener {
       this.written += 1;
     }
     const t = performance.now() - this.t0;
-    // Gated: the same segmenter, a much higher bar. A cut-in has to be a voice over his.
-    const level = this.gated && rms < this.seg.noiseFloor * GATED_RATIO ? 0 : rms;
+    // Through the gate: while he speaks, only a voice clearly over his own reaches the segmenter.
+    const level = this.gate.pass(rms, t, this.seg.noiseFloor);
     for (const ev of this.seg.push(level, t)) this.onSegment(ev, t);
   }
 

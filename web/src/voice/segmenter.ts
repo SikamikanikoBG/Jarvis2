@@ -51,6 +51,8 @@ export class Segmenter {
    *  louder as it goes must not raise the floor under itself. */
   private floorAtStart: number;
   private firstAt: number | null = null;
+  /** A longer attack while a cut-in is what is being listened for (null = the option's). */
+  private attackOverride: number | null = null;
   readonly opts: SegmenterOptions;
 
   constructor(opts: Partial<SegmenterOptions> = {}) {
@@ -65,6 +67,10 @@ export class Segmenter {
 
   get noiseFloor(): number {
     return this.floor;
+  }
+
+  setAttack(ms: number | null): void {
+    this.attackOverride = ms;
   }
 
   /** Feed one energy frame (rms in 0..1, t in ms). */
@@ -97,7 +103,7 @@ export class Segmenter {
       case 'attack':
         if (!loud) {
           this.phase = 'silence';
-        } else if (t - this.phaseSince >= o.attackMs) {
+        } else if (t - this.phaseSince >= (this.attackOverride ?? o.attackMs)) {
           this.phase = 'speech';
           this.utteranceStart = this.phaseSince;
           out.push({ type: 'speech-start', at: this.utteranceStart });

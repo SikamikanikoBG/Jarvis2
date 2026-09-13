@@ -203,6 +203,15 @@ export const api = {
     state: () => request<TriageState[]>('GET', '/api/triage/state'),
     run: () => request<{ run_id: string }>('POST', '/api/triage/run'),
   },
+  /** One sentence as audio bytes in the server's neural voice; throws (502) when it cannot. */
+  tts: async (text: string, lang: string): Promise<ArrayBuffer> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const token = getToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch('/api/tts', { method: 'POST', headers, body: JSON.stringify({ text, lang }), credentials: 'same-origin' });
+    if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => ''));
+    return res.arrayBuffer();
+  },
   stt: (audio: Blob, language?: string) => {
     const form = new FormData();
     form.append('audio', audio, 'speech.webm');

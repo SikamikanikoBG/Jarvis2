@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent,
 import { Icon } from '../components/Icon';
 import { IconButton, Menu } from '../components/primitives';
 import { useTicker } from '../components/useTicker';
+import { callSupported } from '../voice/support';
 import { cameraSupport, readCameraEnv } from '../lib/camera';
 import { nextTtl, timeLeft, ttlLabel } from '../lib/privacy';
 import { THINK_CHOICES, THINK_DEFAULT, thinkChoiceKey } from '../lib/think';
@@ -299,6 +300,7 @@ export function Composer({ runActive, stopping }: Props) {
           enterKeyHint={coarsePointer() ? 'enter' : 'send'}
         />
         <MicButton disabled={false} onTranscript={(t) => setText((prev) => (prev.trim() ? `${prev.trimEnd()} ${t}` : t))} />
+        <CallButton />
         {/* While a run works BOTH are offered: say something more, or stop it. Only hiding Send
             behind Stop is what made "it is going the wrong way" mean "wait until it finishes". */}
         {runActive && (
@@ -398,6 +400,23 @@ function PrivacyToggles() {
       />
       {ttl !== null && <span className="privacy-state">{left ? `gone in ${left}` : `after ${ttlLabel(ttl)}`}</span>}
     </span>
+  );
+}
+
+/**
+ * The headset next to the microphone: the microphone dictates one message, the headset holds a
+ * call (docs/stories/10_voice.md). Shown only where a call can happen at all — a microphone
+ * and a voice — and started from the tap itself, which is the user gesture the phone's audio
+ * needs.
+ */
+function CallButton() {
+  const startCall = useStore((s) => s.startCall);
+  const inCall = useStore((s) => s.call !== null);
+  if (!callSupported()) return null;
+  return (
+    <button type="button" className="mic-btn call-start" onClick={() => void startCall()} disabled={inCall} aria-label="Talk with Jarvis" title="Talk with Jarvis">
+      <Icon name="headphones" size={17} />
+    </button>
   );
 }
 

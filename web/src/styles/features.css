@@ -1236,3 +1236,284 @@
   justify-content: space-between;
   gap: 10px;
 }
+
+/* ---- the call (docs/stories/10_voice.md) --------------------------------------------------- */
+.call {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: calc(var(--s-4) + env(safe-area-inset-top)) var(--s-4) calc(var(--s-6) + env(safe-area-inset-bottom));
+  background: var(--bg);
+  color: var(--fg);
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+/* Locked: the light goes down, the words stay legible for a glance, nothing responds. */
+.call-locked {
+  background: #000;
+  color: var(--fg-2);
+}
+.call-head {
+  width: 100%;
+  max-width: 560px;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--s-3);
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+.call-title {
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.call-locked .call-title {
+  color: var(--fg-2);
+}
+.call-ring-wrap {
+  position: relative;
+  width: 168px;
+  height: 168px;
+  margin: auto 0 var(--s-4);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.call-ring {
+  position: absolute;
+  border-radius: 50%;
+}
+.call-ring-outer {
+  inset: 0;
+  background: var(--accent-soft);
+  transition: transform 90ms linear;
+}
+.call-ring-inner {
+  width: 108px;
+  height: 108px;
+  display: grid;
+  place-items: center;
+  background: var(--bg-elevated);
+  border: 2px solid var(--border-strong);
+  color: var(--accent);
+}
+.call-thinking .call-ring-outer,
+.call-transcribing .call-ring-outer {
+  animation: call-think 1.6s ease-in-out infinite;
+}
+.call-speaking .call-ring-outer {
+  animation: call-speak 0.9s ease-in-out infinite;
+}
+.call-speaking .call-ring-inner {
+  border-color: var(--accent);
+}
+@keyframes call-think {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 1;
+  }
+}
+@keyframes call-speak {
+  0%,
+  100% {
+    transform: scale(1.05);
+  }
+  50% {
+    transform: scale(1.3);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .call-ring-outer {
+    animation: none !important;
+    transition: none;
+  }
+}
+.call-phase {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  min-height: 1.4em;
+}
+.call-captions {
+  width: 100%;
+  max-width: 560px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: var(--s-3);
+  margin: var(--s-4) 0;
+  font-size: 1.05rem;
+  line-height: 1.45;
+}
+.call-captions p {
+  margin: 0;
+}
+.call-who {
+  display: block;
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  margin-bottom: 2px;
+}
+.call-heard {
+  color: var(--fg-2);
+}
+.call-saying .said {
+  color: var(--fg-muted);
+}
+.call-saying .saying {
+  color: var(--fg);
+  font-weight: 600;
+}
+.call-saying .unsaid {
+  color: var(--fg-dim);
+}
+.call-problem {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  max-width: 560px;
+  padding: 8px 12px;
+  border-radius: var(--radius-xs);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: var(--fs-sm);
+  margin-bottom: var(--s-3);
+}
+.call-controls {
+  position: relative;
+  z-index: 2; /* above the guard */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-4);
+  flex-wrap: wrap;
+  width: 100%;
+  max-width: 560px;
+}
+.call-btn {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--bg-elevated);
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+  cursor: pointer;
+}
+.call-btn.on {
+  background: var(--warn-soft);
+  color: var(--warn);
+  border-color: var(--warn);
+}
+.call-btn-danger {
+  background: var(--danger);
+  color: #fff;
+  border-color: var(--danger);
+}
+.call-hold {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 150px;
+  height: 56px;
+  padding: 0 20px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-elevated);
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  touch-action: none;
+  -webkit-touch-callout: none;
+}
+.call-hold.call-btn-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.call-hold-fill {
+  position: absolute;
+  inset: 0;
+  transform-origin: left;
+  transform: scaleX(var(--hold, 0));
+  background: currentColor;
+  opacity: 0.22;
+  pointer-events: none;
+}
+.call-hold-label,
+.call-hold .icon {
+  position: relative;
+}
+.call-hint {
+  margin-top: var(--s-3);
+  font-size: var(--fs-xs);
+  color: var(--fg-dim);
+}
+.call-guard {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: transparent;
+}
+.call-locked .call-controls {
+  opacity: 0.55;
+}
+
+/* A turn held on a call, in the transcript. In a bot bubble the markdown starts a block of its
+   own, so the mark floats left of the first line instead of sitting inside it. */
+.spoken-mark {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 6px;
+  color: var(--accent);
+  vertical-align: -1px;
+}
+.msg-user .spoken-mark {
+  color: var(--fg-2);
+}
+.msg-bot .spoken-mark {
+  float: left;
+  margin: 4px 6px 0 0;
+}
+
+/* Settings → Voice: the tools a call may use, as ticks. */
+.voice-namespaces {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+.voice-ns input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.voice-ns {
+  position: relative;
+}
+.voice-ns:focus-within {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}

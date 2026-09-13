@@ -584,3 +584,33 @@ harness — library vs. own is an open question to settle in the design.
   synthetic repro only showed it at a realistic token rate (a line every 350 ms; at 30 ms the
   content outgrew the finger and the old code passed): swipe 200 px, kept 34 before, 123 after.
   (web alpha.19)
+- 2026-09-13 (late) — "искам да мога да говоря с Джарвис ... слушалка. Аз говоря - Джарвис
+  отговаря ... не пачвърк!" Story 10, written first, built in the four slices it names.
+  The core owes a call five things and got them where incognito got its own: `Channel` on the
+  run, the steer and the message; a voice run offered only `settings.voice.namespaces` (notes,
+  kg, jarvis - on a call he thinks and remembers, he does not act), a tool outside them refused
+  by name before the argument check, no planner, no thinking unless asked, and the "you are on
+  a call" block as a context provider next to skills - per turn, never the cached prefix.
+  The web got a `voice/` module with no React in it: a segmenter with a floor that warms up to
+  the room, a sentence splitter that knows 3.5 and т.н. and initials, a listener that keeps raw
+  16 kHz samples in a ring and writes one WAV per utterance (MediaRecorder's WebM carries its
+  header in the first chunk only - a blob of mid-stream chunks is a file no decoder opens), a
+  speaker that feeds speechSynthesis one sentence at a time and picks the voice by script, and
+  the session: listen, transcribe, think, speak, listen, with cut-in (he stops mid-sentence, the
+  words steer the run still working or start a new turn, the half-sentence written before the
+  cut is dropped) and one honest spoken sentence for every failure. Twenty-two tests over
+  fakes.
+  The screen: the headset beside the microphone (the microphone dictates a message, the
+  headset holds a call), a full-screen surface that is a pure function of the session's state,
+  and on a touch device a lock that takes the light down and swallows every touch except a
+  1.2 s hold - a web page cannot read the proximity sensor, so this is what "at my ear the phone
+  does not press its own buttons" is made of, with a wake lock keeping the page alive. Both
+  turns land in the transcript with a headset mark. Settings gets a Voice section (the tools a
+  call may use, as ticks from the live tool list; think; the style block).
+  Walked end to end in Playwright with an oscillator for a microphone and a stub for a voice,
+  against the real core with the fake model (scripts/dev_fake_core.py): tap → locked →
+  "Listening" → an utterance recognised → "Thinking…" → three sentences spoken in the Bulgarian
+  voice → a tap on the guard does nothing, the hold unlocks → hang up → two spoken turns in the
+  chat. Not yet done: the phone in the hand with a real headset - that is the sign-off the
+  story asks for before the button counts as shipped. (core 2.0.0a40, proto 2.0.0a18, web
+  alpha.20)

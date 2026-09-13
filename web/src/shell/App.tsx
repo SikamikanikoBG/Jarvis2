@@ -15,6 +15,7 @@ import { SkillsScreen } from '../skills/SkillsScreen';
 import { StatusScreen } from '../status/StatusScreen';
 import { useStore } from '../store/store';
 import { TriageScreen } from '../triage/TriageScreen';
+import { CallScreen } from '../voice/CallScreen';
 import type { View } from '../lib/router';
 import { NAV_ALL } from './nav';
 import { BottomNav, MoreSheet, TopBar } from './TopBar';
@@ -118,6 +119,7 @@ export function App() {
         </Drawer>
       )}
       <Toast />
+      <CallScreen />
     </div>
   );
 }

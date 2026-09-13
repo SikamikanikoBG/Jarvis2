@@ -45,6 +45,11 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     keywords: ['formality', 'humour', 'humor', 'verbosity', 'address', 'tone', 'speaks', 'sir', 'by name'],
   },
   {
+    id: 'settings-voice',
+    label: 'Voice',
+    keywords: ['call', 'headset', 'speak', 'spoken', 'tools on a call', 'think', 'microphone', 'tts', 'style', 'namespaces'],
+  },
+  {
     id: 'settings-confirmations',
     label: 'Confirmations',
     keywords: ['destructive', 'unattended', 'confirm before', 'ask before', 'scheduled', 'triage', 'meeting'],

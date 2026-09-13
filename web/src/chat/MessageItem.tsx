@@ -15,6 +15,7 @@ export function MessageItem({ message }: { message: LocalMessage }) {
     if (isInjectedUserMessage(message)) return <InjectedNote name={message.name} text={message.content} />;
     return (
       <div id={anchor} className={`msg msg-user has-actions${message.optimistic ? ' optimistic' : ''}`} aria-label="You">
+        {message.channel === 'voice' && <SpokenMark />}
         {message.content}
         <MessageAttachments attachments={message.attachments ?? []} />
         <MessageActions message={message} />
@@ -26,6 +27,7 @@ export function MessageItem({ message }: { message: LocalMessage }) {
   return (
     <div id={anchor} className="msg msg-bot has-actions" aria-label="Jarvis">
       {message.reasoning && <ReasoningFold text={message.reasoning} />}
+      {message.channel === 'voice' && <SpokenMark />}
       <Markdown text={message.content} />
       {message.partial && (
         <div className="msg-meta">
@@ -37,5 +39,14 @@ export function MessageItem({ message }: { message: LocalMessage }) {
       )}
       <MessageActions message={message} />
     </div>
+  );
+}
+
+/** A turn held on a call: said and heard, not typed and read. */
+function SpokenMark() {
+  return (
+    <span className="spoken-mark" title="Spoken on a call" aria-label="Spoken on a call">
+      <Icon name="headphones" size={12} />
+    </span>
   );
 }

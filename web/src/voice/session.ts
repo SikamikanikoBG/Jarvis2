@@ -195,8 +195,13 @@ export class CallSession {
 
   onRunQueued(runId: string, conversationId: string): void {
     if (this.state.phase === 'ended') return;
+    // Ours if we asked for it, or if it is a new run in our conversation while we hold none — a
+    // late cut-in the core turned into a run of its own. A run in another chat is not ours.
+    const ours = this.pendingCreate || (conversationId === this.conversationId && this.state.runId === null);
+    if (!ours) return;
     this.pendingCreate = false;
     this.conversationId = conversationId;
+    this.splitter = new SentenceSplitter();
     this.set({ runId });
   }
 

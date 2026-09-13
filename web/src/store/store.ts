@@ -8,6 +8,9 @@ import { navigate, parseLocation, rememberConversation, type View } from '../lib
 import { applyThemePref, isPanelMode, readThemePref, type ThemePref } from '../lib/theme';
 import { DRAFT_NORMAL, ttlLabel, type DraftPrivacy } from '../lib/privacy';
 import type { ThinkChoice } from '../lib/think';
+import { MicListener } from '../voice/listener';
+import { CallSession, type CallState } from '../voice/session';
+import { DeviceSpeaker } from '../voice/speaker';
 import type {
   Attachment,
   BulkConversationAction,
@@ -68,6 +71,8 @@ export interface UiState {
   notifyRuns: boolean;
   /** Arsen's own chat folders, in their order. */
   folders: ChatFolder[];
+  /** The call in progress (docs/stories/10_voice.md), or null. A pure function of the session. */
+  call: CallState | null;
   /** Sidebar multi-select: the chosen conversation ids. Empty means not selecting anything. */
   selection: string[];
   /** The row a shift-click measures its range from. */
@@ -120,6 +125,11 @@ export interface Actions {
   /** How long an existing chat may sit idle before it deletes itself; `null` keeps it. */
   setConversationTtl: (id: string, ttlSeconds: number | null) => Promise<void>;
   setMoreOpen: (open: boolean) => void;
+  /** Start a call in the open conversation (or a new chat). Must be called from a user gesture:
+   *  the microphone and the first spoken word both need one. */
+  startCall: () => Promise<void>;
+  endCall: () => void;
+  setCallMuted: (muted: boolean) => void;
   notify: (text: string, level?: Notice['level']) => void;
   dismissNotice: () => void;
   pinConversation: (id: string, pinned: boolean) => Promise<void>;
@@ -165,6 +175,8 @@ export type AppState = ChatState & FeatureState & UiState & Actions;
 let ws: WsClient | null = null;
 let noticeSeq = 0;
 let clientRefSeq = 0;
+/** The call in progress. One at a time; the store's `call` mirrors its state. */
+let session: CallSession | null = null;
 
 /** Past tense for the toast after a bulk action. */
 const BULK_DONE: Record<BulkConversationAction, string> = {
@@ -198,6 +210,7 @@ export const useStore = create<AppState>()((set, get) => ({
   themePref: readThemePref(),
   panelMode: isPanelMode(),
   version: null,
+  call: null,
   thinkChoice: {},
   draftPrivacy: DRAFT_NORMAL,
   summaries: {},
@@ -254,6 +267,15 @@ export const useStore = create<AppState>()((set, get) => ({
     const before = get();
     const after = applyFeatureEvents(applyServerEvents(before, events, Date.now()), events) as AppState;
     set(after);
+    // A call in progress hears the run it is answering: the queue, the words, the end.
+    if (session) {
+      for (const e of events) {
+        if (e.type === 'run.queued') session.onRunQueued(e.run_id, e.conversation_id);
+        else if (e.type === 'model.delta' && e.kind === 'text') session.onDelta(e.run_id, e.text);
+        else if (e.type === 'run.done' || e.type === 'run.cancelled') session.onRunDone(e.run_id);
+        else if (e.type === 'run.failed') session.onRunFailed(e.run_id, e.error);
+      }
+    }
     // A conversation the server created for our null-conversation send: subscribe and route to it.
     if (after.openConversationId && after.openConversationId !== before.openConversationId) {
       const id = after.openConversationId;
@@ -295,6 +317,70 @@ export const useStore = create<AppState>()((set, get) => ({
   },
 
   setMoreOpen: (open) => set({ moreOpen: open }),
+
+  startCall: async () => {
+    if (session) return;
+    const s = get();
+    const open = s.openConversationId;
+    const socket = ws;
+    if (!socket?.isOpen) {
+      s.notify('Not connected to Jarvis.', 'error');
+      return;
+    }
+    const speaker = new DeviceSpeaker();
+    session = new CallSession({
+      listener: new MicListener(),
+      speaker,
+      transcriber: {
+        // Whisper detects the language itself, the same as the push-to-talk microphone.
+        transcribe: async (audio) => {
+          const res = await api.stt(audio);
+          return { text: res.text, language: res.language };
+        },
+      },
+      transport: {
+        create: (text, conversationId) => {
+          const clientRef = `v${Date.now().toString(36)}_${(clientRefSeq++).toString(36)}`;
+          if (!conversationId) {
+            // Same path as a typed first message: the server's new conversation opens behind the call.
+            set({ pendingNewConversation: { clientRef, text }, messages: { ...get().messages, [NEW_CONVERSATION_KEY]: [] } });
+          }
+          return socket.send({
+            type: 'run.create',
+            conversation_id: conversationId,
+            text,
+            kind: 'chat',
+            client_ref: clientRef,
+            think: null,
+            think_level: null,
+            channel: 'voice',
+          });
+        },
+        steer: (runId, text) => socket.send({ type: 'run.steer', run_id: runId, text, channel: 'voice' }),
+        cancel: (runId) => void socket.send({ type: 'run.cancel', run_id: runId }),
+      },
+      language: 'bg',
+      conversationId: open,
+      onChange: (call) => set({ call: { ...call } }),
+    });
+    if (open) socket.send({ type: 'subscribe', conversation_id: open });
+    await session.start();
+    if (session.state.phase === 'ended') {
+      // The microphone was refused or is missing: the reason is on the screen, the call is over.
+      const problem = session.state.problem;
+      session = null;
+      set({ call: null });
+      if (problem) get().notify(problem, 'error');
+    }
+  },
+
+  endCall: () => {
+    session?.end();
+    session = null;
+    set({ call: null });
+  },
+
+  setCallMuted: (muted) => session?.setMuted(muted),
 
   openConversation: async (id, opts = {}) => {
     const prev = get().openConversationId;

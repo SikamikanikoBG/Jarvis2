@@ -11,6 +11,7 @@ import { ConfirmationsSection, EmailSection } from './SafetySections';
 import { RsvpSection } from './RsvpSection';
 import { SettingsNav } from './SettingsNav';
 import { TriageSection } from './TriageSection';
+import { VoiceSection } from './VoiceSection';
 
 const PROVIDERS: Provider[] = ['ollama', 'vllm'];
 const THINK_HINT = 'Only chat may think. Planners, classifiers and judges with thinking on spend their whole budget thinking.';
@@ -28,6 +29,7 @@ export function SettingsScreen() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [namespaces, setNamespaces] = useState<string[]>([]);
   const themePref = useStore((s) => s.themePref);
   const setTheme = useStore((s) => s.setTheme);
 
@@ -39,6 +41,12 @@ export function SettingsScreen() {
         setDraft(s);
       })
       .catch((e: unknown) => setLoadError(e instanceof ApiError ? describeError(e.status, e.body) : String(e)));
+    // The namespaces a call may be allowed: read from the live tool list, so the allow-list
+    // offers what exists and never asks Arsen to type "workocholic" from memory.
+    api.tools
+      .list()
+      .then((tools) => setNamespaces([...new Set(tools.map((t) => t.name.split('.', 1)[0] ?? ''))].filter(Boolean)))
+      .catch(() => undefined);
   }, []);
 
   const dirtyKeys = useMemo(() => {
@@ -191,6 +199,10 @@ export function SettingsScreen() {
 
         <div id="settings-personality" className="settings-anchor">
           <PersonalitySection value={draft.personality} onChange={(p) => patch('personality', p)} error={errors.personality} />
+        </div>
+
+        <div id="settings-voice" className="settings-anchor">
+          <VoiceSection value={draft.voice} namespaces={namespaces} onChange={(v) => patch('voice', v)} error={errors.voice} />
         </div>
 
         <div id="settings-confirmations" className="settings-anchor">

@@ -79,7 +79,11 @@ export function SettingsNav() {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return SETTINGS_INDEX;
-    return SETTINGS_INDEX.filter((s) => s.label.toLowerCase().includes(q) || s.keywords.some((k) => k.includes(q)));
+    // A section NAMED what was typed comes first, so Enter lands on "Voice" for "call" rather
+    // than on the section that merely mentions "repeated call" in a hint.
+    const byLabel = SETTINGS_INDEX.filter((s) => s.label.toLowerCase().includes(q));
+    const byKeyword = SETTINGS_INDEX.filter((s) => !byLabel.includes(s) && s.keywords.some((k) => k.includes(q)));
+    return [...byLabel, ...byKeyword];
   }, [query]);
 
   const jumpTo = (id: string) => {

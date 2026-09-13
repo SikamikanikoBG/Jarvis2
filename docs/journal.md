@@ -574,3 +574,13 @@ harness — library vs. own is an open question to settle in the design.
   in it (bg):]" followed by the transcript. A clip with no audio track says "it has no audio
   track"; a Whisper that is down says "its sound was NOT heard" - the frames still go, but
   the model is never left to pretend. (core 2.0.0a39)
+- 2026-09-13 (night) — "докато генерира отговор ... не ми дава да скролна до началото на
+  отговора - винаги ме връща." Unpinning was decided by distance: a scroll that ended within
+  48 px of the bottom stayed pinned. While an answer streams the transcript grows every line
+  and the pin yanks it back down, and a finger on a phone moves a few pixels per event - so
+  every swipe up ended "within 48 px" and was undone before the next one. Now DIRECTION
+  decides: any user-driven scroll up unpins on the spot, and while a finger is down (or a
+  gesture is fresh) the pin stays off entirely; scrolling back to the bottom re-pins. The
+  synthetic repro only showed it at a realistic token rate (a line every 350 ms; at 30 ms the
+  content outgrew the finger and the old code passed): swipe 200 px, kept 34 before, 123 after.
+  (web alpha.19)

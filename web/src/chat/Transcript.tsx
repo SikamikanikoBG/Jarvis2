@@ -24,6 +24,14 @@ const INTENT_WINDOW_MS = 600;
  * Only user-initiated scrolling can unpin (wheel, touch, keys, scrollbar drag) — layout
  * reflows, browser scroll anchoring and our own pins never do. Mounted with
  * `key={conversation}` so a switch starts pinned to the bottom.
+ *
+ * Unpinning is decided by DIRECTION, not by distance from the bottom. It used to be distance:
+ * a scroll that ended within 48 px of the bottom stayed pinned. While an answer streams the
+ * transcript grows every frame and the pin yanks it back down, and a finger on a phone moves a
+ * few pixels per event — so every swipe up ended "within 48 px of the bottom" and was undone
+ * before the next one. "не ми дава да скролна до началото на отговора - винаги ме връща."
+ * Now any user-driven scroll UP unpins on the spot, and while a finger is down or a gesture
+ * is fresh the pin stays off entirely; scrolling back down to the bottom re-pins.
  */
 export function Transcript({ items }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -31,7 +39,12 @@ export function Transcript({ items }: Props) {
   const atBottom = useRef(true);
   const lastIntentAt = useRef(0);
   const dragging = useRef(false);
+  const touching = useRef(false);
+  const lastTop = useRef(0);
   const [showJump, setShowJump] = useState(false);
+
+  /** The user is scrolling, or just was: no pin of ours may move the transcript under them. */
+  const gestureLive = () => dragging.current || touching.current || Date.now() - lastIntentAt.current < INTENT_WINDOW_MS;
 
   const pinToBottom = useCallback((smooth: boolean) => {
     const el = scrollRef.current;
@@ -50,8 +63,8 @@ export function Transcript({ items }: Props) {
     const outer = scrollRef.current;
     if (!inner || !outer) return;
     const ro = new ResizeObserver(() => {
-      if (atBottom.current) pinToBottom(false);
-      else setShowJump(true);
+      if (atBottom.current && !gestureLive()) pinToBottom(false);
+      else if (!atBottom.current) setShowJump(true);
     });
     ro.observe(inner);
     ro.observe(outer);
@@ -92,11 +105,20 @@ export function Transcript({ items }: Props) {
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
-    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const top = el.scrollTop;
+    const movedUp = top < lastTop.current - 1;
+    lastTop.current = top;
+    const distance = el.scrollHeight - top - el.clientHeight;
+    if (movedUp && gestureLive()) {
+      // Up, by hand: unpinned, however close to the bottom this frame happens to land.
+      atBottom.current = false;
+      setShowJump(true);
+      return;
+    }
     if (distance < BOTTOM_SLACK) {
       atBottom.current = true;
       setShowJump(false);
-    } else if (dragging.current || Date.now() - lastIntentAt.current < INTENT_WINDOW_MS) {
+    } else if (gestureLive()) {
       atBottom.current = false;
     }
   };
@@ -113,7 +135,18 @@ export function Transcript({ items }: Props) {
         className="transcript"
         onScroll={onScroll}
         onWheel={markIntent}
+        onTouchStart={() => {
+          touching.current = true;
+          markIntent();
+        }}
         onTouchMove={markIntent}
+        onTouchEnd={() => {
+          touching.current = false;
+          markIntent(); // the fling after the finger lifts is still the user's
+        }}
+        onTouchCancel={() => {
+          touching.current = false;
+        }}
         onKeyDown={markIntent}
         onMouseDown={() => {
           dragging.current = true;

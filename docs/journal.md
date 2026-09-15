@@ -636,3 +636,115 @@ harness — library vs. own is an open question to settle in the design.
   voice is the fallback when the core cannot, and a Settings choice. Said plainly in the
   setting: the text of each sentence goes to Microsoft. (core 2.0.0a41, proto 2.0.0a19, web
   alpha.21)
+- 2026-09-13 — The send arrow Jarvis could not press. Testing DSK Bank's Webim chatbot,
+  `browser.click @e9` on the send icon answered "the page did not answer … may be mid-navigation
+  or a page extensions cannot touch" three times, and the model concluded the widget lived in an
+  iframe it could not reach. It did not. The icon is an `<svg>`, the kernel ended its click with
+  `(hit || el).click()`, and SVGElement has no `click()` - the TypeError left the kernel, Chrome
+  handed the worker `result: undefined`, and the worker's only word for that was the iframe one.
+  Reproduced in the jsdom harness in one file, fixed in two layers: an `activate()` that calls
+  `click()` where it exists and otherwise dispatches a bubbling click at the element's centre -
+  what a mouse does, handlers and activation included; and a try/catch around the whole
+  dispatch, so a kernel exception comes back as `ok:false, kernel_error:true, "The page script
+  failed while doing click: …, this is a Jarvis bug, not the page"`. Two tests pin both. The
+  extension is loaded unpacked, so the fix lands on the next Reload at brave://extensions.
+  Same afternoon, the second half of that transcript: with click gone, the model sent with
+  Enter and then waited for the bank's bot the only way it could - `workocholic.shell_run
+  Start-Sleep 45` followed by `browser.read`, five times, each read identical, the supervisor
+  nudging it twice for "a loop" while the bot took two and a half minutes to answer - and then
+  re-sent the question it had already sent. It had no clock. `browser.wait {text?, timeout_s?}`
+  is that clock: it polls the page text (the frame it last read) once a second until it changes
+  and holds still for 1.5 s, or the phrase appears, and returns only what is new - the reply,
+  not the page again; on timeout it says "nothing changed, do not re-send". Read-only, the one
+  call allowed to take its time (the worker's 30 s call budget yields to its timeout_s, and the
+  core already honours a tool's own `timeout_s`). Nine tools now; three transport tests.
+  And the side panel itself: "през екстеншъна не мога да отворя чата по темата". Panel mode
+  had stripped the header, the sidebar AND the drawer, so the panel was one conversation with
+  no way to another. It is phone width, so it gets the phone's answer: the mobile header (☰ →
+  the conversation drawer, the title, the chat menu, the connection dot; bell and theme
+  buttons left to the full app) and the drawer itself. Picking a chat routes to
+  `/c/<id>?mode=panel` inside the iframe. Walked in Playwright at 380px. (web alpha.22)
+  One more from the phone: "в voice chat текущото изречение е подчертано, но с тъмни букви на
+  тъмен фон". The locked call screen paints its ground #000 whatever the theme, but its ink
+  came from the theme's tokens - on the light theme the current sentence was #141a2b on black.
+  `.call-locked` now carries the dark theme's ink and surface tokens itself. Verified: on the
+  light theme the sentence being spoken renders rgb(234,240,251) on rgb(0,0,0).
+- 2026-09-13 — "I like it and I don't like it. How to make it AI agentic and not patchwork."
+  Three patches in one morning - the svg click, the wait, the hotspot cap - each a lesson the run
+  had already learned by its end, hand-carried into the extension by me. So the afternoon went
+  into the shape rather than the next patch. Four moves. Tools return EVIDENCE, not verdicts: a
+  click that did nothing now says what was dispatched, the element's path, box, cursor and state
+  (`evidence(el)` in the kernel); "no result came back" says what that means and nothing more;
+  the outline names icon controls by class (`svg.webim-ico-send 27x27`) and ranks hotspots
+  (beside a field, icon-sized, in view, a telling class) instead of taking the first 25 in
+  document order. `browser.eval` - the model's own JavaScript in the work tab, `$`, `$$`,
+  `$ref('e9')`, `describe`, `evidence` at hand - so the next mis-scored control is the model's to
+  solve, not mine. The model SEES: `handle_result` had been dropping browser.screenshot's image
+  since day one while the text told the model "attached for a vision model" - blind and believing
+  it had eyes, on a multimodal endpoint. The image is now an attachment on the tool message and
+  reaches vLLM as an image part in a user turn right after it; the tool card shows it. And the
+  lesson goes to Jarvis, not to me: `skills.learn` writes a playbook (frontmatter `sites:`), a run
+  that fought a site and then got through gets one written for it by the reflector, and the next
+  browser result on that host carries the playbook before the first click. Two smaller ones that
+  explain this morning: the browser context block says when the tool set changed (this
+  conversation kept sleeping through shell_run because nobody told it browser.wait exists), and
+  the supervisor's nudge is handed the family's unused tools and told to name the door, not the
+  loop. Ten browser tools; 84 extension tests, 338 core, 92 web. (core 2.0.0a42, proto 2.0.0a20, web alpha.23)
+  Evening, same chat: "виж пак сесията, пак не може да кликва". It could not, because the
+  extension in Brave was three fixes old - the core had been redeployed twice, the extension
+  reconnected each time (the log said "9 tools", the tell), and nobody had pressed Reload. What
+  ran was the unranked outline, the send arrow past the length cap, and a ref the model made up
+  from the part it never read. Two closures. `browser.find` now matches icon-only controls by
+  class token ("send" → svg.webim-ico-send), and the outline drops sub-10px decorations when real
+  icon controls exist. And the manual step is gone: the worker handles `browser.reload`
+  (`chrome.runtime.reload()` re-reads an unpacked extension from disk), the core exposes
+  `POST /api/browser/reload`, and deploy_ardi.sh sends it after health. One last Reload by hand
+  to get the worker that knows the message; manifest 2.1.0 so the hello line shows which one is
+  loaded.
+- 2026-09-13 — A wait tool for the whole of Jarvis, not just the browser. "since it is GPAI …
+  can keep a session alive as long as needed with this wait and after resumes." Until now the
+  only wait was browser.wait; for anything else the model reached for
+  `workocholic.shell_run Start-Sleep`, host-specific, counted against the 120 s tool budget, and
+  read as a loop. `jarvis.wait {seconds, reason?}` is the general one: sleep server-side up to an
+  hour a call (chain for longer), cancellable at once by a Stop, and — the part that makes it
+  usable — the run clock is PAUSED while it sleeps (`RunWatch.paused_s`, subtracted from
+  `elapsed_s`), so waiting for a fifteen-minute build no longer trips the ten-minute time budget,
+  and the per-call deadline is the wait's own duration, not `tool_timeout_max_s`. browser.wait is
+  credited the same way. Six tests. It is not a schedule: a schedule fires a fresh run hours or
+  days later; wait holds THIS run open across minutes so the task resumes with all its context.
+  (core 2.0.0a43)
+- 2026-09-13 (code red) — "incognito - videos and media uploaded are stored to the device!!!!
+  INCOGNITO MEANS INCOGNITO!!!!!" True, and by design until tonight: API.md said an incognito
+  chat's attachments sat in `data/attachments` "while alive". On the core there was one - the
+  clip he had recorded at 20:35 into an incognito chat, the file on the volume, the transcript
+  in the row; on the phone the same clip was in the gallery, because "Record a video" is
+  `<input capture>`, and the OS camera app keeps what it records. Four leaks closed, one rule.
+  The core: an incognito attachment never touches the disk. Bytes, the text read out of it, the
+  thumbnail - all in the process's memory (`_held`), the row with `path` and `text` NULL; a
+  restart forgets them and the transcript says so (410). The upload that comes BEFORE the chat
+  exists carries `incognito: true` (the core had no way to know), the bind pulls a file an old
+  client wrote off the disk before the message is published, and start-up scrubs whatever an
+  incognito chat still has on the disk - which removed tonight's clip. Every response for one
+  is `Cache-Control: no-store`: the phone's browser had been told to keep the thumbnail and the
+  clip for a day. The voice cache too: `/api/tts {cache: false}` on an incognito call.
+  The phone: in an incognito chat the OS camera app is never used. Photo through the in-app
+  stream (the blurrier wide lens is the price), clip through a new in-app recorder
+  (getUserMedia + MediaRecorder, chunks in memory, 120 s cap, "nothing is saved to this
+  phone" on the screen), and where there is no in-app stream (plain http) there is no camera,
+  and the menu says why. And one more found on the way: a call started with the eye on was
+  opening an ordinary, remembered chat - `run.create` from the call never carried the draft's
+  privacy. Now it does. Six core tests, five web.
+  Same hour: "the tts in the chat call is not working! so today you broke plenty of things".
+  The core was fine - `/api/tts` 200, a valid 24 kHz MP3 - so the page was not playing it. The
+  ServerSpeaker opened its own AudioContext lazily, from a WebSocket delta, with the phone
+  already in call mode (microphone held = earpiece); a context that comes up suspended never
+  ends a source, and the call sits on "Speaking" in silence with the screen saying nothing.
+  Cannot be proven from here without the phone, so the fix does not depend on the diagnosis:
+  the voice now plays through the microphone's own context (opened in the "start call" tap,
+  proven running by the level ring); `resume()` is awaited with a 1.5 s deadline and a context
+  that will not run hands the sentence to the device voice; every play has a watchdog a little
+  longer than the clip; and whatever went wrong reaches the screen through
+  `Speaker.takeProblem` - "The browser would not play the voice (audio suspended); using the
+  device voice." - instead of passing in silence. If it was the earpiece all along: it is the
+  default he asked for this morning, the sound is at the ear, and the button (a hold on the
+  locked screen) is the speaker. (core 2.0.0a44, web alpha.24)

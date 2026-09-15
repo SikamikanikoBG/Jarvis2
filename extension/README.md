@@ -4,7 +4,7 @@ Puts the Jarvis V2 web app in the browser sidebar and lets Jarvis read, navigate
 and act in **your own tabs** — real profile, real logins, no launch flags.
 
 The extension is a **tool provider** for the core: it connects to the core's
-WebSocket, announces eight `browser.*` tools, and executes them when a run asks.
+WebSocket, announces ten `browser.*` tools, and executes them when a run asks.
 The core decides *whether* a tool may be called (its tool policy); the
 extension decides *how* (the page kernel). There is no on/off switch in the
 extension — disable it at `brave://extensions` if you want Jarvis blind.
@@ -54,7 +54,7 @@ ext → core  browser.context {url, title, selection?, tab_id}   on active-tab c
 both        ping / pong
 ```
 
-- `browser.hello` carries the eight `ToolSpec`s (name, description, JSON Schema
+- `browser.hello` carries the ten `ToolSpec`s (name, description, JSON Schema
   with `additionalProperties:false`, `read_only`, `destructive`, `idempotent`).
   The core registers them on hello and drops them when the socket closes, so the
   extension re-announces on every reconnect.
@@ -84,6 +84,8 @@ both        ping / pong
 | `browser.type` | `ref`, `text`, `submit?` | native setter for inputs (React sees it), `execCommand` line-by-line for rich editors, reports nearby buttons and their enabled/disabled transitions |
 | `browser.scroll` | `ref?` \| `direction` | page or its main scrolling container; by ref → into view |
 | `browser.screenshot` | — | visible tab as JPEG (`image` field) |
+| `browser.wait` | `text?`, `timeout_s?` | blocks (default 30 s, max 120) until the visible text changes and holds still, or `text` appears; returns only the new text; `empty` on timeout — the clock for chatbots and slow forms, instead of sleep-and-re-read |
+| `browser.eval` | `code`, `page_world?` | the escape hatch: the model's own JavaScript in the work tab (frame last read), value back as JSON; helpers `$`, `$$`, `$ref('e9')`, `describe(el)`, `evidence(el)`; isolated world by default, `page_world` opts into the page's globals (its CSP applies) |
 
 Refs (`@e12`) are `data-jarvis-ref` attributes stamped by `read`/`find`; they
 stay valid until the page navigates, and a recycled node (virtualised lists) is

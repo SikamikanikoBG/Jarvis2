@@ -70,6 +70,9 @@ export interface Speaker {
   available(): boolean;
   /** Start getting a sentence ready before its turn (a server voice fetches it now). */
   prepare?(text: string, lang: string): void;
+  /** What went wrong with the last sentence, in a sentence for the screen — and cleared by
+   *  the read. A voice that falls back silently is a call that "does not work". */
+  takeProblem?(): string | null;
 }
 
 export interface Transcriber {
@@ -272,6 +275,8 @@ export class CallSession {
         const sentence = this.queue.shift();
         if (sentence === undefined) break;
         await this.o.speaker.speak(sentence, scriptLanguage(sentence, this.o.language));
+        const problem = this.o.speaker.takeProblem?.();
+        if (problem) this.fail(problem);
         if (!this.cutIn) this.set({ spokenUpTo: this.state.spokenUpTo + 1 });
       }
     } finally {

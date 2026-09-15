@@ -272,4 +272,31 @@ describe('CallSession', () => {
     await tick();
     expect(t.speaker.spoken.map((s) => s.lang)).toEqual(['bg', 'en']);
   });
+
+  it('what the voice could not do reaches the screen instead of passing in silence', async () => {
+    // 2026-09-13: "the tts in the chat call is not working" - and the screen said nothing.
+    const speaker = new FakeSpeaker();
+    let problem: string | null = 'The browser would not play the voice (audio suspended); using the device voice.';
+    (speaker as Speaker).takeProblem = () => {
+      const p = problem;
+      problem = null;
+      return p;
+    };
+    const t = build({ speaker });
+    await t.session.start();
+    t.listener.say();
+    await tick();
+    t.session.onRunQueued('r1', 'c1');
+    t.session.onDelta('r1', 'Първо. Второ. ');
+    t.session.onRunDone('r1');
+    await tick();
+    t.speaker.finishOne();
+    await tick();
+    expect(t.session.state.problem).toContain('would not play the voice');
+    // Said once: the second sentence, with nothing wrong, does not repeat it - and the call goes on.
+    t.speaker.finishOne();
+    await tick();
+    expect(t.session.state.phase).toBe('listening');
+    expect(t.speaker.spoken).toHaveLength(2);
+  });
 });

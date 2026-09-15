@@ -7,7 +7,7 @@
  * message, and the `tool.call` / `tool.result` / `tool.confirm_*` events when they are loaded.
  */
 import { isInjectedUserMessage } from '../lib/injected';
-import type { ConversationSummary, Plan, Run, RunScopedEvent, ToolResult } from '../protocol/types';
+import type { ConversationSummary, Plan, Run, RunScopedEvent, ToolResult, Attachment } from '../protocol/types';
 import { isTerminal } from '../protocol/types';
 import type { ChatState, LocalMessage } from './state';
 
@@ -24,6 +24,8 @@ export interface ToolCardModel {
   confirm: { reason: string; approved: boolean | null; note: string | null } | null;
   /** True while the call has neither a result nor a tool message. */
   pending: boolean;
+  /** What the tool came back with besides text — a browser screenshot, filed on its message. */
+  attachments: Attachment[];
 }
 
 export type NoteLevel = 'info' | 'warn' | 'error';
@@ -235,6 +237,7 @@ function collectCards(runId: string | null, messages: LocalMessage[], events: Ru
         durationMs: null,
         confirm: null,
         pending: true,
+        attachments: [],
       };
       cards.set(callId, c);
     }
@@ -248,6 +251,7 @@ function collectCards(runId: string | null, messages: LocalMessage[], events: Ru
       const c = get(m.tool_call_id, m.name ?? 'tool', {});
       c.resultText = m.content;
       c.pending = false;
+      if (m.attachments?.length) c.attachments = m.attachments;
     }
   }
   for (const ev of events) {

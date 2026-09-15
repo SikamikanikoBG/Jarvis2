@@ -32,6 +32,14 @@ const SETTLE_BUDGET_MS = TUNE.settle || 6000;        // client-rendered content 
 const RETRY_MIN_MS = TUNE.retryMin || 1000;
 const RETRY_MAX_MS = TUNE.retryMax || 30000;
 const AFTER_ACTION_MS = TUNE.afterAction === undefined ? 400 : TUNE.afterAction;
+// browser.wait: poll the page text until it changes and settles (or a phrase
+// appears). The model has no other clock — before this it slept through
+// workocholic.shell_run and re-read the page, and the identical reads tripped
+// the supervisor while a chatbot took two minutes to answer (13 Sep 2026).
+const WAIT_DEFAULT_S = TUNE.waitDefault || 30;
+const WAIT_MAX_S = TUNE.waitMax || 120;
+const WAIT_POLL_MS = TUNE.waitPoll || 1000;
+const WAIT_SETTLE_MS = TUNE.waitSettle === undefined ? 1500 : TUNE.waitSettle;
 const CONTEXT_DEBOUNCE_MS = TUNE.contextDebounce === undefined ? 300 : TUNE.contextDebounce;
 const READ_CAP = 12000;                              // chars of page text per read
 
@@ -154,6 +162,44 @@ const TOOLS = [
       "Capture what is visible in the active tab as a JPEG image — for layout, charts, images or anything the " +
       "text misses. Prefer browser.read for text.",
     input_schema: { type: "object", properties: {}, additionalProperties: false },
+    read_only: true, destructive: false, idempotent: true,
+  },
+  {
+    name: "browser.eval",
+    description:
+      "Run your own JavaScript in the page (the work tab, in the frame last read) and get the returned value " +
+      "back as JSON. The escape hatch when the typed tools do not fit: inspect a control the outline mis-read, " +
+      "dispatch the exact event a widget wants, read state only the page knows, click by CSS selector. Write the " +
+      "body of an async function and `return` the value. Helpers: $(sel), $$(sel), $ref('e9') resolves an outline " +
+      "@ref to its element, describe(el) and evidence(el) give the kernel's view of a node. Runs in the " +
+      "extension's isolated world (full DOM, no page variables); set page_world=true to run in the page's own " +
+      "JavaScript world (its globals, subject to its CSP). Output capped at 20k characters.",
+    input_schema: {
+      type: "object",
+      properties: {
+        code: { type: "string", description: "JavaScript — the body of an async function. `return` what you want to see." },
+        page_world: { type: "boolean", description: "Run in the page's main world (access to its JS globals). Default false." },
+      },
+      required: ["code"],
+      additionalProperties: false,
+    },
+    read_only: false, destructive: false, idempotent: false,
+  },
+  {
+    name: "browser.wait",
+    description:
+      "Wait for the page to change — a chatbot's reply, a search result, a form's confirmation — and return " +
+      "the new text when it arrives. Blocks until the visible text changes and holds still, or until `text` " +
+      "appears, or until timeout_s runs out (default 30, max 120). Use this after a click or type that starts " +
+      "something slow, instead of sleeping and re-reading; a timeout means nothing changed, not an error.",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "Return as soon as this phrase appears on the page (case-insensitive)." },
+        timeout_s: { type: "integer", minimum: 1, maximum: 120, description: "How long to wait at most. Default 30." },
+      },
+      additionalProperties: false,
+    },
     read_only: true, destructive: false, idempotent: true,
   },
 ];
@@ -332,6 +378,12 @@ function onFrame(raw) {
   }
   if (!msg || typeof msg.type !== "string") return;
   switch (msg.type) {
+    // The core asks the worker to reload itself — after a deploy that shipped
+    // new extension files, so nobody has to find brave://extensions. An unpacked
+    // extension re-reads its files from disk on chrome.runtime.reload().
+    case "browser.reload":
+      try { chrome.runtime.reload(); } catch (e) { console.warn("reload refused", e); }
+      return;
     case "browser.call":
       handleCall(msg);
       break;
@@ -366,8 +418,10 @@ async function handleCall(msg) {
   const args = (msg.arguments && typeof msg.arguments === "object") ? msg.arguments : {};
   let result;
   try {
-    result = await withTimeout(runTool(name, args), CALL_TIMEOUT_MS, () =>
-      name + " did not complete within " + Math.round(CALL_TIMEOUT_MS / 1000) +
+    // browser.wait is the one call that is MEANT to take its time.
+    const budget = name === "browser.wait" ? waitBudgetMs(args) + 5000 : CALL_TIMEOUT_MS;
+    result = await withTimeout(runTool(name, args), budget, () =>
+      name + " did not complete within " + Math.round(budget / 1000) +
       "s — the tab is probably still loading or busy; wait a moment and retry once");
     if (!result || typeof result !== "object" || !result.kind) {
       result = fail(name + " produced no result");
@@ -392,6 +446,8 @@ async function runTool(name, args) {
     case "browser.type": return toolAct("type", args);
     case "browser.scroll": return toolScroll(args);
     case "browser.screenshot": return toolScreenshot();
+    case "browser.wait": return toolWait(args);
+    case "browser.eval": return toolEval(args);
     default:
       return fail("unknown tool " + JSON.stringify(name) + "; this extension provides: " +
                   TOOLS.map((t) => t.name).join(", "));
@@ -710,8 +766,14 @@ function header(tab) {
 // ambiguous between a blank page and the wrong tab without it.
 function fromKernel(tab, res, op) {
   if (!res) {
-    return fail("the page did not answer for " + op + " — tab " + tab.id + " (" +
-                String(tab.url || "").slice(0, 80) + ") may be mid-navigation or a page extensions cannot touch");
+    // Only what is known. The kernel catches its own exceptions and reports
+    // them, so a missing result means the injection itself produced nothing:
+    // the document was being replaced, or the frame was torn down mid-call.
+    return fail("no result came back from the page for " + op + " — tab " + tab.id + " (" +
+                String(tab.url || "").slice(0, 80) + "), status " + (tab.status || "unknown") +
+                ". The kernel did run and did not throw (it would have said so), so the document " +
+                "was most likely replaced or the frame torn down while the call was in flight. " +
+                "browser.read to see what is there now, then act again on fresh refs.");
   }
   let head = header(tab);
   if (res.frame_id) head += "\n(inside an iframe of this page)";
@@ -868,6 +930,120 @@ async function toolScroll(args) {
     }
   }
   return fromKernel(tab, res, "scroll");
+}
+
+const EVAL_MAX_CHARS = 20000;
+
+function renderValue(v) {
+  if (v === undefined) return "undefined";
+  if (typeof v === "string") return v;
+  try {
+    const s = JSON.stringify(v, (k, x) => {
+      if (x && typeof x === "object" && typeof x.nodeType === "number" && x.tagName) {
+        return "<" + String(x.tagName).toLowerCase() + (x.id ? "#" + x.id : "") + ">";
+      }
+      return x;
+    }, 1);
+    return s === undefined ? String(v) : s;
+  } catch (e) {
+    return String(v);
+  }
+}
+
+// Unlike the typed ops, eval carries the model's own code, so the frame it
+// runs in is stated every time and the page's main world is opt-in: a bank's
+// CSP may refuse it, and that refusal is reported as the fact it is.
+async function toolEval(args) {
+  const tab = await targetTab();
+  assertScriptable(tab);
+  const code = String(args.code == null ? "" : args.code);
+  if (!code.trim()) throw new Error("browser.eval needs code");
+  const sticky = stickyFrame.get(tab.id);
+  const target = { tabId: tab.id };
+  if (sticky) target.frameIds = [sticky];
+  const inject = { target: target, func: pageKernel, args: ["eval", { code: code }] };
+  if (args.page_world) inject.world = "MAIN";
+  let res;
+  try {
+    const out = await withInjectBudget(chrome.scripting.executeScript(inject), tab, ["eval"]);
+    res = out && out[0] ? out[0].result : null;
+  } catch (e) {
+    return fail("browser.eval could not run in tab " + tab.id + ": " + String((e && e.message) || e) +
+                (args.page_world ? " (page_world=true is subject to the page's CSP; try without it)" : ""));
+  }
+  const where = header(tab) + (sticky ? "\n(inside the iframe last read)" : "") +
+                (args.page_world ? "\n(page main world)" : "");
+  if (!res) return fail("browser.eval returned no result (the document was replaced mid-call?)\n" + where);
+  if (res.ok === false) {
+    const err = res.error || "eval failed";
+    return { kind: "error", error: err,
+             text: "Error: " + err + (res.stack ? "\n" + res.stack : "") + "\n" + where };
+  }
+  let text = renderValue(res.value);
+  if (text.length > EVAL_MAX_CHARS) text = text.slice(0, EVAL_MAX_CHARS) + "\n… [cut at " + EVAL_MAX_CHARS + " chars — return less]";
+  if (AFTER_ACTION_MS) await sleep(AFTER_ACTION_MS);
+  return data(where + "\n" + text);
+}
+
+function waitBudgetMs(args) {
+  const asked = Number(args && args.timeout_s);
+  const s = asked > 0 ? Math.min(WAIT_MAX_S, Math.max(1, asked)) : WAIT_DEFAULT_S;
+  return s * 1000;
+}
+
+// The text the model would get from browser.read, from the frame it last read
+// (the chat widget's iframe, when there is one), else the top document.
+async function snapshotText(tab) {
+  const sticky = stickyFrame.get(tab.id);
+  let r = null;
+  if (sticky) { try { r = await runInFrame(tab, ["snapshot", {}], sticky); } catch (e) { r = null; } }
+  if (!r || !r.text) r = await runInFrame(tab, ["snapshot", {}]);
+  return (r && typeof r.text === "string") ? r.text : "";
+}
+
+// What is new: chat logs, feeds and result lists append, so the text after the
+// longest common prefix IS the new content. When the page re-rendered instead,
+// show its tail — that is where a reply lands in a chat.
+function newSince(before, after) {
+  let i = 0;
+  const n = Math.min(before.length, after.length);
+  while (i < n && before.charCodeAt(i) === after.charCodeAt(i)) i++;
+  const grew = after.length > before.length && i >= before.length * 0.8;
+  const piece = grew ? after.slice(i) : after.slice(-900);
+  const t = piece.trim().slice(0, 1500);
+  return { grew: grew, text: t };
+}
+
+async function toolWait(args) {
+  const tab = await targetTab();
+  const want = String(args.text == null ? "" : args.text).trim().toLowerCase();
+  const total = waitBudgetMs(args);
+  const started = Date.now();
+  const base = await snapshotText(tab);
+  const seconds = () => Math.max(1, Math.round((Date.now() - started) / 1000));
+  const report = (cur, why) => {
+    const d = newSince(base, cur);
+    const head = header(tab) + "\n" + why + " after " + seconds() + "s.";
+    if (!d.text) return data(head);
+    return data(head + (d.grew ? " New text:\n" : " The page re-rendered; it now ends with:\n") + d.text);
+  };
+  if (want && base.toLowerCase().includes(want)) return report(base, "\u201C" + args.text + "\u201D is already on the page");
+  let last = base;
+  let changed = false;
+  let lastChange = 0;
+  while (Date.now() - started < total) {
+    await sleep(Math.min(WAIT_POLL_MS, Math.max(50, total - (Date.now() - started))));
+    let cur;
+    try { cur = await snapshotText(tab); } catch (e) { continue; }   // mid-navigation: try again
+    if (cur !== last) { last = cur; changed = true; lastChange = Date.now(); }
+    if (want && cur.toLowerCase().includes(want)) return report(cur, "\u201C" + args.text + "\u201D appeared");
+    if (!want && changed && Date.now() - lastChange >= WAIT_SETTLE_MS) return report(cur, "The page changed");
+  }
+  if (changed) return report(last, "The page kept changing for the whole wait; this is where it stood");
+  return empty(header(tab) + "\nNothing changed on the page in " + seconds() + "s" +
+               (want ? " and \u201C" + args.text + "\u201D did not appear" : "") +
+               ". It may still be working — browser.wait again with a longer timeout_s, or browser.read " +
+               "to see the page as it is. Do not re-send what you already sent.");
 }
 
 async function toolScreenshot() {

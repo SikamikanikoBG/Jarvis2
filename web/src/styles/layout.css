@@ -687,8 +687,8 @@
 }
 
 /* ---- panel mode ------------------------------------------------------------------------ */
-:root[data-mode='panel'] .topbar,
-:root[data-mode='panel'] .bottomnav,
-:root[data-mode='panel'] .sidebar {
+/* The bottom nav stays out: the panel is the chat. The header and the conversation drawer
+   are in — they are how a chat is picked at phone width, and the panel is phone width. */
+:root[data-mode='panel'] .bottomnav {
   display: none !important;
 }

@@ -19,10 +19,12 @@ import { EXT_DIR } from "./dom.mjs";
 const BACKGROUND_SRC = fs.readFileSync(path.join(EXT_DIR, "background.js"), "utf8");
 const MANIFEST = JSON.parse(fs.readFileSync(path.join(EXT_DIR, "manifest.json"), "utf8"));
 
-const TIMEOUTS = { call: 400, inject: 250, load: 400, settle: 60, retryMin: 40, retryMax: 160, afterAction: 0, contextDebounce: 5 };
+const TIMEOUTS = { call: 400, inject: 250, load: 400, settle: 60, retryMin: 40, retryMax: 160, afterAction: 0, contextDebounce: 5,
+                   waitPoll: 40, waitSettle: 100 };
 
 const API_TOOLS = ["browser.tabs", "browser.open", "browser.read", "browser.find",
-                   "browser.click", "browser.type", "browser.scroll", "browser.screenshot"];
+                   "browser.click", "browser.type", "browser.scroll", "browser.screenshot",
+                   "browser.eval", "browser.wait"];
 
 const ARTICLE = "https://example.test/article";
 const SECOND = "https://example.test/second";
@@ -115,11 +117,11 @@ test("browser.hello announces agent, version and exactly the tools in API.md", (
   assert.equal(hello.agent, "jarvis-extension");
   assert.equal(hello.version, "2.0.0-test");
   assert.deepEqual(hello.tools.map((t) => t.name), API_TOOLS);
-  assert.equal(MANIFEST.version, "2.0.0");
+  assert.equal(MANIFEST.version, "2.1.0");
 });
 
 test("every ToolSpec has a closed JSON Schema, a description and the agreed read_only flags", () => {
-  const readOnly = new Set(["browser.tabs", "browser.read", "browser.find", "browser.screenshot"]);
+  const readOnly = new Set(["browser.tabs", "browser.read", "browser.find", "browser.screenshot", "browser.wait"]);
   for (const t of hello.tools) {
     assert.equal(t.input_schema.type, "object", t.name);
     assert.equal(t.input_schema.additionalProperties, false, t.name);
@@ -212,6 +214,87 @@ test("browser.click with a bad ref → error with recovery advice, not silence",
   assert.equal(r.kind, "error");
   assert.match(r.text, /^Error: Ref @e424242 no longer exists/);
   assert.match(r.error, /browser\.read mode=outline or browser\.find/);
+});
+
+// ── browser.eval: the escape hatch ───────────────────────────────────────
+
+test("browser.find → an icon-only control is found by its class name", async () => {
+  const p = chrome._pageFor(7);
+  const svg = p.doc.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "webim-ico webim-ico-send");
+  svg.setAttribute("style", "cursor:pointer;width:27px;height:27px");
+  p.doc.body.appendChild(svg);
+  const r = await core.call(client, "browser.find", { query: "send" });
+  assert.equal(r.kind, "data", r.text);
+  assert.match(r.text, /@e\d+ svg «\.webim-ico\.webim-ico-send»/);
+  svg.remove();
+});
+
+test("browser.eval → runs the model's code against the page and returns the value as JSON", async () => {
+  const r = await core.call(client, "browser.eval", {
+    code: "return { title: document.title, links: $$('a').length, first: $('#first').textContent };",
+  });
+  assert.equal(r.kind, "data", r.text);
+  assert.match(r.text, /"title": "Monitoring guide"/);
+  assert.match(r.text, /"links": 2/);
+  assert.match(r.text, /"first": "Monitoring with Prometheus"/);
+});
+
+test("browser.eval → a thrown error comes back as the error it was, not silence", async () => {
+  const r = await core.call(client, "browser.eval", { code: "return $('#nope').textContent;" });
+  assert.equal(r.kind, "error");
+  assert.match(r.text, /TypeError/);
+});
+
+test("browser.eval → $ref resolves an outline ref, and a click through it reaches the handler", async () => {
+  const outline = await core.call(client, "browser.read", { mode: "outline" });
+  const m = /(@e\d+) link «Monitoring with Prometheus»/.exec(outline.text);
+  assert.ok(m, outline.text);
+  const p = chrome._pageFor(7);
+  p.win.__evalClicked = 0;
+  p.$("#first").addEventListener("click", (e) => { e.preventDefault(); p.win.__evalClicked++; });
+  const r = await core.call(client, "browser.eval", {
+    code: `const el = $ref('${m[1]}'); el.dispatchEvent(new MouseEvent('click', {bubbles: true})); return describe(el);`,
+  });
+  assert.equal(r.kind, "data", r.text);
+  assert.match(r.text, /a#first «Monitoring with Prometheus»/);
+  assert.equal(p.win.__evalClicked, 1);
+});
+
+// ── browser.wait: the clock the model did not have ───────────────────────
+
+test("browser.wait → empty when nothing changes, and it says so without blaming the page", async () => {
+  const r = await core.call(client, "browser.wait", { timeout_s: 1 });
+  assert.equal(r.kind, "empty", r.text);
+  assert.match(r.text, /Nothing changed on the page in 1s/);
+  assert.match(r.text, /Do not re-send/);
+});
+
+test("browser.wait → returns the reply a chat widget appends, and only the new part", async () => {
+  const p = chrome._pageFor(7);
+  setTimeout(() => {
+    const div = p.doc.createElement("p");
+    div.textContent = "Bot: Лихвата по срочните депозити е 0.5% годишно.";
+    p.doc.body.appendChild(div);
+  }, 150);
+  const r = await core.call(client, "browser.wait", { timeout_s: 5 });
+  assert.equal(r.kind, "data", r.text);
+  assert.match(r.text, /The page changed after \d+s\. New text:\nBot: Лихвата по срочните депозити/);
+  assert.ok(!/Search results/.test(r.text), "the old text is not repeated: " + r.text);
+});
+
+test("browser.wait {text} → returns the moment the phrase appears", async () => {
+  const p = chrome._pageFor(7);
+  setTimeout(() => {
+    const div = p.doc.createElement("p");
+    div.textContent = "Готово — заявката е приета.";
+    p.doc.body.appendChild(div);
+  }, 120);
+  const t0 = Date.now();
+  const r = await core.call(client, "browser.wait", { text: "заявката е приета", timeout_s: 5 });
+  assert.equal(r.kind, "data", r.text);
+  assert.match(r.text, /“заявката е приета” appeared after \d+s/);
+  assert.ok(Date.now() - t0 < 2500, "did not wait for the full timeout");
 });
 
 test("browser.type → text lands and the nearby button is reported", async () => {

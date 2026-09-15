@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -99,6 +100,21 @@ class _TimeArgs(BaseModel):
     timezone: str = Field(default="Europe/Sofia", description="IANA timezone name")
 
 
+# A deliberate wait is not a runaway tool: the run clock is paused while it sleeps (the loop
+# credits it back), so a long wait does not eat the time budget. The cap is per call — chain
+# calls for longer, or a schedule for hours/days (a fired schedule is a fresh run).
+WAIT_MAX_S = 3600
+IS_WAIT_TOOL = frozenset({"jarvis.wait"})
+
+
+class _WaitArgs(BaseModel):
+    seconds: float = Field(description=f"How long to wait, 1-{WAIT_MAX_S}s. Chain calls for longer.", gt=0)
+    reason: str = Field(
+        default="",
+        description="What is being waited for (a build, a reply, a person, a rate-limit window) — shown to Arsen.",
+    )
+
+
 class CoreTools(BuiltinProvider):
     """Core-owned tools in the ``jarvis`` namespace — kept off the base class so feature
     providers that subclass BuiltinProvider do not each re-register them."""
@@ -118,3 +134,31 @@ class CoreTools(BuiltinProvider):
         except Exception:
             return ToolResult.failure(f"unknown timezone {timezone!r}")
         return ToolResult.data(now.strftime("%A, %Y-%m-%d %H:%M:%S %Z"))
+
+    @tool(
+        "jarvis.wait",
+        description=(
+            "Pause, then carry on the SAME run. Use it to keep a task alive across something that takes real "
+            "time — a build or deploy finishing, a rate-limit window, a page or a person you have asked and are "
+            "waiting on — instead of giving up and asking Arsen to prompt you again. The run clock is paused "
+            "while you wait, so this does not count as taking too long or as a loop. Cancellable: if Arsen "
+            f"interrupts, the wait ends at once. One call waits up to {WAIT_MAX_S}s; call it again for longer, "
+            "or use a schedule for hours or days. For a chatbot reply that will land on its own, browser.wait "
+            "is better — it returns the moment the page changes."
+        ),
+        args=_WaitArgs,
+        read_only=True,
+    )
+    async def _wait(self, seconds: float, reason: str = "", *, cancel: asyncio.Event) -> ToolResult:
+        want = max(1.0, min(float(seconds), float(WAIT_MAX_S)))
+        started = time.monotonic()
+        try:
+            await asyncio.wait_for(cancel.wait(), timeout=want)
+            interrupted = True
+        except TimeoutError:
+            interrupted = False
+        waited = round(time.monotonic() - started)
+        tail = f" (waiting for {reason})" if reason else ""
+        if interrupted:
+            return ToolResult.data(f"Wait interrupted after {waited}s{tail} — continue with the task now.")
+        return ToolResult.data(f"Waited {waited}s{tail}. Carry on.")

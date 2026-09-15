@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from pydantic import ValidationError
 
-from jarvis_proto import ToolResult, ToolResultKind, ToolSpec, new_id
+from jarvis_proto import ToolImage, ToolResult, ToolResultKind, ToolSpec, new_id
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +28,11 @@ class WsProvider:
         self.version: str | None = None
         self.context: dict[str, Any] | None = None
         self.error: str | None = "browser extension not connected"
+        # The last change to the tool set, for the context block: a conversation that learned
+        # to sleep-and-re-read keeps doing it unless told a browser.wait now exists.
+        self.changed_at: datetime | None = None
+        self.added: list[str] = []
+        self.removed: list[str] = []
 
     @property
     def connected(self) -> bool:
@@ -48,6 +54,12 @@ class WsProvider:
             if not spec.name.startswith("browser."):
                 spec = spec.model_copy(update={"name": f"browser.{spec.name.split('.', 1)[-1]}"})
             tools.append(spec.model_copy(update={"provider": "browser"}))
+        before = {t.name for t in self._tools}
+        after = {t.name for t in tools}
+        if before and before != after:
+            self.changed_at = datetime.now(UTC)
+            self.added = sorted(after - before)
+            self.removed = sorted(before - after)
         self._tools = tools
         self.error = None
         return tools
@@ -67,12 +79,16 @@ class WsProvider:
             return
         kind = str(frame.get("kind") or "data")
         text = str(frame.get("text") or "")
+        images: list[ToolImage] = []
+        img = frame.get("image")
+        if isinstance(img, dict) and img.get("base64"):
+            images.append(ToolImage(mime=str(img.get("mime") or "image/jpeg"), base64=str(img["base64"])))
         if kind == "error":
             fut.set_result(ToolResult.failure(str(frame.get("error") or text or "browser tool error")))
         elif kind == "empty" or not text.strip():
             fut.set_result(ToolResult.empty(text or "Nothing found."))
         else:
-            fut.set_result(ToolResult(kind=ToolResultKind.DATA, text=text))
+            fut.set_result(ToolResult(kind=ToolResultKind.DATA, text=text, images=images))
 
     def handle_context(self, frame: dict[str, Any]) -> None:
         self.context = {k: frame.get(k) for k in ("url", "title", "selection") if frame.get(k)}
@@ -114,12 +130,42 @@ class WsProvider:
         finally:
             waiter.cancel()
 
-    def context_block(self) -> str | None:
-        if not self.context or not self.context.get("url"):
+    def tools_changed_note(self, *, now: datetime | None = None, within: timedelta = timedelta(hours=24)) -> str | None:
+        if self.changed_at is None or not (self.added or self.removed):
             return None
-        title = self.context.get("title") or ""
-        sel = self.context.get("selection")
-        block = f"## Browser\nArsen is looking at: {title} — {self.context['url']}"
-        if sel:
-            block += f"\nSelected text: {str(sel)[:800]}"
-        return block
+        if (now or datetime.now(UTC)) - self.changed_at > within:
+            return None
+        parts = []
+        if self.added:
+            parts.append("added " + ", ".join(self.added))
+        if self.removed:
+            parts.append("removed " + ", ".join(self.removed))
+        return (
+            "Browser tools changed recently: " + "; ".join(parts) + ". Read their descriptions — what a "
+            "conversation learned to work around earlier may now have a tool of its own."
+        )
+
+    async def reload_extension(self) -> bool:
+        """Ask the connected extension to reload itself (new files on disk after a deploy)."""
+        send = self._send
+        if send is None:
+            return False
+        try:
+            await send({"type": "browser.reload"})
+        except Exception as exc:
+            log.warning("browser.reload not sent: %s", exc)
+            return False
+        return True
+
+    def context_block(self) -> str | None:
+        lines: list[str] = []
+        if self.context and self.context.get("url"):
+            title = self.context.get("title") or ""
+            lines.append(f"Arsen is looking at: {title} — {self.context['url']}")
+            sel = self.context.get("selection")
+            if sel:
+                lines.append(f"Selected text: {str(sel)[:800]}")
+        note = self.tools_changed_note()
+        if note:
+            lines.append(note)
+        return "## Browser\n" + "\n".join(lines) if lines else None

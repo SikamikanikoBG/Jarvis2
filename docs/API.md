@@ -92,8 +92,32 @@ go through the same path now, so a deleted chat no longer leaves its photos in `
 
 What the messages of an incognito chat still are: rows in SQLite on the core, for as long as the
 chat lives — the engine resumes runs from the database, so there is no way around that. The
-promise is about what leaves the chat (nothing) and how long it stays (its ttl), not about the
-disk it sits on while alive.
+promise is about what leaves the chat (nothing) and how long it stays (its ttl).
+
+**Its attachments are never on the disk** (since core 2.0.0a44 — 2026-09-13, "INCOGNITO MEANS
+INCOGNITO", after a clip from an incognito chat was found in `data/attachments`). A photo, a
+clip, a document or a pasted note attached to an incognito chat is held in the core's memory
+only: bytes, the text read out of it (a transcript, a document's words), the thumbnail. Its row
+keeps the name, kind and size with `path` and `text` NULL. A core restart forgets them — the
+transcript still names the file, `GET /api/attachments/{id}` answers 410 — and that is the
+design, not a gap. Every response for one carries `Cache-Control: no-store`, so the phone's
+browser keeps no copy either. Two things make it work at the edges:
+
+- `POST /api/attachments` and `/api/attachments/text` take `incognito: true` for the upload that
+  happens **before the chat exists** (the first message of a new incognito chat uploads, then
+  sends `run.create {incognito: true}`); the web client sends it from the draft's privacy. For an
+  existing chat the conversation's own flag is what counts, whatever the caller said.
+- Binding an attachment into an incognito chat (the message it was sent with) pulls a file an
+  older client wrote off the disk and into memory before the message is published; and at
+  start-up the core unlinks whatever an incognito chat still has on the disk and empties the
+  `text` column (`AttachmentStore.scrub_private`).
+
+The same rule for a call: `POST /api/tts {text, lang, cache: false}` synthesises without writing
+the sentence to the voice cache (`data/tts`), and the web sends `cache: false` on an incognito
+call. A call started from an incognito draft opens an incognito chat (`run.create` carries the
+draft's `incognito`/`ttl_seconds`, as a typed first message does). On the phone the web never
+hands an incognito chat to the OS camera app — it keeps what it shoots (a recorded clip lands in
+the gallery) — so photo and clip come from the in-app stream, in memory, or not at all.
 
 ## Boards (Phase 2)
 
@@ -151,6 +175,16 @@ Tool (builtin): `skills.use {name}` → the skill body.
 Already in the protocol: `Run.plan`, `plan.created`, `plan.step_started`, `plan.step_done`.
 The model advances its own plan with builtin tools `jarvis.plan_step_done {index, note?}` and
 `jarvis.replan {goal, steps}`. The UI renders `Run.plan` as a checklist under the run chip.
+
+### Waiting (Phase 1, general)
+
+`jarvis.wait {seconds, reason?}` pauses and then carries on the SAME run — for a build, a deploy, a
+rate-limit window, a page or a person being waited on — instead of ending the run and asking Arsen
+to prompt again. The run clock is paused while it sleeps (`RunWatch.paused_s`), so a wait counts as
+neither time spent nor a loop; the per-call deadline is the wait's own duration, not
+`tool_timeout_max_s`. Cancellable (a Stop ends it at once). One call waits up to 3600 s; chain calls
+for longer, or a schedule for hours/days. For a chatbot reply that lands on its own, `browser.wait`
+is better — it returns the moment the page changes.
 
 ## Compaction (Phase 2)
 
@@ -212,7 +246,16 @@ both        ping / pong
 ```
 Tools the extension exposes (V1 pageKernel, ported): `browser.tabs`, `browser.open {url}`,
 `browser.read {tab?, mode: "text"|"outline"}`, `browser.find {query}`, `browser.click {ref}`,
-`browser.type {ref, text, submit?}`, `browser.scroll {ref?|direction}`, `browser.screenshot`.
+`browser.type {ref, text, submit?}`, `browser.scroll {ref?|direction}`, `browser.screenshot`,
+`browser.wait {text?, timeout_s?}` (blocks until the visible text changes and settles, or the phrase
+appears; empty on timeout — the model's clock, so it never sleeps-and-re-reads),
+`browser.eval {code, page_world?}` (the model's own JavaScript in the page; the escape hatch that keeps
+the agent independent of the typed tools). `browser.screenshot`'s `image` is filed as an attachment on
+the tool message and reaches a multimodal model as an image part in a user turn right after it.
+A browser result whose text carries a URL for which a skill declares `sites:` gets that playbook
+appended once per run; `skills.learn {name, description, body, triggers?, sites?}` writes one, and
+the post-run reflector (`features/reflection.py`) writes one itself after a run that fought a site
+and then got through (a `[playbook]` note lands in the conversation).
 `browser.context` feeds a context provider ("the page Arsen is looking at") for runs created
 from the side panel. The side panel is the SPA in an iframe: `/?mode=panel&token=…`.
 

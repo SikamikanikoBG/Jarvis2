@@ -10,6 +10,13 @@ The chat has a single "+" and a single pipeline (docs/stories/09_attachments.md)
   prompt cache survives (see engine/context.py).
 
 Files live under ``JARVIS_HOME/attachments/<id>`` and die with their conversation.
+
+**Incognito is the exception, and it is absolute**: an attachment of an incognito chat never
+touches the disk. Its bytes, the text read out of it (a transcript, a document's words) and its
+thumbnail are held in this process's memory only; the SQLite row keeps the name, the kind and
+the size, with ``path`` and ``text`` NULL. A core restart forgets them - that is the point, not a
+bug - and the transcript then shows the name of a file that is no longer anywhere. What the
+chat teaches the model is another matter (engine/loop.py); this module is about the disk.
 """
 
 from __future__ import annotations
@@ -85,11 +92,25 @@ class AttachmentError(ValueError):
 class Stored:
     attachment: Attachment
     path: Path | None
+    #: An incognito chat's attachment: nothing of it is on disk, and nothing of it may be cached
+    #: by whoever fetches it (the browser on the phone included).
+    private: bool = False
+
+
+@dataclass(slots=True)
+class _Held:
+    """What an incognito attachment is made of, kept in memory instead of on disk."""
+
+    data: bytes | None
+    text: str | None
+    thumb: tuple[bytes, str] | None = None
 
 
 class AttachmentStore:
     def __init__(self, core: Core) -> None:
         self.core = core
+        # Incognito attachments, by id. This dict IS their storage: no file, no text column.
+        self._held: dict[str, _Held] = {}
 
     @property
     def root(self) -> Path:
@@ -97,11 +118,32 @@ class AttachmentStore:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def is_private(self, att_id: str) -> bool:
+        return att_id in self._held
+
+    async def _conversation_is_private(self, conversation_id: str | None) -> bool:
+        if conversation_id is None:
+            return False
+        conv = await self.core.store.get_conversation(conversation_id)
+        return bool(conv is not None and conv.incognito)
+
     # --- writing ---------------------------------------------------------------------------
 
-    async def add_file(self, *, data: bytes, filename: str, mime: str, conversation_id: str | None) -> Attachment:
+    async def add_file(
+        self,
+        *,
+        data: bytes,
+        filename: str,
+        mime: str,
+        conversation_id: str | None,
+        incognito: bool = False,
+    ) -> Attachment:
+        """``incognito`` is the caller's word for an upload whose chat does not exist yet (the
+        first message of a new incognito chat uploads before ``run.create``); an existing
+        conversation's own flag counts just the same, whatever the caller said."""
         if not data:
             raise AttachmentError("the file is empty")
+        private = incognito or await self._conversation_is_private(conversation_id)
         name = Path(filename or "attachment").name
         mime = (mime or mimetypes.guess_type(name)[0] or "application/octet-stream").split(";")[0].strip()
         is_video = mime in VIDEO_MIME or mime.startswith("video/")
@@ -137,9 +179,14 @@ class AttachmentStore:
                     "and ask Jarvis to open it with the file tools instead."
                 )
 
+        att = Attachment(id=att_id, kind=kind, name=name, mime=mime, bytes=len(data), text=text, meta=meta)
+        if private:
+            # Memory, and only memory: the row below carries neither a path nor the text.
+            self._held[att_id] = _Held(data=data, text=text)
+            await self._insert(att, conversation_id=conversation_id, path=None, private=True)
+            return att
         path = self.root / f"{att_id}{_suffix_for(name, mime)}"
         path.write_bytes(data)
-        att = Attachment(id=att_id, kind=kind, name=name, mime=mime, bytes=len(data), text=text, meta=meta)
         await self._insert(att, conversation_id=conversation_id, path=path)
         return att
 
@@ -174,8 +221,10 @@ class AttachmentStore:
         kind: AttachmentKind = AttachmentKind.TEXT,
         conversation_id: str | None = None,
         meta: dict[str, Any] | None = None,
+        incognito: bool = False,
     ) -> Attachment:
-        """Pasted text, or a thread the host already turned into text: no file on disk."""
+        """Pasted text, or a thread the host already turned into text: no file on disk - and in
+        an incognito chat, no text column either."""
         body = text.strip()
         if not body:
             raise AttachmentError("nothing to attach")
@@ -189,10 +238,15 @@ class AttachmentStore:
             text=trimmed,
             meta=meta_out,
         )
-        await self._insert(att, conversation_id=conversation_id, path=None)
+        private = incognito or await self._conversation_is_private(conversation_id)
+        if private:
+            self._held[att.id] = _Held(data=None, text=trimmed)
+        await self._insert(att, conversation_id=conversation_id, path=None, private=private)
         return att
 
-    async def _insert(self, att: Attachment, *, conversation_id: str | None, path: Path | None) -> None:
+    async def _insert(
+        self, att: Attachment, *, conversation_id: str | None, path: Path | None, private: bool = False
+    ) -> None:
         await self.core.db.execute(
             "INSERT INTO attachments(id, conversation_id, message_id, kind, name, mime, bytes, path, text, meta,"
             " created_at) VALUES (?,?,NULL,?,?,?,?,?,?,?,?)",
@@ -204,45 +258,91 @@ class AttachmentStore:
                 att.mime,
                 att.bytes,
                 str(path) if path else None,
-                att.text,
+                None if private else att.text,
                 json.dumps(att.meta, ensure_ascii=False),
                 att.created_at.isoformat(),
             ),
         )
 
     async def bind(self, ids: list[str], *, message_id: str, conversation_id: str) -> list[Attachment]:
-        """Tie uploads to the message they were sent with (and to its conversation)."""
+        """Tie uploads to the message they were sent with (and to its conversation).
+
+        The moment an upload learns which chat it belongs to is also the last moment to catch a
+        file that should never have been written: a client that did not say ``incognito`` at
+        upload time (an older build, a script) binding into an incognito chat gets its file
+        pulled off the disk and into memory here, before the message is published."""
+        private = await self._conversation_is_private(conversation_id)
         out: list[Attachment] = []
         for att_id in ids:
             row = await self.core.db.fetchone("SELECT * FROM attachments WHERE id = ?", (att_id,))
             if row is None:
                 continue
+            if private and att_id not in self._held:
+                await self._take_off_disk(row)
             await self.core.db.execute(
                 "UPDATE attachments SET message_id = ?, conversation_id = ? WHERE id = ?",
                 (message_id, conversation_id, att_id),
             )
-            out.append(_attachment(row))
+            out.append(self._hydrate(_attachment(row)))
         return out
 
+    async def _take_off_disk(self, row: Any) -> None:
+        """Move one attachment from the disk into memory and erase every trace of it on disk:
+        the file, its thumbnail cache, the text column."""
+        att_id = row["id"]
+        data: bytes | None = None
+        if row["path"]:
+            path = Path(row["path"])
+            with contextlib.suppress(OSError):
+                data = path.read_bytes()
+            _unlink_with_thumb(path)
+        self._held[att_id] = _Held(data=data, text=row["text"])
+        await self.core.db.execute("UPDATE attachments SET path = NULL, text = NULL WHERE id = ?", (att_id,))
+
+    async def scrub_private(self) -> int:
+        """At start-up: whatever an incognito chat still has on the disk from before this rule
+        existed (or from a crash between write and bind) is unlinked and its text column
+        emptied. The bytes are not carried into memory - nothing that was written before the
+        restart is trusted to come back; an incognito attachment survives no restart."""
+        rows = await self.core.db.fetchall(
+            "SELECT a.id, a.path, a.text FROM attachments a JOIN conversations c ON c.id = a.conversation_id"
+            " WHERE c.incognito = 1 AND (a.path IS NOT NULL OR a.text IS NOT NULL)"
+        )
+        for row in rows:
+            if row["path"]:
+                _unlink_with_thumb(Path(row["path"]))
+            await self.core.db.execute("UPDATE attachments SET path = NULL, text = NULL WHERE id = ?", (row["id"],))
+        if rows:
+            log.warning("incognito: %d attachment(s) found on disk at start-up were removed", len(rows))
+        return len(rows)
+
     # --- reading ---------------------------------------------------------------------------
+
+    def _hydrate(self, att: Attachment) -> Attachment:
+        """An incognito attachment's text lives in memory; the row has none."""
+        held = self._held.get(att.id)
+        if held is not None and held.text is not None and att.text is None:
+            att.text = held.text
+        return att
 
     async def get(self, att_id: str) -> Stored | None:
         row = await self.core.db.fetchone("SELECT * FROM attachments WHERE id = ?", (att_id,))
         if row is None:
             return None
-        return Stored(_attachment(row), Path(row["path"]) if row["path"] else None)
+        private = att_id in self._held
+        return Stored(self._hydrate(_attachment(row)), Path(row["path"]) if row["path"] else None, private=private)
 
     async def for_message(self, message_id: str) -> list[Attachment]:
         rows = await self.core.db.fetchall(
             "SELECT * FROM attachments WHERE message_id = ? ORDER BY created_at", (message_id,)
         )
-        return [_attachment(r) for r in rows]
+        return [self._hydrate(_attachment(r)) for r in rows]
 
     async def for_conversation(self, conversation_id: str) -> list[Attachment]:
         rows = await self.core.db.fetchall(
             "SELECT * FROM attachments WHERE conversation_id = ? ORDER BY created_at", (conversation_id,)
         )
-        return [_attachment(r) for r in rows]
+        return [self._hydrate(_attachment(r)) for r in rows]
 
     async def for_messages(self, message_ids: list[str]) -> dict[str, list[Attachment]]:
         """One query for a whole transcript instead of one per message."""
@@ -254,7 +354,7 @@ class AttachmentStore:
         )
         out: dict[str, list[Attachment]] = {}
         for row in rows:
-            out.setdefault(row["message_id"], []).append(_attachment(row))
+            out.setdefault(row["message_id"], []).append(self._hydrate(_attachment(row)))
         return out
 
     async def delete(self, att_id: str) -> bool:
@@ -262,42 +362,68 @@ class AttachmentStore:
         if stored is None:
             return False
         if stored.path is not None:
-            with contextlib.suppress(OSError):
-                stored.path.unlink()
+            _unlink_with_thumb(stored.path)
+        self._held.pop(att_id, None)
         await self.core.db.execute("DELETE FROM attachments WHERE id = ?", (att_id,))
         return True
 
     async def delete_for_conversation(self, conversation_id: str) -> int:
         """Unlink every file a conversation's attachments own. The rows go with the conversation
         (ON DELETE CASCADE); the files on disk would not, and a chat that promised to leave
-        nothing behind must not leave its photos in data/attachments."""
+        nothing behind must not leave its photos in data/attachments. What was held in memory
+        for an incognito chat is let go the same way."""
         rows = await self.core.db.fetchall(
-            "SELECT path FROM attachments WHERE conversation_id = ? AND path IS NOT NULL", (conversation_id,)
+            "SELECT id, path FROM attachments WHERE conversation_id = ?", (conversation_id,)
         )
+        files = 0
         for row in rows:
-            with contextlib.suppress(OSError):
-                Path(row["path"]).unlink()
-        return len(rows)
+            self._held.pop(row["id"], None)
+            if row["path"]:
+                _unlink_with_thumb(Path(row["path"]))
+                files += 1
+        return files
 
     async def thumbnail(self, att_id: str) -> tuple[bytes, str] | None:
         """A small JPEG for the transcript: the picture, or a video's first frame. None for
-        anything with nothing to show."""
+        anything with nothing to show. An incognito attachment's thumbnail is made in memory and
+        remembered there; a stored one is cached next to its file."""
         stored = await self.get(att_id)
-        if stored is None or stored.path is None:
+        if stored is None:
             return None
         kind = stored.attachment.kind
         if kind not in (AttachmentKind.IMAGE, AttachmentKind.VIDEO):
+            return None
+        held = self._held.get(att_id)
+        if held is not None:
+            if held.thumb is None and held.data is not None:
+                held.thumb = _make_thumb(held.data, kind, stored.attachment.mime)
+            return held.thumb
+        if stored.path is None:
             return None
         cache = stored.path.with_suffix(".thumb.jpg")
         if cache.exists():
             return cache.read_bytes(), "image/jpeg"
         raw = stored.path.read_bytes()
-        thumb = _video_poster(raw, THUMB_EDGE) if kind is AttachmentKind.VIDEO else _resize(raw, THUMB_EDGE, jpeg=True)
+        thumb = _make_thumb(raw, kind, stored.attachment.mime)
         if thumb is None:
-            return None if kind is AttachmentKind.VIDEO else (raw, stored.attachment.mime)
-        with contextlib.suppress(OSError):
-            cache.write_bytes(thumb[0])
-        return thumb[0], thumb[1]
+            return None
+        if thumb[1] == "image/jpeg" and thumb[0] is not raw:
+            with contextlib.suppress(OSError):
+                cache.write_bytes(thumb[0])
+        return thumb
+
+    async def raw(self, att_id: str) -> tuple[bytes, str] | None:
+        """The bytes of a picture or a clip wherever they are (memory for an incognito chat,
+        the disk otherwise), or None when there are none any more."""
+        stored = await self.get(att_id)
+        if stored is None:
+            return None
+        held = self._held.get(att_id)
+        if held is not None:
+            return (held.data, stored.attachment.mime) if held.data is not None else None
+        if stored.path is None or not stored.path.exists():
+            return None
+        return stored.path.read_bytes(), stored.attachment.mime
 
     async def data_url(self, att_id: str) -> str | None:
         """The picture or the clip as a data: URL for a model request; None for anything the
@@ -305,15 +431,32 @@ class AttachmentStore:
         import base64
 
         stored = await self.get(att_id)
-        if stored is None or stored.path is None:
+        if stored is None or stored.attachment.kind not in (AttachmentKind.IMAGE, AttachmentKind.VIDEO):
             return None
-        if stored.attachment.kind not in (AttachmentKind.IMAGE, AttachmentKind.VIDEO):
+        got = await self.raw(att_id)
+        if got is None:
             return None
-        raw = stored.path.read_bytes()
-        return f"data:{stored.attachment.mime};base64,{base64.b64encode(raw).decode('ascii')}"
+        raw, mime = got
+        return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
 
 
 # --- helpers ---------------------------------------------------------------------------------
+
+
+def _unlink_with_thumb(path: Path) -> None:
+    """The file and the thumbnail cached beside it: one is never left without the other."""
+    with contextlib.suppress(OSError):
+        path.unlink()
+    with contextlib.suppress(OSError):
+        path.with_suffix(".thumb.jpg").unlink()
+
+
+def _make_thumb(raw: bytes, kind: AttachmentKind, mime: str) -> tuple[bytes, str] | None:
+    """The transcript's small picture from the bytes: a clip's first frame, or the image scaled
+    down - or the image itself when it is already small enough to be its own thumbnail."""
+    if kind is AttachmentKind.VIDEO:
+        return _video_poster(raw, THUMB_EDGE)
+    return _resize(raw, THUMB_EDGE, jpeg=True) or (raw, mime)
 
 
 def _attachment(row: Any) -> Attachment:

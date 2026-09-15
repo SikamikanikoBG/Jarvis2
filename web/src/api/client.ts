@@ -203,12 +203,14 @@ export const api = {
     state: () => request<TriageState[]>('GET', '/api/triage/state'),
     run: () => request<{ run_id: string }>('POST', '/api/triage/run'),
   },
-  /** One sentence as audio bytes in the server's neural voice; throws (502) when it cannot. */
-  tts: async (text: string, lang: string): Promise<ArrayBuffer> => {
+  /** One sentence as audio bytes in the server's neural voice; throws (502) when it cannot.
+   * `cache: false` (an incognito call) keeps the core from writing the sentence to its disk cache. */
+  tts: async (text: string, lang: string, opts: { cache?: boolean } = {}): Promise<ArrayBuffer> => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     const token = getToken();
     if (token) headers.Authorization = `Bearer ${token}`;
-    const res = await fetch('/api/tts', { method: 'POST', headers, body: JSON.stringify({ text, lang }), credentials: 'same-origin' });
+    const body = JSON.stringify({ text, lang, cache: opts.cache ?? true });
+    const res = await fetch('/api/tts', { method: 'POST', headers, body, credentials: 'same-origin' });
     if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => ''));
     return res.arrayBuffer();
   },
@@ -227,14 +229,18 @@ export const api = {
     remove: (id: string) => request<null>('DELETE', `/api/meetings/${encodeURIComponent(id)}`),
   },
   attachments: {
-    upload: (file: File, conversationId: string | null) => {
+    /** `incognito` is for the upload that comes BEFORE the chat exists (the first message of a
+     * new incognito chat): the core must know not to write the file. An open incognito chat's
+     * own flag is honoured by the core whatever is sent here. */
+    upload: (file: File, conversationId: string | null, incognito = false) => {
       const form = new FormData();
       form.append('file', file, file.name);
       if (conversationId) form.append('conversation_id', conversationId);
+      if (incognito) form.append('incognito', 'true');
       return request<Attachment>('POST', '/api/attachments', form);
     },
-    uploadText: (text: string, name: string, conversationId: string | null) =>
-      request<Attachment>('POST', '/api/attachments/text', { text, name, conversation_id: conversationId }),
+    uploadText: (text: string, name: string, conversationId: string | null, incognito = false) =>
+      request<Attachment>('POST', '/api/attachments/text', { text, name, conversation_id: conversationId, incognito }),
     remove: (id: string) => request<null>('DELETE', `/api/attachments/${encodeURIComponent(id)}`),
     /** Direct URL for an <img> or a download; the token rides in the query like the SPA's own. */
     url: (id: string, opts: { thumb?: boolean } = {}) => {

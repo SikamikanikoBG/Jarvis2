@@ -35,6 +35,23 @@ def to_openai_messages(messages: list[Message]) -> list[dict[str, Any]]:
     for m in messages:
         if m.role is Role.TOOL:
             out.append({"role": "tool", "content": m.content, "tool_call_id": m.tool_call_id or ""})
+            # A tool that came back with a picture (browser.screenshot): the tool message
+            # carries the text, and the picture follows as a user turn — the one place the
+            # OpenAI shape lets an image in. Hydrated only while the request is built.
+            pics = [a for a in m.attachments if a.data_url and a.kind is AttachmentKind.IMAGE]
+            if pics:
+                out.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"[what {m.name or 'the tool'} captured — the image below is its result, not a message from Arsen]",
+                            },
+                            *({"type": "image_url", "image_url": {"url": a.data_url}} for a in pics),
+                        ],
+                    }
+                )
             continue
         shown = [a for a in m.attachments if a.data_url]
         if shown:

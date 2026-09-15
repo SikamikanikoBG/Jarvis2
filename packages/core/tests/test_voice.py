@@ -168,6 +168,10 @@ def test_ws_voice_create_and_a_late_cut_in_are_both_spoken(client: TestClient):
 # --- /api/tts: his voice, one sentence at a time ----------------------------------------------
 
 
+def core_tts_dir(client: TestClient) -> Path:
+    return client.app.state.core.config.home / "tts"  # type: ignore[attr-defined]
+
+
 def test_tts_synthesises_caches_and_says_when_it_cannot(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     from jarvis_core.features import tts
 
@@ -189,6 +193,16 @@ def test_tts_synthesises_caches_and_says_when_it_cannot(client: TestClient, monk
     client.post("/api/tts", json={"text": "Fine.", "lang": "en"}, headers=_h())
     client.post("/api/tts", json={"text": "Bien.", "lang": "fr"}, headers=_h())
     assert [c[1] for c in calls[1:]] == ["en-GB-RyanNeural", "en-GB-RyanNeural"]
+
+    # An incognito call: synthesised, served, told to stay in no cache - and written nowhere.
+    before = {f.name for f in core_tts_dir(client).glob("*.mp3")} if core_tts_dir(client).exists() else set()
+    r3 = client.post("/api/tts", json={"text": "Само между нас.", "lang": "bg", "cache": False}, headers=_h())
+    assert r3.status_code == 200 and r3.content.endswith("Само между нас.".encode())
+    assert r3.headers["cache-control"] == "no-store"
+    after = {f.name for f in core_tts_dir(client).glob("*.mp3")} if core_tts_dir(client).exists() else set()
+    assert after == before, "an incognito sentence must not land in the voice cache"
+    r4 = client.post("/api/tts", json={"text": "Само между нас.", "lang": "bg", "cache": False}, headers=_h())
+    assert r4.status_code == 200 and len(calls) == 5  # synthesised again: nothing was kept
 
     async def down(text: str, voice: str, rate: str) -> bytes:
         raise tts.TtsError("voice service failed: ConnectError")

@@ -10,6 +10,7 @@ const ICONS: Readonly<Record<string, IconName>> = {
   transcript: 'headphones',
   frame: 'monitor',
   triage: 'inbox',
+  playbook: 'book',
 };
 
 /** Collapsed system-style note for a message the core injected as user-role input. */

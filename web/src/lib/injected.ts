@@ -12,6 +12,7 @@ export const INJECTED_LABELS: Readonly<Record<string, string>> = {
   transcript: 'Transcript',
   frame: 'Screen frame',
   triage: 'Triage batch',
+  playbook: 'Playbook learned',
 };
 
 export const CONTEXT_MARKER = '[Context for the request above]';

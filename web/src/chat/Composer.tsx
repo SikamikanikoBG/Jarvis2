@@ -3,14 +3,15 @@ import { Icon } from '../components/Icon';
 import { IconButton, Menu } from '../components/primitives';
 import { useTicker } from '../components/useTicker';
 import { callSupported } from '../voice/support';
-import { cameraSupport, readCameraEnv } from '../lib/camera';
+import { cameraSupport, readRecorderEnv, recorderSupport } from '../lib/camera';
 import { nextTtl, timeLeft, ttlLabel } from '../lib/privacy';
 import { THINK_CHOICES, THINK_DEFAULT, thinkChoiceKey } from '../lib/think';
-import { selectSendRefusal } from '../store/selectors';
+import { selectIncognitoNow, selectSendRefusal } from '../store/selectors';
 import { NEW_CONVERSATION_KEY } from '../store/state';
 import { useStore } from '../store/store';
 import { PendingAttachments } from './Attachments';
 import { CameraDialog } from './CameraDialog';
+import { RecorderDialog } from './RecorderDialog';
 import { MicButton } from './MicButton';
 
 /** Pasted text longer than this becomes an attachment instead of filling the input. */
@@ -49,10 +50,14 @@ export function Composer({ runActive, stopping }: Props) {
   const videoInput = useRef<HTMLInputElement>(null);
   const [attachMenu, setAttachMenu] = useState<HTMLElement | null>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
+  const [recorderOpen, setRecorderOpen] = useState(false);
   const notify = useStore((s) => s.notify);
-  // Fixed for the life of the composer: whether this device can show a live preview does not
-  // change while Arsen is typing.
-  const camera = useMemo(() => cameraSupport(readCameraEnv()), []);
+  const incognito = useStore(selectIncognitoNow);
+  // What this device can do does not change while Arsen is typing; what the chat allows does -
+  // in an incognito chat the OS camera app is never used (it keeps what it shoots on the phone).
+  const env = useMemo(() => readRecorderEnv(), []);
+  const camera = useMemo(() => cameraSupport(env, { incognito }), [env, incognito]);
+  const recorder = useMemo(() => recorderSupport(env, { incognito }), [env, incognito]);
   const refusal = useStore((s) =>
     selectSendRefusal(s, {
       connection: s.connection,
@@ -169,10 +174,13 @@ export function Composer({ runActive, stopping }: Props) {
     else if (camera.mode === 'os') cameraInput.current?.click();
     else notify(camera.reason, 'error');
   };
-  // Recording has no in-app equivalent — the camera app records, we take the file.
+  // Recording: the camera app on a phone, we take the file - except in an incognito chat, where
+  // the camera app would save the clip to the gallery, so the in-app recorder does it in memory.
   const recordVideo = () => {
     setAttachMenu(null);
-    videoInput.current?.click();
+    if (recorder.mode === 'stream') setRecorderOpen(true);
+    else if (recorder.mode === 'os') videoInput.current?.click();
+    else notify(recorder.reason, 'error');
   };
   return (
     <div
@@ -239,6 +247,15 @@ export function Composer({ runActive, stopping }: Props) {
           }}
         />
       )}
+      {recorderOpen && (
+        <RecorderDialog
+          onClose={() => setRecorderOpen(false)}
+          onCapture={(file) => {
+            setRecorderOpen(false);
+            void attachFiles([file]);
+          }}
+        />
+      )}
       <PendingAttachments pending={pending} uploading={uploading} onRemove={removeAttachment} />
       {editing && (
         <div className="edit-banner" role="status">
@@ -279,9 +296,12 @@ export function Composer({ runActive, stopping }: Props) {
             onClose={() => setAttachMenu(null)}
             items={[
               { label: 'Take a photo', icon: 'camera', onSelect: takePhoto },
-              // Recording is the camera app's job, so it is offered only where `capture` means
-              // something: on a desktop the same input is a file dialog, which "Video" already is.
-              ...(camera.mode === 'os' ? [{ label: 'Record a video', icon: 'video' as const, onSelect: recordVideo }] : []),
+              // Recording is offered where it means something: the camera app on a phone, the
+              // in-app recorder in an incognito chat (with its reason when even that is off), and
+              // not on a desktop, where the same input is the file dialog "Photo or video" already is.
+              ...(recorder.mode !== 'unavailable' || recorder.reason
+                ? [{ label: 'Record a video', icon: 'video' as const, onSelect: recordVideo }]
+                : []),
               { label: 'Photo or video', icon: 'image', onSelect: () => pick(mediaInput.current) },
               { label: 'Document or file', icon: 'paperclip', onSelect: () => pick(fileInput.current) },
             ]}

@@ -69,6 +69,7 @@ from jarvis_proto.messages import (
     Message,
     Role,
     ToolCall,
+    ToolImage,
     ToolResult,
     ToolResultKind,
 )
@@ -189,6 +190,7 @@ __all__ = [
     "ToolConfirmRequest",
     "ToolConfirmRequested",
     "ToolConfirmResolved",
+    "ToolImage",
     "ToolResult",
     "ToolResultEvent",
     "ToolResultKind",

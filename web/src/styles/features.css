@@ -1201,6 +1201,36 @@
 .camera-shutter:active:not(:disabled) .camera-shutter-dot {
   transform: scale(0.88);
 }
+/* Recording: the shutter is red and square-ish, the way every camera says "stop". */
+.camera-shutter.recording .camera-shutter-dot {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  background: var(--danger);
+}
+.camera-rec {
+  top: 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.camera-rec-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: camera-rec-blink 1s steps(2, start) infinite;
+}
+@keyframes camera-rec-blink {
+  to {
+    visibility: hidden;
+  }
+}
+.camera-hint-low {
+  bottom: 16px;
+  opacity: 0.8;
+}
 
 /* --- per-chat instructions --- */
 .instructions-card {
@@ -1252,8 +1282,21 @@
   -webkit-user-select: none;
   touch-action: none;
 }
-/* Locked: the light goes down, the words stay legible for a glance, nothing responds. */
+/* Locked: the light goes down, the words stay legible for a glance, nothing responds.
+   The ground is black WHATEVER the theme, so the ink tokens must be the dark theme's here too:
+   with the phone on the light theme the current sentence came out #141a2b on #000 (13 Sep 2026,
+   "с тъмни букви на тъмен фон и не се чете"). */
 .call-locked {
+  --fg: #eaf0fb;
+  --fg-2: #aab4cc;
+  --fg-muted: #8893ad;
+  --fg-dim: #5f6b87;
+  --bg-elevated: #1b2440;
+  --border-strong: #34426a;
+  --accent: #25d8ff;
+  --accent-soft: rgba(37, 216, 255, 0.12);
+  --warn-soft: rgba(255, 179, 71, 0.14);
+  --danger-soft: rgba(255, 84, 112, 0.14);
   background: #000;
   color: var(--fg-2);
 }

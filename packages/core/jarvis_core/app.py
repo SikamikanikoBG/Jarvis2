@@ -42,6 +42,7 @@ from jarvis_core.features.knowledge import KnowledgeLearner, KnowledgeStore, Kno
 from jarvis_core.features.meetings import MeetingService
 from jarvis_core.features.notify import NotifyTools
 from jarvis_core.features.planner import Planner
+from jarvis_core.features.reflection import PlaybookReflector
 from jarvis_core.features.results import ResultsTools
 from jarvis_core.features.rsvp import RsvpJob
 from jarvis_core.features.schedules import Scheduler, ScheduleStore, ScheduleTools
@@ -85,6 +86,7 @@ class Core:
             lambda: self.adapters.for_role(RoleName.CLASSIFIER), lambda: self.adapters.for_role(RoleName.PLANNER)
         )
         self.learner = KnowledgeLearner(self.knowledge, lambda: self.adapters.for_role(RoleName.CLASSIFIER))
+        self.reflector = PlaybookReflector(self.skills, lambda: self.adapters.for_role(RoleName.CLASSIFIER))
         self.schedules = ScheduleStore(self.db, self.bus)
         self.browser = WsProvider()
         self.notify = NotifyTools(settings)
@@ -120,7 +122,9 @@ class Core:
             compactor=self.compactor,
             attachments=self.attachments,
         )
-        self.supervisor = Supervisor(settings, lambda: self.adapters.for_role(RoleName.JUDGE))
+        self.supervisor = Supervisor(
+            settings, lambda: self.adapters.for_role(RoleName.JUDGE), catalog=self.registry.specs
+        )
         self.loop = AgentLoop(
             self.store,
             self.bus,
@@ -133,6 +137,8 @@ class Core:
             planner=self.planner,
             skills=self.skill_detector,
             learner=self.learner,
+            attachments=self.attachments,
+            reflector=self.reflector,
         )
         self.titler = Titler(lambda: self.adapters.for_role(RoleName.CLASSIFIER))
         self.engine = RunEngine(
@@ -173,6 +179,9 @@ class Core:
 
     async def start(self) -> None:
         await self.db.open()
+        # Before anything else runs: an incognito chat's attachments are never on the disk, and
+        # whatever a previous build left there is removed now, not on the next delete.
+        await self.attachments.scrub_private()
         self.apply_settings(await self.store.load_settings())
         # What each machine could do before the restart, so a host that is asleep right now does
         # not look like a machine without capabilities.

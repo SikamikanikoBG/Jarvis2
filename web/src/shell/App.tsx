@@ -92,7 +92,10 @@ export function App() {
 
   return (
     <div className="app">
-      {!panelMode && <TopBar desktop={desktop} />}
+      {/* The side panel is a phone-width Jarvis: same header, same drawer, so a chat can be
+          picked there too — before this the panel was one conversation with no way out of it
+          (13 Sep 2026: "трябва да мога да избера в кой чат искам да си говоря в екстеншъна"). */}
+      <TopBar desktop={desktop && !panelMode} panel={panelMode} />
       <div className="app-body">
         {desktop && !panelMode && view === 'chat' && <Sidebar />}
         <main className="main">
@@ -107,7 +110,7 @@ export function App() {
         )}
       </div>
       {!desktop && !panelMode && <BottomNav />}
-      {!desktop && sidebarOpen && !panelMode && (
+      {(!desktop || panelMode) && sidebarOpen && (
         <Drawer side="left" label="Conversations" onClose={() => setSidebarOpen(false)}>
           <Sidebar />
         </Drawer>

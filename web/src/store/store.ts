@@ -25,7 +25,7 @@ import type {
 import { isRunScoped, isTerminal } from '../protocol/types';
 import { applyFeatureEvents, initialFeatureState, type FeatureState } from './features';
 import { applyServerEvents } from './reducer';
-import { selectActiveRun, selectSendRefusal } from './selectors';
+import { selectActiveRun, selectIncognitoNow, selectSendRefusal } from './selectors';
 import { NEW_CONVERSATION_KEY, initialChatState, omit, type ChatState, type LocalMessage } from './state';
 
 export interface Notice {
@@ -354,9 +354,15 @@ export const useStore = create<AppState>()((set, get) => ({
     } catch {
       /* the default stands; the server voice falls back to the device on its own */
     }
-    speaker = tts === 'server' ? new ServerSpeaker() : new DeviceSpeaker();
+    // An incognito call is one from the first word: the chat it opens is incognito, and the
+    // sentences Jarvis says are not written to the core's voice cache.
+    const incognito = selectIncognitoNow(s);
+    const listener = new MicListener();
+    // The voice plays through the microphone's own context (opened in this tap, proven
+    // running), never a second one opened later while the phone is in call mode.
+    speaker = tts === 'server' ? new ServerSpeaker({ contextOf: () => listener.audioContext, cache: !incognito }) : new DeviceSpeaker();
     session = new CallSession({
-      listener: new MicListener(),
+      listener,
       speaker,
       transcriber: {
         // Whisper detects the language itself, the same as the push-to-talk microphone.
@@ -381,6 +387,9 @@ export const useStore = create<AppState>()((set, get) => ({
             think: null,
             think_level: null,
             channel: 'voice',
+            // Same as a typed first message: the draft's privacy opens the chat (a call started
+            // with the eye on was opening an ordinary, remembered chat - 2026-09-13).
+            ...(conversationId ? {} : { incognito: s.draftPrivacy.incognito, ttl_seconds: s.draftPrivacy.ttlSeconds }),
           });
         },
         steer: (runId, text) => socket.send({ type: 'run.steer', run_id: runId, text, channel: 'voice' }),
@@ -612,7 +621,7 @@ export const useStore = create<AppState>()((set, get) => ({
     for (const file of files) {
       set((s) => ({ uploadingAttachments: [...s.uploadingAttachments, file.name] }));
       try {
-        const att = await api.attachments.upload(file, get().openConversationId);
+        const att = await api.attachments.upload(file, get().openConversationId, selectIncognitoNow(get()));
         set((s) => ({ pendingAttachments: [...s.pendingAttachments, att] }));
       } catch (e) {
         get().notify(`${file.name}: ${errorText(e)}`, 'error');
@@ -624,7 +633,7 @@ export const useStore = create<AppState>()((set, get) => ({
 
   attachText: async (text, name = 'pasted text') => {
     try {
-      const att = await api.attachments.uploadText(text, name, get().openConversationId);
+      const att = await api.attachments.uploadText(text, name, get().openConversationId, selectIncognitoNow(get()));
       set((s) => ({ pendingAttachments: [...s.pendingAttachments, att] }));
     } catch (e) {
       get().notify(`Could not attach the text: ${errorText(e)}`, 'error');

@@ -522,6 +522,97 @@ test("kernel.js holds no control characters Chrome could fail to re-parse", () =
   assert.ok(/^function pageKernel\(op, p\) \{/m.test(KERNEL_SRC));
 });
 
+// ── icon-only controls (the DSK Bank / Webim send arrow, 13 Sep 2026) ────
+//
+// The outline offers pointer-styled <svg> nodes as hotspots, so click must be
+// able to act on one. SVGElement has no .click(); the kernel threw, Chrome
+// returned result: undefined, and the worker said "the page did not answer"
+// — read by the model as an untouchable iframe. Two guarantees below.
+
+const WEBIM = `
+<div class="webim-chat">
+  <div contenteditable="true" role="textbox" id="msg">Колко е лихвата?</div>
+  <div class="webim-send-wrap" id="wrap" style="cursor:pointer">
+    <svg class="webim-ico webim-ico-send" style="cursor:pointer" width="27" height="27">
+      <use xlink:href="#webim-ico-send"></use>
+    </svg>
+  </div>
+</div>`;
+
+test("clicking an <svg> hotspot fires the handler on its host", () => {
+  const p = page(WEBIM, { title: "Онлайн-асистент" });
+  p.win.__sent = 0;
+  p.$("#wrap").addEventListener("click", () => { p.win.__sent++; });
+  assert.equal(typeof p.win.SVGElement.prototype.click, "undefined", "the premise: no click() on SVG");
+  const out = p.op("read", { mode: "outline" });
+  const svg = out.elements.find((e) => e.tag === "svg");
+  assert.ok(svg, out.text);
+  const res = p.op("click", { selector: svg.ref });
+  assert.equal(res.ok, true, res.text);
+  assert.equal(p.win.__sent, 1);
+});
+
+test("a click that does nothing reports the facts, not a verdict", () => {
+  const p = page(`<div id="wrap" class="composer-actions"><span id="txt" class="hint muted">Send</span></div>`);
+  const res = p.op("click", { selector: "Send" });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /nothing observable happened/);
+  assert.match(res.error, /path: span#txt\.hint\.muted < div#wrap\.composer-actions/);
+  assert.match(res.error, /cursor: /);
+  assert.ok(!/probably text/.test(res.error), res.error);
+  assert.equal(typeof res.evidence, "string");
+});
+
+test("the outline keeps the composer's send icon when the log is full of decorative svgs", () => {
+  const dots = Array.from({ length: 40 }, (_, i) =>
+    `<svg class="msg-dot" style="cursor:pointer;width:8px;height:8px"><circle r="4"/></svg>`).join("");
+  const p = page(`
+    <div class="log">${dots}</div>
+    <div class="composer">
+      <div contenteditable="true" role="textbox" id="msg"></div>
+      <svg class="webim-ico webim-ico-send" style="cursor:pointer;width:27px;height:27px"><use/></svg>
+    </div>`);
+  const out = p.op("read", { mode: "outline" });
+  const send = out.elements.find((e) => /webim-ico-send/.test(e.label));
+  assert.ok(send, "send icon is in the outline:\n" + out.text);
+  assert.match(send.label, /^svg\.webim-ico\.webim-ico-send 27x27/);
+  const dotCount = out.elements.filter((e) => /msg-dot/.test(e.label)).length;
+  assert.ok(dotCount < 25, "the dots did not crowd it out: " + dotCount);
+});
+
+test("eval runs code with the helpers and returns a promise the worker awaits", async () => {
+  const p = page(`<button id="go" class="primary">Go</button>`);
+  const out = p.op("read", { mode: "outline" });
+  const ref = out.elements.find((e) => e.tag === "button").ref;
+  const res = await p.op("eval", { code: `return { tag: $ref('${ref}').tagName, n: $$('button').length, d: describe($('#go')) };` });
+  assert.equal(res.ok, true);
+  assert.equal(res.value.tag, "BUTTON");
+  assert.equal(res.value.n, 1);
+  assert.match(res.value.d, /button#go «Go»/);
+  const bad = await p.op("eval", { code: "throw new RangeError('nope');" });
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /RangeError: nope/);
+});
+
+test("an exception inside the kernel comes back as an error result, not silence", () => {
+  const p = page("<button id=b>Go</button>");
+  // Break something the click path relies on, the way an exotic page might.
+  p.win.Element.prototype.getBoundingClientRect = () => { throw new TypeError("boom from the page"); };
+  const res = p.op("click", { selector: "Go" });
+  assert.ok(res && typeof res === "object", "a result object came back");
+  assert.equal(res.ok, false);
+  assert.equal(res.kernel_error, true);
+  assert.match(res.error, /page script failed while doing click: boom from the page/);
+  assert.match(res.text, /Jarvis bug, not the page/);
+});
+
+test("snapshot is the page's visible text on one line, hidden nodes excluded", () => {
+  const { op } = page("<h1>Title</h1><p>Line one.</p><p hidden>secret</p><script>var x = 1;</script><p>Line   two.</p>");
+  const res = op("snapshot", {});
+  assert.equal(res.ok, true);
+  assert.equal(res.text, "Title Line one. Line two.");
+});
+
 test("an unknown op is an error, never silence", () => {
   const { op } = page("<p>x</p>");
   const res = op("extract", {});

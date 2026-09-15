@@ -43,7 +43,9 @@ class Synthesizer:
         # point; more than that and a long answer floods the endpoint for audio nobody hears yet.
         self._sem = asyncio.Semaphore(2)
 
-    async def synthesize(self, text: str, lang: str) -> tuple[bytes, str]:
+    async def synthesize(self, text: str, lang: str, *, cache: bool = True) -> tuple[bytes, str]:
+        """``cache=False`` is an incognito call: a sentence already in the cache is still served
+        from it (nothing new is learned by reading), but nothing said in that call is written."""
         text = " ".join(text.split())
         if not text:
             raise TtsError("nothing to say")
@@ -63,6 +65,8 @@ class Synthesizer:
             audio = await asyncio.wait_for(_edge(text, voice, s.rate), TIMEOUT_S)
         if not audio:
             raise TtsError("the voice service returned no audio")
+        if not cache:
+            return audio, "audio/mpeg"
         self._dir.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".part")
         tmp.write_bytes(audio)

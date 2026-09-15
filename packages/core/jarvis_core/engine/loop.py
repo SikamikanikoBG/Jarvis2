@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
+import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -25,6 +27,7 @@ from jarvis_core.models.base import (
     ModelToolCallsChunk,
 )
 from jarvis_core.tools import ToolRegistry
+from jarvis_core.tools.builtin import IS_WAIT_TOOL
 from jarvis_core.tools.facades import ExposurePolicy
 from jarvis_proto import (
     Channel,
@@ -70,8 +73,10 @@ if TYPE_CHECKING:
     # runs jarvis_core.engine.__init__, which imports this module. Importing them for real made
     # `import jarvis_core.features.knowledge` (or .skills) as the FIRST jarvis_core import raise a
     # circular ImportError — invisible from the app, which always reaches them via app.py.
+    from jarvis_core.features.attachments import AttachmentStore
     from jarvis_core.features.knowledge import KnowledgeLearner
     from jarvis_core.features.planner import Planner, Preflight
+    from jarvis_core.features.reflection import PlaybookReflector
     from jarvis_core.features.skills import SkillDetector
 
 log = logging.getLogger(__name__)
@@ -114,6 +119,8 @@ class AgentLoop:
         planner: Planner | None = None,
         skills: SkillDetector | None = None,
         learner: KnowledgeLearner | None = None,
+        attachments: AttachmentStore | None = None,
+        reflector: PlaybookReflector | None = None,
     ) -> None:
         self._store = store
         self._bus = bus
@@ -126,6 +133,8 @@ class AgentLoop:
         self._planner = planner
         self._skills = skills
         self._learner = learner
+        self._attachments = attachments
+        self._reflector = reflector
 
     def _exposed_tools(self, plan_active: bool, *, incognito: bool = False, voice: bool = False) -> list[ToolSpec]:
         s = self._settings()
@@ -413,6 +422,9 @@ class AgentLoop:
                     and not incognito
                 ):
                     self._learner.schedule(run.conversation_id, run.input_text, text, assistant.id)
+                # A run that fought a site and won leaves a playbook behind for the next one.
+                if self._reflector is not None and not incognito:
+                    self._reflector.schedule(watch.steps, on_learned=self._note_playbook(run))
                 return
 
             results = await self._execute_tool_calls(run, assistant, calls, ctl, watch)
@@ -689,12 +701,56 @@ class AgentLoop:
             note = f"\n[saved as a draft: {policy_note}]"
             result = result.model_copy(update={"text": result.text + note})
         duration = int((time.perf_counter() - t0) * 1000)
+        # A wait paused the world on purpose: credit the run clock so the time budget measures
+        # work, not waiting. (browser.wait is a wait too — recognised by name.)
+        if (call.name in IS_WAIT_TOOL or call.name.endswith(".wait")) and result.kind is not ToolResultKind.ERROR:
+            watch.paused_s += time.perf_counter() - t0
         if not read_only:
             await self._store.record_idempotent_result(key, result.model_dump_json())
+        if call.name.startswith("browser."):
+            result = await self._with_site_playbook(result, watch)
         return (
             await self._tool_message(run, call, result, duration, emit),
             step_of(call.name, call.arguments, result),
         )
+
+    async def _with_site_playbook(self, result: ToolResult, watch: RunWatch) -> ToolResult:
+        """Arriving on a site Jarvis has a playbook for: the playbook rides on the tool result,
+        once per run. This is where a learned lesson meets the next run — before its first click,
+        without Arsen having to mention the site by name."""
+        if self._skills is None or result.kind is ToolResultKind.ERROR:
+            return result
+        m = _URL_IN_RESULT.search(result.text or "")
+        if not m:
+            return result
+        try:
+            found = await self._skills.store.for_site(m.group(0))
+        except Exception as exc:  # a broken skill file is not the run's problem
+            log.warning("site playbook lookup failed: %s", exc)
+            return result
+        fresh = [(n, b) for n, b in found if n not in watch.playbooks_shown]
+        if not fresh:
+            return result
+        blocks = []
+        for name, body in fresh[:2]:
+            watch.playbooks_shown.add(name)
+            blocks.append(
+                f"[Playbook `{name}` — learned on this site earlier; follow it before improvising]\n{body[:3000]}"
+            )
+        return result.model_copy(update={"text": result.text + "\n\n" + "\n\n".join(blocks)})
+
+    def _note_playbook(self, run: Run) -> Callable[[str, str], Awaitable[None]]:
+        async def note(name: str, description: str) -> None:
+            await self._persist(
+                run,
+                Message.user(
+                    f"[playbook] Learned `{name}` from this run: {description}. It will be shown automatically "
+                    "the next time a browser tool lands on that site. Review or edit it under Skills.",
+                    name="playbook",
+                ),
+            )
+
+        return note
 
     async def _tool_message(
         self, run: Run, call: ToolCall, result: ToolResult, duration_ms: int, emit: Emit
@@ -704,7 +760,35 @@ class AgentLoop:
                 run_id="", conversation_id="", call_id=call.id, name=call.name, result=result, duration_ms=duration_ms
             )
         )
-        return await self._persist(run, Message.tool(call.id, call.name, result.to_model_text()))
+        message = await self._persist(run, Message.tool(call.id, call.name, result.to_model_text()))
+        if result.images and self._attachments is not None and message.id:
+            # The picture becomes an attachment of the tool message: hydrated into the request
+            # like any image Arsen sends, shown in the transcript, and gone with the conversation.
+            ids: list[str] = []
+            for img in result.images:
+                try:
+                    att = await self._attachments.add_file(
+                        data=base64.b64decode(img.base64),
+                        filename=img.name,
+                        mime=img.mime,
+                        conversation_id=run.conversation_id,
+                    )
+                    ids.append(att.id)
+                except Exception as exc:
+                    log.warning("tool image from %s not kept: %s", call.name, exc)
+            if ids:
+                try:
+                    bound = await self._attachments.bind(
+                        ids, message_id=message.id, conversation_id=run.conversation_id
+                    )
+                    # Hydrated NOW, not only when a later run rebuilds the history: this message
+                    # goes to the model on the very next step, and it must carry the picture.
+                    for att in bound:
+                        att.data_url = await self._attachments.data_url(att.id)
+                    message.attachments = bound
+                except Exception as exc:
+                    log.warning("tool image from %s not bound: %s", call.name, exc)
+        return message
 
     async def _wait_for_confirmation(self, run: Run, ctl: RunControl, call: ToolCall, *, reason: str) -> None:
         emit = ctl.emitter.emit
@@ -804,6 +888,12 @@ class AgentLoop:
         asked = call.arguments.get("timeout_s")
         if isinstance(asked, int | float) and asked > 0:
             return min(float(asked) + 10.0, limit)
+        # A deliberate wait is not a runaway tool — it is meant to take exactly this long, so
+        # its own duration governs the deadline instead of tool_timeout_max_s.
+        if call.name in IS_WAIT_TOOL:
+            secs = call.arguments.get("seconds")
+            if isinstance(secs, int | float) and secs > 0:
+                return float(secs) + 30.0
         return min(_TOOL_TIMEOUT_S, limit)
 
     # --- finishing -----------------------------------------------------------------
@@ -908,6 +998,9 @@ def _dispatch_groups(
         else:
             groups.append([call])
     return groups
+
+
+_URL_IN_RESULT = re.compile(r"""https?://[^\s"'<>)\]]+""")
 
 
 def _repeated_failure(watch: RunWatch, call: ToolCall) -> str | None:

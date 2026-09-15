@@ -87,17 +87,35 @@ export class DeviceSpeaker implements Speaker {
  * The next sentence is fetched while the current one plays (`prepare`), so the gap between
  * sentences is the network only once, at the first. When the core cannot synthesise, the
  * device voice says that sentence instead — and the call goes on.
+ *
+ * Where it plays: through the microphone's own AudioContext when the listener lends one
+ * (`contextOf`). That context was opened inside the "start call" tap and is proven running by
+ * the level ring; a second context opened later — from a WebSocket delta, with the phone
+ * already in call mode — is the one that can come up suspended, and a source started on a
+ * suspended context never ends: the call sat on "Speaking" in silence (2026-09-13, "the tts
+ * in the chat call is not working"). Belt and braces for that: `resume()` is awaited with a
+ * deadline, a context that will not run hands the sentence to the device voice, every play
+ * has a watchdog a little longer than the clip, and the reason reaches the screen.
  */
 export class ServerSpeaker implements Speaker {
-  private ctx: AudioContext | null = null;
-  private current: { source: AudioBufferSourceNode; resolve: () => void } | null = null;
+  private own: AudioContext | null = null;
+  private current: { source: AudioBufferSourceNode; resolve: () => void; watchdog: ReturnType<typeof setTimeout> } | null = null;
   private prepared = new Map<string, Promise<AudioBuffer | null>>();
   private readonly fallback = new DeviceSpeaker();
+  private problem: string | null = null;
   /** Set once the server has failed, so the screen can say the voice is the device's. */
   fellBack = false;
 
+  constructor(private readonly o: { contextOf?: () => AudioContext | null; cache?: boolean } = {}) {}
+
   available(): boolean {
     return typeof AudioContext !== 'undefined';
+  }
+
+  takeProblem(): string | null {
+    const p = this.problem;
+    this.problem = null;
+    return p;
   }
 
   /** Start fetching a sentence now; `speak` will find it ready. */
@@ -108,16 +126,27 @@ export class ServerSpeaker implements Speaker {
   }
 
   private context(): AudioContext {
-    this.ctx ??= new AudioContext();
-    if (this.ctx.state === 'suspended') void this.ctx.resume();
-    return this.ctx;
+    const lent = this.o.contextOf?.();
+    if (lent) return lent;
+    if (!this.own || this.own.state === 'closed') this.own = new AudioContext();
+    return this.own;
+  }
+
+  /** True once the context runs; false when it will not within the deadline. */
+  private async running(ctx: AudioContext, deadlineMs = 1500): Promise<boolean> {
+    if (ctx.state === 'running') return true;
+    const resumed = ctx.resume().then(() => true, () => false);
+    const late = new Promise<boolean>((r) => setTimeout(() => r(false), deadlineMs));
+    // Re-read after the await: TypeScript's narrowing does not know a state can change.
+    return (await Promise.race([resumed, late])) && (ctx.state as AudioContextState) === 'running';
   }
 
   private async fetch(text: string, lang: string): Promise<AudioBuffer | null> {
     try {
-      const bytes = await api.tts(text, lang);
+      const bytes = await api.tts(text, lang, { cache: this.o.cache ?? true });
       return await this.context().decodeAudioData(bytes);
-    } catch {
+    } catch (e) {
+      this.problem = `The server voice failed (${e instanceof Error ? e.message : 'error'}); using the device voice.`;
       return null;
     }
   }
@@ -132,6 +161,11 @@ export class ServerSpeaker implements Speaker {
       return this.fallback.speak(text, lang);
     }
     const ctx = this.context();
+    if (!(await this.running(ctx))) {
+      this.fellBack = true;
+      this.problem = `The browser would not play the voice (audio ${ctx.state}); using the device voice.`;
+      return this.fallback.speak(text, lang);
+    }
     return new Promise<void>((resolve) => {
       const source = ctx.createBufferSource();
       source.buffer = buffer;
@@ -140,11 +174,21 @@ export class ServerSpeaker implements Speaker {
       const finish = () => {
         if (done) return;
         done = true;
-        if (this.current?.source === source) this.current = null;
+        if (this.current?.source === source) {
+          clearTimeout(this.current.watchdog);
+          this.current = null;
+        }
         resolve();
       };
       source.onended = finish;
-      this.current = { source, resolve: finish };
+      // A source that never ends (a context that went quiet under it) must not hold the call
+      // on "Speaking" for ever: the clip's own length plus a little is as long as it gets.
+      const watchdog = setTimeout(() => {
+        if (done) return;
+        this.problem = 'The voice stopped playing mid-sentence.';
+        finish();
+      }, buffer.duration * 1000 + 1500);
+      this.current = { source, resolve: finish, watchdog };
       source.start();
     });
   }
@@ -153,6 +197,7 @@ export class ServerSpeaker implements Speaker {
     const cur = this.current;
     this.current = null;
     if (cur) {
+      clearTimeout(cur.watchdog);
       try {
         cur.source.stop();
       } catch {
@@ -166,7 +211,8 @@ export class ServerSpeaker implements Speaker {
 
   close(): void {
     this.cancel();
-    void this.ctx?.close();
-    this.ctx = null;
+    // Only a context of our own is ours to close; a lent one belongs to the microphone.
+    void this.own?.close();
+    this.own = null;
   }
 }

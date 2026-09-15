@@ -1,3 +1,4 @@
+import type { DraftPrivacy } from '../lib/privacy';
 import type { ChatFolder, Conversation, ConversationKind, Run, ToolConfirmRequested } from '../protocol/types';
 import { isTerminal } from '../protocol/types';
 import type { ChatState } from './state';
@@ -209,4 +210,18 @@ export function selectSendRefusal(
     return 'Jarvis is working — words reach him now, but a photo has to wait for the next message.';
   }
   return null;
+}
+
+/**
+ * Whether what is being attached or shot RIGHT NOW belongs to an incognito chat: the open
+ * chat's own flag, or - before the first message, when no chat exists yet - the draft's. The
+ * upload has to carry this because the core cannot know it any other way at that moment, and
+ * the camera has to know it because the OS camera app keeps what it shoots.
+ */
+export function selectIncognitoNow(
+  state: Pick<ChatState, 'openConversationId' | 'conversations'> & { draftPrivacy: DraftPrivacy },
+): boolean {
+  const id = state.openConversationId;
+  if (id) return state.conversations[id]?.incognito ?? false;
+  return state.draftPrivacy.incognito;
 }

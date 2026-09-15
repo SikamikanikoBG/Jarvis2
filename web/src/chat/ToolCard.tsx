@@ -3,6 +3,7 @@ import { Icon } from '../components/Icon';
 import { formatDuration, prettyJson, summariseArgs } from '../lib/format';
 import type { ToolResultKind } from '../protocol/types';
 import type { ToolCardModel } from '../store/transcript';
+import { MessageAttachments } from './Attachments';
 
 const KIND_CHIP: Record<ToolResultKind, string> = {
   data: 'chip-ok',
@@ -73,6 +74,7 @@ export function ToolCard({ card }: { card: ToolCardModel }) {
               <pre className={kind === 'error' ? 'error' : ''}>{card.result?.error ?? resultText ?? (rejected ? 'Not executed.' : '')}</pre>
             )}
             {card.result?.cursor && <div className="field-hint">More available (cursor {card.result.cursor})</div>}
+            {card.attachments.length > 0 && <MessageAttachments attachments={card.attachments} />}
           </div>
         </div>
       )}

@@ -17,8 +17,20 @@
  * returns the full-size photo; there is nothing the web preview does better on a touch screen.
  * So: OS camera on a phone, the in-app preview on a desktop (where `capture` is ignored and a
  * file dialog is not a camera), and otherwise say plainly why there is none.
+ *
+ * **Except in an incognito chat.** The OS camera app keeps what it shoots: a clip recorded
+ * through `<input capture>` lands in the phone's gallery (Android hands the recorder no output
+ * file of ours, so it saves its own), and a photo at least sits in the browser's cache
+ * directory. Incognito means nothing of the chat stays on the phone, so there the in-app
+ * stream is the only camera — the frame goes canvas → blob → upload and touches no storage —
+ * and where there is no in-app stream (plain http), there is no camera, and the menu says why.
+ * The blurrier wide lens is the price, and it is the right price.
  */
 export type CameraMode = 'stream' | 'os' | 'unavailable';
+
+export const INCOGNITO_NO_CAMERA_REASON =
+  'In an incognito chat the phone’s camera app is not used: it would keep a copy on the phone. ' +
+  'The in-app camera needs https; over this connection there is none.';
 
 export interface CameraSupport {
   mode: CameraMode;
@@ -40,7 +52,11 @@ export function readCameraEnv(): CameraEnv {
   };
 }
 
-export function cameraSupport(env: CameraEnv): CameraSupport {
+export function cameraSupport(env: CameraEnv, opts: { incognito?: boolean } = {}): CameraSupport {
+  if (opts.incognito) {
+    if (env.hasUserMedia) return { mode: 'stream', reason: '' };
+    return { mode: 'unavailable', reason: INCOGNITO_NO_CAMERA_REASON };
+  }
   if (env.coarsePointer) return { mode: 'os', reason: '' };
   if (env.hasUserMedia) return { mode: 'stream', reason: '' };
   return {
@@ -49,6 +65,41 @@ export function cameraSupport(env: CameraEnv): CameraSupport {
       ? 'This browser exposes no camera.'
       : 'The camera needs a secure connection. Open Jarvis over https (or on localhost) and it will work here.',
   };
+}
+
+export interface RecorderEnv extends CameraEnv {
+  hasMediaRecorder: boolean;
+}
+
+export function readRecorderEnv(): RecorderEnv {
+  return { ...readCameraEnv(), hasMediaRecorder: typeof MediaRecorder !== 'undefined' };
+}
+
+/**
+ * Which way this device can record a clip. Normally the OS camera app, and only on a phone (a
+ * desktop ignores `capture`, and "Photo or video" is already a file dialog there). In an
+ * incognito chat never the OS app — it saves the recording to the gallery — so the in-app
+ * recorder (getUserMedia + MediaRecorder, memory only) or nothing, with the reason.
+ */
+export function recorderSupport(env: RecorderEnv, opts: { incognito?: boolean } = {}): CameraSupport {
+  if (opts.incognito) {
+    if (env.hasUserMedia && env.hasMediaRecorder) return { mode: 'stream', reason: '' };
+    return { mode: 'unavailable', reason: INCOGNITO_NO_CAMERA_REASON };
+  }
+  if (env.coarsePointer) return { mode: 'os', reason: '' };
+  return { mode: 'unavailable', reason: '' };
+}
+
+/** The MediaRecorder container this browser can write for a clip with sound, best first. */
+export function recorderMime(isSupported: (m: string) => boolean = (m) => MediaRecorder.isTypeSupported(m)): string {
+  const wanted = ['video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+  return wanted.find((m) => isSupported(m)) ?? 'video/webm';
+}
+
+/** clip-20260913-203501.webm — the same shape as a photo's name, the suffix from the container. */
+export function clipFilename(mime: string, at: Date = new Date()): string {
+  const suffix = mime.startsWith('video/mp4') ? '.mp4' : '.webm';
+  return photoFilename(at).replace(/^photo-/, 'clip-').replace(/\.jpg$/, suffix);
 }
 
 /** What went wrong, said in a sentence a person can act on rather than a DOMException name. */
@@ -88,10 +139,12 @@ export function nextCamera(devices: MediaDeviceInfo[], currentId: string | null)
 }
 
 /** The constraints for a capture: the back camera on a phone, and enough pixels that the 1568 px
- *  the pipeline keeps is a down-scale rather than an up-scale. */
-export function captureConstraints(deviceId: string | null): MediaStreamConstraints {
+ *  the pipeline keeps is a down-scale rather than an up-scale. A clip asks for sound too — what
+ *  is said in it is what was meant — and fewer pixels, since the core samples it to 768 px. */
+export function captureConstraints(deviceId: string | null, opts: { clip?: boolean } = {}): MediaStreamConstraints {
   const video: MediaTrackConstraints = deviceId
     ? { deviceId: { exact: deviceId } }
     : { facingMode: { ideal: 'environment' } };
+  if (opts.clip) return { video: { ...video, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: true };
   return { video: { ...video, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false };
 }

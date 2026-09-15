@@ -45,6 +45,8 @@ async def stt(
 class TtsRequest(BaseModel):
     text: str
     lang: str = "bg"
+    #: False for an incognito call: the sentence is synthesised but never written to the disk cache.
+    cache: bool = True
 
 
 @router.post("/tts")
@@ -53,12 +55,13 @@ async def tts(request: Request, body: TtsRequest) -> Response:
     service cannot be reached - the browser then says the sentence with the device's own voice."""
     core = core_of(request)
     try:
-        audio, mime = await core.synthesizer.synthesize(body.text, body.lang)
+        audio, mime = await core.synthesizer.synthesize(body.text, body.lang, cache=body.cache)
     except TtsError as exc:
         raise HTTPException(502, str(exc)) from exc
     except TimeoutError as exc:
         raise HTTPException(504, "the voice service took too long") from exc
-    return Response(content=audio, media_type=mime, headers={"Cache-Control": "private, max-age=86400"})
+    caching = {"Cache-Control": "private, max-age=86400"} if body.cache else {"Cache-Control": "no-store"}
+    return Response(content=audio, media_type=mime, headers=caching)
 
 
 # --- meetings -------------------------------------------------------------------------------

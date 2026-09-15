@@ -62,6 +62,13 @@ export class MicListener implements Listener {
   private t0 = 0;
   private acquiring: Promise<void> | null = null;
 
+  /** The context the microphone runs in: created inside the "start call" tap and proven running
+   *  by the level ring, so the voice plays through it too rather than through a second context
+   *  opened later, outside any gesture, while the phone is in call mode. */
+  get audioContext(): AudioContext | null {
+    return this.ctx && this.ctx.state !== 'closed' ? this.ctx : null;
+  }
+
   async start(handlers: ListenerHandlers): Promise<void> {
     this.handlers = handlers;
     this.ctx = new AudioContext();

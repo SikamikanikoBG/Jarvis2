@@ -108,6 +108,16 @@ class ToolResultKind(StrEnum):
     ERROR = "error"
 
 
+class ToolImage(BaseModel):
+    """A picture a tool came back with (a browser screenshot). Bytes ride here from the provider
+    to the engine, which files them as an attachment on the tool message; they are never
+    serialised onward — ``ToolResult.images`` is excluded from every dump."""
+
+    mime: str
+    base64: str
+    name: str = "screenshot.jpg"
+
+
 class ToolResult(BaseModel):
     """Typed outcome of a tool call (V1's contract, adopted everywhere from day one).
 
@@ -121,6 +131,9 @@ class ToolResult(BaseModel):
     total: int | None = None
     cursor: str | None = None
     error: str | None = None
+    # What the tool SAW. Until 13 Sep 2026 browser.screenshot's image was dropped on the way in
+    # and the model was told "attached for a vision model" — blind, and believing it had eyes.
+    images: list[ToolImage] = Field(default_factory=list, exclude=True)
 
     @classmethod
     def data(cls, text: str, *, count: int | None = None, total: int | None = None) -> ToolResult:

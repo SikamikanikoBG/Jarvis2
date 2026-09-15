@@ -367,3 +367,15 @@ async def reload_tools(request: Request) -> list[ToolSpec]:
 @router.get("/tools", response_model=list[ToolSpec])
 async def list_tools(request: Request) -> list[ToolSpec]:
     return core_of(request).registry.specs()
+
+
+@router.post("/browser/reload")
+async def reload_browser_extension(request: Request) -> dict[str, Any]:
+    """Tell the connected extension to reload itself — the last step of a deploy that shipped
+    new extension files. Before this every such deploy ended with a trip to brave://extensions,
+    and on 2026-09-13 one that was skipped had the model working with a kernel three fixes old."""
+    core = core_of(request)
+    sent = await core.browser.reload_extension()
+    if not sent:
+        raise HTTPException(status_code=409, detail="browser extension not connected")
+    return {"ok": True, "version": core.browser.version}

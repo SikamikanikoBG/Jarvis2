@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from jarvis_core.models.base import ModelAdapter, ModelDoneChunk, ModelTextChunk
-from jarvis_proto import Message, Run, RunBudget, Settings, ToolResult, ToolResultKind
+from jarvis_proto import Message, Run, RunBudget, Settings, ToolResult, ToolResultKind, ToolSpec
 from jarvis_proto.events import GuardArmed, GuardConsumed, JudgeVerdict, RunEvent
 
 log = logging.getLogger(__name__)
@@ -50,7 +50,13 @@ class Verdict:
 class RunWatch:
     budget: RunBudget
     started: float = field(default_factory=time.monotonic)
+    # Seconds spent in a deliberate wait (jarvis.wait / browser.wait). Subtracted from elapsed
+    # so the time budget measures work, not waiting — a run that sleeps for a build is not a
+    # runaway (13 Sep 2026).
+    paused_s: float = 0.0
     steps: list[StepRecord] = field(default_factory=list)
+    # Site playbooks already shown in this run (skill names): once per run, not per click.
+    playbooks_shown: set[str] = field(default_factory=set)
     empty_replies: int = 0
     nudges: int = 0
     plan_nudged: bool = False
@@ -61,7 +67,7 @@ class RunWatch:
     continued: bool = False
 
     def elapsed_s(self) -> float:
-        return time.monotonic() - self.started
+        return time.monotonic() - self.started - self.paused_s
 
 
 def args_hash(tool: str, arguments: dict[str, object]) -> str:
@@ -99,11 +105,15 @@ class Supervisor:
         *,
         error_streak: int = 3,
         max_nudges: int = 2,
+        catalog: Callable[[], Sequence[ToolSpec]] | None = None,
     ) -> None:
         self._settings = settings
         self._judge = judge
         self._error_streak = error_streak
         self._max_nudges = max_nudges
+        # The tools the run could be using instead. A nudge that says "you are in a loop" leaves
+        # the model to guess the way out; one that says "browser.wait exists" hands it the door.
+        self._catalog = catalog
 
     # --- budgets -------------------------------------------------------------------
 
@@ -173,11 +183,14 @@ class Supervisor:
             f"Task: {run.input_text[:600]}\n"
             f"Signal: {detail}\n"
             f"Recent tool steps (oldest first):\n{render_steps(watch.steps[-8:])}\n\n"
-            "Some tools act on state their arguments do not name (a browser tab, a cursor). For\n"
+            + self._alternatives(watch)
+            + "Some tools act on state their arguments do not name (a browser tab, a cursor). For\n"
             "those, identical arguments are normal and say nothing; judge by whether the RESULTS\n"
-            "move forward.\n"
+            "move forward. Waiting for a slow page is progress when a wait tool is what is being used.\n"
             'Answer with JSON only: {"verdict": "continue" | "nudge" | "stop", "reason": "<one sentence>"}.\n'
-            "continue = the repetition is justified (e.g. paging); nudge = it should change approach; "
+            "continue = the repetition is justified (e.g. paging); nudge = it should change approach — then "
+            "the reason MUST name the tool or the concrete step to take instead, from the list above when one "
+            "fits (e.g. 'use browser.wait instead of sleeping and re-reading'); "
             "stop = it is looping or cannot succeed."
         )
         try:
@@ -192,6 +205,21 @@ class Supervisor:
         except Exception as exc:
             log.warning("judge unavailable: %s", exc)
             return Verdict("stop", f"supervisor could not evaluate progress ({type(exc).__name__}); stopping")
+
+    def _alternatives(self, watch: RunWatch) -> str:
+        """The other tools of the namespaces the run is stuck in, one line each."""
+        if self._catalog is None or not watch.steps:
+            return ""
+        spaces = {s.tool.split(".", 1)[0] for s in watch.steps[-8:] if "." in s.tool}
+        used = {s.tool for s in watch.steps[-8:]}
+        lines = []
+        for spec in self._catalog():
+            if spec.name.split(".", 1)[0] in spaces and spec.name not in used:
+                first = spec.description.split(". ", 1)[0].strip()
+                lines.append(f"- {spec.name}: {first[:140]}")
+        if not lines:
+            return ""
+        return "Tools in the same family it has NOT used in these steps:\n" + "\n".join(lines[:12]) + "\n\n"
 
 
 def _shared_head(values: Sequence[str], minimum: int = 40) -> str:

@@ -233,6 +233,81 @@ function pageKernel(op, p) {
     return el;
   }
 
+  // Facts about an element, for the model to reason from when an action did
+  // not do what was asked. A refusal used to carry a verdict ("probably just
+  // text", "an iframe extensions cannot touch") and the model then argued from
+  // the verdict for forty minutes (DSK Bank, 13 Sep 2026). What is HERE is
+  // observable: the element, its ancestors, its box, cursor and state.
+  function evidence(el) {
+    const parts = [];
+    try {
+      const chain = [];
+      let n = el;
+      for (let i = 0; n && n.nodeType === 1 && i < 5; i++, n = n.parentElement || (n.getRootNode && n.getRootNode().host)) {
+        let t = n.tagName.toLowerCase();
+        if (n.id) t += "#" + n.id;
+        const cls = String(n.className && n.className.baseVal !== undefined ? n.className.baseVal : n.className || "")
+          .trim().split(/\s+/).filter(Boolean).slice(0, 3).join(".");
+        if (cls) t += "." + cls;
+        const role = n.getAttribute && n.getAttribute("role");
+        if (role) t += "[role=" + role + "]";
+        if (n.getAttribute && n.getAttribute("onclick") !== null) t += "[onclick]";
+        chain.push(t);
+      }
+      parts.push("path: " + chain.join(" < "));
+    } catch (e) {}
+    try {
+      const b = el.getBoundingClientRect();
+      parts.push("box: " + Math.round(b.width) + "x" + Math.round(b.height) + " at " +
+                 Math.round(b.left) + "," + Math.round(b.top) +
+                 (b.bottom < 0 || b.top > innerHeight || b.right < 0 || b.left > innerWidth ? " (offscreen)" : ""));
+    } catch (e) {}
+    try {
+      const cs = getComputedStyle(el);
+      parts.push("cursor: " + cs.cursor + ", pointer-events: " + cs.pointerEvents + ", visibility: " + cs.visibility);
+    } catch (e) {}
+    try {
+      const st = [];
+      if (disabled(el)) st.push("disabled");
+      if (el.getAttribute && el.getAttribute("tabindex") !== null) st.push("tabindex=" + el.getAttribute("tabindex"));
+      if (el.getAttribute && el.getAttribute("aria-disabled")) st.push("aria-disabled=" + el.getAttribute("aria-disabled"));
+      if (el.isContentEditable) st.push("contenteditable");
+      if (el.closest && el.closest("form")) st.push("inside a <form>");
+      if (el.ownerDocument !== document) st.push("in another document");
+      if (window !== window.top) st.push("this frame is an iframe of the page");
+      if (st.length) parts.push("state: " + st.join(", "));
+    } catch (e) {}
+    return parts.join("; ");
+  }
+
+  // Pointer-styled icon nodes (or their pointer-styled wrapper) whose class
+  // tokens carry the words asked for: "send" → svg.webim-ico-send.
+  function iconControlsMatching(want) {
+    const words = String(want || "").toLowerCase().split(/\s+/).filter((w) => w.length >= 3);
+    if (!words.length) return [];
+    const out = [];
+    let cand = [];
+    try { cand = deepQueryAll("svg, img, i, span, div, button, a"); } catch (e) { return out; }
+    for (let i = 0; i < cand.length && out.length < 12 && i < 6000; i++) {
+      const el = cand[i];
+      const cls = String(el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className || "").toLowerCase();
+      if (!cls) continue;
+      const tokens = cls.split(/[\s_\-:.]+/).filter(Boolean);
+      if (!words.every((w) => tokens.some((t) => t === w || t.indexOf(w) === 0))) continue;
+      if (!visible(el)) continue;
+      let pointer = false;
+      let n = el;
+      for (let d = 0; n && d < 3 && !pointer; d++, n = n.parentElement) {
+        try { pointer = getComputedStyle(n).cursor === "pointer" || (n.matches && n.matches(CLICKABLE)); } catch (e) {}
+      }
+      if (!pointer) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width * r.height > innerWidth * innerHeight * 0.25) continue;
+      out.push(el);
+    }
+    return out;
+  }
+
   function signature(el) {
     return (el.tagName + "|" + labelOf(el)).slice(0, 60);
   }
@@ -792,6 +867,32 @@ function pageKernel(op, p) {
     return target;
   }
 
+  // The click itself. HTMLElement.click() is the native activation (submits
+  // forms, follows links) — but it does not exist on SVGElement, and icon-only
+  // controls are exactly that: an <svg> send arrow inside a div with a handler
+  // (Webim chat widget, 13 Sep 2026 — the throw became "the page did not
+  // answer"). A dispatched click at the same point bubbles through the same
+  // ancestors a real mouse click would, handlers and activation included.
+  function activate(t) {
+    if (typeof t.click === "function") { t.click(); return; }
+    let cx = 0, cy = 0;
+    try {
+      const r = t.getBoundingClientRect();
+      cx = Math.round(r.left + r.width / 2);
+      cy = Math.round(r.top + r.height / 2);
+    } catch (e) {}
+    const init = {
+      bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: cx, clientY: cy, button: 0, detail: 1,
+    };
+    try {
+      t.dispatchEvent(new PointerCtor("click", Object.assign(
+        { pointerId: 1, pointerType: "mouse", isPrimary: true }, init)));
+    } catch (e) {
+      try { t.dispatchEvent(new MouseEvent("click", init)); } catch (e2) {}
+    }
+  }
+
   function typeInto(el, value, opts) {
     opts = opts || {};
     try { el.focus({ preventScroll: true }); } catch (e) { try { el.focus(); } catch (e2) {} }
@@ -1031,8 +1132,15 @@ function pageKernel(op, p) {
       const cand = deepQueryAll(
         "div, span, img, area, li, td, svg, g, path, circle, rect",
         scope === document ? null : scope);
-      let added = 0;
-      for (let i = 0; i < cand.length && added < 25 && i < 4000; i++) {
+      // Rank, do not take the first 25 in document order: a chat log grows
+      // dozens of 8x8 decorative svgs ABOVE the composer, and on the seventh
+      // question the send arrow fell off the end of the list (DSK/Webim,
+      // 13 Sep 2026). What matters most: controls beside an editable field,
+      // icon-sized, in the viewport, with a telling class name.
+      const fields = kept.filter((k) => k.editable).map((k) => k.el.getBoundingClientRect());
+      const HINT = /send|submit|search|mic|attach|upload|close|dismiss|menu|next|prev|play|pause|arrow|expand|more/i;
+      const scored = [];
+      for (let i = 0; i < cand.length && i < 4000; i++) {
         const el = cand[i];
         if (seen.has(el) || !visible(el)) continue;
         let cs;
@@ -1041,16 +1149,39 @@ function pageKernel(op, p) {
         const r = el.getBoundingClientRect();
         if (r.width * r.height > innerWidth * innerHeight * 0.5) continue;
         if (el.querySelector && el.querySelector("a[href],button,input,[role=button]")) continue;
+        const cls = String(el.className && el.className.baseVal !== undefined
+                           ? el.className.baseVal : el.className || "").trim().split(/\s+/).filter(Boolean);
+        const size = Math.max(r.width, r.height);
+        let score = 0;
+        if (size >= 14 && size <= 96) score += 3;      // icon-sized: a control, not a bullet
+        else if (size < 10) score -= 4;                // dots and decorations
+        if (r.bottom > 0 && r.top < innerHeight) score += 2;
+        if (cls.some((c) => HINT.test(c))) score += 3;
+        for (const f of fields) {
+          const near = Math.abs((r.top + r.height / 2) - (f.top + f.height / 2)) < Math.max(80, f.height) &&
+                       r.left < f.right + 160 && r.right > f.left - 160;
+          if (near) { score += 5; break; }
+        }
         let lab = labelOf(el) ||
           (el.getAttribute && (el.getAttribute("alt") || el.getAttribute("title") ||
                                el.getAttribute("aria-label"))) || "";
         if (!lab) {
-          lab = "hotspot " + Math.round(r.width) + "x" + Math.round(r.height) +
+          // The class IS the identity of an icon-only control — "svg.webim-ico-send"
+          // tells the model (and Arsen) what it is; "hotspot 27x27" told neither.
+          lab = (cls.length ? el.tagName.toLowerCase() + "." + cls.slice(0, 2).join(".") + " " : "hotspot ") +
+                Math.round(r.width) + "x" + Math.round(r.height) +
                 " at " + Math.round(r.left) + "," + Math.round(r.top);
         }
-        kept.push({ el: el, label: lab, editable: false });
-        seen.add(el);
-        added++;
+        scored.push({ el: el, label: lab, score: score, order: i });
+      }
+      scored.sort((a, b) => (b.score - a.score) || (a.order - b.order));
+      // Sub-10px pointer nodes are bullets and read-receipts; when there are
+      // real icon controls they only push those past the result's length cap.
+      const strong = scored.filter((s) => s.score >= 3).length;
+      const shown = strong >= 3 ? scored.filter((s) => s.score >= 0) : scored;
+      for (const s of shown.slice(0, 25)) {
+        kept.push({ el: s.el, label: s.label, editable: false });
+        seen.add(s.el);
       }
     } catch (e) { /* never let the hotspot pass break a normal read */ }
 
@@ -1295,6 +1426,22 @@ function pageKernel(op, p) {
 
   // ---- dispatch ---------------------------------------------------------
 
+  // An exception here reaches chrome.scripting.executeScript as result:
+  // undefined — the worker then reports "the page did not answer", which
+  // reads as an iframe or a navigation, not as a kernel bug. Say what broke.
+  try {
+    return dispatch();
+  } catch (e) {
+    return finalize({
+      ok: false,
+      kernel_error: true,
+      error: "The page script failed while doing " + op + ": " +
+        ((e && e.message) || String(e)) + ". This is a Jarvis bug, not the page — " +
+        "try another way to reach the control, and report the error.",
+    });
+  }
+
+  function dispatch() {
   switch (op) {
     // Exposed for the unit tests: the scoring invariant is asserted, not assumed.
     case "__tuning":
@@ -1303,6 +1450,53 @@ function pageKernel(op, p) {
     case "read": {
       const mode = String(p.mode || "text").toLowerCase();
       return mode === "outline" ? readOutline(p) : readText(p);
+    }
+
+    // The page's visible text as one line, for browser.wait to diff between
+    // polls. No refs, no formatting, no model-facing prose — the worker speaks.
+    case "snapshot": {
+      const root = document.body || document.documentElement;
+      const text = tidy(root ? textOf(root) : "").replace(/\s+/g, " ").slice(0, 200000);
+      return { ok: true, text: text };
+    }
+
+    // Run the model's own JavaScript against this document. The typed ops
+    // are the fast path; this is what makes the agent independent of them —
+    // a control the outline mis-scored, a widget that wants a specific event,
+    // a value only the page's state knows. Helpers: $(sel), $$(sel), $ref("e9")
+    // (an outline ref), and describe(el)/evidence(el) from this kernel.
+    case "eval": {
+      const code = String(p.code == null ? "" : p.code);
+      if (!code.trim()) return finalize({ ok: false, error: "browser.eval needs code." });
+      const helpers = {
+        $: (s) => document.querySelector(s),
+        $$: (s) => Array.prototype.slice.call(document.querySelectorAll(s)),
+        $ref: (r) => document.querySelector("[" + REF + "=\"" + String(r).replace(/^@/, "") + "\"]"),
+        describe: describe,
+        evidence: evidence,
+      };
+      let fn;
+      try {
+        fn = new Function("$", "$$", "$ref", "describe", "evidence",
+                          "return (async () => {\n" + code + "\n})();");
+      } catch (e) {
+        return finalize({ ok: false, kernel_error: false,
+          error: "The code does not parse: " + ((e && e.message) || String(e)) +
+                 ". Write the body of an async function; use `return` for the value you want back." });
+      }
+      // Not awaited here: executeScript needs a sync return for the value to
+      // travel. Promises are resolved by the worker (see toolEval) — the
+      // kernel returns a promise, executeScript awaits it.
+      try {
+        return fn(helpers.$, helpers.$$, helpers.$ref, helpers.describe, helpers.evidence).then(
+          (v) => ({ ok: true, value: v }),
+          (e) => ({ ok: false, thrown: true,
+                    error: ((e && e.name) ? e.name + ": " : "") + ((e && e.message) || String(e)),
+                    stack: e && e.stack ? String(e.stack).split("\n").slice(0, 4).join(" | ") : undefined }));
+      } catch (e) {
+        return finalize({ ok: false, thrown: true,
+          error: ((e && e.name) ? e.name + ": " : "") + ((e && e.message) || String(e)) });
+      }
     }
 
     case "find": {
@@ -1329,6 +1523,11 @@ function pageKernel(op, p) {
       // Text on its own is not actionable; hand back the controls carrying it
       // so the next call can be a click by ref instead of another guess.
       const ranked = rank(deepQueryAll(ACTIONABLE), want, null).slice(0, 8);
+      // An icon-only control has no text to match — its class name is its
+      // name. browser.find "send" answered "nothing matches" while
+      // svg.webim-ico-send sat beside the composer (DSK/Webim, 13 Sep 2026).
+      const byClass = iconControlsMatching(want).filter((el) => !ranked.some((c) => c.el === el));
+      for (const el of byClass.slice(0, 6)) ranked.push({ el: el, score: 50 + (inViewport(el) ? 6 : 0) });
       const elements = ranked.map((c) => {
         const e = {
           ref: "@" + refOf(c.el),
@@ -1511,8 +1710,10 @@ function pageKernel(op, p) {
       if (disabled(el)) {
         return finalize({
           ok: false,
+          evidence: evidence(el),
           error: "Element is disabled: " + desc +
-            ". Something upstream is unsatisfied — fill the form or type into the editor first.",
+            ". Something upstream is unsatisfied — fill the form or type into the editor first. " +
+            "Facts: " + evidence(el) + ".",
         });
       }
       // Observation, not interpretation: snapshot nearby editable fields before
@@ -1532,26 +1733,27 @@ function pageKernel(op, p) {
       // Click the element the pointer actually landed on: events bubble UP, so
       // an overlay's listener never fires when dispatching on `el` beneath it,
       // while a child still bubbles to `el` for native activation.
-      (hit || el).click();
+      activate(hit || el);
       let changedTheDom = false;
       if (watcher) {
         try { changedTheDom = watcher.takeRecords().length > 0; } catch (e) {}
         try { watcher.disconnect(); } catch (e) {}
       }
       if (noAffordance && !changedTheDom && location.href === urlBefore) {
-        // Refuse, rather than return ok with a warning nobody reads. What
-        // reaches here has no href, role, tabindex, pointer cursor or ARIA
-        // state and did nothing — inert prose that merely CONTAINS the text.
+        // Refuse rather than return ok with a warning nobody reads — but say
+        // WHAT WAS OBSERVED, not what it probably is. The model decides.
         return finalize({
           ok: false,
           action: "click",
           element: desc,
           how: r.how,
-          error: "Element is not clickable: " + desc +
-            ". It has no href, role, tabindex, pointer cursor or ARIA state and nothing " +
-            "changed when it was clicked — it is probably text that just contains your " +
-            "words. Pick one of the candidates below, or browser.read mode=outline for " +
-            "the links and buttons on this page.",
+          evidence: evidence(el),
+          error: "Element is not clickable as far as the page showed: clicked " + desc + " and nothing observable happened — a full pointer sequence " +
+            "(pointerdown/mousedown/pointerup/mouseup/click) was dispatched at its centre, the DOM " +
+            "did not change and the URL did not change. The element has no href, role, tabindex, " +
+            "pointer cursor or ARIA state. Facts: " + evidence(el) + ". If a handler sits on a " +
+            "different node, click that one (a candidate below, a parent from the path, or " +
+            "browser.read mode=outline for the page's controls); browser.eval can inspect or drive it directly.",
           candidates: candidateList(r).filter((c) => c.href)
             .concat(candidateList(r).filter((c) => !c.href)).slice(0, 5),
         });
@@ -1686,6 +1888,7 @@ function pageKernel(op, p) {
 
     default:
       return finalize({ ok: false, error: "Kernel has no op: " + op });
+  }
   }
 }
 

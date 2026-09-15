@@ -8,7 +8,7 @@ import { useStore } from '../store/store';
 import { ConversationMenu } from './ConversationMenu';
 import { NAV_ALL, NAV_DESKTOP, NAV_MORE, NAV_PRIMARY } from './nav';
 
-export function TopBar({ desktop }: { desktop: boolean }) {
+export function TopBar({ desktop, panel = false }: { desktop: boolean; panel?: boolean }) {
   const view = useStore((s) => s.view);
   const setView = useStore((s) => s.setView);
   const openId = useStore((s) => s.openConversationId);
@@ -78,14 +78,18 @@ export function TopBar({ desktop }: { desktop: boolean }) {
         <span className={`dot ${connection === 'open' ? 'dot-ok' : connection === 'closed' ? 'dot-danger' : 'dot-warn dot-pulse'}`} />
         {desktop && <span>{connection === 'open' ? 'live' : connection}</span>}
       </div>
-      {'Notification' in window && (
+      {/* The panel is ~360px wide and follows the browser's theme; notifications belong to the
+          full app's tab. Menu, title, chat menu and the connection dot are what fits and matters. */}
+      {!panel && 'Notification' in window && (
         <IconButton
           icon={notifyRuns ? 'bell' : 'bellOff'}
           label={notifyRuns ? 'Desktop notifications on — click to turn off' : 'Notify me when a run finishes in a background tab'}
           onClick={() => void setNotifyRuns(!notifyRuns)}
         />
       )}
-      <IconButton icon={theme === 'dark' ? 'sun' : 'moon'} label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} />
+      {!panel && (
+        <IconButton icon={theme === 'dark' ? 'sun' : 'moon'} label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} />
+      )}
     </header>
   );
 }

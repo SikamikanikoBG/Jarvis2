@@ -63,6 +63,16 @@ for i in $(seq 1 30); do
 done
 $SSH "docker ps --filter name=$NAME --format '    {{.Names}}  {{.Status}}  {{.Ports}}'"
 $SSH "curl -fsS -m 5 http://127.0.0.1:$PORT/api/health" && echo
+# The extension reconnects within seconds of the restart; then it is told to re-read its files,
+# so a deploy that changed extension/ is complete without a visit to brave://extensions.
+echo "==> asking the browser extension to reload"
+for i in $(seq 1 15); do
+  if $SSH "curl -fsS -m 3 -X POST -H 'Authorization: Bearer $TOKEN' http://127.0.0.1:$PORT/api/browser/reload" >/dev/null 2>&1; then
+    echo "    reload sent after ${i}s"
+    break
+  fi
+  sleep 1
+done
 echo
 echo "Jarvis V2 on ardi:  http://$BIND:$PORT/?token=$TOKEN"
 echo "OpenAI-compatible:  http://$BIND:$PORT/v1  (model 'jarvis', bearer above)"

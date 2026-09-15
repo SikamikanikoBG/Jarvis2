@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import struct
 import zlib
+from typing import Any
 
 import pytest
 
@@ -202,17 +203,41 @@ async def test_a_portrait_photo_reaches_the_model_the_right_way_up(harness: Harn
         assert img.size == (200, 300)
 
 
-def clip(seconds: float, fps: int, width: int = 640, height: int = 480, *, audio: bool = False) -> bytes:
+class _NoSeek:
+    """A write-only sink: what a muxer sees when it streams (the browser's MediaRecorder does).
+    Unable to seek back, WebM never writes its length — the header says "unknown size"."""
+
+    def __init__(self) -> None:
+        self.buf = io.BytesIO()
+
+    def write(self, data: bytes) -> int:
+        return self.buf.write(data)
+
+
+def clip(
+    seconds: float,
+    fps: int,
+    width: int = 640,
+    height: int = 480,
+    *,
+    audio: bool = False,
+    rotation: int = 0,
+    streamed_webm: bool = False,
+) -> bytes:
     """A real encoded video, made here so the test needs no ffmpeg binary and no fixture file.
-    With ``audio`` it carries a 440 Hz tone: an audio TRACK, which is what the extraction needs."""
+    With ``audio`` it carries a 440 Hz tone: an audio TRACK, which is what the extraction needs.
+    ``rotation`` writes the display matrix a phone writes instead of turning its pixels;
+    ``streamed_webm`` makes a WebM the way MediaRecorder does — with no duration in it."""
     import av
     from PIL import Image
 
-    buf = io.BytesIO()
-    with av.open(buf, mode="w", format="mp4") as dst:
-        stream = dst.add_stream("mpeg4", rate=fps)
+    buf: Any = _NoSeek() if streamed_webm else io.BytesIO()
+    with av.open(buf, mode="w", format="webm" if streamed_webm else "mp4") as dst:
+        stream = dst.add_stream("libvpx" if streamed_webm else "mpeg4", rate=fps)
         stream.width, stream.height = width, height
         stream.pix_fmt = "yuv420p"
+        if rotation:
+            stream.set_display_rotation(rotation)
         sound = dst.add_stream("aac", rate=44100, layout="mono") if audio else None
         for i in range(int(seconds * fps)):
             shade = (i * 7) % 256
@@ -240,7 +265,19 @@ def clip(seconds: float, fps: int, width: int = 640, height: int = 480, *, audio
                 dst.mux(packet)
         for packet in stream.encode():
             dst.mux(packet)
-    return buf.getvalue()
+    return buf.buf.getvalue() if streamed_webm else buf.getvalue()
+
+
+def sampled_shape(path: str) -> tuple[int, float, int, int]:
+    """(frames, duration in seconds, width, height) of a stored clip, read the way a player
+    reads it — the same clock vLLM's loader uses (frame count over frame rate)."""
+    import av
+
+    with av.open(path, mode="r") as src:
+        stream = src.streams.video[0]
+        frames = sum(1 for _ in src.demux(stream) if _.pts is not None)
+        duration = frames / float(stream.average_rate) if stream.average_rate else 0.0
+        return frames, duration, stream.width, stream.height
 
 
 async def test_a_video_is_sampled_to_frames_and_reaches_the_model_as_a_video_part(harness: Harness):
@@ -266,6 +303,14 @@ async def test_a_video_is_sampled_to_frames_and_reaches_the_model_as_a_video_par
     )
     assert long_att.meta["frames"] == 32
     assert "over 60" in long_att.meta["sampled"]
+    # And the file is as long as the clip: the frames sit where they were taken. At 1 fps the
+    # same 32 frames were a 32-second video, and the model — told by the note it was 60 s —
+    # concluded it had been shown the first half-minute and nothing after it.
+    stored = await core.attachments.get(long_att.id)
+    assert stored is not None and stored.path is not None
+    frames, duration, _, _ = sampled_shape(stored.path)
+    assert frames == 32 and duration == pytest.approx(60.0, abs=1.0)
+    assert "one every 1.9s" in long_att.meta["sampled"]
 
     # No audio track: the message says so, rather than the model guessing what was said.
     assert att.text is None and att.meta["audio"] == "none"
@@ -298,6 +343,45 @@ async def test_a_video_is_sampled_to_frames_and_reaches_the_model_as_a_video_par
     ]
     assert video_parts, "the adapter sends a video_url part, which is what vLLM takes"
     assert video_parts[0]["video_url"]["url"].startswith("data:video/mp4;base64,")
+
+
+async def test_a_portrait_clip_reaches_the_model_the_right_way_up(harness: Harness):
+    """A phone held upright records landscape pixels and a display matrix that says "turn
+    this"; a player honours it, a decoder does not. The model was shown the raw pixels — every
+    portrait clip lying on its side — until the rotation was applied to the frames here."""
+    core = harness.core
+    att = await core.attachments.add_file(
+        data=clip(3, 10, 640, 480, rotation=-90), filename="upright.mp4", mime="video/mp4", conversation_id=None
+    )
+    assert att.meta["rotation"] == -90
+    assert (att.meta["width"], att.meta["height"]) == (480, 640), "portrait, as the phone showed it"
+    stored = await core.attachments.get(att.id)
+    assert stored is not None and stored.path is not None
+    _, _, width, height = sampled_shape(stored.path)
+    assert (width, height) == (480, 640)
+    # The transcript's poster too.
+    poster = await core.attachments.thumbnail(att.id)
+    assert poster is not None
+    from PIL import Image
+
+    with Image.open(io.BytesIO(poster[0])) as img:
+        assert img.height > img.width
+
+
+async def test_a_clip_the_browser_recorded_is_sampled_across_its_whole_length(harness: Harness):
+    """MediaRecorder streams into a WebM and never writes how long it is. With the container
+    saying nothing, the sampler took the length to be 0 s and kept ONE frame of a two-minute
+    recording. The packets know: their last timestamp is the length."""
+    core = harness.core
+    att = await core.attachments.add_file(
+        data=clip(40, 5, 320, 240, streamed_webm=True), filename="clip.webm", mime="video/webm", conversation_id=None
+    )
+    assert att.meta["duration_s"] == pytest.approx(40.0, abs=1.0)
+    assert att.meta["frames"] == 32, "sampled across the clip, not one frame of it"
+    stored = await core.attachments.get(att.id)
+    assert stored is not None and stored.path is not None
+    frames, duration, _, _ = sampled_shape(stored.path)
+    assert frames == 32 and duration == pytest.approx(40.0, abs=1.0)
 
 
 async def test_what_is_said_in_a_video_reaches_the_model_as_text(harness: Harness, monkeypatch: pytest.MonkeyPatch):

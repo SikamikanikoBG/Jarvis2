@@ -52,7 +52,8 @@ VIDEO_MIME = {"video/mp4", "video/quicktime", "video/webm", "video/x-matroska", 
 # picture's worth of tokens, so the sampling is the whole design: 1 frame a second, at most 32 of
 # them, 768 px on the long edge. That is ~32 s of a clip watched evenly, for about the token cost
 # of a handful of photos. Longer clips are not refused — they are sampled across their length, so
-# a 5-minute video becomes 32 frames spread over 5 minutes.
+# a 5-minute video becomes 32 frames spread over 5 minutes, and the file they are packed into is
+# still 5 minutes long (see _prepare_video: the frame rate is the sampling rate, not VIDEO_FPS).
 VIDEO_FPS = 1.0
 VIDEO_MAX_FRAMES = 32
 VIDEO_EDGE = 768
@@ -565,6 +566,30 @@ def _prepare_image(data: bytes, mime: str, meta: dict[str, Any]) -> tuple[bytes,
     return smaller[0], smaller[1], meta
 
 
+def _clip_duration(src: Any, stream: Any) -> float:
+    """How long the clip is, in seconds, whatever the container says.
+
+    An MP4 off a phone carries it in the header. A WebM out of the browser's ``MediaRecorder``
+    (the in-app recorder) carries it NOWHERE — the recorder streams into a segment of unknown
+    size and never comes back to write the length — so ``src.duration`` and the stream's are
+    both None. For that one the packets are walked without decoding (cheap: timestamps only)
+    and the last one's time is the length. Before this the fallback was 0 s, and 0 s at one
+    frame a second sampled a two-minute recording down to ONE frame.
+    """
+    import av
+
+    if src.duration:
+        return float(src.duration / av.time_base)
+    if stream.duration and stream.time_base:
+        return float(stream.duration * stream.time_base)
+    last = 0
+    for packet in src.demux(stream):
+        if packet.pts is not None and packet.pts > last:
+            last = packet.pts
+    src.seek(0)
+    return float(last * stream.time_base) if stream.time_base else 0.0
+
+
 def _prepare_video(data: bytes, mime: str, meta: dict[str, Any]) -> tuple[bytes, str, dict[str, Any]]:
     """Re-sample a clip into the few frames the model is actually shown.
 
@@ -575,12 +600,25 @@ def _prepare_video(data: bytes, mime: str, meta: dict[str, Any]) -> tuple[bytes,
     longer than that — so a five-minute video still arrives as 32 frames, one every ten seconds,
     rather than the first half-minute and nothing after it.
 
+    The frames keep their place in time. The file is muxed at the sampling rate — 32 frames of
+    a two-minute clip play at 32/120 fps, not at 1 fps — because the model is told WHEN each
+    frame is by the file's clock, and vLLM reads that clock as frame count over frame rate.
+    At 1 fps the same 32 frames were a 32-second video: the model saw the whole clip and
+    believed it had seen the first half-minute of it ("видеото е 2 минути, а аз стигам само
+    до първите ~30 секунди").
+
+    A phone that was held upright writes landscape pixels and a display matrix saying "turn
+    this"; a player honours it, a decoder hands out the raw pixels. The rotation is applied
+    here (``frame.rotation``, the same number ffmpeg's autorotate uses), so a portrait clip
+    reaches the model portrait, not lying on its side.
+
     Re-encoded to MJPEG in an MP4 container: every decoder in the chain (PyAV here, whatever vLLM
     uses there) reads it, the frames stay crisp because each one is a JPEG, and nothing depends
     on an H.264 encoder being compiled into the wheel — ``libx264`` is exactly what was missing
     on the machine this was first tried on.
     """
     import io
+    from fractions import Fraction
 
     try:
         import av
@@ -591,7 +629,7 @@ def _prepare_video(data: bytes, mime: str, meta: dict[str, Any]) -> tuple[bytes,
             stream = next((s for s in src.streams.video), None)
             if stream is None:
                 raise AttachmentError("no video track in this file")
-            duration = float(src.duration / av.time_base) if src.duration else 0.0
+            duration = _clip_duration(src, stream)
             meta["duration_s"] = round(duration, 2)
             meta["source_size"] = f"{stream.width}x{stream.height}"
             meta["original_bytes"] = len(data)
@@ -600,13 +638,19 @@ def _prepare_video(data: bytes, mime: str, meta: dict[str, Any]) -> tuple[bytes,
             wanted = VIDEO_MAX_FRAMES if duration * VIDEO_FPS > VIDEO_MAX_FRAMES else max(1, int(duration * VIDEO_FPS))
             step = duration / wanted if duration > 0 and wanted else 0.0
             frames: list[Any] = []
-            next_at = 0.0
+            rotation = 0
             for frame in src.decode(stream):
                 at = float(frame.time or 0.0)
-                if step and at + 1e-3 < next_at:
+                # The k-th frame kept is the first one at or after k*step — a fixed grid, not
+                # "step after the last one kept": that drifted by up to a source frame per pick
+                # and lost the tail of a clip whose frames were sparse.
+                if step and at + 1e-3 < len(frames) * step:
                     continue
-                frames.append(frame.to_image())
-                next_at = at + step if step else next_at
+                rotation = int(frame.rotation or 0)
+                image = frame.to_image()
+                if rotation:
+                    image = image.rotate(rotation, expand=True)
+                frames.append(image)
                 if len(frames) >= wanted:
                     break
     except AttachmentError:
@@ -620,9 +664,13 @@ def _prepare_video(data: bytes, mime: str, meta: dict[str, Any]) -> tuple[bytes,
     scale = min(1.0, VIDEO_EDGE / max(first.width, first.height))
     width = max(2, int(first.width * scale)) & ~1  # even dimensions: encoders insist
     height = max(2, int(first.height * scale)) & ~1
+    # The frames are `step` seconds apart in the clip, so they are `step` seconds apart in the
+    # file: the frame rate is 1/step, and the file is as long as the clip was.
+    spacing = Fraction(step).limit_denominator(1000) if step > 0 else Fraction(1, int(VIDEO_FPS) or 1)
+    rate = 1 / spacing
     out = io.BytesIO()
     with av.open(out, mode="w", format="mp4") as dst:
-        stream_out = dst.add_stream("mjpeg", rate=int(VIDEO_FPS) or 1)
+        stream_out = dst.add_stream("mjpeg", rate=rate)
         stream_out.width, stream_out.height = width, height
         stream_out.pix_fmt = "yuvj420p"
         for image in frames:
@@ -632,9 +680,12 @@ def _prepare_video(data: bytes, mime: str, meta: dict[str, Any]) -> tuple[bytes,
         for packet in stream_out.encode():
             dst.mux(packet)
     meta["frames"] = len(frames)
-    meta["fps"] = VIDEO_FPS
+    meta["fps"] = round(float(rate), 4)
     meta["width"], meta["height"] = width, height
-    meta["sampled"] = f"{len(frames)} frames over {meta['duration_s']}s"
+    if rotation:
+        meta["rotation"] = rotation
+    every = f", one every {step:.1f}s" if step > 0 and len(frames) > 1 else ""
+    meta["sampled"] = f"{len(frames)} frames over {meta['duration_s']}s{every}"
     return out.getvalue(), "video/mp4", meta
 
 
@@ -686,6 +737,8 @@ def _video_poster(data: bytes, edge: int) -> tuple[bytes, str] | None:
                 return None
             for frame in src.decode(stream):
                 image = frame.to_image()
+                if frame.rotation:  # the display matrix a phone writes instead of turning the pixels
+                    image = image.rotate(int(frame.rotation), expand=True)
                 image.thumbnail((edge, edge))
                 out = io.BytesIO()
                 image.convert("RGB").save(out, format="JPEG", quality=85)

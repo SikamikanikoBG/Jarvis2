@@ -748,3 +748,28 @@ harness — library vs. own is an open question to settle in the design.
   device voice." - instead of passing in silence. If it was the earpiece all along: it is the
   default he asked for this morning, the sound is at the ear, and the button (a hold on the
   locked screen) is the speaker. (core 2.0.0a44, web alpha.24)
+- 2026-09-15 — "the AI said the videos are rotated, and sees only 30 seconds, not the full
+  video." Both true, and a third one found on the way. The 30 seconds: `_prepare_video` took
+  32 frames evenly across the clip and muxed them at `VIDEO_FPS` = 1 fps, so the FILE was 32
+  seconds long whatever the clip was. vLLM's loader (checked in the container on vader:
+  `opencv.py`, `duration = total_frames_num / original_fps`) hands Qwen3-VL that clock, and the
+  model timestamps every frame from it - the frames spanned the two minutes, the timestamps
+  said 0-31 s, and the note said 119.97 s, so the model concluded, reasonably, "видеото е 2
+  минути, а аз стигам само до първите ~30 секунди" (this morning's blood-pressure clip,
+  `att_1a0a3946f8c`). The file is now muxed at the sampling rate - 32 frames of a two-minute
+  clip at 4/15 fps - so it is as long as the clip; verified through vLLM's own
+  `VIDEO_LOADER_REGISTRY.load("qwen3_vl").load_bytes` in the container: 32 frames,
+  `duration 120.0`. The note also says "one every 3.7s" now. The rotation: a phone held
+  upright writes landscape pixels and a display matrix; `frame.to_image()` is the raw pixels.
+  PyAV 18 exposes `frame.rotation` from the matrix, and `image.rotate(frame.rotation,
+  expand=True)` reproduces ffmpeg's autorotate pixel-for-pixel (checked against `ffmpeg -i
+  rot.mp4 -frames:v 1` on `-display_rotation ±90` files, mean diff 0.0) - applied to the sampled
+  frames and to the transcript poster. The third: a WebM out of the browser's MediaRecorder -
+  the in-app (incognito) recorder on Android - carries NO duration anywhere, the container
+  said 0 s, and 0 s at one frame a second is ONE frame of a two-minute recording. The
+  packets are demuxed (no decode) and the last timestamp is the length. And a fourth, small:
+  the sampler re-anchored each pick on the frame it actually got (`next_at = at + step`), so
+  the step drifted by up to a source frame per pick and a 40 s clip at 5 fps came out 29
+  frames; picks are on a fixed grid now (`k * step`). Three tests: the 60 s clip's stored file
+  is 60 s long, a `-90` display-matrix clip is stored and postered portrait, a streamed WebM
+  is 32 frames over its whole length. (core 2.0.0a45)

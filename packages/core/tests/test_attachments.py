@@ -284,7 +284,7 @@ async def test_a_video_is_sampled_to_frames_and_reaches_the_model_as_a_video_par
     """A clip is frames to the model, and frames are what it pays for.
 
     Ten seconds at 30 fps is 300 pictures; shown whole it is a context blown by one message. The
-    clip is re-sampled once on the way in — a frame a second, 32 at most — and the stored file is
+    clip is re-sampled once on the way in — a frame a second, 64 at most — and the stored file is
     what the model watches. Verified against the qwen3.8 endpoint on 2026-09-13: an mp4 data URI
     in a `video_url` part, answered correctly.
     """
@@ -297,20 +297,20 @@ async def test_a_video_is_sampled_to_frames_and_reaches_the_model_as_a_video_par
     assert att.bytes < att.meta["original_bytes"], "the stored clip is the sampled one"
     assert att.mime == "video/mp4"
 
-    # A long clip is spread across its whole length rather than cut off after 32 seconds.
+    # A long clip is spread across its whole length rather than cut off after 64 seconds.
     long_att = await core.attachments.add_file(
-        data=clip(60, 15), filename="long.mp4", mime="video/mp4", conversation_id=None
+        data=clip(128, 5, 320, 240), filename="long.mp4", mime="video/mp4", conversation_id=None
     )
-    assert long_att.meta["frames"] == 32
-    assert "over 60" in long_att.meta["sampled"]
+    assert long_att.meta["frames"] == 64
+    assert "over 128" in long_att.meta["sampled"]
     # And the file is as long as the clip: the frames sit where they were taken. At 1 fps the
-    # same 32 frames were a 32-second video, and the model — told by the note it was 60 s —
-    # concluded it had been shown the first half-minute and nothing after it.
+    # same frames were a one-minute video, and the model — told by the note it was longer —
+    # concluded it had been shown the first minute and nothing after it.
     stored = await core.attachments.get(long_att.id)
     assert stored is not None and stored.path is not None
     frames, duration, _, _ = sampled_shape(stored.path)
-    assert frames == 32 and duration == pytest.approx(60.0, abs=1.0)
-    assert "one every 1.9s" in long_att.meta["sampled"]
+    assert frames == 64 and duration == pytest.approx(128.0, abs=1.0)
+    assert "one every 2.0s" in long_att.meta["sampled"]
 
     # No audio track: the message says so, rather than the model guessing what was said.
     assert att.text is None and att.meta["audio"] == "none"
@@ -374,14 +374,14 @@ async def test_a_clip_the_browser_recorded_is_sampled_across_its_whole_length(ha
     recording. The packets know: their last timestamp is the length."""
     core = harness.core
     att = await core.attachments.add_file(
-        data=clip(40, 5, 320, 240, streamed_webm=True), filename="clip.webm", mime="video/webm", conversation_id=None
+        data=clip(80, 5, 320, 240, streamed_webm=True), filename="clip.webm", mime="video/webm", conversation_id=None
     )
-    assert att.meta["duration_s"] == pytest.approx(40.0, abs=1.0)
-    assert att.meta["frames"] == 32, "sampled across the clip, not one frame of it"
+    assert att.meta["duration_s"] == pytest.approx(80.0, abs=1.0)
+    assert att.meta["frames"] == 64, "sampled across the clip, not one frame of it"
     stored = await core.attachments.get(att.id)
     assert stored is not None and stored.path is not None
     frames, duration, _, _ = sampled_shape(stored.path)
-    assert frames == 32 and duration == pytest.approx(40.0, abs=1.0)
+    assert frames == 64 and duration == pytest.approx(80.0, abs=1.0)
 
 
 async def test_what_is_said_in_a_video_reaches_the_model_as_text(harness: Harness, monkeypatch: pytest.MonkeyPatch):

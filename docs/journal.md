@@ -773,3 +773,6 @@ harness — library vs. own is an open question to settle in the design.
   frames; picks are on a fixed grid now (`k * step`). Three tests: the 60 s clip's stored file
   is 60 s long, a `-90` display-matrix clip is stored and postered portrait, a streamed WebM
   is 32 frames over its whole length. (core 2.0.0a45)
+  Same evening: "raise it to 64 frames". `VIDEO_MAX_FRAMES` 32 → 64: the two-minute clip is now
+  one frame every 1.9 s instead of 3.75 s, for roughly twice the tokens (~10k of the 262k
+  context per video). The file's clock follows: 64 frames of 120 s at 8/15 fps. (core 2.0.0a46)

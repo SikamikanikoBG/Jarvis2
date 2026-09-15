@@ -49,13 +49,15 @@ EXIF_ORIENTATION = 0x0112  # the tag a phone writes instead of rotating the pixe
 IMAGE_MIME = {"image/jpeg", "image/png", "image/webp", "image/gif", "image/bmp"}
 VIDEO_MIME = {"video/mp4", "video/quicktime", "video/webm", "video/x-matroska", "video/x-msvideo", "video/3gpp"}
 # What the model is shown of a clip. The vision tower reads frames, and every frame is roughly a
-# picture's worth of tokens, so the sampling is the whole design: 1 frame a second, at most 32 of
-# them, 768 px on the long edge. That is ~32 s of a clip watched evenly, for about the token cost
-# of a handful of photos. Longer clips are not refused — they are sampled across their length, so
-# a 5-minute video becomes 32 frames spread over 5 minutes, and the file they are packed into is
-# still 5 minutes long (see _prepare_video: the frame rate is the sampling rate, not VIDEO_FPS).
+# picture's worth of tokens, so the sampling is the whole design: 1 frame a second, at most 64 of
+# them, 768 px on the long edge. That is ~1 minute of a clip watched evenly, for about the token
+# cost of a dozen photos (~10k tokens on the 262k context). Longer clips are not refused — they are
+# sampled across their length, so a 5-minute video becomes 64 frames spread over 5 minutes, and
+# the file they are packed into is still 5 minutes long (see _prepare_video: the frame rate is the
+# sampling rate, not VIDEO_FPS). 32 until 2026-09-15: one frame every 3.75 s of a two-minute clip
+# of a blood-pressure monitor missed readings; 64 is one every 1.9 s.
 VIDEO_FPS = 1.0
-VIDEO_MAX_FRAMES = 32
+VIDEO_MAX_FRAMES = 64
 VIDEO_EDGE = 768
 TEXT_SUFFIXES = {
     ".txt",
@@ -597,11 +599,11 @@ def _prepare_video(data: bytes, mime: str, meta: dict[str, Any]) -> tuple[bytes,
     size but how many pictures come out of it. A phone clip is 30 fps: shown whole, ten seconds
     of it is 300 images and a context blown in one message. Here it becomes at most
     ``VIDEO_MAX_FRAMES`` frames at ``VIDEO_FPS``, spread evenly across the WHOLE clip when it is
-    longer than that — so a five-minute video still arrives as 32 frames, one every ten seconds,
-    rather than the first half-minute and nothing after it.
+    longer than that — so a five-minute video still arrives as 64 frames, one every five seconds,
+    rather than the first minute and nothing after it.
 
-    The frames keep their place in time. The file is muxed at the sampling rate — 32 frames of
-    a two-minute clip play at 32/120 fps, not at 1 fps — because the model is told WHEN each
+    The frames keep their place in time. The file is muxed at the sampling rate — 64 frames of
+    a two-minute clip play at 64/120 fps, not at 1 fps — because the model is told WHEN each
     frame is by the file's clock, and vLLM reads that clock as frame count over frame rate.
     At 1 fps the same 32 frames were a 32-second video: the model saw the whole clip and
     believed it had seen the first half-minute of it ("видеото е 2 минути, а аз стигам само

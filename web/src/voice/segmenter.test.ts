@@ -16,12 +16,26 @@ describe('Segmenter', () => {
     expect(r.events).toEqual([]);
     r = feed(seg, 0.2, 1200, r.t); // a sentence
     expect(r.events.map((e) => e.type)).toEqual(['speech-start']);
-    r = feed(seg, 0.002, 400, r.t); // a breath: not the end yet
-    expect(r.events).toEqual([]);
+    r = feed(seg, 0.002, 400, r.t); // a breath: not the end yet, but maybe — a pause is reported
+    expect(r.events.map((e) => e.type)).toEqual(['pause']);
     r = feed(seg, 0.2, 800, r.t); // …more of the sentence
     r = feed(seg, 0.002, 800, r.t); // done
+    const pause = r.events.find((e) => e.type === 'pause');
     const end = r.events.find((e) => e.type === 'speech-end');
     expect(end?.type === 'speech-end' ? end.durationMs : 0).toBeGreaterThan(2000);
+    // The end confirms the pause: same `at`, so a recognition started at the pause is the answer.
+    expect(pause?.at).toBe(end?.at);
+  });
+
+  it('a pause is reported once per silence, and not for a fragment too short to be words', () => {
+    const seg = new Segmenter();
+    let r = feed(seg, 0.002, 1000, 0);
+    r = feed(seg, 0.2, 300, r.t); // 300 ms of sound: under minUtteranceMs
+    r = feed(seg, 0.002, 600, r.t);
+    expect(r.events.filter((e) => e.type === 'pause')).toEqual([]);
+    r = feed(seg, 0.2, 1000, r.t);
+    r = feed(seg, 0.002, 700, r.t); // one pause, however long the release runs
+    expect(r.events.filter((e) => e.type === 'pause')).toHaveLength(1);
   });
 
   it('drops a click and a cough', () => {

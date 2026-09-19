@@ -1136,3 +1136,34 @@ So it is wired in, off by default:
 What this buys, beyond the sentence leaving the house or not: *any* voice. A clip and its
 transcript in `voices/` and Jarvis speaks with it, Bulgarian or English. The clip should be
 5–15 s, 24 kHz mono, one speaker, no music.
+
+
+## 2026-09-19 — the seven hundred milliseconds after his last word (web alpha.32)
+
+"Is it possible to have better/faster answers — audio streaming, not batches?" The reply
+already streams: the run's sentences go to the voice one by one, the next fetched while the
+first plays. The question is batch, and it has to be — Whisper recognises an utterance, not a
+stream, and no streaming recogniser speaks Bulgarian. So the time between his last word and
+the request leaving the phone was counted instead, and it was three waits in a row:
+
+| after the last word | before | now |
+|---|---|---|
+| release: silence that closes the utterance | 750 ms | 750 ms |
+| recognition (Whisper large-v3, resident) | ~700 ms | overlapped |
+| join: silence that says he will not go on | 600 ms | 600 ms, counted from the end of speech |
+| **total** | **~2,050 ms** | **~1,350 ms** |
+
+Two changes. The segmenter now reports a **`pause`** 250 ms into a silence (`pauseMs`), the
+listener sends the words so far to be recognised at once, and the session keeps the answer
+under the pause's `at`; when the release confirms the end, `speech-end` carries the same `at`
+and the recognition is already done or nearly — no second round-trip. If he talked through
+the pause the end is a later silence, the `at` differs, the early answer is dropped unread and
+the whole utterance is recognised afresh: one wasted request, never a wrong word. And the
+**join window counts from the end of speech**, not from when the recogniser answered, so the
+silence spent recognising is not paid twice. The hard deadline (1.5 s from the first held
+words) and the noisy-room rule are as they were. Five new tests (segmenter: a pause once per
+silence, none for a fragment; session: the pause that was the end, the pause talked through,
+a failed early recognition, the window measured from speech-end); 115 pass.
+
+What is left between the last word and the first spoken one is the model's first sentence
+and the voice — 1.1 s of it OmniVoice at 16 steps, half that at 8.

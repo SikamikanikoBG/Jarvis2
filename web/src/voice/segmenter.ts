@@ -19,6 +19,9 @@ export interface SegmenterOptions {
   warmupMs: number;
   /** Silence must hold this long before the utterance is closed (a pause for breath is not the end). */
   releaseMs: number;
+  /** Silence this long is reported as a `pause` — maybe the end, maybe a breath — so the words
+   *  so far can be recognised while the release is still being waited out. */
+  pauseMs: number;
   /** Utterances shorter than this are dropped (a cough is not a sentence). */
   minUtteranceMs: number;
   /** A ceiling on one utterance; beyond it the utterance is closed and a new one opens. */
@@ -31,6 +34,7 @@ export const DEFAULT_SEGMENTER: SegmenterOptions = {
   attackMs: 200,
   warmupMs: 600,
   releaseMs: 750,
+  pauseMs: 250,
   minUtteranceMs: 400,
   maxUtteranceMs: 30_000,
 };
@@ -38,6 +42,8 @@ export const DEFAULT_SEGMENTER: SegmenterOptions = {
 export type SegmentEvent =
   | { type: 'speech-start'; at: number }
   | { type: 'speech-end'; at: number; startedAt: number; durationMs: number }
+  /** Silence has held `pauseMs` since `at`; a `speech-end` that follows without more speech carries the same `at`. */
+  | { type: 'pause'; at: number }
   | { type: 'dropped'; at: number; durationMs: number };
 
 type Phase = 'silence' | 'attack' | 'speech' | 'release';
@@ -51,6 +57,7 @@ export class Segmenter {
    *  louder as it goes must not raise the floor under itself. */
   private floorAtStart: number;
   private firstAt: number | null = null;
+  private pauseSent = false;
   /** A longer attack while a cut-in is what is being listened for (null = the option's). */
   private attackOverride: number | null = null;
   readonly opts: SegmenterOptions;
@@ -113,6 +120,7 @@ export class Segmenter {
         if (!loud) {
           this.phase = 'release';
           this.phaseSince = t;
+          this.pauseSent = false;
         } else if (t - this.utteranceStart >= o.maxUtteranceMs) {
           out.push(...this.close(t));
           this.phase = 'attack';
@@ -125,6 +133,9 @@ export class Segmenter {
         } else if (t - this.phaseSince >= o.releaseMs) {
           out.push(...this.close(this.phaseSince));
           this.phase = 'silence';
+        } else if (!this.pauseSent && t - this.phaseSince >= o.pauseMs && this.phaseSince - this.utteranceStart >= o.minUtteranceMs) {
+          this.pauseSent = true;
+          out.push({ type: 'pause', at: this.phaseSince });
         }
         break;
     }

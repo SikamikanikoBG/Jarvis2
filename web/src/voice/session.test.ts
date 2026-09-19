@@ -63,10 +63,15 @@ class FakeTranscriber implements Transcriber {
   fail = false;
   hints: string[] = [];
   language: string | null = 'bg';
+  /** How long a recognition takes; 0 is the next turn of the loop. */
+  delayMs = 0;
+  calls = 0;
   transcribe(_audio: Blob, language: string): Promise<{ text: string; language: string | null }> {
     this.hints.push(language);
+    this.calls += 1;
     if (this.fail) return Promise.reject(new Error('502'));
-    return Promise.resolve({ text: this.next, language: this.language });
+    const res = { text: this.next, language: this.language };
+    return this.delayMs ? new Promise((r) => setTimeout(() => r(res), this.delayMs)) : Promise.resolve(res);
   }
 }
 
@@ -246,6 +251,55 @@ describe('CallSession', () => {
     await new Promise((r) => setTimeout(r, 60));
     expect(t.transport.created).toEqual(['какво ще кажеш в крайна сметка']);
     expect(t.states.at(-1)?.heard).toBe('какво ще кажеш в крайна сметка');
+  });
+
+  it('a pause that turns out to be the end: the words recognised at the pause are the words sent', async () => {
+    const t = build();
+    await t.session.start();
+    t.listener.h?.onSpeechStart();
+    t.listener.h?.onPause(new Blob(['x']), 500); // silence began at 500 ms: recognise now
+    t.transcriber.next = 'wrong, if asked again';
+    t.listener.h?.onUtterance(new Blob(['x']), 500); // the release confirmed it: same `at`
+    await settle();
+    expect(t.transcriber.calls).toBe(1);
+    expect(t.transport.created).toEqual(['какво ще кажеш']);
+  });
+
+  it('a pause he talked through is forgotten: the whole utterance is recognised afresh', async () => {
+    const t = build();
+    await t.session.start();
+    t.listener.h?.onSpeechStart();
+    t.listener.h?.onPause(new Blob(['x']), 500);
+    t.transcriber.next = 'какво ще кажеш в крайна сметка';
+    t.listener.h?.onUtterance(new Blob(['xy']), 900); // he went on; the end is a later silence
+    await settle();
+    expect(t.transcriber.calls).toBe(2);
+    expect(t.transport.created).toEqual(['какво ще кажеш в крайна сметка']);
+  });
+
+  it('a recognition that fails at the pause is not the end of the turn', async () => {
+    const t = build();
+    await t.session.start();
+    t.transcriber.fail = true;
+    t.listener.h?.onPause(new Blob(['x']), 500);
+    await tick();
+    t.transcriber.fail = false;
+    t.listener.h?.onUtterance(new Blob(['x']), 500);
+    await settle();
+    expect(t.states.at(-1)?.problem).toMatch(/can't hear you/);
+    expect(t.phases().at(-1)).toBe('listening');
+  });
+
+  it('the join window counts from the end of speech, not from when the recogniser answered', async () => {
+    const t = build({ joinMs: 80 });
+    t.transcriber.delayMs = 60;
+    await t.session.start();
+    const t0 = Date.now();
+    t.listener.say();
+    await new Promise((r) => setTimeout(r, 105));
+    // 60 ms of recognition + 80 ms of window would be 140; from the end of speech it is 80.
+    expect(t.transport.created).toEqual(['какво ще кажеш']);
+    expect(Date.now() - t0).toBeLessThan(140);
   });
 
   it('a noisy room does not hold his words: only recognised text extends the wait', async () => {

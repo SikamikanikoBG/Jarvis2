@@ -59,8 +59,11 @@ export interface Listener {
 export interface ListenerHandlers {
   onLevel(level: number): void;
   onSpeechStart(): void;
+  /** Silence that may be the end: the audio so far, to be recognised now rather than after the
+   *  release. `at` names the pause; an utterance that ends there carries the same `at`. */
+  onPause(audio: Blob, at: number): void;
   /** An utterance has ended and its audio is on its way to be recognised. */
-  onUtterance(audio: Blob): void;
+  onUtterance(audio: Blob, at?: number): void;
   onError(message: string): void;
 }
 
@@ -79,6 +82,8 @@ export interface Speaker {
   /** A new reply is about to be spoken: a voice that had to fall back may try its own again. */
   beginReply?(): void;
 }
+
+type Recognised = { text: string; language: string | null };
 
 export interface Transcriber {
   /** `language` is the call's current language, a hint for the recogniser — an utterance is
@@ -143,6 +148,11 @@ export class CallSession {
   private held = '';
   private heldSince = 0;
   private joinTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When the last utterance ended: the join window counts from there, not from when the
+   *  recogniser answered, so recognition time is not paid twice. */
+  private quietSince = 0;
+  /** A recognition started at a pause, before the utterance was known to have ended. */
+  private speculative: { at: number; result: Promise<Recognised | Error> } | null = null;
   /** Words that arrived while the run was being created, steered once its id is known. */
   private steerWhenKnown = '';
   /** The language he is speaking, for the recogniser; the reply's, for the voice. Decided once
@@ -172,7 +182,8 @@ export class CallSession {
       await this.o.listener.start({
         onLevel: (level) => this.set({ level }),
         onSpeechStart: () => this.onSpeechStart(),
-        onUtterance: (audio) => void this.onUtterance(audio),
+        onPause: (audio, at) => this.onPause(audio, at),
+        onUtterance: (audio, at) => void this.onUtterance(audio, at),
         onError: (message) => this.fail(message),
       });
     } catch (e) {
@@ -218,12 +229,31 @@ export class CallSession {
     }
   }
 
-  private async onUtterance(audio: Blob): Promise<void> {
+  /**
+   * A pause that may be the end: recognise what was said so far now, so that if the release
+   * confirms it the words are ready when the utterance closes instead of a Whisper round-trip
+   * later. If he goes on, the result is dropped unread — one wasted request, no wrong words.
+   */
+  private onPause(audio: Blob, at: number): void {
     if (this.state.phase === 'ended' || this.state.muted) return;
+    const result = this.o.transcriber.transcribe(audio, this.heardLang).then(
+      (r): Recognised | Error => r,
+      (e: unknown): Recognised | Error => (e instanceof Error ? e : new Error(String(e))),
+    );
+    this.speculative = { at, result };
+  }
+
+  private async onUtterance(audio: Blob, at?: number): Promise<void> {
+    if (this.state.phase === 'ended' || this.state.muted) return;
+    this.quietSince = this.now();
     this.set({ phase: 'transcribing', problem: null });
+    // The utterance ended at the pause already being recognised: that answer is this answer.
+    const early = at !== undefined && this.speculative?.at === at ? this.speculative.result : null;
+    this.speculative = null;
     let text = '';
     try {
-      const res = await this.o.transcriber.transcribe(audio, this.heardLang);
+      const res = early ? await early : await this.o.transcriber.transcribe(audio, this.heardLang);
+      if (res instanceof Error) throw res;
       text = res.text.trim();
       // He may switch to another of the call's languages — believed only when the words are
       // written in that language's script too. Whisper labels a noise "en" as readily as
@@ -249,7 +279,9 @@ export class CallSession {
     // (2026-09-16: "it catches every sound but not me") — and never past the hard deadline.
     if (this.joinTimer) clearTimeout(this.joinTimer);
     const join = this.o.joinMs ?? 600;
-    const wait = Math.max(0, Math.min(join, this.heldSince + JOIN_DEADLINE_MS - this.now()));
+    // The window is measured from the end of speech: the silence already spent while the
+    // recogniser worked counts toward it.
+    const wait = Math.max(0, Math.min(join - (this.now() - this.quietSince), this.heldSince + JOIN_DEADLINE_MS - this.now()));
     this.joinTimer = setTimeout(() => {
       this.joinTimer = null;
       this.send();

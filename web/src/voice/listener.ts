@@ -174,10 +174,14 @@ export class MicListener implements Listener {
       const startedAgoMs = t - ev.at;
       this.utteranceStartSample = Math.max(0, this.written - Math.round((startedAgoMs / 1000) * TARGET_RATE) - preRoll);
       this.handlers.onSpeechStart();
+    } else if (ev.type === 'pause') {
+      // Maybe the end: the words so far go to be recognised now, while the release runs.
+      const audio = this.slice(this.utteranceStartSample, this.written);
+      if (audio) this.handlers.onPause(audio, ev.at);
     } else if (ev.type === 'speech-end') {
       const endSample = this.written;
       const audio = this.slice(this.utteranceStartSample, endSample);
-      if (audio) this.handlers.onUtterance(audio);
+      if (audio) this.handlers.onUtterance(audio, ev.at);
     }
   }
 

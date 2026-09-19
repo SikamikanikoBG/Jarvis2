@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from jarvis_core.db import Database
 from jarvis_core.engine.bus import Subscriber
@@ -118,7 +119,15 @@ async def run_and_wait(
 
 def build_mcp_server(core: Core) -> FastMCP:
     """The core itself as an MCP server (mounted at /mcp; bearer = collab key or owner token)."""
-    mcp = FastMCP("jarvis", stateless_http=True, streamable_http_path="/")
+    # The SDK's DNS-rebinding guard trusts localhost only: a client on another machine (Claude
+    # Code on the laptop reaching ardi:9020) got 421 Misdirected Request. The bearer key is
+    # the defence here, as in the host (2026-09-05); the guard is off.
+    mcp = FastMCP(
+        "jarvis",
+        stateless_http=True,
+        streamable_http_path="/",
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
 
     def _key_from(ctx: Context[Any, Any, Any]) -> CollabKey | None:
         request = getattr(ctx.request_context, "request", None)

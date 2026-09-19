@@ -1167,3 +1167,13 @@ a failed early recognition, the window measured from speech-end); 115 pass.
 
 What is left between the last word and the first spoken one is the model's first sentence
 and the voice — 1.1 s of it OmniVoice at 16 steps, half that at 8.
+
+## 2026-09-19 — Claude Code talks to Jarvis2, not V1 (core 2.0.0a55)
+
+"Remove jarvis MCP from Claude and add jarvis2." The core's MCP app (`/mcp`, tools `jarvis_chat`,
+`jarvis_status`, `jarvis_notes`) answered 421 Misdirected Request to the laptop — the SDK's
+DNS-rebinding guard, the same one fixed in the host on 2026-09-05 and never in the core, since
+until today nothing but localhost tests had called it. Off now, the bearer key being the
+defence. A collab key named `claude-code` was minted for it (Settings → Collaboration shows
+it); Claude Code's user-scope MCP config has `jarvis2` → `http://100.97.120.53:9020/mcp`
+with that key, and the V1 `jarvis` entry is gone.

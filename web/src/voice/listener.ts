@@ -56,6 +56,8 @@ export class MicListener implements Listener {
   private written = 0;
   private utteranceStartSample = 0;
   private speaking = false;
+  /** Until this moment on the call's clock the microphone is ignored (a cue is sounding). */
+  private suppressUntil = 0;
   private route: CallRoute = 'earpiece';
   private muted = false;
   private handlers: ListenerHandlers | null = null;
@@ -122,9 +124,10 @@ export class MicListener implements Listener {
     this.stream = null;
   }
 
-  setSpeaking(on: boolean): void {
+  setSpeaking(on: boolean, echoCancelled = false): void {
     this.speaking = on;
     const now = performance.now() - this.t0;
+    if (on) this.gate.setProfile(echoCancelled);
     if (this.route === 'speaker') {
       // Let go of the microphone while he speaks; take it back when he stops.
       if (on) this.release();
@@ -148,6 +151,11 @@ export class MicListener implements Listener {
     if (muted) this.seg = new Segmenter(this.seg.opts);
   }
 
+  /** Ignore the microphone for a moment: a cue is sounding, and a beep is not a word. */
+  suppress(ms: number): void {
+    this.suppressUntil = Math.max(this.suppressUntil, performance.now() - this.t0 + ms);
+  }
+
   private onAudio(input: Float32Array, rate: number): void {
     if (!this.handlers) return;
     // Level from the raw frame (before the mute zeroes it), for the ring on screen.
@@ -163,7 +171,7 @@ export class MicListener implements Listener {
     }
     const t = performance.now() - this.t0;
     // Through the gate: while he speaks, only a voice clearly over his own reaches the segmenter.
-    const level = this.gate.pass(rms, t, this.seg.noiseFloor);
+    const level = t < this.suppressUntil ? 0 : this.gate.pass(rms, t, this.seg.noiseFloor);
     for (const ev of this.seg.push(level, t)) this.onSegment(ev, t);
   }
 
@@ -173,15 +181,24 @@ export class MicListener implements Listener {
       const preRoll = Math.round((PRE_ROLL_MS / 1000) * TARGET_RATE);
       const startedAgoMs = t - ev.at;
       this.utteranceStartSample = Math.max(0, this.written - Math.round((startedAgoMs / 1000) * TARGET_RATE) - preRoll);
+      // 450 ms of voice over his own is a decision, not a guess: the rest of it comes through
+      // whole, or his sentence arrives as fragments too short to be an utterance.
+      if (this.speaking) this.gate.latch();
       this.handlers.onSpeechStart();
+    } else if (ev.type === 'dropped') {
+      // He stopped him and then said nothing a recogniser could use: a cough, a chair.
+      this.gate.unlatch();
+      this.handlers.onSpeechDropped();
     } else if (ev.type === 'pause') {
       // Maybe the end: the words so far go to be recognised now, while the release runs.
       const audio = this.slice(this.utteranceStartSample, this.written);
       if (audio) this.handlers.onPause(audio, ev.at);
     } else if (ev.type === 'speech-end') {
+      this.gate.unlatch();
       const endSample = this.written;
       const audio = this.slice(this.utteranceStartSample, endSample);
       if (audio) this.handlers.onUtterance(audio, ev.at);
+      else this.handlers.onSpeechDropped();
     }
   }
 

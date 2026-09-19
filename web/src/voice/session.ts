@@ -12,11 +12,16 @@
  */
 
 import { SentenceSplitter, scriptLanguage, speakable } from './sentences';
+import type { Cues } from './tones';
 
 export type CallPhase = 'idle' | 'connecting' | 'listening' | 'transcribing' | 'thinking' | 'speaking' | 'ended';
 
 /** However he pauses, what was recognised is sent no later than this after its first words. */
 const JOIN_DEADLINE_MS = 1500;
+
+/** What the model is told when he talked over its answer: what he heard, and not to say it again. */
+const CUT_NOTE = (heard: number, total: number) =>
+  `[The user cut you off: of your ${total} sentences he heard only the first ${heard}. Do not repeat what follows them — answer what he says now.]`;
 
 /**
  * Where his voice comes out. The web cannot pick the earpiece or the speaker by name; what it
@@ -43,6 +48,8 @@ export interface CallState {
   level: number;
   muted: boolean;
   route: CallRoute;
+  /** False while the socket to Jarvis is down: nothing said now will reach him. */
+  online: boolean;
   startedAt: number;
 }
 
@@ -50,8 +57,9 @@ export interface Listener {
   start(handlers: ListenerHandlers): Promise<void>;
   stop(): void;
   /** Jarvis started or stopped speaking: the listener gates itself (earpiece) or lets the
-   *  microphone go and takes it back (speaker). */
-  setSpeaking(on: boolean): void;
+   *  microphone go and takes it back (speaker). `echoCancelled` says his voice is the page's
+   *  own audio, which the browser subtracts from the microphone — a far lower bar to cut in. */
+  setSpeaking(on: boolean, echoCancelled?: boolean): void;
   setRoute(route: CallRoute): void;
   setMuted(muted: boolean): void;
 }
@@ -64,6 +72,8 @@ export interface ListenerHandlers {
   onPause(audio: Blob, at: number): void;
   /** An utterance has ended and its audio is on its way to be recognised. */
   onUtterance(audio: Blob, at?: number): void;
+  /** Something stopped him and came to nothing: a cough, a chair, a word too short to hear. */
+  onSpeechDropped(): void;
   onError(message: string): void;
 }
 
@@ -81,6 +91,8 @@ export interface Speaker {
   takeProblem?(): string | null;
   /** A new reply is about to be spoken: a voice that had to fall back may try its own again. */
   beginReply?(): void;
+  /** True when the page plays the audio itself, so the browser's echo canceller has it. */
+  cancellable?(): boolean;
 }
 
 type Recognised = { text: string; language: string | null };
@@ -118,6 +130,8 @@ export interface SessionOptions {
    *  call's language until he is heard speaking another of them. */
   languages?: string[];
   onChange(state: CallState): void;
+  /** The call's quiet signals (tones.ts); absent on a device that cannot make them. */
+  cues?: Cues;
   now?: () => number;
 }
 
@@ -131,6 +145,7 @@ const INITIAL: CallState = {
   level: 0,
   muted: false,
   route: 'earpiece',
+  online: true,
   startedAt: 0,
 };
 
@@ -144,6 +159,15 @@ export class CallSession {
   private readonly now: () => number;
   /** Utterances recognised while a run was still being created: one voice turn, not two. */
   private pendingCreate = false;
+  /** What he was still to be told when a cut-in stopped the voice. Dropped for good once the
+   *  cut-in turns into words; spoken after all if it came to nothing (2026-09-19: a cut-in that
+   *  was heard but not understood left him listening to the rest of the old answer as if it
+   *  were a new one). */
+  private suspended: string[] = [];
+  /** The sentence being spoken right now, so a cut-in can put it back unsaid. */
+  private current: string | null = null;
+  /** How much of the answer he had actually heard when he cut in. */
+  private cutAfter = 0;
   /** Recognised words waiting for him to finish (the join window), and the timer that sends them. */
   private held = '';
   private heldSince = 0;
@@ -184,6 +208,7 @@ export class CallSession {
         onSpeechStart: () => this.onSpeechStart(),
         onPause: (audio, at) => this.onPause(audio, at),
         onUtterance: (audio, at) => void this.onUtterance(audio, at),
+        onSpeechDropped: () => this.onSpeechDropped(),
         onError: (message) => this.fail(message),
       });
     } catch (e) {
@@ -201,7 +226,9 @@ export class CallSession {
     // A run still working is left to finish: its words land in the chat, only the reading
     // aloud stops. Cancelling it would throw away an answer that was already being written.
     this.queue = [];
+    this.suspended = [];
     this.set({ phase: 'ended', level: 0 });
+    this.o.cues?.close();
   }
 
   setMuted(muted: boolean): void {
@@ -222,6 +249,9 @@ export class CallSession {
       // dropped too — it was an answer to the question he has just been talked out of.
       this.cutIn = true;
       this.o.speaker.cancel();
+      // Held, not dropped: if this turns out to be a cough the rest of the answer goes on.
+      this.suspended = this.current ? [this.current, ...this.queue] : [...this.queue];
+      this.cutAfter = this.state.spokenUpTo;
       this.queue = [];
       this.stepText = '';
       this.splitter = new SentenceSplitter();
@@ -234,6 +264,23 @@ export class CallSession {
    * confirms it the words are ready when the utterance closes instead of a Whisper round-trip
    * later. If he goes on, the result is dropped unread — one wasted request, no wrong words.
    */
+  /**
+   * A cut-in that came to nothing: say the rest of what he was being told. The drain it
+   * interrupted is still unwinding (its sentence resolves a microtask later), so this waits for
+   * it — starting a second drain beside the first would say everything twice.
+   */
+  onSpeechDropped(): void {
+    if (this.state.phase === 'ended' || this.suspended.length === 0 || this.held) return;
+    const rest = this.suspended;
+    this.suspended = [];
+    void (async () => {
+      await this.speaking;
+      if (this.state.phase === 'ended' || this.held || this.suspended.length > 0) return;
+      this.queue = [...rest, ...this.queue];
+      this.speaking ??= this.drain();
+    })();
+  }
+
   private onPause(audio: Blob, at: number): void {
     if (this.state.phase === 'ended' || this.state.muted) return;
     const result = this.o.transcriber.transcribe(audio, this.heardLang).then(
@@ -268,6 +315,7 @@ export class CallSession {
     }
     if (!text) {
       this.set({ phase: this.held ? 'transcribing' : 'listening' });
+      this.onSpeechDropped();
       return;
     }
     const first = !this.held;
@@ -305,10 +353,20 @@ export class CallSession {
       this.set({ heard: text, phase: 'thinking' });
       return;
     }
+    // His words won: the rest of the answer he talked over is not said after all.
+    const interrupted = this.suspended.length > 0;
+    const heardOf = this.cutAfter;
+    const ofTotal = this.cutAfter + this.suspended.length;
+    this.suspended = [];
     this.set({ heard: text, phase: 'thinking', saying: [], spokenUpTo: 0 });
+    this.o.cues?.accepted();
     // A run still working gets the words; otherwise a new voice turn. If the run finished
     // between the two, the core turns the steer into a new turn itself.
-    const sent = this.state.runId ? this.o.transport.steer(this.state.runId, text) : this.create(text);
+    // A steer that follows a cut-in says so: the model wrote an answer of which he heard the
+    // first sentences only, and without being told it simply said the whole thing again
+    // (2026-09-19, "просто ми повтори първия отговор").
+    const outgoing = interrupted ? `${CUT_NOTE(heardOf, ofTotal)}\n${text}` : text;
+    const sent = this.state.runId ? this.o.transport.steer(this.state.runId, outgoing) : this.create(outgoing);
     if (!sent) {
       this.fail('The connection to Jarvis is down; try again in a moment.');
       this.set({ phase: 'listening' });
@@ -406,19 +464,22 @@ export class CallSession {
 
   private async drain(): Promise<void> {
     this.cutIn = false;
-    this.o.listener.setSpeaking(true);
+    this.o.listener.setSpeaking(true, this.o.speaker.cancellable?.() ?? false);
     this.set({ phase: 'speaking' });
     try {
       while (this.queue.length > 0 && !this.cutIn && this.state.phase !== 'ended') {
         const sentence = this.queue.shift();
         if (sentence === undefined) break;
+        this.current = sentence;
         await this.o.speaker.speak(sentence, this.langFor(sentence));
+        this.current = null;
         const problem = this.o.speaker.takeProblem?.();
         if (problem) this.fail(problem);
         if (!this.cutIn) this.set({ spokenUpTo: this.state.spokenUpTo + 1 });
       }
     } finally {
       this.speaking = null;
+      this.current = null;
       this.o.listener.setSpeaking(false);
     }
     if (this.state.phase === 'ended') return;
@@ -449,8 +510,17 @@ export class CallSession {
     this.set({ problem: message });
   }
 
+  /** The line to Jarvis, as the socket sees it: a call on a dead socket says so, quietly. */
+  setOnline(online: boolean): void {
+    if (this.state.phase === 'ended' || online === this.state.online) return;
+    this.set({ online });
+    this.o.cues?.offline(!online);
+  }
+
   private set(patch: Partial<CallState>): void {
+    const before = this.state.phase;
     this.state = { ...this.state, ...patch };
+    if (this.state.phase !== before) this.o.cues?.thinking(this.state.phase === 'thinking');
     this.o.onChange(this.state);
   }
 }

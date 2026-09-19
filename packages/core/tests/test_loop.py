@@ -257,6 +257,41 @@ async def test_a_message_sent_while_the_run_works_reaches_the_next_step(harness:
     assert all(m.run_id == run.id for m in mine)
 
 
+async def test_a_steer_that_lands_on_the_last_step_is_answered_not_dropped(harness: Harness):
+    """He spoke while the answer was being written: a run with no next step must still take it.
+
+    A steer is read at the top of a step, and a run that answers has no next step — so the last
+    thing said before the reply landed was appended to the control block and thrown away with it.
+    On a call that is exactly the cut-in: Jarvis stopped talking, heard nothing, and went on
+    saying the rest of the old answer (2026-09-19, "все едно не беше разпознато ... просто ми
+    повтори първия отговор").
+    """
+    harness.chat.push(
+        FakeTurn(text="one two three four five six seven eight", token_delay_s=0.05),  # the answer he talks over
+        FakeTurn(text="right, the other way then"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    run, _ = await harness.core.engine.create_run(text="do the thing", conversation_id=conv.id)
+
+    # While those words are still being written — no tool call anywhere, this is the last step.
+    async with asyncio.timeout(10):
+        while not harness.chat.calls:
+            await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)
+    assert harness.core.engine.steer(run.id, "no, wait") is True
+
+    seen = await harness.wait_for(sub, "run.done", timeout=15)
+    assert [e for e in seen if e.type == "run.steered"]
+    # The run answered again inside itself rather than ending on the words he interrupted.
+    assert len(harness.chat.calls) == 2
+    said = [m for m in harness.chat.calls[1][0] if m.role.value == "user" and not m.name]
+    assert any(m.content == "no, wait" for m in said)
+    stored = await harness.core.store.list_messages(conv.id)
+    mine = [m.content for m in stored if m.role.value == "user" and not m.name]
+    assert mine == ["do the thing", "no, wait"]
+
+
 async def test_steering_a_run_that_has_already_finished_is_refused_not_swallowed(harness: Harness):
     """The caller turns a refusal into an ordinary new turn, so nothing Arsen typed is lost."""
     harness.chat.push(FakeTurn(text="done"))

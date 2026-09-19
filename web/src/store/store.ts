@@ -12,6 +12,7 @@ import { MicListener } from '../voice/listener';
 import { requestMotionPermission } from '../voice/earPose';
 import { holdScreen, releaseScreen } from '../voice/screenHold';
 import { CallSession, type CallRoute, type CallState } from '../voice/session';
+import { ToneCues } from '../voice/tones';
 import { DeviceSpeaker, ServerSpeaker } from '../voice/speaker';
 import type {
   Attachment,
@@ -254,7 +255,10 @@ export const useStore = create<AppState>()((set, get) => ({
 
     ws = new WsClient({
       onEvents: (events) => get().applyEvents(events),
-      onState: (connection, connectionAttempt) => set({ connection, connectionAttempt }),
+      onState: (connection, connectionAttempt) => {
+        set({ connection, connectionAttempt });
+        session?.setOnline(connection === 'open');
+      },
       onOpen: (isReconnect) => {
         const open = get().openConversationId;
         if (open) {
@@ -410,6 +414,9 @@ export const useStore = create<AppState>()((set, get) => ({
       languages,
       conversationId: open,
       route: readRoute(),
+      // The call's quiet signals, on the microphone's own context so they are on its route and
+      // inside the echo canceller, and hushing the microphone for as long as they sound.
+      cues: new ToneCues({ contextOf: () => listener.audioContext, suppress: (ms) => listener.suppress(ms) }),
       onChange: (call) => set({ call: { ...call } }),
     });
     if (open) socket.send({ type: 'subscribe', conversation_id: open });

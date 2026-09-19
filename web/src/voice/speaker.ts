@@ -112,6 +112,12 @@ export class ServerSpeaker implements Speaker {
     return typeof AudioContext !== 'undefined';
   }
 
+  /** The page plays these bytes itself, so the browser's echo canceller subtracts them from the
+   *  microphone — unless this voice has fallen back to the device's, which it does not. */
+  cancellable(): boolean {
+    return !this.fellBack;
+  }
+
   takeProblem(): string | null {
     const p = this.problem;
     this.problem = null;

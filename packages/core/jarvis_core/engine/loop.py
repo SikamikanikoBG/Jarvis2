@@ -483,6 +483,16 @@ class AgentLoop:
                     )
                     await emit(GuardConsumed(run_id="", conversation_id="", guard="open_plan", detail="nudged"))
                     continue
+                # Said while these very words were being written. A steer is taken at the next
+                # step, and a run that answers has no next step - so the last thing Arsen said
+                # was dropped, and on a call that is the whole second half of "he did not hear
+                # me and repeated himself" (2026-09-19). The run answers again instead.
+                if late := ctl.take_steers():
+                    for said in late:
+                        messages.append(await self._persist(run, Message.user(said, channel=run.channel)))
+                        await emit(RunSteered(run_id="", conversation_id="", text=said[:400]))
+                    think_next = True
+                    continue
                 await self._done(run, ctl, message_id=assistant.id)
                 # The knowledge graph learns from every ordinary exchange; an incognito chat is
                 # the one place it must not look. Decided in code, not in the prompt.

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CallSession, type CallState, type Listener, type ListenerHandlers, type Speaker, type Transcriber, type Transport } from './session';
+import type { Cues } from './tones';
 
 /** A listener the test drives by hand. */
 class FakeListener implements Listener {
@@ -29,6 +30,11 @@ class FakeListener implements Listener {
   say(): void {
     this.h?.onSpeechStart();
     this.h?.onUtterance(new Blob(['x']));
+  }
+  /** Something stopped him and came to nothing: a cough, a chair. */
+  cough(): void {
+    this.h?.onSpeechStart();
+    this.h?.onSpeechDropped();
   }
 }
 
@@ -75,6 +81,22 @@ class FakeTranscriber implements Transcriber {
   }
 }
 
+class FakeCues implements Cues {
+  log: string[] = [];
+  accepted(): void {
+    this.log.push('accepted');
+  }
+  thinking(on: boolean): void {
+    this.log.push(`thinking:${on}`);
+  }
+  offline(on: boolean): void {
+    this.log.push(`offline:${on}`);
+  }
+  close(): void {
+    this.log.push('close');
+  }
+}
+
 class FakeTransport implements Transport {
   created: string[] = [];
   steered: { runId: string; text: string }[] = [];
@@ -102,6 +124,7 @@ function build(
   const speaker = over.speaker ?? new FakeSpeaker();
   const transcriber = over.transcriber ?? new FakeTranscriber();
   const transport = over.transport ?? new FakeTransport();
+  const cues = new FakeCues();
   const states: CallState[] = [];
   const session = new CallSession({
     listener,
@@ -112,9 +135,10 @@ function build(
     languages: ['bg', 'en'],
     joinMs: over.joinMs ?? 0,
     conversationId: 'c1',
+    cues,
     onChange: (s) => states.push(s),
   });
-  return { session, listener, speaker, transcriber, transport, states, phases: () => states.map((s) => s.phase) };
+  return { session, listener, speaker, transcriber, transport, cues, states, phases: () => states.map((s) => s.phase) };
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -191,8 +215,12 @@ describe('CallSession', () => {
     t.listener.say();
     expect(t.speaker.cancelled).toBe(1);
     await settle();
-    // The run is still working: the words go to it, not to a new run.
-    expect(t.transport.steered).toEqual([{ runId: 'r1', text: 'не, не това' }]);
+    // The run is still working: the words go to it, not to a new run — and they carry a note
+    // saying he heard only the first sentence, or the model says the whole answer again.
+    expect(t.transport.steered).toHaveLength(1);
+    expect(t.transport.steered[0]?.runId).toBe('r1');
+    expect(t.transport.steered[0]?.text).toContain('не, не това');
+    expect(t.transport.steered[0]?.text).toMatch(/cut you off/);
     expect(t.transport.created).toHaveLength(1);
     expect(t.session.state.phase).toBe('thinking');
     // Its new sentences are spoken from a clean queue.
@@ -205,6 +233,73 @@ describe('CallSession', () => {
     expect(t.speaker.spoken.map((s) => s.text).slice(-2)).toEqual(['Разбрах.', 'Ще го направя.']);
     // "И" — the half-sentence written before the cut — was never said.
     expect(t.speaker.spoken.some((s) => s.text === 'И')).toBe(false);
+  });
+
+  it('a cut-in that comes to nothing lets him finish what he was saying', async () => {
+    const t = build();
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    t.session.onRunQueued('r1', 'c1');
+    t.session.onDelta('r1', 'Първо. Второ. Трето.');
+    t.session.onStepDone('r1', false);
+    t.session.onRunDone('r1');
+    await tick();
+    expect(t.session.state.phase).toBe('speaking');
+    t.listener.cough(); // a chair, a cough: he stops, and nothing was said
+    expect(t.speaker.cancelled).toBe(1);
+    expect(t.session.state.phase).toBe('listening');
+    await tick();
+    // The rest of the answer is said after all, starting with the sentence he talked over.
+    expect(t.session.state.phase).toBe('speaking');
+    for (let i = 0; i < 4; i += 1) {
+      t.speaker.finishAll();
+      await tick();
+    }
+    expect(t.speaker.spoken.map((s) => s.text)).toEqual(['Първо.', 'Първо.', 'Второ.', 'Трето.']);
+    expect(t.transport.steered).toEqual([]);
+  });
+
+  it('a cut-in with words in it drops the rest of the answer for good', async () => {
+    const t = build();
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    t.session.onRunQueued('r1', 'c1');
+    t.session.onDelta('r1', 'Първо. Второ. Трето.');
+    t.session.onStepDone('r1', false);
+    t.session.onRunDone('r1');
+    await tick();
+    t.transcriber.next = 'чакай';
+    t.listener.say();
+    await settle();
+    t.speaker.finishAll();
+    await tick();
+    expect(t.speaker.spoken.map((s) => s.text)).toEqual(['Първо.']);
+    expect(t.transport.created).toHaveLength(2);
+    expect(t.transport.created[1]).toContain('чакай');
+  });
+
+  it('the quiet signals: his words accepted, the thinking, the line going down and up', async () => {
+    const t = build();
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    expect(t.cues.log).toContain('accepted');
+    expect(t.cues.log).toContain('thinking:true');
+    t.session.onRunQueued('r1', 'c1');
+    t.session.onDelta('r1', 'Готово.');
+    t.session.onStepDone('r1', false);
+    await tick();
+    expect(t.cues.log).toContain('thinking:false'); // he is speaking now, not thinking
+    t.session.setOnline(false);
+    t.session.setOnline(false); // said once, not once a second
+    expect(t.cues.log.filter((l) => l === 'offline:true')).toHaveLength(1);
+    expect(t.session.state.online).toBe(false);
+    t.session.setOnline(true);
+    expect(t.cues.log).toContain('offline:false');
+    t.session.end();
+    expect(t.cues.log.at(-1)).toBe('close');
   });
 
   it('with no run working, a new utterance starts a new voice turn in the same conversation', async () => {

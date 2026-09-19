@@ -1177,3 +1177,42 @@ until today nothing but localhost tests had called it. Off now, the bearer key b
 defence. A collab key named `claude-code` was minted for it (Settings → Collaboration shows
 it); Claude Code's user-scope MCP config has `jarvis2` → `http://100.97.120.53:9020/mcp`
 with that key, and the V1 `jarvis` entry is gone.
+
+## 2026-09-19 — talking over him, and the call's quiet signals (core 2.0.0a56, web alpha.33)
+
+Three complaints off one call at the ear: "докато ми говори не мога да говоря през него",
+"второто ми съобщение все едно не беше разпознато и джарвис просто ми повтори първия отговор",
+and "искам лек ненатрапчив сигнал ... нежно бип бип". The first two were the same fault seen
+from both ends, and there were four of them:
+
+1. **The gate learned the cut-in.** `EchoGate` let its echo peak follow any frame that was not
+   already over the bar — so a voice rising into the room raised the bar under itself and could
+   never be over anything. After the grace the peak may now rise by at most 6% a frame: the echo,
+   already there, keeps it; a voice arriving into it cannot take it along.
+2. **The gate kept judging a cut-in it had already accepted.** Once the segmenter has heard
+   450 ms of voice over the echo the decision is made, so the gate now `latch`es open until the
+   utterance closes. Before, his sentence was chopped into fragments under `minUtteranceMs` and
+   dropped — he stopped Jarvis and then "said nothing".
+3. **The bar ignored who was speaking.** With the server voice (and now OmniVoice) the page plays
+   the audio itself, so the browser's echo canceller has already subtracted most of it: a
+   `CANCELLED` profile (1.5× over the echo, not 2.5×) applies whenever `Speaker.cancellable()`.
+   The device voice, which plays outside the browser, keeps the strict bar.
+4. **The core dropped the words.** `steer` is read at the top of a step, and a run that answers
+   has no next step: anything said while the final words were being written was appended to the
+   control block and thrown away with it. Exactly the cut-in case, since he talks over an answer
+   that is by definition the last step. The loop now takes pending steers before finishing and
+   answers them in the same run (test: a steer landing mid-stream of the final turn).
+
+And the answer he talked over is no longer thrown away on the guess that he meant to: it is
+**held**. A cut-in that turns into words drops it for good and the steer carries a note saying
+how much of it he actually heard ("of your 5 sentences he heard the first 2 — do not repeat
+them"), which is why the model used to say the whole thing again. A cut-in that came to nothing
+— a cough, a chair — resumes it, starting with the sentence he interrupted.
+
+**The signals** (`tones.ts`): two soft notes up when his words go off to Jarvis, a quiet pair
+every 2.6 s while he thinks (the first only after 1.4 s, so a quick answer is never announced),
+two notes down when the socket drops and two up when it returns, and the screen says so too.
+They play on the microphone's own AudioContext — the call's route, inside the echo canceller —
+and each one hushes the microphone while it sounds, so a beep is never heard as a word.
+
+121 web tests, 133 core tests.

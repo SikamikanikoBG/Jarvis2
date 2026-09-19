@@ -77,7 +77,7 @@ export function CallScreen() {
 
       <Ring phase={call.phase} level={call.level} muted={call.muted} />
       <div className="call-phase" aria-live="polite">
-        {call.muted && call.phase === 'listening' ? 'Muted' : PHASE_LABEL[call.phase]}
+        {!call.online ? 'No connection — reconnecting…' : call.muted && call.phase === 'listening' ? 'Muted' : PHASE_LABEL[call.phase]}
       </div>
 
       <Captions call={call} />

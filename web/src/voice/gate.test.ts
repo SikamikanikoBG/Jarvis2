@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EchoGate } from './gate';
+import { CANCELLED_GATE, EchoGate } from './gate';
 
 const FLOOR = 0.004;
 const FRAME = 43;
@@ -53,6 +53,50 @@ describe('EchoGate', () => {
     for (let i = 0; i < 40; i++) g.pass(0.005, i * FRAME, FLOOR); // he is almost inaudible
     expect(g.pass(0.015, 41 * FRAME, FLOOR)).toBe(0); // a breath is not a cut-in
     expect(g.pass(0.08, 42 * FRAME, FLOOR)).toBeGreaterThan(0);
+  });
+
+  it('a voice rising into the room breaks through instead of training the bar', () => {
+    // The bug of 2026-09-19: the peak followed any frame under the bar, so a voice that ramps
+    // up — every real voice — raised the bar with it and never counted as a cut-in.
+    const g = new EchoGate();
+    g.setSpeaking(true, 0, FLOOR);
+    for (let i = 0; i < 40; i++) g.pass(echoFrame(i), i * FRAME, FLOOR);
+    const peak = g.echoPeak;
+    let passed = 0;
+    for (let i = 40; i < 60; i++) {
+      const ramp = peak * Math.min(4, 0.8 * 1.35 ** (i - 40)); // ~35% louder each frame
+      if (g.pass(ramp, i * FRAME, FLOOR) > 0) passed += 1;
+    }
+    expect(passed).toBeGreaterThan(10);
+  });
+
+  it('once the cut-in is accepted the gate latches open, so his sentence is not chopped up', () => {
+    const g = new EchoGate();
+    g.setSpeaking(true, 0, FLOOR);
+    for (let i = 0; i < 40; i++) g.pass(echoFrame(i), i * FRAME, FLOOR);
+    g.latch();
+    // Even the quiet parts of his own sentence now reach the segmenter.
+    expect(g.pass(0.01, 41 * FRAME, FLOOR)).toBe(0.01);
+    expect(g.open).toBe(true);
+    g.unlatch();
+    expect(g.pass(0.01, 42 * FRAME, FLOOR)).toBe(0);
+    g.latch();
+    g.setSpeaking(false, 43 * FRAME, FLOOR); // a new reply starts judged, never latched
+    expect(g.open).toBe(false);
+  });
+
+  it('the cancelled profile asks far less of a voice: the browser has already removed the echo', () => {
+    const strict = new EchoGate();
+    const easy = new EchoGate();
+    easy.setProfile(true);
+    expect(easy.opts).toEqual(CANCELLED_GATE);
+    for (const g of [strict, easy]) {
+      g.setSpeaking(true, 0, FLOOR);
+      for (let i = 0; i < 40; i++) g.pass(echoFrame(i) * 0.2, i * FRAME, FLOOR); // a cancelled echo
+    }
+    const spoken = 0.05; // an ordinary voice, not a shout
+    expect(easy.pass(spoken, 41 * FRAME, FLOOR)).toBeGreaterThan(0);
+    expect(strict.pass(spoken, 41 * FRAME, FLOOR)).toBe(0);
   });
 
   it('forgets the echo quickly once he stops, so the next turn starts from the room', () => {

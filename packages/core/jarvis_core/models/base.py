@@ -48,6 +48,10 @@ class ProbeResult:
     latency_ms: int
     detail: str = ""
     models: list[str] = field(default_factory=list)
+    # The served model's context window in tokens, when the endpoint says (vLLM's
+    # /v1/models carries max_model_len). None = unknown; the context ceiling then stays
+    # at the configured budgets.
+    context_window: int | None = None
 
 
 class ModelError(RuntimeError):

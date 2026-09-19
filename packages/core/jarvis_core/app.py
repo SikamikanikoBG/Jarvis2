@@ -139,6 +139,7 @@ class Core:
             learner=self.learner,
             attachments=self.attachments,
             reflector=self.reflector,
+            windows=self.adapters.context_window,
         )
         self.titler = Titler(lambda: self.adapters.for_role(RoleName.CLASSIFIER))
         self.engine = RunEngine(

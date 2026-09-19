@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ApiError, api, describeError, fieldErrors } from '../api/client';
 import { Switch } from '../components/primitives';
 import type { ThemePref } from '../lib/theme';
-import { ROLE_NAMES, RUN_KINDS, THINK_LEVELS, type ModelSpec, type Provider, type RoleName, type RunKind, type Settings, type SttKind, type ThinkLevel, type ToolExposure } from '../protocol/types';
+import { LANES, ROLE_NAMES, RUN_KINDS, THINK_LEVELS, type Lane, type ModelSpec, type Provider, type RoleName, type RunKind, type Settings, type SttKind, type ThinkLevel, type ToolExposure } from '../protocol/types';
 import { useStore } from '../store/store';
 import { CollabSection } from './CollabSection';
 import { McpServersSection } from './McpServersSection';
@@ -224,6 +224,11 @@ export function SettingsScreen() {
             <span className="field-hint">Multi-step tasks get a plan the model advances step by step.</span>
           </div>
           <div className="think-row">
+            <Switch checked={draft.lane_failover} onChange={(v) => patch('lane_failover', v)} label="Lane failover" />
+            <span className="small">Lane failover</span>
+            <span className="field-hint">A run whose lane cannot be reached retries the step once on the other lane.</span>
+          </div>
+          <div className="think-row">
             <Switch checked={draft.kg_learning} onChange={(v) => patch('kg_learning', v)} label="Knowledge learning" />
             <span className="small">Knowledge learning</span>
             <span className="field-hint">After each run the classifier extracts entities and relations into Knowledge.</span>
@@ -239,8 +244,20 @@ export function SettingsScreen() {
             <Field label="Facade threshold (tools)" error={errors.facade_threshold}>
               <NumberInput value={draft.facade_threshold} min={1} onChange={(v) => patch('facade_threshold', v ?? 1)} />
             </Field>
-            <Field label="History budget (tokens)" error={errors.history_token_budget}>
+            <Field label="History budget (tokens)" hint="Earlier turns a step may carry; shrinks with the lane's window." error={errors.history_token_budget}>
               <NumberInput value={draft.history_token_budget} min={1000} onChange={(v) => patch('history_token_budget', v ?? 1000)} />
+            </Field>
+            <Field label="Tool results budget (tokens)" hint="This run's tool results before the oldest shrink to heads." error={errors.tool_context_token_budget}>
+              <NumberInput value={draft.tool_context_token_budget} min={1000} onChange={(v) => patch('tool_context_token_budget', v ?? 1000)} />
+            </Field>
+            <Field label="Admit a tool result up to (chars)" hint="Longer results enter as a head + ref; result_search / result_read reach the rest. Capped at half the results budget on a small lane." error={errors.tool_result_admit_chars}>
+              <NumberInput value={draft.tool_result_admit_chars} min={2000} onChange={(v) => patch('tool_result_admit_chars', v ?? 2000)} />
+            </Field>
+            <Field label="Context reserve (tokens)" hint="Kept free of the lane's window besides the answer." error={errors.context_reserve_tokens}>
+              <NumberInput value={draft.context_reserve_tokens} min={0} onChange={(v) => patch('context_reserve_tokens', v ?? 0)} />
+            </Field>
+            <Field label="Pictures and clips in context" hint="Newest first; older ones stay as a note. Keep under the lane's per-prompt limit (6 images)." error={errors.media_in_context}>
+              <NumberInput value={draft.media_in_context} min={0} onChange={(v) => patch('media_in_context', v ?? 0)} />
             </Field>
             <Field label="Boards in context (chars)" error={errors.boards_context_chars}>
               <NumberInput value={draft.boards_context_chars} min={0} onChange={(v) => patch('boards_context_chars', v ?? 0)} />
@@ -254,12 +271,42 @@ export function SettingsScreen() {
         <section id="settings-roles" className="settings-anchor" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div className="section-head">
             <h2>Model roles</h2>
-            <p>Which endpoint serves each role. No fallbacks: a missing model stays missing.</p>
+            <p>
+              chat and background are the two lanes: a run is routed to one of them whole. The other roles are behaviours —
+              inside a run they execute on the run&apos;s lane; their own endpoint only serves calls made outside any run. No
+              fallbacks: a missing model stays missing.
+            </p>
           </div>
           {errors.roles && <div className="field-error">{errors.roles}</div>}
           {ROLE_NAMES.map((role) => (
             <RoleCard key={role} role={role} spec={draft.roles[role]} onChange={(s) => patchRole(role, s)} />
           ))}
+        </section>
+
+        <section id="settings-routing" className="card role-card settings-anchor">
+          <div className="section-head">
+            <h2>Run routing</h2>
+            <p>Which lane each kind of run executes on. Keep the chat you are typing in away from the runs that read 80k tokens a step.</p>
+          </div>
+          {errors.run_routing && <div className="field-error">{errors.run_routing}</div>}
+          <div className="form-grid">
+            {RUN_KINDS.map((kind) => (
+              <Field key={kind} label={kind}>
+                <select
+                  className="select"
+                  value={draft.run_routing?.[kind] ?? 'chat'}
+                  onChange={(e) => patch('run_routing', { ...draft.run_routing, [kind]: e.target.value as Lane })}
+                  aria-label={`${kind} lane`}
+                >
+                  {LANES.map((lane) => (
+                    <option key={lane} value={lane}>
+                      {lane}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            ))}
+          </div>
         </section>
 
         <div id="settings-mcp" className="settings-anchor">
@@ -397,7 +444,7 @@ function NumberInput({
 }
 
 function RoleCard({ role, spec, onChange }: { role: RoleName; spec: ModelSpec; onChange: (s: Partial<ModelSpec>) => void }) {
-  const mayThink = role === 'chat';
+  const mayThink = role === 'chat' || role === 'background';
   const ollama = spec.provider === 'ollama';
   return (
     <div id={`role-${role}`} className="card role-card settings-anchor">
@@ -457,9 +504,10 @@ function RoleCard({ role, spec, onChange }: { role: RoleName; spec: ModelSpec; o
 }
 
 const ROLE_HINTS: Record<RoleName, string> = {
-  chat: 'Answers you. The only role allowed to think.',
-  planner: 'Writes the plan for multi-step tasks.',
-  classifier: 'Pre-flight: tier, skills, routing; compaction summaries.',
-  judge: 'Supervises a run when structural signals fire.',
-  triage: 'Classifies inbound mail in the background.',
+  chat: 'Lane for the runs you watch (see Run routing). Thinks.',
+  background: 'Lane for unattended runs — the same loop as chat, on the endpoint that holds long contexts. Thinks.',
+  planner: 'Writes the plan for multi-step tasks. Runs on the lane of the run it plans for.',
+  classifier: 'Pre-flight: tier, skills, routing; compaction summaries. Runs on the lane of the run it serves.',
+  judge: 'Supervises a run when structural signals fire. Runs on the lane of that run.',
+  triage: 'Classifies inbound mail. Runs on the lane triage runs are routed to.',
 };

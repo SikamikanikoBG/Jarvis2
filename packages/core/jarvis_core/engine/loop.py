@@ -15,13 +15,21 @@ from pydantic import ValidationError
 
 from jarvis_core.db import Store
 from jarvis_core.engine.bus import EventBus
-from jarvis_core.engine.context import ContextAssembler, tool_result_head
+from jarvis_core.engine.context import (
+    OLD_TOOL_RESULT_HEAD,
+    ContextAssembler,
+    admit,
+    context_breakdown,
+    prompt_chars,
+    tool_result_head,
+)
 from jarvis_core.engine.control import RunCancelledError, RunControl
 from jarvis_core.engine.supervision import Emit, RunWatch, StepRecord, Supervisor, args_hash, step_of
 from jarvis_core.features.planner import PLAN_TOOLS
 from jarvis_core.models.base import (
     ModelAdapter,
     ModelCancelled,
+    ModelError,
     ModelReasoningChunk,
     ModelTextChunk,
     ModelToolCallsChunk,
@@ -100,7 +108,12 @@ _TOOL_TIMEOUT_S = 120.0
 
 class AdapterGetter(Protocol):
     def __call__(
-        self, role: RoleName, *, think: bool | None = None, think_level: ThinkLevel | None = None
+        self,
+        role: RoleName,
+        *,
+        think: bool | None = None,
+        think_level: ThinkLevel | None = None,
+        exact: bool = False,
     ) -> ModelAdapter: ...
 
 
@@ -121,10 +134,15 @@ class AgentLoop:
         learner: KnowledgeLearner | None = None,
         attachments: AttachmentStore | None = None,
         reflector: PlaybookReflector | None = None,
+        windows: Callable[[RunKind], Awaitable[int | None]] | None = None,
     ) -> None:
         self._store = store
         self._bus = bus
         self._adapters = adapters
+        # The context window of a run kind's lane, in tokens (AdapterFactory.context_window);
+        # None when nobody knows, and the budgets stay as configured.
+        self._windows = windows
+        self._admit_chars = 48_000  # per step, from the view (Settings.admit_chars)
         self._registry = registry
         self._context = context
         self._supervisor = supervisor
@@ -160,6 +178,10 @@ class AgentLoop:
     async def run(self, run: Run, ctl: RunControl) -> None:
         emit = ctl.emitter.emit
         watch = RunWatch(budget=run.budget)
+        # The run executes on one lane (settings.run_routing): the main loop as the lane's spec,
+        # every other model call it makes on the lane's endpoint — so a scheduled run chewing
+        # through 84k-token steps cannot starve the chat Arsen is typing in.
+        main_role = self._settings().lane_for(run.kind)
         run.status = RunStatus.RUNNING
         run.started_at = run.started_at or datetime.now(UTC)
         run.waiting_reason = None
@@ -216,9 +238,18 @@ class AgentLoop:
                     await emit(PlanCreated(run_id="", conversation_id="", plan=plan))
                     await emit(PlanStepStarted(run_id="", conversation_id="", index=0, title=plan.steps[0].title))
 
-        messages = await self._context.assemble(run, skill_names=skill_names)
         incognito = await self._is_incognito(run)
         tools = self._exposed_tools(run.plan is not None, incognito=incognito, voice=voice)
+        # Built against the lane's window: the tool schemas and the system message are the fixed
+        # part of every step's prompt, and what is left after them, the answer and the reserve is
+        # what history and this run's results may share.
+        window = await self._windows(run.kind) if self._windows is not None else None
+        lane_spec = self._adapters(main_role).spec
+        view = await self._context.assemble_view(
+            run, skill_names=skill_names, tools=tools, window=window, max_tokens=lane_spec.max_tokens
+        )
+        messages = view.messages
+        self._admit_chars = view.admit_chars
         plan_trailer: Message | None = None  # ephemeral, always the last message
         think_off_once = False  # set for ONE step when reasoning ate the whole output allowance
         # Adaptive thinking: the first step of a run always reasons, and after that only a step
@@ -263,7 +294,14 @@ class AgentLoop:
             # Tool results from earlier steps have been acted on; keep their head only. The DB
             # keeps the full text. Without this a 49-event calendar_list rode along in every one
             # of 8 model calls and a single scheduled run cost 217k prompt tokens (2026-09-05).
-            _compress_old_tool_results(messages, self._settings().tool_context_token_budget)
+            _compress_old_tool_results(messages, view.results_tokens, chars_per_token=self._context.chars_per_token)
+            # And whatever the step holds, it must fit the lane: a step that read 31 mails at once
+            # (2026-09-16, the AI Newsletter: 222k chars of fresh results in one step) is beyond
+            # any budget and was refused by the server outright. The largest fresh results give
+            # up their tails first, only as much as the window demands.
+            if view.window is not None:
+                limit_tokens = view.window - (lane_spec.max_tokens or _DEFAULT_MAX_TOKENS) - self._settings().context_reserve_tokens
+                _fit_to_window(messages, run.id, int(limit_tokens * self._context.chars_per_token) - view.tools_chars)
             if plan_trailer is not None:
                 messages.append(plan_trailer)
             run.steps_used += 1
@@ -273,7 +311,7 @@ class AgentLoop:
             # so the role's own configuration still has the last word on thinking at all.
             mechanical = self._settings().adaptive_thinking and not think_next
             adapter = self._adapters(
-                RoleName.CHAT,
+                main_role,
                 think=False if think_off_once or mechanical else run.think,
                 think_level=None if think_off_once or mechanical else run.think_level,
             )
@@ -283,16 +321,49 @@ class AgentLoop:
                 ModelCall(
                     run_id="",
                     conversation_id="",
-                    role=RoleName.CHAT.value,
+                    role=main_role.value,
                     provider=adapter.spec.provider.value,
                     model=adapter.spec.model,
                     message_count=len(messages),
                     tool_count=len(tools),
                     think=adapter.spec.think,
                     think_level=adapter.spec.think_level,
+                    context=context_breakdown(
+                        messages,
+                        run.id,
+                        tools_chars=view.tools_chars,
+                        window=view.window,
+                        chars_per_token=self._context.chars_per_token,
+                    ),
                 )
             )
-            text, reasoning, raw_calls, usage, finish = await self._stream(adapter, messages, tools, run, ctl)
+            sent_chars = prompt_chars(messages, view.tools_chars)
+            try:
+                text, reasoning, raw_calls, usage, finish = await self._stream(adapter, messages, tools, run, ctl)
+            except ModelError as exc:
+                # The lane is unreachable (booting, restarted, gone): the other lane serves the
+                # same model. One try, shown in the inspector as a second model.call; a failure
+                # there is the run's failure.
+                other = self._settings().other_lane(main_role) if self._settings().lane_failover else None
+                if not exc.retryable or other is None:
+                    raise
+                log.warning("run %s: lane %s unreachable (%s); falling over to %s", run.id, main_role.value, exc, other.value)
+                adapter = self._adapters(other, think=adapter.spec.think, think_level=adapter.spec.think_level, exact=True)
+                await emit(
+                    ModelCall(
+                        run_id="",
+                        conversation_id="",
+                        role=f"{other.value} (failover from {main_role.value})",
+                        provider=adapter.spec.provider.value,
+                        model=adapter.spec.model,
+                        message_count=len(messages),
+                        tool_count=len(tools),
+                        think=adapter.spec.think,
+                        think_level=adapter.spec.think_level,
+                    )
+                )
+                text, reasoning, raw_calls, usage, finish = await self._stream(adapter, messages, tools, run, ctl)
+            self._context.observe(sent_chars, usage.prompt_tokens)
             calls = [self._policy.resolve(c) for c in raw_calls]  # facade op → canonical namespace.op
             run.usage = run.usage.add(usage)
             await emit(
@@ -788,7 +859,9 @@ class AgentLoop:
                     message.attachments = bound
                 except Exception as exc:
                     log.warning("tool image from %s not bound: %s", call.name, exc)
-        return message
+        # What the model reads from here on: whole up to the admission limit, else its head and
+        # the marker with the ref. The DB has the whole text; the view is what costs tokens.
+        return admit(message, self._admit_chars)
 
     async def _wait_for_confirmation(self, run: Run, ctl: RunControl, call: ToolCall, *, reason: str) -> None:
         emit = ctl.emitter.emit
@@ -930,7 +1003,7 @@ class AgentLoop:
             name="supervisor",
         )
         try:
-            adapter = self._adapters(RoleName.CHAT, think=False, think_level=None)
+            adapter = self._adapters(self._settings().lane_for(run.kind), think=False, think_level=None)
             text, _reasoning, _calls, usage, _finish = await self._stream(adapter, [*messages, ask], [], run, ctl)
             run.usage = run.usage.add(usage)
             await self._store.save_run(run)
@@ -1023,10 +1096,40 @@ _CHARS_PER_TOKEN = 3.2
 # just enough put the run back over the line on the very next step, so it fired again and again:
 # 64 s, then 59 s, then 49 s inside a single run, each one re-reading ~78k tokens. Crossing the
 # line rarely and coming back well under it pays for the crossing.
-_COMPRESS_TO = 0.7
+# Ageing rewrites messages in the middle of the prompt, and the prefix cache is gone for the
+# rest of that request; so when it has to happen it goes deep, to half the budget, and then not
+# again for a long while — every-step ageing was the 2026-09-17 newsletter's undoing.
+_COMPRESS_TO = 0.5
+# What vLLM applies when a request names no max_tokens (the model's generation_config).
+_DEFAULT_MAX_TOKENS = 16_384
 
 
-def _compress_old_tool_results(messages: list[Message], budget_tokens: int) -> None:
+def _fit_to_window(messages: list[Message], run_id: str, limit_chars: int) -> None:
+    """Cut this step's fresh tool results, largest first and only by the overflow, so the whole
+    prompt fits the lane's window. Ageing (above) is a budget the run lives within; this is the
+    wall it must not hit. The DB keeps every byte; the marker names the ref."""
+    total = sum(len(m.content) + sum(len(str(c.arguments)) for c in m.tool_calls) for m in messages)
+    overflow = total - limit_chars
+    if overflow <= 0:
+        return
+    fresh = sorted(
+        (i for i, m in enumerate(messages) if m.role is Role.TOOL and m.run_id == run_id),
+        key=lambda i: -len(messages[i].content),
+    )
+    for i in fresh:
+        if overflow <= 0:
+            break
+        m = messages[i]
+        room = len(m.content) - OLD_TOOL_RESULT_HEAD - 240  # what this one can give up (240 ~ the marker)
+        if room <= 0:
+            continue
+        cut = min(room, overflow)
+        shrunk = tool_result_head(m, head=len(m.content) - cut - 240, min_len=0)
+        overflow -= len(m.content) - len(shrunk.content)
+        messages[i] = shrunk
+
+
+def _compress_old_tool_results(messages: list[Message], budget_tokens: int, *, chars_per_token: float = _CHARS_PER_TOKEN) -> None:
     """Keep this run's tool results under a token budget by truncating the OLDEST first.
 
     Nothing is touched while the results fit: a "read 26 mails and summarise" run must keep the
@@ -1039,7 +1142,7 @@ def _compress_old_tool_results(messages: list[Message], budget_tokens: int) -> N
     last_assistant = max((i for i, m in enumerate(messages) if m.role is Role.ASSISTANT), default=-1)
     if last_assistant < 0:
         return
-    budget = int(budget_tokens * _CHARS_PER_TOKEN)
+    budget = int(budget_tokens * chars_per_token)
     tool_idx = [i for i, m in enumerate(messages) if m.role is Role.TOOL]
     total = sum(len(messages[i].content) for i in tool_idx)
     if total <= budget:

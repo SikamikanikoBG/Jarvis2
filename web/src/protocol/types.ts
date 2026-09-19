@@ -203,9 +203,12 @@ export interface SearchHit {
 
 export type Provider = 'ollama' | 'vllm' | 'fake';
 
-export type RoleName = 'chat' | 'planner' | 'classifier' | 'judge' | 'triage';
+export type RoleName = 'chat' | 'background' | 'planner' | 'classifier' | 'judge' | 'triage';
 
-export const ROLE_NAMES: readonly RoleName[] = ['chat', 'planner', 'classifier', 'judge', 'triage'];
+export const ROLE_NAMES: readonly RoleName[] = ['chat', 'background', 'planner', 'classifier', 'judge', 'triage'];
+/** The two roles a run can be routed to as a whole. */
+export type Lane = 'chat' | 'background';
+export const LANES: readonly Lane[] = ['chat', 'background'];
 export const RUN_KINDS: readonly RunKind[] = ['chat', 'collab', 'scheduled', 'triage', 'meeting', 'system'];
 
 export interface ModelSpec {
@@ -364,6 +367,8 @@ export interface Settings {
   confirmations: Confirmations;
   email: EmailPolicy;
   roles: Record<RoleName, ModelSpec>;
+  /** Which lane (chat or background) a run of each kind executes on — whole, every model call it makes. */
+  run_routing: Record<RunKind, Lane>;
   budgets: Record<RunKind, RunBudget>;
   mcp_servers: McpServerSpec[];
   max_concurrent_runs_per_endpoint: number;
@@ -371,10 +376,15 @@ export interface Settings {
   tool_exposure: ToolExposure;
   facade_threshold: number;
   history_token_budget: number;
+  tool_context_token_budget: number;
+  tool_result_admit_chars: number;
+  context_reserve_tokens: number;
+  media_in_context: number;
   boards_context_chars: number;
   skill_max_chars: number;
   planning_enabled: boolean;
   kg_learning: boolean;
+  lane_failover: boolean;
   triage: TriageSettings;
   rsvp: MeetingRsvpSettings;
   voice: VoiceSettings;
@@ -620,6 +630,16 @@ export interface PlanStepDone extends RunEventBase {
   index: number;
 }
 
+/** Where a step's prompt went, in estimated tokens; `window` is the lane's context length when known. */
+export interface ContextBreakdown {
+  system: number;
+  tools: number;
+  history: number;
+  results: number;
+  total: number;
+  window: number | null;
+  admitted: number;
+}
 export interface ModelCall extends RunEventBase {
   type: 'model.call';
   role: string;
@@ -629,6 +649,7 @@ export interface ModelCall extends RunEventBase {
   tool_count: number;
   think: boolean;
   think_level: ThinkLevel | null;
+  context?: ContextBreakdown | null;
 }
 export interface ModelDelta extends RunEventBase {
   type: 'model.delta';

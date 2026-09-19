@@ -14,6 +14,7 @@ from jarvis_proto.events import (
     GuardConsumed,
     JudgeVerdict,
     MessageCreated,
+    ContextBreakdown,
     ModelCall,
     ModelDelta,
     ModelDone,
@@ -92,6 +93,7 @@ from jarvis_proto.runs import (
     ThinkLevel,
 )
 from jarvis_proto.settings import (
+    LANES,
     Confirmations,
     EmailPolicy,
     McpServerSpec,
@@ -141,6 +143,7 @@ __all__ = [
     "MeetingRsvpSettings",
     "Message",
     "MessageCreated",
+    "ContextBreakdown",
     "ModelCall",
     "ModelDelta",
     "ModelDone",
@@ -157,6 +160,7 @@ __all__ = [
     "Pong",
     "Provider",
     "Role",
+    "LANES",
     "RoleName",
     "RsvpDecision",
     "RsvpState",

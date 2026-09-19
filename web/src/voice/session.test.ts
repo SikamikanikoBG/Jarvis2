@@ -61,9 +61,12 @@ class FakeSpeaker implements Speaker {
 class FakeTranscriber implements Transcriber {
   next = 'какво ще кажеш';
   fail = false;
-  transcribe(): Promise<{ text: string; language: string | null }> {
+  hints: string[] = [];
+  language: string | null = 'bg';
+  transcribe(_audio: Blob, language: string): Promise<{ text: string; language: string | null }> {
+    this.hints.push(language);
     if (this.fail) return Promise.reject(new Error('502'));
-    return Promise.resolve({ text: this.next, language: 'bg' });
+    return Promise.resolve({ text: this.next, language: this.language });
   }
 }
 
@@ -87,7 +90,9 @@ class FakeTransport implements Transport {
   }
 }
 
-function build(over: Partial<{ listener: FakeListener; speaker: FakeSpeaker; transcriber: FakeTranscriber; transport: FakeTransport }> = {}) {
+function build(
+  over: Partial<{ listener: FakeListener; speaker: FakeSpeaker; transcriber: FakeTranscriber; transport: FakeTransport; joinMs: number }> = {},
+) {
   const listener = over.listener ?? new FakeListener();
   const speaker = over.speaker ?? new FakeSpeaker();
   const transcriber = over.transcriber ?? new FakeTranscriber();
@@ -99,6 +104,8 @@ function build(over: Partial<{ listener: FakeListener; speaker: FakeSpeaker; tra
     transcriber,
     transport,
     language: 'bg',
+    languages: ['bg', 'en'],
+    joinMs: over.joinMs ?? 0,
     conversationId: 'c1',
     onChange: (s) => states.push(s),
   });
@@ -106,6 +113,11 @@ function build(over: Partial<{ listener: FakeListener; speaker: FakeSpeaker; tra
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
+/** Transcription resolves, then the (zero) join window elapses: two turns of the event loop. */
+const settle = async () => {
+  await tick();
+  await tick();
+};
 
 describe('CallSession', () => {
   it('walks a whole turn: listen → transcribe → think → speak sentence by sentence → listen', async () => {
@@ -113,7 +125,7 @@ describe('CallSession', () => {
     await t.session.start();
     expect(t.session.state.phase).toBe('listening');
     t.listener.say();
-    await tick();
+    await settle();
     expect(t.session.state.phase).toBe('thinking');
     expect(t.session.state.heard).toBe('какво ще кажеш');
     expect(t.transport.created).toEqual(['какво ще кажеш']);
@@ -121,17 +133,19 @@ describe('CallSession', () => {
     t.session.onRunQueued('r1', 'c1');
     t.session.onDelta('r1', 'Три дни. Има ли');
     await tick();
+    expect(t.session.state.phase).toBe('thinking'); // a step's words wait for the step to end
+    expect(t.speaker.spoken).toEqual([]);
+    t.session.onDelta('r1', ' бучка?');
+    t.session.onStepDone('r1', false);
+    await tick();
     expect(t.session.state.phase).toBe('speaking');
     expect(t.listener.gated).toBe(true);
     expect(t.speaker.spoken).toEqual([{ text: 'Три дни.', lang: 'bg' }]);
     t.speaker.finishOne();
     await tick();
     expect(t.session.state.spokenUpTo).toBe(1);
-    expect(t.session.state.phase).toBe('thinking'); // more is being written
-    t.session.onDelta('r1', ' бучка?');
-    t.session.onRunDone('r1');
-    await tick();
     expect(t.speaker.spoken.map((s) => s.text)).toEqual(['Три дни.', 'Има ли бучка?']);
+    t.session.onRunDone('r1');
     t.speaker.finishOne();
     await tick();
     expect(t.session.state.phase).toBe('listening');
@@ -139,40 +153,60 @@ describe('CallSession', () => {
     expect(t.session.state.runId).toBeNull();
   });
 
+  it('a step that ends in tool calls is not read out: its words were the plan, not the reply', async () => {
+    const t = build();
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    t.session.onRunQueued('r1', 'c1');
+    t.session.onDelta('r1', 'The user is on a voice call. Let me look that up. ');
+    t.session.onStepDone('r1', true);
+    await tick();
+    expect(t.speaker.spoken).toEqual([]);
+    expect(t.session.state.phase).toBe('thinking');
+    t.session.onDelta('r1', 'Три дни. ');
+    t.session.onStepDone('r1', false);
+    t.session.onRunDone('r1');
+    await tick();
+    expect(t.speaker.spoken.map((s) => s.text)).toEqual(['Три дни.']);
+  });
+
   it('a cut-in while he speaks stops him and steers the run that is still working', async () => {
     const t = build();
     await t.session.start();
     t.listener.say();
-    await tick();
+    await settle();
     t.session.onRunQueued('r1', 'c1');
     t.session.onDelta('r1', 'Първо. Второ. Трето. И');
+    t.session.onStepDone('r1', false);
     await tick();
     expect(t.session.state.phase).toBe('speaking');
     // Arsen talks over him.
     t.transcriber.next = 'не, не това';
     t.listener.say();
     expect(t.speaker.cancelled).toBe(1);
-    await tick();
+    await settle();
     // The run is still working: the words go to it, not to a new run.
     expect(t.transport.steered).toEqual([{ runId: 'r1', text: 'не, не това' }]);
     expect(t.transport.created).toHaveLength(1);
     expect(t.session.state.phase).toBe('thinking');
     // Its new sentences are spoken from a clean queue.
     t.session.onDelta('r1', ' Разбрах. Ще го направя.');
+    t.session.onStepDone('r1', false);
     t.session.onRunDone('r1');
     await tick();
     t.speaker.finishOne();
     await tick();
     expect(t.speaker.spoken.map((s) => s.text).slice(-2)).toEqual(['Разбрах.', 'Ще го направя.']);
     // "И" — the half-sentence written before the cut — was never said.
-    expect(t.speaker.spoken.some((s) => s.text.startsWith('И '))).toBe(false);
+    expect(t.speaker.spoken.some((s) => s.text === 'И')).toBe(false);
   });
 
   it('with no run working, a new utterance starts a new voice turn in the same conversation', async () => {
     const t = build();
     await t.session.start();
     t.listener.say();
-    await tick();
+    await settle();
     t.session.onRunQueued('r1', 'c1');
     t.session.onDelta('r1', 'Да.');
     t.session.onRunDone('r1');
@@ -182,7 +216,7 @@ describe('CallSession', () => {
     expect(t.session.state.phase).toBe('listening');
     t.transcriber.next = 'и още нещо';
     t.listener.say();
-    await tick();
+    await settle();
     expect(t.transport.created).toEqual(['какво ще кажеш', 'и още нещо']);
     expect(t.transport.steered).toEqual([]);
   });
@@ -191,12 +225,60 @@ describe('CallSession', () => {
     const t = build();
     await t.session.start();
     t.listener.say();
-    await tick();
+    await settle();
+    t.transcriber.next = 'и още нещо';
     t.listener.say(); // the run has not been queued yet
+    await settle();
+    expect(t.transport.created).toEqual(['какво ще кажеш']);
+    // Held until the run has an id, then handed to it — one turn, nothing lost, nothing doubled
+    // (two creates used to be answered twice, spoken over each other).
+    t.session.onRunQueued('r1', 'c1');
+    expect(t.transport.steered).toEqual([{ runId: 'r1', text: 'и още нещо' }]);
+  });
+
+  it('a pause for breath does not end the turn: what follows joins the same utterance', async () => {
+    const t = build({ joinMs: 30 });
+    await t.session.start();
+    t.listener.say();
+    await tick(); // recognised, now waiting for him to go on
+    t.transcriber.next = 'в крайна сметка';
+    t.listener.say(); // he went on inside the window
+    await new Promise((r) => setTimeout(r, 60));
+    expect(t.transport.created).toEqual(['какво ще кажеш в крайна сметка']);
+    expect(t.states.at(-1)?.heard).toBe('какво ще кажеш в крайна сметка');
+  });
+
+  it('a noisy room does not hold his words: only recognised text extends the wait', async () => {
+    const t = build({ joinMs: 30 });
+    await t.session.start();
+    t.listener.say();
     await tick();
-    expect(t.transport.created).toEqual(['какво ще кажеш', 'какво ще кажеш']);
-    // Two creates, because the first one had not come back — the core queues them; the session
-    // does not steer a run it has not been told about. What matters: nothing was lost.
+    for (let i = 0; i < 5; i += 1) {
+      t.listener.h?.onSpeechStart(); // something in the room, every few ms, never words
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    await new Promise((r) => setTimeout(r, 30));
+    expect(t.transport.created).toEqual(['какво ще кажеш']);
+  });
+
+  it('the recogniser gets the call language as a hint, and follows him when he switches', async () => {
+    const t = build();
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    expect(t.transcriber.hints).toEqual(['bg']);
+    t.transcriber.language = 'en'; // labelled English, but the words are Cyrillic: not believed
+    t.listener.say();
+    await settle();
+    t.transcriber.next = 'switch to english please';
+    t.listener.say();
+    await settle();
+    t.transcriber.language = 'el'; // not one of the call's languages: not believed
+    t.listener.say();
+    await settle();
+    t.listener.say();
+    await settle();
+    expect(t.transcriber.hints).toEqual(['bg', 'bg', 'bg', 'en', 'en']);
   });
 
   it('says one honest sentence when Whisper is down and keeps listening', async () => {
@@ -204,7 +286,7 @@ describe('CallSession', () => {
     await t.session.start();
     t.transcriber.fail = true;
     t.listener.say();
-    await tick();
+    await settle();
     expect(t.session.state.phase).toBe('listening');
     expect(t.session.state.problem).toMatch(/speech service is not answering/);
     expect(t.transport.created).toEqual([]);
@@ -214,7 +296,7 @@ describe('CallSession', () => {
     const t = build();
     await t.session.start();
     t.listener.say();
-    await tick();
+    await settle();
     t.session.onRunQueued('r1', 'c1');
     t.session.onRunFailed('r1', 'model unreachable');
     await tick();
@@ -237,15 +319,17 @@ describe('CallSession', () => {
     const t = build();
     await t.session.start();
     t.listener.say();
-    await tick();
+    await settle();
     t.session.onRunQueued('r1', 'c1');
     t.session.onDelta('r1', 'Едно. Две. Три. ');
+    t.session.onStepDone('r1', false);
     await tick();
     t.session.end();
     expect(t.listener.stopped).toBe(true);
     expect(t.speaker.cancelled).toBe(1);
     expect(t.session.state.phase).toBe('ended');
     t.session.onDelta('r1', 'Четири. Пет.'); // late deltas change nothing
+    t.session.onStepDone('r1', false);
     expect(t.speaker.spoken).toHaveLength(1);
   });
 
@@ -259,18 +343,28 @@ describe('CallSession', () => {
     expect(t.session.state.route).toBe('speaker');
   });
 
-  it('a mixed reply switches voice per sentence', async () => {
+  it('one reply, one voice: the first sentence with letters decides the language for the rest', async () => {
     const t = build();
     await t.session.start();
     t.listener.say();
-    await tick();
+    await settle();
     t.session.onRunQueued('r1', 'c1');
     t.session.onDelta('r1', 'Готово. Run it with vLLM. ');
     t.session.onRunDone('r1');
     await tick();
     t.speaker.finishOne();
     await tick();
-    expect(t.speaker.spoken.map((s) => s.lang)).toEqual(['bg', 'en']);
+    expect(t.speaker.spoken.map((s) => s.lang)).toEqual(['bg', 'bg']);
+    // The next reply decides afresh.
+    t.speaker.finishAll();
+    await tick();
+    t.listener.say();
+    await settle();
+    t.session.onRunQueued('r2', 'c1');
+    t.session.onDelta('r2', 'Done. Готово е. ');
+    t.session.onRunDone('r2');
+    await tick();
+    expect(t.speaker.spoken.slice(2).map((s) => s.lang)).toEqual(['en']);
   });
 
   it('what the voice could not do reaches the screen instead of passing in silence', async () => {
@@ -285,7 +379,7 @@ describe('CallSession', () => {
     const t = build({ speaker });
     await t.session.start();
     t.listener.say();
-    await tick();
+    await settle();
     t.session.onRunQueued('r1', 'c1');
     t.session.onDelta('r1', 'Първо. Второ. ');
     t.session.onRunDone('r1');

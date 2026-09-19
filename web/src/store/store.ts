@@ -291,6 +291,7 @@ export const useStore = create<AppState>()((set, get) => ({
       for (const e of events) {
         if (e.type === 'run.queued') session.onRunQueued(e.run_id, e.conversation_id);
         else if (e.type === 'model.delta' && e.kind === 'text') session.onDelta(e.run_id, e.text);
+        else if (e.type === 'model.done') session.onStepDone(e.run_id, e.tool_call_count > 0 || e.finish_reason === 'tool_calls');
         else if (e.type === 'run.done' || e.type === 'run.cancelled') session.onRunDone(e.run_id);
         else if (e.type === 'run.failed') session.onRunFailed(e.run_id, e.error);
       }
@@ -349,10 +350,13 @@ export const useStore = create<AppState>()((set, get) => ({
     // Whose voice: the core's neural one unless the settings say the device's. Read here, at
     // the tap, so a change in Settings takes effect on the next call without a reload.
     let tts: 'server' | 'device' = 'server';
+    let languages = ['bg', 'en'];
     try {
-      tts = (await api.settings.get()).voice.tts;
+      const settings = await api.settings.get();
+      tts = settings.voice.tts;
+      if (settings.stt_languages.length) languages = settings.stt_languages;
     } catch {
-      /* the default stands; the server voice falls back to the device on its own */
+      /* the defaults stand; the server voice falls back to the device on its own */
     }
     // An incognito call is one from the first word: the chat it opens is incognito, and the
     // sentences Jarvis says are not written to the core's voice cache.
@@ -365,9 +369,10 @@ export const useStore = create<AppState>()((set, get) => ({
       listener,
       speaker,
       transcriber: {
-        // Whisper detects the language itself, the same as the push-to-talk microphone.
-        transcribe: async (audio) => {
-          const res = await api.stt(audio);
+        // The call's language goes along as a hint: a few words are too few for Whisper to
+        // guess from, and a wrong guess came back as Greek letters (2026-09-16).
+        transcribe: async (audio, language) => {
+          const res = await api.stt(audio, language);
           return { text: res.text, language: res.language };
         },
       },
@@ -395,7 +400,8 @@ export const useStore = create<AppState>()((set, get) => ({
         steer: (runId, text) => socket.send({ type: 'run.steer', run_id: runId, text, channel: 'voice' }),
         cancel: (runId) => void socket.send({ type: 'run.cancel', run_id: runId }),
       },
-      language: 'bg',
+      language: languages[0] ?? 'bg',
+      languages,
       conversationId: open,
       route: readRoute(),
       onChange: (call) => set({ call: { ...call } }),

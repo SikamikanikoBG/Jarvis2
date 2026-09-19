@@ -109,6 +109,21 @@ class PlanStepDone(RunEvent):
 # --- model ------------------------------------------------------------------------------
 
 
+class ContextBreakdown(BaseModel):
+    """Where a step's prompt goes, in estimated tokens (chars / 3.2), so the size of a prompt is
+    something to read rather than to guess at: the stable system message, the tool schemas,
+    earlier turns, this run's own tool results, and the window of the lane it is sent to."""
+
+    system: int = 0
+    tools: int = 0
+    history: int = 0
+    results: int = 0
+    total: int = 0
+    window: int | None = None
+    # Tool results this step carries as an admitted head rather than whole.
+    admitted: int = 0
+
+
 class ModelCall(RunEvent):
     type: Literal["model.call"] = "model.call"
     role: str
@@ -118,6 +133,7 @@ class ModelCall(RunEvent):
     tool_count: int
     think: bool
     think_level: ThinkLevel | None = None
+    context: ContextBreakdown | None = None
 
 
 class ModelDelta(RunEvent):

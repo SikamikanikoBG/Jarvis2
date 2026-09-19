@@ -45,8 +45,14 @@ function previewOf(ev: RunScopedEvent): string {
       return `${ev.steps_used} steps · ${formatTokens(ev.usage.prompt_tokens + ev.usage.completion_tokens)} tok${ev.summary ? ` · ${ev.summary}` : ''}`;
     case 'run.resumed':
       return `from seq ${ev.from_seq}`;
-    case 'model.call':
-      return `${ev.role} → ${ev.provider}/${ev.model} · ${ev.message_count} msgs · ${ev.tool_count} tools · ${ev.think ? `think${ev.think_level ? `:${ev.think_level}` : ''}` : 'no think'}`;
+    case 'model.call': {
+      const base = `${ev.role} → ${ev.provider}/${ev.model} · ${ev.message_count} msgs · ${ev.tool_count} tools · ${ev.think ? `think${ev.think_level ? `:${ev.think_level}` : ''}` : 'no think'}`;
+      const c = ev.context;
+      if (!c) return base;
+      const window = c.window ? ` / ${formatTokens(c.window)}` : '';
+      const admitted = c.admitted ? ` · ${c.admitted} result${c.admitted > 1 ? 's' : ''} as head` : '';
+      return `${base} · ctx ${formatTokens(c.total)} = sys ${formatTokens(c.system)} + tools ${formatTokens(c.tools)} + hist ${formatTokens(c.history)} + res ${formatTokens(c.results)}${window}${admitted}`;
+    }
     case 'tool.call':
     case 'tool.confirm_requested':
       return `${ev.name} ${previewValue(ev.arguments, 70)}`;

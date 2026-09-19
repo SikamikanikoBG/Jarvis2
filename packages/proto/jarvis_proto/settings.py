@@ -6,6 +6,7 @@ host that owns them and are not here.
 
 from __future__ import annotations
 
+import copy
 from enum import StrEnum
 from typing import Literal
 
@@ -21,11 +22,23 @@ class Provider(StrEnum):
 
 
 class RoleName(StrEnum):
+    # CHAT and BACKGROUND are the two LANES: full model specs (endpoint + behaviour) that a run is
+    # routed to as a whole by ``Settings.run_routing``. They run the same main loop and are the
+    # only roles allowed to think. Two of them because the box that holds long contexts well is
+    # not the box that answers fastest: a scheduled run re-reading 84k tokens of search results
+    # every step starved the chat Arsen was typing in when both shared one engine (2026-09-16,
+    # 3.9 tok/s). The other roles are BEHAVIOURS (thinking off, low temperature, own prompt) —
+    # inside a run they execute on the run's lane; their own endpoint fields only serve calls
+    # made outside any run.
     CHAT = "chat"
+    BACKGROUND = "background"
     PLANNER = "planner"
     CLASSIFIER = "classifier"
     JUDGE = "judge"
     TRIAGE = "triage"
+
+
+LANES: tuple[RoleName, ...] = (RoleName.CHAT, RoleName.BACKGROUND)
 
 
 class ModelSpec(BaseModel):
@@ -104,10 +117,29 @@ def _default_roles() -> dict[RoleName, ModelSpec]:
     quiet = ModelSpec(think=False, temperature=0.1)
     return {
         RoleName.CHAT: chat,
+        RoleName.BACKGROUND: chat.model_copy(),
         RoleName.PLANNER: quiet.model_copy(),
         RoleName.CLASSIFIER: quiet.model_copy(),
         RoleName.JUDGE: quiet.model_copy(),
         RoleName.TRIAGE: quiet.model_copy(),
+    }
+
+
+_BUDGET_FLOOR_TOKENS = 4_000
+_ADMIT_FLOOR_CHARS = 2_000
+
+
+def _default_routing() -> dict[RunKind, RoleName]:
+    # Interactive kinds on the chat lane, unattended ones on the background lane.
+    return {
+        RunKind.CHAT: RoleName.CHAT,
+        RunKind.COLLAB: RoleName.CHAT,
+        RunKind.SYSTEM: RoleName.CHAT,
+        # Scheduled runs read dozens of documents a step: the lane with the room and the fast
+        # prefill (262k on TP=2) is theirs too; background is for the runs that stay small.
+        RunKind.SCHEDULED: RoleName.CHAT,
+        RunKind.TRIAGE: RoleName.BACKGROUND,
+        RunKind.MEETING: RoleName.BACKGROUND,
     }
 
 
@@ -397,7 +429,9 @@ VOICE_STYLE_DEFAULT = (
     "sounds wrong aloud. Two or three sentences unless asked for more. If a proper answer needs "
     "to be long or needs a list, say so in a sentence and offer to write it in the chat. On a "
     "call you think and remember; you do not act: if asked to send, run, open or change "
-    "something, say you will do it once the call is over and ask for the word in the chat."
+    "something, say you will do it once the call is over and ask for the word in the chat. "
+    "Say only what you would say aloud: never narrate your reasoning, never describe what the "
+    "user wants or what you are about to do - just say it."
 )
 
 
@@ -442,6 +476,14 @@ class Settings(BaseModel):
     confirmations: Confirmations = Field(default_factory=Confirmations)
     email: EmailPolicy = Field(default_factory=EmailPolicy)
     roles: dict[RoleName, ModelSpec] = Field(default_factory=_default_roles)
+    # Which lane (CHAT or BACKGROUND) each run kind executes on. A run is routed whole: its main
+    # loop and every planner/classifier/judge call it makes go to that lane's endpoint.
+    run_routing: dict[RunKind, RoleName] = Field(default_factory=_default_routing)
+    # When the run's lane cannot be reached at all (its engine is booting, restarted, gone),
+    # the step is retried once on the other lane — the same model, a different box — and the
+    # run inspector shows the switch. Off = the run fails as it did on 2026-09-18 07:07, when
+    # watchtower had just recreated both engines: "ConnectError: All connection attempts failed".
+    lane_failover: bool = True
     budgets: dict[RunKind, RunBudget] = Field(default_factory=_default_budgets)
     mcp_servers: list[McpServerSpec] = Field(default_factory=_default_mcp_servers)
     # Two, because pre-flight asks the model two independent questions about the incoming message
@@ -474,8 +516,30 @@ class Settings(BaseModel):
     history_token_budget: int = 24_000
     # Tool results accumulated within ONE run may occupy this much before the oldest are
     # truncated to a head. Large enough for "read 26 mails and summarise"; small enough that a
-    # 49-event calendar does not ride along whole in every one of 8 model calls.
-    tool_context_token_budget: int = 40_000
+    # 49-event calendar does not ride along whole in every one of 8 model calls. It was 40,000
+    # while a token was assumed to be 3.2 chars — 128k chars — and ageing was rare; with the
+    # ratio calibrated (~2 chars a token on mail JSON) the same number aged the newsletter run's
+    # results every single step, each time invalidating the prefix cache, and a step on the
+    # background lane cost four minutes (2026-09-17: an hour, no newsletter). 120,000 keeps the
+    # same room in chars; the lane's window is what actually caps it (effective_budgets).
+    tool_context_token_budget: int = 120_000
+    # A single tool result longer than this enters the prompt as its head plus a marker naming
+    # the ref, from the step it arrives in; the DB keeps it whole and jarvis.result_search /
+    # jarvis.result_read reach the rest. Never a summary: what the model does not see is one
+    # call away. The limit is generous on purpose: at 12k a 43k-char folder listing (one line
+    # of JSON) made the model fish for it with 60 search/read calls over six minutes, where
+    # seeing it whole was one step (2026-09-16). Structured data has to be SEEN to be reasoned
+    # about; search helps only once the model knows what it is looking for. So the head is for
+    # the genuinely huge (page dumps, long shell output), and the effective limit also follows
+    # the lane: never more than half the step's results budget (Settings.admit_chars).
+    tool_result_admit_chars: int = 48_000
+    # How many pictures and clips, newest first, ride in the prompt as pixels. Every vLLM has a
+    # per-prompt limit on them and refuses the whole request past it (the lanes allow 6 images
+    # and 2 videos); older ones keep their note and can be shown again on request.
+    media_in_context: int = 4
+    # What the context ceiling keeps free of the lane's window besides the answer: the chat
+    # template's own additions, truncation markers, and the error of a chars/3.2 estimate.
+    context_reserve_tokens: int = 2_048
     # Ceiling for a single tool call. A tool that asks for its own timeout_s (shell_run running a
     # long report) is honoured up to this; everything else gets the 120 s default.
     tool_timeout_max_s: int = 1200  # Arsen's Outlook workload report takes ~14 min
@@ -500,14 +564,63 @@ class Settings(BaseModel):
     stt_model: str = "large-v3"
     stt_languages: list[str] = Field(default_factory=lambda: ["bg", "en"])
 
+    @model_validator(mode="before")
+    @classmethod
+    def _roles_added_later_inherit_chat(cls, data: object) -> object:
+        # Settings stored before a role existed have no row for it. BACKGROUND is CHAT's twin, so
+        # it starts as a copy of whatever CHAT is set to: the same endpoint until someone points
+        # it elsewhere, never a silent fall back to the built-in localhost default.
+        if isinstance(data, dict) and isinstance(roles := data.get("roles"), dict):
+            chat = roles.get(RoleName.CHAT.value, roles.get(RoleName.CHAT))
+            if chat is not None and RoleName.BACKGROUND.value not in roles and RoleName.BACKGROUND not in roles:
+                data = {**data, "roles": {**roles, RoleName.BACKGROUND.value: copy.deepcopy(chat)}}
+        return data
+
+    def lane_for(self, kind: RunKind) -> RoleName:
+        """The lane a run of this kind executes on."""
+        return self.run_routing.get(kind, RoleName.CHAT)
+
+    def other_lane(self, lane: RoleName) -> RoleName | None:
+        """The lane to fall over to: the other one, when it is a different endpoint."""
+        other = RoleName.BACKGROUND if lane is RoleName.CHAT else RoleName.CHAT
+        return other if self.roles[other].endpoint_key != self.roles[lane].endpoint_key else None
+
+    def admit_chars(self, results_budget_tokens: int, chars_per_token: float) -> int:
+        """How much of one tool result a step admits: the configured limit, or half the step's
+        results budget on a lane too small for it — one result never crowds out the rest."""
+        return max(_ADMIT_FLOOR_CHARS, min(self.tool_result_admit_chars, int(results_budget_tokens * chars_per_token / 2)))
+
+    def effective_budgets(
+        self, *, window: int | None, max_tokens: int | None, fixed_tokens: int
+    ) -> tuple[int, int]:
+        """(history, this run's tool results) token budgets for one step, as configured unless
+        the lane's context window cannot hold them next to the fixed part of the prompt
+        (system + tool schemas), the answer and the reserve — then both shrink in the
+        configured proportion. No window known → as configured. The floor keeps a step from
+        being starved into uselessness: below it the server's own refusal is the better failure."""
+        history, results = self.history_token_budget, self.tool_context_token_budget
+        if window is None:
+            return history, results
+        available = window - (max_tokens or 0) - fixed_tokens - self.context_reserve_tokens
+        if available >= history + results:
+            return history, results
+        available = max(available, _BUDGET_FLOOR_TOKENS)
+        share = history / (history + results)
+        return int(available * share), int(available * (1 - share))
+
     @model_validator(mode="after")
     def _only_chat_may_think(self) -> Settings:
         for role, spec in self.roles.items():
-            if role is not RoleName.CHAT and spec.think:
+            if role not in LANES and spec.think:
                 raise ValueError(
                     f"role {role.value!r} may not think: classifiers, planners and judges with "
                     "thinking on spend their whole budget thinking (V1 lesson, three times)."
                 )
+        for kind, lane in self.run_routing.items():
+            if lane not in LANES:
+                raise ValueError(f"run_routing[{kind.value}] must be one of {[r.value for r in LANES]}, not {lane.value!r}")
+        if self.tool_result_admit_chars < _ADMIT_FLOOR_CHARS:
+            raise ValueError(f"tool_result_admit_chars must be at least {_ADMIT_FLOOR_CHARS}")
         names = [s.name for s in self.mcp_servers]
         if len(names) != len(set(names)):
             raise ValueError("mcp server names must be unique")

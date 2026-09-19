@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from jarvis_core.models.fake import FakeTurn
 from jarvis_core.tools import BuiltinProvider, tool
-from jarvis_proto import RunKind, RunStatus, ToolCall, ToolResult, ToolResultKind
+from jarvis_proto import RoleName, RunKind, RunStatus, ToolCall, ToolResult, ToolResultKind
 from tests.conftest import Harness
 
 
@@ -558,6 +558,27 @@ async def test_unattended_runs_do_not_ask_for_confirmation(harness: Harness):
     seen = await harness.wait_for(sub, "run.done", timeout=10)
     assert tools.calls == ["send"]
     assert not any(e.type == "tool.confirm_requested" for e in seen)
+    # Where a kind executes is settings.run_routing: scheduled runs read dozens of documents a
+    # step and default to the chat lane (the one with the room); triage stays on background.
+    assert {e.role for e in seen if e.type == "model.call"} == {"chat"}
+    assert harness.core.settings.lane_for(RunKind.TRIAGE) is RoleName.BACKGROUND
+
+
+async def test_interactive_runs_use_the_chat_lane_and_routing_is_a_setting(harness: Harness):
+    harness.chat.push(FakeTurn(text="hi"))
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="hi", conversation_id=conv.id)
+    seen = await harness.wait_for(sub, "run.done")
+    assert {e.role for e in seen if e.type == "model.call"} == {"chat"}
+    # Re-route chats to the background lane: the next run follows the setting.
+    harness.enable(run_routing={**harness.core.settings.run_routing, RunKind.CHAT: RoleName.BACKGROUND})
+    harness.chat.push(FakeTurn(text="hi again"))
+    conv2 = await harness.core.store.create_conversation()
+    sub2 = harness.subscribe(conv2.id)
+    await harness.core.engine.create_run(text="hi", conversation_id=conv2.id)
+    seen2 = await harness.wait_for(sub2, "run.done")
+    assert {e.role for e in seen2 if e.type == "model.call"} == {"background"}
 
 
 async def test_mutating_call_gets_an_idempotency_key(harness: Harness):
@@ -609,8 +630,9 @@ async def test_old_tool_results_are_truncated_in_context_but_kept_in_db(harness:
     """A 5k-char tool result is whole for the step that must read it, a head afterwards."""
     tools = await with_tools(harness)
     big = "row " * 1500  # ~6k chars
-    # Budget-based: two 6k results must exceed the budget for the older one to be truncated.
-    harness.enable(tool_context_token_budget=2_500)  # ~8k chars
+    # Budget-based: 3,800 tokens ~ 12k chars holds two 6k results (admission caps a single one at
+    # half the budget, ~6k, so each passes whole); the third pushes the oldest down to a head.
+    harness.enable(tool_context_token_budget=3_800)
 
     async def big_echo(text: str = "") -> ToolResult:
         return ToolResult.data(big)
@@ -619,22 +641,25 @@ async def test_old_tool_results_are_truncated_in_context_but_kept_in_db(harness:
     harness.chat.push(
         FakeTurn(tool_calls=[ToolCall(id="c1", name="test.echo", arguments={"text": "a"})]),
         FakeTurn(tool_calls=[ToolCall(id="c2", name="test.echo", arguments={"text": "b"})]),
+        FakeTurn(tool_calls=[ToolCall(id="c3", name="test.echo", arguments={"text": "c"})]),
         FakeTurn(text="done"),
     )
     conv = await harness.core.store.create_conversation()
     sub = harness.subscribe(conv.id)
-    await harness.core.engine.create_run(text="two big reads", conversation_id=conv.id)
+    await harness.core.engine.create_run(text="three big reads", conversation_id=conv.id)
     await harness.wait_for(sub, "run.done", timeout=10)
-    # Call 2 (answering the first tool result) saw it in full.
+    # Call 2 (answering the first tool result) saw it in full; call 3 still saw both whole.
     second_call_msgs = harness.chat.calls[1][0]
     first_result_at_call2 = next(m for m in second_call_msgs if m.role.value == "tool" and m.tool_call_id == "c1")
     assert len(first_result_at_call2.content) > 5000
-    # Call 3 saw the first result truncated and the second (fresh) result whole.
     third_call_msgs = harness.chat.calls[2][0]
-    first_at_call3 = next(m for m in third_call_msgs if m.role.value == "tool" and m.tool_call_id == "c1")
-    second_at_call3 = next(m for m in third_call_msgs if m.role.value == "tool" and m.tool_call_id == "c2")
-    assert "[truncated to save context" in first_at_call3.content and len(first_at_call3.content) < 1000
-    assert len(second_at_call3.content) > 5000
+    assert all(len(m.content) > 5000 for m in third_call_msgs if m.role.value == "tool")
+    # Call 4 saw the first result truncated and the third (fresh) result whole.
+    fourth_call_msgs = harness.chat.calls[3][0]
+    first_at_call4 = next(m for m in fourth_call_msgs if m.role.value == "tool" and m.tool_call_id == "c1")
+    third_at_call4 = next(m for m in fourth_call_msgs if m.role.value == "tool" and m.tool_call_id == "c3")
+    assert "[truncated to save context" in first_at_call4.content and len(first_at_call4.content) < 1000
+    assert len(third_at_call4.content) > 5000
     # The database keeps the full text.
     stored = [m for m in await harness.core.store.list_messages(conv.id) if m.role.value == "tool"]
     assert all(len(m.content) > 5000 and "[truncated" not in m.content for m in stored)
@@ -832,3 +857,171 @@ async def test_a_trimmed_tool_result_names_a_ref_that_reads_it_back(harness: Har
         "jarvis.result_read", {"ref": "nope"}, cancel=asyncio.Event(), idempotency_key="k3"
     )
     assert missing.kind is ToolResultKind.ERROR and "no tool result" in missing.text
+
+    # And it can be searched instead of paged: hits with offsets, a hit cap, a bad regex that
+    # still works as plain text, and a clean miss.
+    hit = await harness.core.registry.call(
+        "jarvis.result_search", {"ref": "L1", "pattern": "население", "max_hits": 2, "context": 10},
+        cancel=asyncio.Event(), idempotency_key="s1",
+    )
+    assert hit.kind is ToolResultKind.DATA and hit.count == 2 and hit.total == 4000 and "@0:" in hit.text
+    assert len(hit.text) < 400, "windows around the matches, merged where they touch — not the line (there is one line)"
+    plain = await harness.core.registry.call(
+        "jarvis.result_search", {"ref": "L1", "pattern": "("}, cancel=asyncio.Event(), idempotency_key="s2"
+    )
+    assert plain.kind is ToolResultKind.EMPTY, "an unbalanced paren is not a regex error; it is the text it says"
+    miss = await harness.core.registry.call(
+        "jarvis.result_search", {"ref": "L1", "pattern": "zzzz"}, cancel=asyncio.Event(), idempotency_key="s3"
+    )
+    assert miss.kind is ToolResultKind.EMPTY
+    gone = await harness.core.registry.call(
+        "jarvis.result_search", {"ref": "nope", "pattern": "x"}, cancel=asyncio.Event(), idempotency_key="s4"
+    )
+    assert gone.kind is ToolResultKind.ERROR
+
+
+# --- B: a big result is admitted as a head from the step it arrives in ------------------
+
+
+async def test_a_big_result_is_admitted_as_a_head_in_the_very_next_step(harness: Harness):
+    """The 43k-char folder listing: the step that gets it sees the admission head and the ref,
+    not the whole thing; the DB keeps the whole thing; a small result passes whole."""
+    await with_tools(harness)
+    harness.core.apply_settings(harness.core.settings.model_copy(update={"tool_result_admit_chars": 2_000}))
+    harness.chat.push(
+        FakeTurn(tool_calls=[ToolCall(id="big", name="test.long", arguments={})]),
+        FakeTurn(tool_calls=[ToolCall(id="small", name="test.echo", arguments={"text": "tiny"})]),
+        FakeTurn(text="done"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="list folders", conversation_id=conv.id)
+    seen = await harness.wait_for(sub, "run.done")
+
+    second = harness.chat.calls[1][0]  # the step right after the big result arrived
+    big = next(m for m in second if m.role.value == "tool" and m.tool_call_id == "big")
+    assert "[truncated to save context: 92,000 chars in full" in big.content
+    assert 'jarvis.result_search(ref="big"' in big.content and 'jarvis.result_read(ref="big")' in big.content
+    assert len(big.content) < 2_400, "the admission head plus the marker, not 92k"
+    whole = await harness.core.store.tool_result("big")
+    assert whole is not None and len(whole[1]) == 92_000, "the DB keeps it whole"
+    third = harness.chat.calls[2][0]
+    small = next(m for m in third if m.role.value == "tool" and m.tool_call_id == "small")
+    assert "[truncated" not in small.content
+    # The inspector can see where the prompt went.
+    calls = [e for e in seen if e.type == "model.call"]
+    ctx = calls[1].context
+    assert ctx is not None and ctx.admitted == 1 and ctx.results > 0
+    assert ctx.total == ctx.system + ctx.tools + ctx.history + ctx.results
+    assert ctx.window is None, "fake endpoints do not say; budgets stay as configured"
+
+
+async def test_an_admitted_head_ages_down_to_the_small_head(harness: Harness):
+    """Admission (large head) and ageing (700-char head) are one function: a result the step
+    admitted at 2k shrinks to 700 once the run's results outgrow their budget."""
+    await with_tools(harness)
+    harness.core.apply_settings(
+        harness.core.settings.model_copy(update={"tool_result_admit_chars": 2_000, "tool_context_token_budget": 300})
+    )
+    harness.chat.push(
+        FakeTurn(tool_calls=[ToolCall(id="L1", name="test.long", arguments={})]),
+        FakeTurn(tool_calls=[ToolCall(id="L2", name="test.long", arguments={})]),
+        FakeTurn(text="ok"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="twice", conversation_id=conv.id)
+    await harness.wait_for(sub, "run.done")
+    third = harness.chat.calls[2][0]
+    first = next(m for m in third if m.role.value == "tool" and m.tool_call_id == "L1")
+    assert len(first.content) < 1_000 and "92,000 chars in full" in first.content
+
+
+def test_chars_per_token_calibrates_from_served_prompts():
+    """3.2 chars a token is a guess; JSON and Cyrillic run nearer 2. The assembler learns from
+    what the server counted, gently and within bounds."""
+    from jarvis_core.engine.context import ContextAssembler
+
+    a = ContextAssembler(None, lambda: None)  # type: ignore[arg-type]
+    assert a.chars_per_token == 3.2
+    a.observe(100_000, 50_000)  # 2.0 seen
+    assert 2.7 < a.chars_per_token < 2.9
+    for _ in range(20):
+        a.observe(100_000, 50_000)
+    assert abs(a.chars_per_token - 2.0) < 0.05
+    a.observe(100_000, 1)  # absurd: clamped, not believed
+    assert a.chars_per_token <= 4.5
+    a.observe(0, 0)  # nothing served: ignored
+
+
+async def test_a_step_that_reads_more_than_the_window_holds_is_cut_to_fit(harness: Harness):
+    """31 mails read in one step (the AI Newsletter, 2026-09-16) must not be sent whole to a lane
+    that cannot hold them: the largest fresh results give up their tails, the rest stay whole,
+    and the run goes on instead of dying on the server's 400."""
+    tools = await with_tools(harness)
+    harness.enable(tool_context_token_budget=1_000_000, context_reserve_tokens=0)
+    mail = "Subject: weekly digest\n" + "body line of the mail. " * 300  # ~7k chars each
+    calls = {"n": 0}
+
+    async def read(text: str = "") -> ToolResult:
+        calls["n"] += 1
+        return ToolResult.data(mail)
+
+    tools._entries["test.echo"].fn = read
+    # A lane whose window, after the 16k default answer, holds ~3.6k tokens of prompt.
+    async def small_window(kind=None):  # noqa: ANN001
+        return 20_000
+
+    harness.core.loop._windows = small_window
+    harness.chat.push(
+        FakeTurn(tool_calls=[ToolCall(id=f"m{i}", name="test.echo", arguments={"text": str(i)}) for i in range(12)]),
+        FakeTurn(text="the digest"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="read them all", conversation_id=conv.id)
+    seen = await harness.wait_for(sub, "run.done", timeout=15)
+    assert seen[-1].type == "run.done" and calls["n"] == 12
+    second = harness.chat.calls[1][0]
+    sent = sum(len(m.content) for m in second)
+    # 12 x 7k = 84k chars of results against ~(20,000 - 16,384) * 3.2 ~ 11.5k... the window is
+    # tiny, so most were cut; what matters is the prompt fits and the model still saw heads + refs.
+    assert sent < 20_000 * 3.2
+    cut = [m for m in second if m.role.value == "tool" and "[truncated to save context" in m.content]
+    assert cut, "the largest results gave up their tails"
+    assert all(len(m.content) >= 700 for m in cut), "never below the small head"
+
+
+async def test_an_unreachable_lane_falls_over_to_the_other_one(harness: Harness):
+    """The chat lane refuses connections (its engine is booting): the step is retried on the
+    background lane, the inspector shows the switch, the run completes."""
+    from jarvis_core.models.fake import FakeAdapter
+    from jarvis_proto import ModelSpec, Provider, RoleName
+
+    s = harness.core.settings
+    s.roles[RoleName.BACKGROUND] = ModelSpec(provider=Provider.FAKE, base_url="fake://other", model="fake", think=True)
+    harness.core.apply_settings(s)
+    other = FakeAdapter()
+    harness.core.adapters.fakes[RoleName.BACKGROUND] = other
+    harness.chat.push(FakeTurn(text="", fail_before_first_byte=True))
+    other.push(FakeTurn(text="served by the other lane"))
+    import jarvis_core.models.http as http_mod
+
+    http_mod._BACKOFF_S = (0.0, 0.0)
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="hi", conversation_id=conv.id)
+    seen = await harness.wait_for(sub, "run.done", timeout=15)
+    roles = [e.role for e in seen if e.type == "model.call"]
+    assert roles == ["chat", "background (failover from chat)"]
+    msgs = await harness.core.store.list_messages(conv.id)
+    assert msgs[-1].content == "served by the other lane"
+
+    # Off: the run fails as before.
+    harness.enable(lane_failover=False)
+    harness.chat.push(FakeTurn(text="", fail_before_first_byte=True))
+    conv2 = await harness.core.store.create_conversation()
+    sub2 = harness.subscribe(conv2.id)
+    await harness.core.engine.create_run(text="hi", conversation_id=conv2.id)
+    seen2 = await harness.wait_for(sub2, "run.failed", timeout=15)
+    assert seen2[-1].type == "run.failed"

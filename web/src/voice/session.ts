@@ -15,6 +15,9 @@ import { SentenceSplitter, scriptLanguage, speakable } from './sentences';
 
 export type CallPhase = 'idle' | 'connecting' | 'listening' | 'transcribing' | 'thinking' | 'speaking' | 'ended';
 
+/** However he pauses, what was recognised is sent no later than this after its first words. */
+const JOIN_DEADLINE_MS = 1500;
+
 /**
  * Where his voice comes out. The web cannot pick the earpiece or the speaker by name; what it
  * can do is hold or release the microphone. On Android, an open microphone puts Chrome in the
@@ -73,10 +76,14 @@ export interface Speaker {
   /** What went wrong with the last sentence, in a sentence for the screen — and cleared by
    *  the read. A voice that falls back silently is a call that "does not work". */
   takeProblem?(): string | null;
+  /** A new reply is about to be spoken: a voice that had to fall back may try its own again. */
+  beginReply?(): void;
 }
 
 export interface Transcriber {
-  transcribe(audio: Blob): Promise<{ text: string; language: string | null }>;
+  /** `language` is the call's current language, a hint for the recogniser — an utterance is
+   *  too short to guess a language from, and a wrong guess comes back as Greek. */
+  transcribe(audio: Blob, language: string): Promise<{ text: string; language: string | null }>;
 }
 
 export interface Transport {
@@ -97,6 +104,14 @@ export interface SessionOptions {
   conversationId: string | null;
   /** The route the call opens on; the screen's toggle changes it live. */
   route?: CallRoute;
+  /** How long a recognised utterance waits for him to go on before it is sent. A pause for
+   *  breath inside a sentence closes an utterance (2026-09-16: "да може в крайна сметка" and
+   *  the rest of the sentence became two turns, answered twice, spoken over each other); this
+   *  is the window in which the rest joins it. Latency he pays on every turn, so short. */
+  joinMs?: number;
+  /** The languages the recogniser may hear (the settings' `stt_languages`); the first is the
+   *  call's language until he is heard speaking another of them. */
+  languages?: string[];
   onChange(state: CallState): void;
   now?: () => number;
 }
@@ -124,10 +139,24 @@ export class CallSession {
   private readonly now: () => number;
   /** Utterances recognised while a run was still being created: one voice turn, not two. */
   private pendingCreate = false;
+  /** Recognised words waiting for him to finish (the join window), and the timer that sends them. */
+  private held = '';
+  private heldSince = 0;
+  private joinTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Words that arrived while the run was being created, steered once its id is known. */
+  private steerWhenKnown = '';
+  /** The language he is speaking, for the recogniser; the reply's, for the voice. Decided once
+   *  per reply from its first sentence with letters, so one Latin-only sentence inside a
+   *  Bulgarian answer does not switch the voice (2026-09-16, "the voices change"). */
+  private heardLang: string;
+  private replyLang: string | null = null;
+  /** The current step's words, held until the step ends (see `onDelta`). */
+  private stepText = '';
 
   constructor(private readonly o: SessionOptions) {
     this.conversationId = o.conversationId;
     this.now = o.now ?? (() => Date.now());
+    this.heardLang = o.languages?.[0] ?? o.language;
   }
 
   // --- lifecycle --------------------------------------------------------------------------
@@ -155,6 +184,7 @@ export class CallSession {
   }
 
   end(): void {
+    this.clearJoin();
     this.o.listener.stop();
     this.o.speaker.cancel();
     // A run still working is left to finish: its words land in the chat, only the reading
@@ -182,6 +212,7 @@ export class CallSession {
       this.cutIn = true;
       this.o.speaker.cancel();
       this.queue = [];
+      this.stepText = '';
       this.splitter = new SentenceSplitter();
       this.set({ phase: 'listening' });
     }
@@ -192,21 +223,60 @@ export class CallSession {
     this.set({ phase: 'transcribing', problem: null });
     let text = '';
     try {
-      const res = await this.o.transcriber.transcribe(audio);
+      const res = await this.o.transcriber.transcribe(audio, this.heardLang);
       text = res.text.trim();
+      // He may switch to another of the call's languages — believed only when the words are
+      // written in that language's script too. Whisper labels a noise "en" as readily as
+      // anything, and a hint of "en" on Bulgarian speech comes back as an English translation.
+      if (res.language && this.o.languages?.includes(res.language) && text && scriptLanguage(text, res.language) === res.language) {
+        this.heardLang = res.language;
+      }
     } catch (e) {
       this.fail(`I can't hear you right now — the speech service is not answering (${e instanceof Error ? e.message : 'error'}).`);
       this.set({ phase: 'listening' });
       return;
     }
     if (!text) {
-      this.set({ phase: 'listening' });
+      this.set({ phase: this.held ? 'transcribing' : 'listening' });
+      return;
+    }
+    const first = !this.held;
+    this.held = this.held ? `${this.held} ${text}` : text;
+    this.set({ heard: this.held });
+    if (first) this.heldSince = this.now();
+    // Sent when no more words have arrived for a moment. Only recognised words extend the wait
+    // — not the microphone hearing something, or a noisy room would hold his question for ever
+    // (2026-09-16: "it catches every sound but not me") — and never past the hard deadline.
+    if (this.joinTimer) clearTimeout(this.joinTimer);
+    const join = this.o.joinMs ?? 600;
+    const wait = Math.max(0, Math.min(join, this.heldSince + JOIN_DEADLINE_MS - this.now()));
+    this.joinTimer = setTimeout(() => {
+      this.joinTimer = null;
+      this.send();
+    }, wait);
+  }
+
+  private clearJoin(): void {
+    if (this.joinTimer) clearTimeout(this.joinTimer);
+    this.joinTimer = null;
+    this.held = '';
+    this.steerWhenKnown = '';
+  }
+
+  private send(): void {
+    const text = this.held;
+    this.held = '';
+    if (!text || this.state.phase === 'ended') return;
+    if (this.pendingCreate) {
+      // The run we asked for has no id yet: these words follow it as a steer the moment it does.
+      this.steerWhenKnown = this.steerWhenKnown ? `${this.steerWhenKnown} ${text}` : text;
+      this.set({ heard: text, phase: 'thinking' });
       return;
     }
     this.set({ heard: text, phase: 'thinking', saying: [], spokenUpTo: 0 });
     // A run still working gets the words; otherwise a new voice turn. If the run finished
     // between the two, the core turns the steer into a new turn itself.
-    const sent = this.state.runId && !this.pendingCreate ? this.o.transport.steer(this.state.runId, text) : this.create(text);
+    const sent = this.state.runId ? this.o.transport.steer(this.state.runId, text) : this.create(text);
     if (!sent) {
       this.fail('The connection to Jarvis is down; try again in a moment.');
       this.set({ phase: 'listening' });
@@ -230,16 +300,46 @@ export class CallSession {
     this.pendingCreate = false;
     this.conversationId = conversationId;
     this.splitter = new SentenceSplitter();
+    this.replyLang = null;
+    this.o.speaker.beginReply?.();
     this.set({ runId });
+    if (this.steerWhenKnown) {
+      const more = this.steerWhenKnown;
+      this.steerWhenKnown = '';
+      if (!this.o.transport.steer(runId, more)) this.fail('The connection to Jarvis is down; part of what you said was lost.');
+    }
   }
 
+  /**
+   * A step's words are held until the step ends, and spoken only if it ended in an answer. A
+   * step that ends in tool calls has written its plan ("The user is on a voice call. I need to
+   * keep it short. Let me look up…") — the tool format invites reasoning before a call — and
+   * that was being read out as if it were the reply (2026-09-16). Replies on a call are two or
+   * three sentences, so holding them until the step is done costs a fraction of a second.
+   */
   onDelta(runId: string, text: string): void {
     if (runId !== this.state.runId || this.state.phase === 'ended') return;
+    this.stepText += text;
+  }
+
+  onStepDone(runId: string, endedInToolCalls: boolean): void {
+    if (runId !== this.state.runId || this.state.phase === 'ended') return;
+    const text = this.stepText;
+    this.stepText = '';
+    if (endedInToolCalls || !text) return;
     for (const sentence of this.splitter.push(text)) this.enqueue(sentence);
+    const rest = this.splitter.flush();
+    if (rest) this.enqueue(rest);
   }
 
   onRunDone(runId: string): void {
     if (runId !== this.state.runId) return;
+    // A run that ends without a step-done for its last words (a cancel) still says them.
+    if (this.stepText) {
+      const text = this.stepText;
+      this.stepText = '';
+      for (const sentence of this.splitter.push(text)) this.enqueue(sentence);
+    }
     const rest = this.splitter.flush();
     if (rest) this.enqueue(rest);
     this.set({ runId: null });
@@ -261,9 +361,15 @@ export class CallSession {
     const clean = speakable(sentence);
     if (!clean) return;
     this.queue.push(clean);
-    this.o.speaker.prepare?.(clean, scriptLanguage(clean, this.o.language));
+    this.o.speaker.prepare?.(clean, this.langFor(clean));
     this.set({ saying: [...this.state.saying, clean] });
     this.speaking ??= this.drain();
+  }
+
+  /** The reply's language: decided by its first sentence that has letters, then kept. */
+  private langFor(sentence: string): string {
+    if (this.replyLang === null && /\p{L}/u.test(sentence)) this.replyLang = scriptLanguage(sentence, this.o.language);
+    return this.replyLang ?? this.o.language;
   }
 
   private async drain(): Promise<void> {
@@ -274,7 +380,7 @@ export class CallSession {
       while (this.queue.length > 0 && !this.cutIn && this.state.phase !== 'ended') {
         const sentence = this.queue.shift();
         if (sentence === undefined) break;
-        await this.o.speaker.speak(sentence, scriptLanguage(sentence, this.o.language));
+        await this.o.speaker.speak(sentence, this.langFor(sentence));
         const problem = this.o.speaker.takeProblem?.();
         if (problem) this.fail(problem);
         if (!this.cutIn) this.set({ spokenUpTo: this.state.spokenUpTo + 1 });

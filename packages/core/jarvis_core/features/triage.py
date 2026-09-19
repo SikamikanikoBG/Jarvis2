@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from jarvis_core.models.base import ModelTextChunk
-from jarvis_proto import ConversationKind, Message, TriageState
+from jarvis_proto import ConversationKind, Message, RunKind, TriageState
 from jarvis_proto.events import ConversationUpdated, MessageCreated
 
 if TYPE_CHECKING:
@@ -454,7 +454,8 @@ class TriageJob:
         try:
             from jarvis_proto.settings import RoleName
 
-            adapter = self.core.adapters.for_role(RoleName.TRIAGE)
+            # The mail sweep is not a run, but it is triage work: it goes where triage runs go.
+            adapter = self.core.adapters.for_role(RoleName.TRIAGE, kind=RunKind.TRIAGE)
             text = ""
             async for chunk in adapter.stream([Message.user(prompt)], [], cancel=asyncio.Event()):
                 if isinstance(chunk, ModelTextChunk):

@@ -776,3 +776,285 @@ harness — library vs. own is an open question to settle in the design.
   Same evening: "raise it to 64 frames". `VIDEO_MAX_FRAMES` 32 → 64: the two-minute clip is now
   one frame every 1.9 s instead of 3.75 s, for roughly twice the tokens (~10k of the 262k
   context per video). The file's clock follows: 64 frames of 120 s at 8/15 fps. (core 2.0.0a46)
+
+## 2026-09-15 — Jarvis2 moved to the single-card vLLM on vader (:18021)
+
+vader now runs two vLLMs. `vllm-q38` (TP=2, INT8, 262K ctx) was repinned to GPU0+GPU1 (the two
+Turbo blowers); the syv-ai `qwen38-27b-single` (W4A16 AutoRound + DFlash2 MTP, 64K ctx, KV pool
+68.6K tokens, max-num-seqs 8) sits alone on GPU2, the ROG — the coolest card. `VISION=1` was added
+to its `.env` (tower offloaded to host RAM, KV pool unchanged) because the default
+`--language-model-only` rejected every image with "At most 0 image(s)".
+
+Settings changed through `PATCH /api/settings` (no deploy): every role's `base_url` →
+`http://100.76.27.18:18021/v1`; `roles.chat.max_tokens` 32768 → 16384, because the worst case
+prompt (~15.7K system+tools + 24K history budget + attachments) plus 32K output overshoots the
+64K context and vLLM refuses such a request outright rather than trimming it.
+
+Measured through the core itself (WS `run.create`, incognito, 15.7K-token prompts, deleted after):
+
+| | TP2 :8010 | single :18021 |
+|---|---|---|
+| one chat, warm prefix | 39–43 tok/s, ~35–48 s | **186–199 tok/s, ~8 s** |
+| 3 concurrent chats | 50 tok/s aggregate, wall 146 s | **300 tok/s aggregate, wall 22 s** |
+| 4 concurrent | — | 294 aggregate, per-chat 118–196 |
+| image (PNG, base64) | works | works, 3.3 s, correct |
+| video (9 s mp4, 9 sampled frames) | — | 6.6 s, order right, invented an "orange" between red and green |
+
+Cold prefill of the 15.7K prefix costs ~12–13 s on either server (the chat after a restart);
+after that the prefix cache serves 15.2K of the 15.7K. MTP acceptance on Jarvis prose ≈ 70 %
+(23,067 of 32,718 draft tokens), well above the 25–30 % of the synthetic bench — which is why
+the core sees ~190 tok/s where the raw bench saw 125.
+
+The third and fourth concurrent chat wait ~15 s before their first token: that is
+`max_concurrent_runs_per_endpoint = 2` in the core, not the GPU (model TTFT stayed 0.6–1.0 s).
+The reason that setting stops at 2 — long runs evicting each other's prefix out of a 305K pool —
+does not transfer to the 68.6K pool one-to-one; the prefix is shared, so 3 runs cost one copy
+plus their outputs. Left at 2 for now; raise to 3 if the wait shows up in real use.
+
+Left open: W4A16 answer quality against INT8 (`bench/prefix_test.py` on vader against :18021).
+Rollback = the same PATCH with `:8010` and `max_tokens 32768`; the TP2 server is still running.
+
+### Same evening — first real use died: HTTP 400 "maximum context length" (core 2.0.0a47)
+
+Two news searches in one run put 49,153 tokens in the prompt; with `max_tokens 16384` vLLM
+answered "at least 65,537 tokens" and refused. The 262K server never showed this because Jarvis2
+sends a fixed `max_tokens` and there was always room. The adapter now retries with a halved
+`max_tokens` while the server keeps refusing (a 400 costs a round trip, not a prefill), stopping
+at 256 — below that the prompt itself is the problem and the run fails with the server's message.
+Trap found on the way: the 400's "your prompt contains at least N input tokens" is not the prompt
+size, it is context − max_tokens + 1, so the exact fit cannot be read off it (the first version
+of this fix trimmed 17 tokens and got refused again). Three tests. `roles.chat.max_tokens` sits at 8192 (a stopgap set before the fix) — with the clamp in
+place it can go back up, and 16384 is the sensible value on a 64K server.
+
+### Later — the single server moved to `CTX=long` (int8 KV, 131072 ctx, KV pool 136,429 tokens)
+
+The 64K ceiling was the default `CTX=fast` profile, not the model. `CTX=long` in
+`~/qwen38-27b/.env` on vader; `.env.bak-fast-20260915` is the way back. Measured (same harness,
+cold cards, cold prefill), fast → long: short decode 125 → 114 tok/s; 2.8K prompt prefill
+1196 → 1265, 11K 1173 → 1104, 33K 1073 → 805 tok/s (−25 %); decode at 33K 95 → 92; a 68K prompt
+(impossible before) prefills at 562 tok/s (121 s cold) and decodes at 64. Four concurrent short
+streams got *better*: 132 → 237 tok/s aggregate, TTFT 5.6 → 1.1 s. Through the core: chat decode
+182–195 tok/s (unchanged), cold TTFT on the 15.8K prefix 12.7 → 15.7 s, warm 0.6 → 1.5 s.
+`roles.chat.max_tokens` stays 16384; the halving retry stays as the safety net (95K scheduled run
++ 16K answer still overshoots 128K).
+
+## 2026-09-16 — Jarvis2 on the syv-ai image with TP=2 (GPU0+GPU1, :18022); the think-toggle cache bug
+
+Overnight a scheduled run and an agent chat ran together and the visible speed fell to 3.9 tok/s.
+Two causes, both found by measurement:
+
+1. **`adaptive_thinking` was defeating the prefix cache on every step.** The Qwen3.8 chat template
+   prepends "Reasoning effort is set to xhigh. …" to the system prompt when `enable_thinking` is on
+   and nothing when it is off. Alternating think on/off between steps therefore changed the first
+   36 tokens of the prompt, and every step re-prefilled 33–47K tokens (`cached 0 (0%)` in the run
+   inspector, TTFT 40–85 s). Confirmed with a raw test: same prompt, think toggled → `cached 0`;
+   `reasoning_effort=medium` (no line) → hits. Fix on the server, not in the core: a patched copy of
+   the template (`chat_template_stable_prefix.jinja`, line 46 `if true`) emits the line in both modes,
+   mounted read-only and passed with `--chat-template`. Only `xhigh`/`medium`/`low` are valid effort
+   values — the core's `ThinkLevel` "high" would 400 against this template; `think_level` stays None
+   (= xhigh, what Arsen wants).
+2. **The 136K pool could not hold two ~45K contexts plus a chat**; each step evicted the other run's
+   prefix. Solved by the move below (357K pool).
+
+The syv-ai image runs under TP=2 on the two Turbos (`~/qwen38-27b-tp2/`, `EXTRA_ARGS=--tensor-parallel-size 2`,
+`MAX_LEN=262144`, `CTX=fast` bf16 KV, `VISION=1`): KV pool **357,833 tokens**, 262K context, and it
+beat the single card everywhere — decode 135/137/121/112 tok/s at 0/4K/11K/33K (single `long`:
+114/120/105/92), prefill flat at ~1.3–1.4K tok/s (single: 805 at 33K), 4 concurrent 264 vs 237.
+Through the core with xhigh thinking: warm chat **204–236 tok/s**, TTFT 0.6 s, `cached 15232`;
+3 concurrent chats 319 tok/s aggregate at ~200 each. All roles → `http://100.76.27.18:18022/v1`.
+`vllm-q38` (stock vLLM, INT8) is stopped; the single-card server on GPU2 (:18021, `long`, same
+template) stays up as the spare lane.
+
+### Same morning — lanes and run routing: a run executes on ONE endpoint, chosen in settings (core 2.0.0a48, web alpha.25)
+
+Even with the prefix cache hitting, a scheduled run whose steps are 84k tokens adds 13–27k new
+tokens per step, and while vLLM prefills those in 2,048-token chunks the chat on the same engine
+gets one decode step per chunk: 2–9 tok/s in the run inspector, 122 in between. Not a scheduler
+knob to turn — a separation to make, and made as one rule rather than a patch:
+
+- `chat` and `background` are the two **lanes**: full model specs, the same main loop, the only
+  roles that think. `settings.run_routing` maps every run kind to a lane (default: chat, collab,
+  system → chat; scheduled, triage, meeting → background) and is edited in Settings → Run routing.
+- A run is routed **whole**. The engine sets a context variable with the run's kind for the run's
+  task; `AdapterFactory.for_role` reads it, so the planner, classifier and judge calls a run makes
+  keep their own behaviour (thinking off, temperature) but execute on the run's lane endpoint —
+  no plumbing through eight features. Outside a run a role uses its own endpoint; the triage mail
+  sweep, which is not a run, is routed like triage runs on purpose.
+- Settings stored before the lane existed load `background` as a copy of `chat` (never the
+  localhost default). Validators refuse a non-lane in `run_routing`. Six tests.
+
+Layout on vader after this: chat lane → the single card on GPU2 (`:18021`, 128k, ~190 tok/s,
+nothing else runs there); background lane → TP=2 on GPU0+GPU1 (`:18022`, 262k, 358k-token pool,
+flat ~1.3k tok/s prefill — the box that holds 84k-step runs well). The alternative on the table —
+three single-card engines behind a sticky router — was set aside: it gives up the 262k pool the
+background runs actually use, caps every run at 128k, and adds routing logic with its own
+failure modes. It stays the upgrade path if the chat lane ever gets crowded, and with lanes
+in settings it would be one more lane, not a new mechanism.
+
+Correction an hour later: the lanes were assigned the wrong way round. An 80k-token chat (system
+16k + history 24k + tool context 40k — the budgets' sum) ran at 7–10 s TTFT and ~30 tok/s per
+step on the single card, whose int8 path decays hard past ~25k. The strong engine belongs to
+the run someone is watching: chat → TP=2 (`:18022`, flat prefill, ~110 tok/s at 80k),
+background → the single card (`:18021`, 128k — enough, since the budgets bound a prompt at
+~80–90k; unattended runs can afford the slower step). Two endpoint fields in Settings, no deploy.
+
+## 2026-09-16 — the context economy: a run carries a view of its ledger, sized to its lane (core 2.0.0a49, web alpha.26)
+
+An 81k-token chat step turned out to be exactly the sum of the budgets — system+tools 16k,
+history 24k, this run's tool results 40k — with a 42,900-char `outlook_folders` listing, a
+30,581-char `outlook_search` and a 20,223-char `shell_run` riding along whole because a result
+entered the prompt at any size the step it arrived in. Prompt size is what makes steps slow at
+depth, what made runs collide on one engine and what produced the 400 on the 64k server; the
+lanes moved that load around, this changes how much is asked to be read. Three rules, one place:
+
+- **Admission** (`engine/context.py: admit`, applied in `AgentLoop._tool_message` and on a
+  resumed run's rebuild): a tool result longer than `tool_result_admit_chars` (12k, ~3.7k tokens)
+  enters as its head plus the `[truncated …]` marker naming the ref — from the step it arrives
+  in, for builtin, MCP and browser tools alike. A mail body or a search page passes whole; a
+  folder dump does not. `tool_result_head` now takes the head size, so the admitted head and the
+  700-char aged head are one function and the first can age into the second (the marker carries
+  the full length). Nothing is summarised, nothing deleted: the DB keeps every byte.
+- **Ceilings that follow the lane** (`Settings.effective_budgets`): the history and results
+  budgets stay as configured unless the lane's window — `max_model_len` from `/v1/models`, asked
+  once per endpoint by `AdapterFactory.context_window`, `num_ctx` overriding — cannot hold them
+  next to the system message, the tool schemas, `max_tokens` and `context_reserve_tokens`; then
+  both shrink in proportion, never below a 4k floor. On a 64k lane with 16k answers that is
+  11.7k + 19.4k instead of 24k + 40k, and the 400 cannot happen by construction; the halving
+  retry stays as the net.
+- **Retrieval without reading it all**: `jarvis.result_search(ref, pattern)` — case-insensitive
+  regex (plain text when the regex is bad) over a stored result, matching lines with context and
+  char offsets, so the one folder in 43k chars is one call, not five 8k pages. Rule 6 says so.
+
+And **visibility**: every `model.call` event carries a `ContextBreakdown` — sys / tools / hist /
+res in estimated tokens, the lane window, how many results ride as heads — and the run inspector
+prints it (`ctx 33k = sys 16k + tools 3k + hist 5k + res 9k / 262k · 2 results as head`).
+Settings → Behaviour has the four knobs; `tool_result_admit_chars = 10_000_000` is the
+no-deploy way back to the old behaviour. Nine new tests; 273 pass.
+
+Two things the first live run taught, fixed before the day was out: (1) `result_search` was
+line-based, and a 43k-char MCP result is ONE line of minified JSON — every "hit" was the whole
+thing. It is window-based now (characters around each match, windows merged where they touch,
+offsets kept), which works on JSON and prose alike. (2) 3.2 chars a token under-counts this
+workload by ~40% (estimated 50k, served 79k: JSON punctuation and Cyrillic both tokenise
+short), so the assembler now calibrates itself from every served step — `observe(prompt_chars,
+prompt_tokens)`, an EMA clamped to 1.5-4.5 — and the breakdown, the budgets and the ageing all
+use the learned ratio. One more note for tuning: ageing rewrites older results in place, which
+invalidates the prefix cache once per compaction (a 46 s TTFT seen at 80k); on a 262k lane a
+larger `tool_context_token_budget` buys fewer of those.
+
+Third lesson, same day: at 12k the admission head made the model FISH. The folders question
+took 60 search/read calls and six minutes on the new build against one step on the old one —
+structured data has to be seen to be reasoned about; search helps once you know what you are
+looking for. So `tool_result_admit_chars` is 48k by default (the head is for the genuinely huge:
+page dumps, long shell output), and `Settings.admit_chars` caps it at half the step's results
+budget so a small lane still admits proportionally. The fake adapter now reports prompt tokens
+from the prompt it was sent (3.2 chars a token) so calibration in tests stays where the tests
+were written.
+
+
+## 2026-09-16 — the call: one voice per reply, one turn per breath, and no plan read aloud (core 2.0.0a50, web alpha.27)
+
+Arsen: "voice call is super buggy — voices change, it cuts me off, sometimes the thinking tokens
+get spoken", on the phone and the desktop alike. The transcript of this morning's call had all
+three, each with a cause of its own:
+
+- **Voices changed** because the language was decided per sentence (`scriptLanguage`, by
+  design): a Latin-only sentence inside a Bulgarian answer got the English voice. Now the first
+  sentence with letters decides the reply's language and the rest follows (`CallSession.langFor`);
+  the next reply decides afresh. And the server voice, once it had to fall back to the device's
+  for a sentence, stays there for the rest of that reply (`ServerSpeaker.beginReply`) instead of
+  the two taking turns.
+- **Cut off / answered twice** because a pause for breath closes an utterance (`releaseMs` 750):
+  "да може в крайна сметка" and the rest of the sentence became two turns four seconds apart,
+  both answered, spoken over each other. A recognised utterance now waits `joinMs` (600 ms) for
+  him to go on and joins what follows; words recognised while the run is still being created are
+  held and steered to it once it has an id — one turn, nothing lost, nothing doubled. Also:
+  Whisper guessed the language of a short utterance and came back with Greek letters
+  ("Διάλα, φορμουλήρε εγώ"); the call's language now goes along as a hint, and he can still switch
+  to another of `stt_languages` when he is heard doing so.
+- **"Thinking" spoken** was not thinking: with thinking off, a step that ends in tool calls writes
+  its plan as plain text first ("The user is on a voice call. I need to keep it short. Let me…")
+  — the tool format invites reasoning before a call — and every text delta was read out. A step's
+  words are now held until the step ends and spoken only if it ended in an answer
+  (`onStepDone`); replies on a call are two or three sentences, so the wait is a fraction of a
+  second. Belt and braces: the voice style block says to say only what one would say aloud, and
+  the always-present reasoning line in the patched chat template now ends "…when this turn has no
+  thinking, answer directly and never narrate your reasoning" (loaded on `:18021`; `:18022` at
+  its next restart).
+
+Tests: joining, the run-id hold, the language hint, one voice per reply, the tool-call step. The
+CSS he also called out is next, separately.
+
+## 2026-09-16 — the wall: a step must fit the lane (core 2.0.0a51)
+
+Checking for scheduled runs broken by context since the lane split found one: the AI
+Newsletter draft at 05:30 read **31 mails in one step** — 222k chars of fresh results — and the
+background lane (131,072) refused it: "requested 256 output tokens and your prompt contains at
+least 130,817". Per-result admission bounds one result; nothing bounded a step with thirty. The
+halving retry did its job and bottomed out at 256, which is the honest failure when the prompt
+itself is the problem — so the prompt must never be the problem: before every model call, if
+the messages exceed `window − max_tokens − reserve` (in chars, at the calibrated ratio, minus
+the tool schemas), `_fit_to_window` cuts this step's fresh results largest first and only by
+the overflow, never below the 700-char head, markers naming the refs. Ageing is the budget a run
+lives within; this is the wall it cannot hit. On the 262k lane the same step fits whole.
+
+An hour later (web alpha.28): "it catches every sound but not me, and comes back in Urdu". Two
+things. The join window was being extended by the microphone hearing *anything* — in a room with
+noise his recognised words were held until the room went quiet. Now only recognised words extend
+the wait, and a hard deadline of 1.5 s from the first held words sends them regardless. And the
+language hint could flip to "en" on Whisper's say-so alone (it labels a noise "en" as readily as
+anything), after which Bulgarian speech came back as an English *translation*; the switch is
+believed only when the words are written in that script too. The Urdu was the old bundle still
+open in a tab — no hint at all, Whisper guessing on noise; a reload gets the new one (the
+service worker keeps index.html network-first, hashed assets cache-first).
+
+
+## 2026-09-17 — every limit a request can hit, closed at once (core 2.0.0a52, web alpha.29)
+
+"HTTP 400 again on my last chat": `At most 1 image(s) may be provided in one prompt`. Not context
+this time — the syv-ai image ships vLLM's default of one picture per prompt, and a chat with two
+photos in its history is refused whole. Arsen's point stands: since the server changed, each of
+its limits has surfaced one at a time, in his chats. So the request's limits are now an
+enumerated list, each with a Jarvis-side bound that makes the request fit *before* it is sent,
+whatever the server:
+
+| limit | Jarvis2 bound |
+|---|---|
+| context length | budgets shrink to the lane's window (a49); the step is cut to fit (a51) |
+| `max_tokens` | the halving retry (a47) |
+| pictures/clips per prompt | `media_in_context` (4): the newest ride as pixels, older ones keep a note saying they were shown earlier; lanes raised to 6 images / 2 videos (`--limit-mm-per-prompt`, both `.env`s) |
+| picture size | the server scales to 2,048 image tokens (`--mm-processor-kwargs`, shipped) |
+
+Both lanes were recreated with the new args and the neutral reasoning line (`:18022` had not
+had it yet). Test: two photos in a chat with the budget at 1 — the newest as pixels, the older
+as a note. Rule 1 for the future: a new server is checked against this table before Jarvis
+points at it, not after.
+
+## 2026-09-17 — the newsletter run that took an hour and wrote nothing (core 2.0.0a53)
+
+Arsen: "the chat is broken — this did not happen before", the 08:30 AI Newsletter. It ran for
+an hour on the background lane, read 26 mails, then spent four to five minutes per step until
+the time budget ended it, with `cached 0` on most steps. What happened, in order:
+
+1. `tool_context_token_budget` was 40,000 under a 3.2-chars-a-token assumption, i.e. 128k chars
+   of room; calibration made the token count honest (~2 chars a token on mail JSON), and the
+   same 40,000 became 80k chars — the newsletter's results crossed it at mail twelve.
+2. From then on ageing rewrote older results **every step** (compress to 70% is one step's worth
+   of growth away from the next trigger), and every rewrite changes the middle of the prompt,
+   so the prefix cache served nothing: 60–80k tokens re-read per step.
+3. On the background lane that is 500–800 tok/s and a decode that crawls under it: four minutes
+   a step. On the chat lane the same step is ~40 s. The routing put the heaviest reader on the
+   slowest engine.
+
+Three changes, one idea — a run's results should not be shuffled while it works, and the room
+should come from the lane, not from a number tuned under a wrong constant:
+
+- `tool_context_token_budget` 40,000 → **120,000**: the room in chars it always meant to be; the
+  lane's window is what caps it (`effective_budgets`), so the 128k lane still gets ~77k tokens
+  of results and the 262k lane the full 120k.
+- Ageing, when it must happen, goes to **half** the budget (`_COMPRESS_TO` 0.5) and then not
+  again for a long while — one cache miss, not one per step.
+- `run_routing` default: **scheduled → chat lane** (262k, 1.3k tok/s prefill, 200 tok/s decode);
+  background keeps triage and meeting, the runs that stay small. Settings → Run routing changes it.
+
+Tests updated (routing expectations); 275 pass. The run is re-fired after deploy as the check.

@@ -64,6 +64,7 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     label: 'Context and behaviour',
     keywords: [
       'planning',
+      'lane failover',
       'knowledge learning',
       'entities',
       'relations',
@@ -72,6 +73,11 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
       'flat',
       'auto',
       'history budget',
+      'tool results budget',
+      'admit',
+      'truncated',
+      'result_search',
+      'context reserve',
       'tokens',
       'boards context',
       'skill size limit',
@@ -80,9 +86,10 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   {
     id: 'settings-roles',
     label: 'Model roles',
-    keywords: ['provider', 'ollama', 'vllm', 'base url', 'num_ctx', 'context', 'temperature', 'max tokens', 'timeout', 'keep alive', 'thinking', 'reasoning'],
+    keywords: ['provider', 'ollama', 'vllm', 'base url', 'num_ctx', 'context', 'temperature', 'max tokens', 'timeout', 'keep alive', 'thinking', 'reasoning', 'lane'],
   },
   { id: 'role-chat', label: 'chat', group: 'Model roles', keywords: ['answers you', 'chat model'] },
+  { id: 'role-background', label: 'background', group: 'Model roles', keywords: ['lane', 'scheduled', 'unattended', 'long context'] },
   { id: 'role-planner', label: 'planner', group: 'Model roles', keywords: ['writes the plan'] },
   { id: 'role-classifier', label: 'classifier', group: 'Model roles', keywords: ['tier', 'skills', 'routing', 'compaction'] },
   { id: 'role-judge', label: 'judge', group: 'Model roles', keywords: ['supervises a run'] },
@@ -99,6 +106,11 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     keywords: ['calendar', 'accept', 'decline', 'cancelled meetings', 'invite'],
   },
   { id: 'settings-collab', label: 'Collaborators', keywords: ['key', 'invite', 'access', 'mcp'] },
+  {
+    id: 'settings-routing',
+    label: 'Run routing',
+    keywords: ['lane', 'chat', 'background', 'scheduled', 'triage', 'meeting', 'endpoint', 'gpu'],
+  },
   {
     id: 'settings-budgets',
     label: 'Budgets per run kind',

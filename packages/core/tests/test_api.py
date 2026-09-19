@@ -155,5 +155,74 @@ def test_status_reports_endpoints(client: TestClient):
     r = client.get("/api/status", headers=_h())
     assert r.status_code == 200
     body = r.json()
-    assert len(body["endpoints"]) == 5 and all(e["ok"] for e in body["endpoints"])
+    assert len(body["endpoints"]) == len(RoleName) and all(e["ok"] for e in body["endpoints"])
     assert body["runs"] == {"running": 0, "queued": 0}
+
+
+def test_settings_stored_before_the_background_role_still_load():
+    """A roles map saved by an older core has no 'background' row; it comes back as a copy of
+    chat (same endpoint), never as the built-in localhost default. run_routing likewise gets
+    its defaults."""
+    from jarvis_proto import ModelSpec, Provider, RoleName, RunKind, Settings
+
+    old = Settings().model_dump(mode="json")
+    old["roles"].pop("background")
+    old.pop("run_routing")
+    old["roles"]["chat"]["base_url"] = "http://vader:18021/v1"
+    old["roles"]["chat"]["provider"] = Provider.VLLM.value
+    loaded = Settings.model_validate(old)
+    assert loaded.roles[RoleName.BACKGROUND] == ModelSpec.model_validate(old["roles"]["chat"])
+    assert loaded.lane_for(RunKind.SCHEDULED) is RoleName.CHAT
+    assert loaded.lane_for(RunKind.TRIAGE) is RoleName.BACKGROUND
+    assert loaded.lane_for(RunKind.CHAT) is RoleName.CHAT
+
+
+def test_run_routing_only_accepts_lanes(client: TestClient):
+    r = client.patch("/api/settings", json={"run_routing": {"scheduled": "planner"}}, headers=_h())
+    assert r.status_code == 422
+    r = client.patch("/api/settings", json={"run_routing": {"scheduled": "chat"}}, headers=_h())
+    assert r.status_code == 200 and r.json()["run_routing"]["scheduled"] == "chat"
+
+
+def test_every_call_of_a_run_goes_to_its_lane():
+    """Inside a run the planner keeps its behaviour (no thinking, low temperature) but takes the
+    lane's endpoint; outside a run it uses its own."""
+    from jarvis_core.models.factory import AdapterFactory, current_run_kind
+    from jarvis_proto import ModelSpec, Provider, RoleName, RunKind, Settings
+
+    s = Settings()
+    s.roles[RoleName.CHAT] = ModelSpec(provider=Provider.VLLM, base_url="http://chat-lane/v1", model="m", think=True)
+    s.roles[RoleName.BACKGROUND] = ModelSpec(provider=Provider.VLLM, base_url="http://bg-lane/v1", model="m", think=True)
+    s.roles[RoleName.PLANNER] = ModelSpec(provider=Provider.OLLAMA, base_url="http://elsewhere", model="p", temperature=0.1)
+    f = AdapterFactory(s)
+    assert f.spec_for(RoleName.PLANNER).base_url == "http://elsewhere"
+    planner_in_scheduled = f.spec_for(RoleName.PLANNER, kind=RunKind.TRIAGE)
+    assert planner_in_scheduled.base_url == "http://bg-lane/v1" and planner_in_scheduled.provider is Provider.VLLM
+    assert planner_in_scheduled.temperature == 0.1 and planner_in_scheduled.think is False
+    assert f.spec_for(RoleName.CHAT, kind=RunKind.TRIAGE).base_url == "http://bg-lane/v1"
+    token = current_run_kind.set(RunKind.CHAT)
+    try:
+        assert f.spec_for(RoleName.PLANNER).base_url == "http://chat-lane/v1"
+        assert f.for_role(RoleName.CHAT).spec.base_url == "http://chat-lane/v1"
+    finally:
+        current_run_kind.reset(token)
+
+
+def test_effective_budgets_follow_the_lane_window():
+    from jarvis_proto import Settings
+
+    s = Settings(history_token_budget=24_000, tool_context_token_budget=40_000, context_reserve_tokens=2_048)
+    # No window known, or a window with room: as configured.
+    assert s.effective_budgets(window=None, max_tokens=16_384, fixed_tokens=16_000) == (24_000, 40_000)
+    assert s.effective_budgets(window=262_144, max_tokens=16_384, fixed_tokens=16_000) == (24_000, 40_000)
+    # A 64k lane: 65,536 - 16,384 - 16,000 - 2,048 = 31,104 to share 3:5.
+    h, r = s.effective_budgets(window=65_536, max_tokens=16_384, fixed_tokens=16_000)
+    assert (h, r) == (11_664, 19_440) and h + r == 31_104
+    # Nothing left: the floor, not zero — the server's refusal is the honest failure then.
+    h, r = s.effective_budgets(window=20_000, max_tokens=16_384, fixed_tokens=16_000)
+    assert h + r == 4_000
+    with pytest.raises(ValueError):
+        Settings(tool_result_admit_chars=500)
+    # One result never takes more than half the step's results budget on a small lane.
+    assert s.admit_chars(40_000, 3.2) == 48_000
+    assert s.admit_chars(10_000, 3.2) == 16_000

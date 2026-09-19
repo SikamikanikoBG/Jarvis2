@@ -21,6 +21,7 @@ from jarvis_core.engine.control import RunCancelledError, RunControl
 from jarvis_core.engine.emit import RunEmitter
 from jarvis_core.engine.loop import AgentLoop
 from jarvis_core.models.base import ModelError
+from jarvis_core.models.factory import current_run_kind
 from jarvis_proto import (
     Channel,
     Conversation,
@@ -284,6 +285,8 @@ class RunEngine:
 
     async def _execute(self, run: Run, ctl: RunControl) -> None:
         emitter = ctl.emitter
+        # Every model call made by this task — and by tasks it spawns — is routed to the run's lane.
+        current_run_kind.set(run.kind)
         try:
             await self._loop.run(run, ctl)
         except RunCancelledError as exc:

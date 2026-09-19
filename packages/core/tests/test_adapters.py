@@ -19,7 +19,7 @@ from jarvis_core.models.base import (
 )
 from jarvis_core.models.ollama import OllamaAdapter, to_ollama_messages
 from jarvis_core.models.openai_compat import OpenAICompatAdapter, to_openai_messages
-from jarvis_proto import Message, ModelSpec, Provider, ToolCall
+from jarvis_proto import Message, ModelSpec, Provider, RoleName, ToolCall
 
 
 def test_reasoning_is_never_sent_back():
@@ -228,3 +228,104 @@ async def test_5xx_before_first_byte_is_retried_then_fails():
     with pytest.raises(ModelError, match="503"):
         await _collect(adapter, [Message.user("hi")])
     assert attempts["n"] == 3
+
+
+async def test_context_length_400_retries_once_with_max_tokens_that_fit():
+    """vLLM's 400 says exactly how much room there is; the adapter asks for that instead of dying."""
+    spec = ModelSpec(provider=Provider.VLLM, base_url="http://x/v1", model="m", think=False, max_tokens=16384)
+    adapter = OpenAICompatAdapter(spec)
+    seen: list[int | None] = []
+    refusal = (
+        '{"error":{"message":"This model\'s maximum context length is 65536 tokens. However, you requested '
+        "16384 output tokens and your prompt contains at least 49153 input tokens, for a total of at least "
+        '65537 tokens. Please reduce the length of the input prompt or the number of requested output tokens. '
+        '(parameter=input_tokens, value=49153)","type":"BadRequestError","param":"input_tokens","code":400}}'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content).get("max_tokens"))
+        if len(seen) == 1:
+            return httpx.Response(400, content=refusal.encode())
+        lines = [
+            "data: " + json.dumps({"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]}),
+            "data: " + json.dumps({"choices": [], "usage": {"prompt_tokens": 49153, "completion_tokens": 1}}),
+            "data: [DONE]",
+        ]
+        return httpx.Response(200, content="\n".join(lines).encode())
+
+    adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    events = await _collect(adapter, [Message.user("hi")])
+    # "at least 49153" is context - 16384 + 1, not the prompt's size: the retry halves instead.
+    assert seen == [16384, 8192]
+    assert any(getattr(e, "text", None) == "ok" for e in events)
+
+
+async def test_context_length_400_keeps_halving_until_it_fits():
+    """A 60K prompt on a 64K server: 16384 and 8192 refused, 4096 fits."""
+    spec = ModelSpec(provider=Provider.VLLM, base_url="http://x/v1", model="m", think=False, max_tokens=16384)
+    adapter = OpenAICompatAdapter(spec)
+    seen: list[int | None] = []
+    prompt = 60000
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        want = json.loads(request.content).get("max_tokens")
+        seen.append(want)
+        if prompt + want > 65536:
+            msg = (
+                f"This model's maximum context length is 65536 tokens. However, you requested {want} output "
+                f"tokens and your prompt contains at least {65536 - want + 1} input tokens, for a total of at "
+                "least 65537 tokens."
+            )
+            return httpx.Response(400, content=json.dumps({"error": {"message": msg, "code": 400}}).encode())
+        lines = [
+            "data: " + json.dumps({"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]}),
+            "data: [DONE]",
+        ]
+        return httpx.Response(200, content="\n".join(lines).encode())
+
+    adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    await _collect(adapter, [Message.user("hi")])
+    assert seen == [16384, 8192, 4096]
+
+
+async def test_context_length_400_with_no_room_left_fails_once():
+    """When even 256 output tokens would not fit, the prompt is the problem — no second attempt."""
+    spec = ModelSpec(provider=Provider.VLLM, base_url="http://x/v1", model="m", think=False, max_tokens=4096)
+    adapter = OpenAICompatAdapter(spec)
+    calls = {"n": 0}
+    refusal = (
+        '{"error":{"message":"This model\'s maximum context length is 65536 tokens. However, you requested '
+        "4096 output tokens and your prompt contains at least 65400 input tokens, for a total of at least "
+        '69496 tokens.","type":"BadRequestError","code":400}}'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(400, content=refusal.encode())
+
+    adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(ModelError, match="maximum context length"):
+        await _collect(adapter, [Message.user("hi")])
+    assert calls["n"] == 1
+
+
+async def test_probe_reads_the_context_window_and_the_factory_keeps_it_per_lane():
+    """vLLM's /v1/models says max_model_len; the factory asks once per endpoint and num_ctx wins."""
+    from jarvis_core.models.factory import AdapterFactory
+    from jarvis_proto import RunKind, Settings
+
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"data": [{"id": "m", "max_model_len": 131072}]})
+
+    s = Settings()
+    s.roles[RoleName.CHAT] = ModelSpec(provider=Provider.VLLM, base_url="http://x/v1", model="m", think=True)
+    s.roles[RoleName.BACKGROUND] = ModelSpec(provider=Provider.VLLM, base_url="http://y/v1", model="m", think=True, num_ctx=4096)
+    f = AdapterFactory(s)
+    f.for_role(RoleName.CHAT)._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    assert await f.context_window(RunKind.CHAT) == 131072
+    assert await f.context_window(RunKind.CHAT) == 131072 and calls["n"] == 1, "asked once, then remembered"
+    assert await f.context_window(RunKind.TRIAGE) == 4096, "num_ctx is the explicit answer"
+    assert calls["n"] == 1, "a lane with num_ctx is never probed for it"

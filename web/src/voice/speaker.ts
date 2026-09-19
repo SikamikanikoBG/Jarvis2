@@ -151,7 +151,15 @@ export class ServerSpeaker implements Speaker {
     }
   }
 
+  /** A new reply: the server voice gets another chance after a fallback. Within one reply the
+   *  voice never changes — once a sentence had to be the device's, the rest of that reply is too,
+   *  rather than the two voices taking turns (2026-09-16). */
+  beginReply(): void {
+    this.fellBack = false;
+  }
+
   async speak(text: string, lang: string): Promise<void> {
+    if (this.fellBack) return this.fallback.speak(text, lang);
     const key = `${lang}|${text}`;
     const pending = this.prepared.get(key) ?? this.fetch(text, lang);
     this.prepared.delete(key);

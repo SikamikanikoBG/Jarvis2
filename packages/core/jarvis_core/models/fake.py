@@ -27,7 +27,9 @@ class FakeTurn:
     token_delay_s: float = 0.0  # per text token; lets tests cancel mid-stream
     fail_before_first_byte: bool = False  # transient error → the loop should see retry/fail
     hang: bool = False  # never finishes until cancelled
-    prompt_tokens: int = 100
+    # None = counted from the prompt at 3.2 chars a token, so the assembler's calibration sees
+    # a plausible ratio from a fake and tests keep the constant they were written against.
+    prompt_tokens: int | None = None
     completion_tokens: int = 20
     cached_tokens: int = 0  # what a prefix cache served, for budget/TTFT tests
     # "length" reproduces a turn cut off at the output allowance, which is a different
@@ -52,6 +54,7 @@ class FakeAdapter:
         self, messages: list[Message], tools: list[ToolSpec], *, cancel: asyncio.Event
     ) -> AsyncIterator[ModelEvent]:
         self.calls.append((list(messages), list(tools)))
+        sent_chars = sum(len(m.content) for m in messages)
         if self.on_call:
             self.on_call(len(self.calls))
         turn = self.turns.pop(0) if self.turns else self.default_turn
@@ -74,7 +77,7 @@ class FakeAdapter:
             yield ModelToolCallsChunk(list(turn.tool_calls))
         yield ModelDoneChunk(
             usage=ModelUsage(
-                prompt_tokens=turn.prompt_tokens,
+                prompt_tokens=turn.prompt_tokens if turn.prompt_tokens is not None else max(1, int(sent_chars / 3.2)),
                 completion_tokens=turn.completion_tokens,
                 cached_tokens=turn.cached_tokens,
                 calls=1,

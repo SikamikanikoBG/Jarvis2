@@ -8,14 +8,28 @@ the compactor, and only when the history has outgrown its budget.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from jarvis_core.db import Store
 from jarvis_core.features.personality import personality_block
-from jarvis_proto import Attachment, AttachmentKind, Channel, Message, Plan, Role, Run, RunKind, Settings
+from jarvis_proto import (
+    Attachment,
+    AttachmentKind,
+    Channel,
+    ContextBreakdown,
+    Message,
+    Plan,
+    Role,
+    Run,
+    RunKind,
+    Settings,
+    ToolSpec,
+)
 
 # One numbered list behind a precedence block. Count, not length, is what degrades the
 # local model (V1 lesson), so keep this short and add rules only when a test demands one.
@@ -29,13 +43,19 @@ PRECEDENCE: when rules conflict, the lower-numbered rule wins.
    a required detail is genuinely missing.
 4. Keep answers short and direct. No filler, no emojis, no restating the question.
 5. {language_hint}
-6. When a tool result says [partial], page through it before concluding.
+6. When a tool result says [partial], page through it before concluding. A result marked
+   [truncated] is stored whole: jarvis.result_search finds inside it, jarvis.result_read pages it.
 7. When a tool fails, say so plainly and try one sensible alternative, not the same call.
 8. Format for a phone screen: short paragraphs, lists only when they add clarity.
 9. Notes boards and known context below are facts Arsen curated; prefer them over guesses,
    and use notes.add when Arsen asks you to remember something."""
 
+# The starting guess. Real prompts calibrate it: a step's chars against the server's own
+# prompt_tokens (``ContextAssembler.observe``) — minified JSON and Cyrillic run nearer 2 chars a
+# token than 3.2, and a 60% under-count is a ceiling that is not one (measured 2026-09-16:
+# estimated 50k, served 79k).
 _CHARS_PER_TOKEN = 3.2
+_CPT_MIN, _CPT_MAX = 1.5, 4.5
 
 # A tool result from an earlier step or turn rides along as this much of its head; the DB keeps
 # the full text and jarvis.result_read hands it back on request. Results at or under the minimum
@@ -44,30 +64,57 @@ OLD_TOOL_RESULT_HEAD = 700
 OLD_TOOL_RESULT_MIN = 1_200
 
 
-def tool_result_head(message: Message) -> Message:
-    """The head of a tool result plus the marker that says how to read the rest. Idempotent: a
-    message already carrying the marker comes back unchanged, and so does a short one."""
-    if len(message.content) <= OLD_TOOL_RESULT_MIN or "[truncated" in message.content[-160:]:
+_MARKER = re.compile(r"\n?\[truncated to save context: ([\d,]+) chars in full\.[^\]]*\]$")
+
+
+def tool_result_head(message: Message, *, head: int = OLD_TOOL_RESULT_HEAD, min_len: int = OLD_TOOL_RESULT_MIN) -> Message:
+    """The first ``head`` chars of a tool result plus the marker that says how to read the rest.
+
+    One function for the two sizes a result is shown at: admitted (``head`` = the admission
+    limit, from the step it arrives in) and aged (700 chars, once the step is over or the run's
+    results outgrow their budget). Idempotent, and an admitted head can be aged further: the
+    marker carries the full length, and the head of a head is the same bytes. Results at or
+    under ``min_len`` are left whole - shortening them would cost more marker than it saves."""
+    body, full = message.content, len(message.content)
+    if m := _MARKER.search(body):
+        full = int(m.group(1).replace(",", ""))
+        body = body[: m.start()]
+        if len(body) <= head:
+            return message
+    elif full <= min_len:
         return message
-    full = len(message.content)
-    head = message.content[:OLD_TOOL_RESULT_HEAD].rstrip()
     # The ref is what makes the rest reachable. Telling the model to "note it down now or re-read
     # it once" was advice it could not act on: the full text is in the DB and there was no tool
     # that could fetch it, so a long research run reached the step that had to write with 8.4%
     # of what it had found (measured 2026-09-07, "бизнес презентация").
     marker = (
         f"[truncated to save context: {full:,} chars in full."
-        + (f' Read the rest with jarvis.result_read(ref="{message.tool_call_id}").' if message.tool_call_id else "")
+        + (
+            f' Search it with jarvis.result_search(ref="{message.tool_call_id}", pattern=...)'
+            f' or page it with jarvis.result_read(ref="{message.tool_call_id}").'
+            if message.tool_call_id
+            else ""
+        )
         + "]"
     )
-    return message.model_copy(update={"content": head + "\n" + marker})
+    return message.model_copy(update={"content": body[:head].rstrip() + "\n" + marker})
+
+
+def admit(message: Message, admit_chars: int) -> Message:
+    """A tool result as it enters the prompt: whole up to ``admit_chars``, else that much of its
+    head and the marker. The DB keeps it whole either way."""
+    return tool_result_head(message, head=admit_chars, min_len=admit_chars)
+
+
+def is_admitted_head(message: Message) -> bool:
+    return message.role is Role.TOOL and _MARKER.search(message.content) is not None
 
 
 def _skill_names(context_text: str) -> list[str]:
     return [ln[len("## Skill: ") :].strip() for ln in context_text.splitlines() if ln.startswith("## Skill: ")]
 
 
-def earlier_turn_view(history: list[Message], current_run_id: str) -> list[Message]:
+def earlier_turn_view(history: list[Message], current_run_id: str, *, admit_chars: int | None = None) -> list[Message]:
     """The history as the model should see it: earlier turns kept, but at the size they are worth.
 
     A finished turn's tool results were acted on when they arrived; what matters now is the
@@ -85,7 +132,9 @@ def earlier_turn_view(history: list[Message], current_run_id: str) -> list[Messa
     out: list[Message] = []
     for m in history:
         if m.run_id == current_run_id:
-            out.append(m)
+            # A resumed run rebuilds its own results from the DB: they enter at admission size,
+            # exactly as they did when they first arrived.
+            out.append(admit(m, admit_chars) if admit_chars and m.role is Role.TOOL else m)
         elif m.role is Role.TOOL:
             out.append(tool_result_head(m))
         elif m.role is Role.USER and m.name == "context":
@@ -118,16 +167,63 @@ class ContextAssembler:
         self._store = store
         self._settings = settings
         self._providers: list[BlockProvider] = list(providers or [])
+        self.chars_per_token = _CHARS_PER_TOKEN
         self._compactor = compactor  # features.compaction.Compactor, optional
         self._clock = clock
         self._attachments = attachments  # features.attachments.AttachmentStore, optional
+
+    def observe(self, prompt_chars: int, prompt_tokens: int) -> None:
+        """Calibrate the chars-per-token estimate from a served prompt: an exponential moving
+        average, clamped, so one odd step cannot swing it and JSON-heavy runs pull it down."""
+        if prompt_chars <= 0 or prompt_tokens <= 0:
+            return
+        seen = max(_CPT_MIN, min(_CPT_MAX, prompt_chars / prompt_tokens))
+        self.chars_per_token = round(0.7 * self.chars_per_token + 0.3 * seen, 3)
+
+    def tokens(self, chars: int) -> int:
+        return int(chars / self.chars_per_token)
 
     def add_provider(self, provider: BlockProvider) -> None:
         self._providers.append(provider)
 
     @property
     def budget_chars(self) -> int:
-        return int(self._settings().history_token_budget * _CHARS_PER_TOKEN)
+        return int(self._settings().history_token_budget * self.chars_per_token)
+
+    async def assemble_view(
+        self,
+        run: Run,
+        *,
+        skill_names: list[str] | None = None,
+        tools: list[ToolSpec] | None = None,
+        window: int | None = None,
+        max_tokens: int | None = None,
+    ) -> ContextView:
+        """The step's messages plus the budgets they were built to: the run's tool results are
+        admitted at ``tool_result_admit_chars``, and history/results budgets are the configured
+        ones unless the lane's ``window`` cannot hold them next to the system message, the tool
+        schemas, the answer and the reserve (``Settings.effective_budgets``)."""
+        s = self._settings()
+        await self.context_message(run, skill_names=skill_names or [])  # persisted; comes back in history
+        system = await self.system_message(run)
+        tools_chars = tool_schema_chars(tools or [])
+        fixed_tokens = self.tokens(len(system.content)) + self.tokens(tools_chars)
+        history_tokens, results_tokens = s.effective_budgets(window=window, max_tokens=max_tokens, fixed_tokens=fixed_tokens)
+        admit_chars = s.admit_chars(results_tokens, self.chars_per_token)
+        history = earlier_turn_view(await self._store.list_messages(run.conversation_id), run.id, admit_chars=admit_chars)
+        budget_chars = int(history_tokens * self.chars_per_token)
+        if self._compactor is not None and run.kind is not RunKind.TRIAGE:
+            history = await self._compactor.prepare(run.conversation_id, history, budget_chars)  # type: ignore[attr-defined]
+        messages = [system, *await self._hydrate(self.trim(history, budget_chars))]
+        return ContextView(
+            messages=messages,
+            history_tokens=history_tokens,
+            results_tokens=results_tokens,
+            tools_chars=tools_chars,
+            window=window,
+            chars_per_token=self.chars_per_token,
+            admit_chars=admit_chars,
+        )
 
     async def system_message(self, run: Run) -> Message:
         """The STABLE prefix: identical for every turn of a conversation (and every step of a run).
@@ -246,12 +342,7 @@ class ContextAssembler:
 
     async def assemble(self, run: Run, *, skill_names: list[str] | None = None) -> list[Message]:
         """[stable system] [history incl. earlier turns' context messages] [input] [this run's context]."""
-        await self.context_message(run, skill_names=skill_names or [])  # persisted; comes back in history
-        history = earlier_turn_view(await self._store.list_messages(run.conversation_id), run.id)
-        if self._compactor is not None and run.kind is not RunKind.TRIAGE:
-            history = await self._compactor.prepare(run.conversation_id, history, self.budget_chars)  # type: ignore[attr-defined]
-        system = await self.system_message(run)
-        return [system, *await self._hydrate(self.trim(history))]
+        return (await self.assemble_view(run, skill_names=skill_names)).messages
 
     async def _hydrate(self, history: list[Message]) -> list[Message]:
         """Fill in what the model needs from attachments: image bytes as data URLs, and a line
@@ -262,6 +353,17 @@ class ContextAssembler:
         by_message = await self._attachments.for_messages(ids)
         if not by_message:
             return history
+        # Pictures and clips ride as pixels only for the newest few (settings.media_in_context):
+        # every vLLM has a per-prompt limit on them (the syv-ai image ships 1, raised to 6 on
+        # both lanes) and refuses the whole request past it — a chat with two photos in its
+        # history died with "At most 1 image(s) may be provided" (2026-09-17). Older ones keep
+        # their note, saying they were shown earlier and can be shown again on request.
+        budget = self._settings().media_in_context
+        shown_ids: set[str] = set()
+        for m in reversed(history):
+            for att in by_message.get(m.id or "", []):
+                if att.kind in (AttachmentKind.IMAGE, AttachmentKind.VIDEO) and len(shown_ids) < budget:
+                    shown_ids.add(att.id)
         out: list[Message] = []
         for m in history:
             atts = by_message.get(m.id or "", [])
@@ -270,13 +372,12 @@ class ContextAssembler:
                 continue
             hydrated = []
             for att in atts:
-                shown = att.kind in (AttachmentKind.IMAGE, AttachmentKind.VIDEO)
-                url = await self._attachments.data_url(att.id) if shown else None
+                url = await self._attachments.data_url(att.id) if att.id in shown_ids else None
                 hydrated.append(att.model_copy(update={"data_url": url}) if url else att)
-            out.append(m.model_copy(update={"attachments": hydrated, "content": _with_attachment_note(m, hydrated)}))
+            out.append(m.model_copy(update={"attachments": hydrated, "content": _with_attachment_note(m, hydrated, shown_earlier=True)}))
         return out
 
-    def trim(self, history: list[Message]) -> list[Message]:
+    def trim(self, history: list[Message], budget_chars: int | None = None) -> list[Message]:
         """Newest messages that fit the budget, cut at a user-message boundary so no tool
         message is ever orphaned from the assistant call that produced it."""
         # The compaction summary is pinned: it is the memory of everything trimmed away.
@@ -284,7 +385,7 @@ class ContextAssembler:
         rest = [m for m in history if m.name != "summary"]
         kept: list[Message] = []
         used = sum(len(m.content) + 8 for m in pinned)
-        budget = self.budget_chars
+        budget = budget_chars if budget_chars is not None else self.budget_chars
         for m in reversed(rest):
             cost = len(m.content) + sum(len(str(c.arguments)) for c in m.tool_calls) + 8
             if used + cost > budget and kept:
@@ -297,16 +398,71 @@ class ContextAssembler:
         return [*pinned, *kept]
 
 
-def _with_attachment_note(message: Message, attachments: list[Attachment]) -> str:
+@dataclass
+class ContextView:
+    """What one step was built from: the messages and the budgets that shaped them."""
+
+    messages: list[Message]
+    history_tokens: int
+    results_tokens: int
+    tools_chars: int
+    window: int | None
+    chars_per_token: float = _CHARS_PER_TOKEN
+    admit_chars: int = 48_000
+
+
+def prompt_chars(messages: list[Message], tools_chars: int) -> int:
+    """What a step sends, in chars: the calibration's numerator."""
+    return tools_chars + sum(len(m.content) + sum(len(str(c.arguments)) for c in m.tool_calls) for m in messages)
+
+
+def tool_schema_chars(tools: list[ToolSpec]) -> int:
+    """How much of the prompt the tool list is, roughly: what the chat template renders per tool."""
+    import json
+
+    return sum(len(t.name) + len(t.description) + len(json.dumps(t.input_schema)) + 16 for t in tools)
+
+
+def context_breakdown(
+    messages: list[Message], run_id: str, *, tools_chars: int, window: int | None, chars_per_token: float = _CHARS_PER_TOKEN
+) -> ContextBreakdown:
+    """Where a step's prompt goes, by part. ``messages[0]`` is the system message; this run's own
+    tool results count as results, everything else after the system message as history."""
+
+    def _tokens(chars: int) -> int:
+        return int(chars / chars_per_token)
+
+    system = len(messages[0].content) if messages else 0
+    history = results = admitted = 0
+    for m in messages[1:]:
+        cost = len(m.content) + sum(len(str(c.arguments)) for c in m.tool_calls)
+        if m.run_id == run_id and m.role is Role.TOOL:
+            results += cost
+            admitted += 1 if is_admitted_head(m) else 0
+        else:
+            history += cost
+    parts = [_tokens(n) for n in (system, tools_chars, history, results)]
+    return ContextBreakdown(
+        system=parts[0], tools=parts[1], history=parts[2], results=parts[3], total=sum(parts), window=window, admitted=admitted
+    )
+
+
+def _with_attachment_note(message: Message, attachments: list[Attachment], *, shown_earlier: bool = False) -> str:
     """The message text plus what came with it. Images say they are shown; text is inlined here
-    so a document reaches even a model that cannot see pictures."""
+    so a document reaches even a model that cannot see pictures. ``shown_earlier``: a picture
+    without pixels here was shown in an earlier turn and is only past the media budget."""
     parts = [message.content] if message.content else []
+    unseen = (
+        " — shown earlier in this conversation, not repeated here; ask to see it again if needed"
+        if shown_earlier
+        else " — this model cannot be shown images, so describe what you need instead"
+    )
     for att in attachments:
         size = f"{att.bytes // 1024} kB" if att.bytes >= 1024 else f"{att.bytes} B"
         if att.kind is AttachmentKind.IMAGE:
             note = f"[image attached: {att.name}, {size}"
             if not att.data_url:
-                note += " — this model cannot be shown images, so describe what you need instead"
+                note += unseen
             parts.append(note + "]")
         elif att.kind is AttachmentKind.VIDEO:
             # What it was sampled to is part of the content: an answer about "the whole video"
@@ -316,7 +472,7 @@ def _with_attachment_note(message: Message, attachments: list[Attachment]) -> st
             shape = att.meta.get("sampled") or f"{att.meta.get('frames', '?')} frames"
             note = f"[video attached: {att.name}, {size}, shown as {shape}"
             if not att.data_url:
-                note += " — this model cannot be shown video, so describe what you need instead"
+                note += unseen.replace("images", "video")
             audio = str(att.meta.get("audio") or "")
             if att.text:
                 lang = f" ({att.meta['language']})" if att.meta.get("language") else ""

@@ -1058,3 +1058,41 @@ should come from the lane, not from a number tuned under a wrong constant:
   background keeps triage and meeting, the runs that stay small. Settings → Run routing changes it.
 
 Tests updated (routing expectations); 275 pass. The run is re-fired after deploy as the check.
+
+
+## 2026-09-19 — the phone at the ear: black, still, and deaf to a cheek (web alpha.30)
+
+Arsen, from a call on the earpiece: "I put the phone next to my ear — I need the screen to go
+black and not be able to touch it, like a phone call; when I pull it off, to see the screen.
+Right now the screen rotates, or with my face I am tapping on the screen." Three faults in the
+lock of alpha.20, in the order a cheek finds them:
+
+1. **The hold buttons were reachable through the lock.** The guard sat *under* the controls by
+   design (a finger had to reach them), and a cheek resting on "hold to hang up" for 1.2 s is a
+   finger to the browser. So the call ended, or the route flipped, by face.
+2. **The page turned with the head.** The manifest says `orientation: any`, and a phone at an
+   ear is tilted enough for Android to call it landscape.
+3. **The browser's own bar was in reach.** Address bar, tab strip, the long-press text menu —
+   none of it ours to guard.
+
+The dialer has the proximity sensor for this and the web does not (docs/stories/10_voice.md,
+platform truths). What the web has is gravity. A phone read is tilted back so the glass faces
+the eyes — gravity comes out of the screen; a phone at an ear lies against a cheek, which is
+vertical — gravity runs down the phone's length and almost none comes out of the glass. That
+difference is `earPose.ts`: enter the ear pose inside ~12° of vertical and ~35° of upright,
+leave it past ~22° of tilt toward a face; 450 ms to go dark (a cheek brushing past is not an
+ear), 120 ms to come back (pulling it away must feel immediate); signs ignored, since Android
+and iOS disagree on them and an upside-down phone at an ear is still at an ear; and a sensor
+that stops delivering clears the dark within two seconds, so a black screen can never be stuck.
+
+At the ear the call screen renders **nothing but black and a guard**: no controls exist to be
+held. Away from the ear it is the locked screen of before, with two more cheek rules on the
+holds: a contact wider than 60 px is not a fingertip and holds nothing, and a second contact
+anywhere while a hold runs drops it (an ear comes with a cheek). `screenHold.ts` takes the call
+**fullscreen and portrait-primary** inside the tap that starts it (orientation can only be
+locked in fullscreen or an installed app) and lets both go when it ends; `-webkit-touch-callout`
+and `overscroll-behavior` go off on the call surface. The pose has eight tests (`earPose.test.ts`)
+from synthetic gravity vectors; 110 web tests pass.
+
+Still true: only a native wrapper can turn the screen *off*. This is the closest the web comes,
+and it is the dialer's behaviour as seen from the ear.

@@ -46,8 +46,13 @@ be *talked through* first — scoped, questioned, narrowed — before anyone doe
 - **A web page cannot read the proximity sensor.** No browser ships it. "The screen goes
   inactive at my ear" is therefore done the only way it can be: a **wake lock** keeps the page
   alive, a **near-black surface** takes the light down, and a **touch guard** swallows every
-  touch except a deliberate hold. A phone in an Android wrapper (TWA/Capacitor) could turn the
-  screen off for real; that is a later, separate step, not this one.
+  touch except a deliberate hold. Since 2026-09-19 the **accelerometer stands in for the
+  proximity sensor** (`earPose.ts`): gravity tells a phone lying against a vertical cheek from
+  one tilted back to be read, and at the ear the screen is fully black with *no* control on it,
+  not even a hold. The call is also held **fullscreen and portrait** (`screenHold.ts`), so the
+  page does not turn with the head and no browser bar is within a cheek's reach. A phone in an
+  Android wrapper (TWA/Capacitor) could turn the screen off for real; that is a later, separate
+  step, not this one.
 - **A web page cannot route audio to the earpiece.** Playback goes to the media channel — the
   loudspeaker, or the headset when one is connected (wired or Bluetooth). The feature is built
   for the headset; on the bare phone it is speakerphone, and the design says so on screen.

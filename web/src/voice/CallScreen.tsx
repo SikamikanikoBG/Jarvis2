@@ -3,11 +3,14 @@ import { Icon } from '../components/Icon';
 import { useTicker } from '../components/useTicker';
 import { formatSeconds } from '../lib/format';
 import { useStore } from '../store/store';
+import { useAtEar } from './earPose';
 import type { CallPhase, CallState } from './session';
 import { useWakeLock } from './useWakeLock';
 
 /** How long a hold must last to act. Long enough that a cheek never does it, short enough not to feel stuck. */
 const HOLD_MS = 1200;
+/** A contact wider than this (CSS px) is a cheek or an ear, not a fingertip; it holds nothing. */
+const FINGER_MAX_PX = 60;
 
 const PHASE_LABEL: Record<CallPhase, string> = {
   idle: '',
@@ -25,9 +28,11 @@ const PHASE_LABEL: Record<CallPhase, string> = {
  * both ways; nothing here starts a run or touches audio — the session does that.
  *
  * On a touch device the screen locks itself the moment the call starts: near-black, and every
- * touch swallowed except a deliberate hold. A web page cannot read the proximity sensor, so this
- * is what "at my ear the phone does not press its own buttons" is made of — a wake lock keeps
- * the page alive, the black takes the light down, the guard takes the touches.
+ * touch swallowed except a deliberate hold. A web page cannot read the proximity sensor, so the
+ * accelerometer stands in for it (earPose.ts): with the phone at an ear the screen goes fully
+ * dark and *nothing* on it responds, not even a hold — the controls are not there to hold.
+ * Pulled away to be looked at, it comes back to the locked screen. A wake lock keeps the page
+ * alive, the black takes the light down, the guard takes the touches.
  */
 export function CallScreen() {
   const call = useStore((s) => s.call);
@@ -37,7 +42,8 @@ export function CallScreen() {
   const conv = useStore((s) => (s.openConversationId ? s.conversations[s.openConversationId] : undefined));
   const touch = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
   const [locked, setLocked] = useState(touch);
-  const now = useTicker(1000, Boolean(call));
+  const atEar = useAtEar(Boolean(call) && touch);
+  const now = useTicker(1000, Boolean(call) && !atEar);
   useWakeLock(Boolean(call));
 
   // Escape hangs up on a keyboard; on a phone there is no Escape, and that is the point.
@@ -52,6 +58,15 @@ export function CallScreen() {
 
   if (!call) return null;
   const elapsed = call.startedAt ? formatSeconds(now - call.startedAt) : '0:00';
+
+  // At the ear: black, and a guard over everything. No controls exist to be pressed.
+  if (atEar) {
+    return (
+      <div className={`call call-locked call-dark call-${call.phase}`} role="dialog" aria-label="Call with Jarvis" aria-modal="true">
+        <div className="call-guard" aria-hidden="true" />
+      </div>
+    );
+  }
 
   return (
     <div className={`call${locked ? ' call-locked' : ''} call-${call.phase}`} role="dialog" aria-label="Call with Jarvis" aria-modal="true">
@@ -180,6 +195,8 @@ function HoldButton({ label, icon, danger, onHeld }: { label: string; icon: 'che
     setProgress(0);
   };
   const begin = (e: PointerEvent<HTMLButtonElement>) => {
+    // A cheek is wide and an ear comes with a cheek: only a single fingertip-sized contact holds.
+    if (e.width > FINGER_MAX_PX || e.height > FINGER_MAX_PX) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     fired.current = false;
     startedAt.current = performance.now();
@@ -195,6 +212,15 @@ function HoldButton({ label, icon, danger, onHeld }: { label: string; icon: 'che
     }, 40);
   };
   useEffect(() => stop, []);
+  // A second contact anywhere while a hold runs is a face, not a finger: the hold is dropped.
+  useEffect(() => {
+    const onAnother = (e: globalThis.PointerEvent) => {
+      if (timer.current === null) return;
+      if (!e.isPrimary || e.width > FINGER_MAX_PX || e.height > FINGER_MAX_PX) stop();
+    };
+    window.addEventListener('pointerdown', onAnother, true);
+    return () => window.removeEventListener('pointerdown', onAnother, true);
+  }, []);
 
   return (
     <button

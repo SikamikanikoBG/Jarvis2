@@ -9,6 +9,8 @@ import { applyThemePref, isPanelMode, readThemePref, type ThemePref } from '../l
 import { DRAFT_NORMAL, ttlLabel, type DraftPrivacy } from '../lib/privacy';
 import type { ThinkChoice } from '../lib/think';
 import { MicListener } from '../voice/listener';
+import { requestMotionPermission } from '../voice/earPose';
+import { holdScreen, releaseScreen } from '../voice/screenHold';
 import { CallSession, type CallRoute, type CallState } from '../voice/session';
 import { DeviceSpeaker, ServerSpeaker } from '../voice/speaker';
 import type {
@@ -347,6 +349,10 @@ export const useStore = create<AppState>()((set, get) => ({
       s.notify('Not connected to Jarvis.', 'error');
       return;
     }
+    // Still inside the tap, before anything is awaited: fullscreen and portrait for the call,
+    // and (iOS) leave to read the accelerometer that tells an ear from a look.
+    holdScreen();
+    void requestMotionPermission();
     // Whose voice: the core's neural one unless the settings say the device's. Read here, at
     // the tap, so a change in Settings takes effect on the next call without a reload.
     let tts: 'server' | 'device' = 'server';
@@ -412,6 +418,7 @@ export const useStore = create<AppState>()((set, get) => ({
       // The microphone was refused or is missing: the reason is on the screen, the call is over.
       const problem = session.state.problem;
       session = null;
+      releaseScreen();
       set({ call: null });
       if (problem) get().notify(problem, 'error');
     }
@@ -422,6 +429,7 @@ export const useStore = create<AppState>()((set, get) => ({
     session = null;
     if (speaker instanceof ServerSpeaker) speaker.close();
     speaker = null;
+    releaseScreen();
     set({ call: null });
   },
 

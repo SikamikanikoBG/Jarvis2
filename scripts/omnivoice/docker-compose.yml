@@ -1,0 +1,31 @@
+# Jarvis's own voice: OmniVoice resident on ardi's ROG Strix 3090, beside Whisper.
+# Pinned by UUID, never by index (the P2000 lesson). Reference clips live in ./voices:
+# name.wav (24 kHz mono, 5-15 s) + name.txt (what is said in it). Drop a pair in, it is a voice.
+services:
+  omnivoice:
+    build: .
+    image: omnivoice:latest
+    container_name: omnivoice
+    restart: unless-stopped
+    ports:
+      - "100.97.120.53:9120:9120"
+      - "127.0.0.1:9120:9120"
+    volumes:
+      - ./voices:/voices
+      - ./hf:/root/.cache/huggingface
+    environment:
+      - VOICES_DIR=/voices
+      - HF_HUB_OFFLINE=0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["GPU-898cf2b2-0288-829e-1b74-f377b8194d95"]
+              capabilities: ["gpu"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if b'true' in urllib.request.urlopen('http://127.0.0.1:9120/health').read() else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 180s
+      retries: 3

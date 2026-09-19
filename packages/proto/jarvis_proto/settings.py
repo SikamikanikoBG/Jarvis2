@@ -454,10 +454,21 @@ class VoiceSettings(BaseModel):
     # browser falls back to the device voice when the core cannot. "device": speechSynthesis
     # only - offline, and on Android and Windows the voices are what they are.
     tts: Literal["server", "device"] = "server"
+    # Which synthesiser the core uses. "edge": Microsoft's neural voices over the internet (the
+    # text of every sentence leaves the house). "omnivoice": Jarvis's own voice on ardi's 3090
+    # (scripts/omnivoice) - OmniVoice cloning a reference clip, local, and any voice a clip can
+    # be found for. Falls back to edge for a sentence when the local server cannot be reached.
+    engine: Literal["edge", "omnivoice"] = "edge"
     # Neural voice per language for the server synthesiser (edge-tts short names).
     voices: dict[str, str] = Field(default_factory=lambda: {"bg": "bg-BG-BorislavNeural", "en": "en-GB-RyanNeural"})
     # Speaking rate as edge-tts takes it: "+0%", "+10%", "-5%".
     rate: str = "+0%"
+    # The local synthesiser: where it listens, the reference voice per language (a name in its
+    # voices/ folder, or "design:male, low pitch"), and how many diffusion steps a sentence gets
+    # (8 is 0.55 s a sentence on the 3090, 32 is 1.75 s; 16 is the middle).
+    omnivoice_url: str = "http://100.97.120.53:9120"
+    omnivoice_voices: dict[str, str] = Field(default_factory=lambda: {"bg": "borislav", "en": "ryan"})
+    omnivoice_steps: int = 16
 
     def allows(self, namespace: str) -> bool:
         return namespace in self.namespaces
@@ -465,6 +476,10 @@ class VoiceSettings(BaseModel):
     def voice_for(self, lang: str) -> str | None:
         short = (lang or "").split("-")[0].lower()
         return self.voices.get(short) or self.voices.get("en")
+
+    def omnivoice_voice_for(self, lang: str) -> str | None:
+        short = (lang or "").split("-")[0].lower()
+        return self.omnivoice_voices.get(short) or self.omnivoice_voices.get("en")
 
 
 class Settings(BaseModel):

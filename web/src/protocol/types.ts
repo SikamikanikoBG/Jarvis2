@@ -352,10 +352,16 @@ export interface VoiceSettings {
   style: string;
   /** "server": the core's neural voices, the device voice as fallback; "device": speechSynthesis only. */
   tts: 'server' | 'device';
+  /** Which synthesiser the core uses: Microsoft's cloud voices, or Jarvis's own on ardi's 3090. */
+  engine: 'edge' | 'omnivoice';
   /** Neural voice per language (edge-tts short names), e.g. { bg: 'bg-BG-BorislavNeural' }. */
   voices: Record<string, string>;
   /** Speaking rate as the synthesiser takes it: "+0%", "+10%", "-5%". */
   rate: string;
+  /** The local synthesiser: its URL, a reference voice per language, diffusion steps per sentence. */
+  omnivoice_url: string;
+  omnivoice_voices: Record<string, string>;
+  omnivoice_steps: number;
 }
 
 export interface Settings {

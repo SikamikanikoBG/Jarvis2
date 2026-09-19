@@ -1096,3 +1096,43 @@ from synthetic gravity vectors; 110 web tests pass.
 
 Still true: only a native wrapper can turn the screen *off*. This is the closest the web comes,
 and it is the dialer's behaviour as seen from the ear.
+
+
+## 2026-09-19 — a voice of his own: OmniVoice on ardi's 3090 (core 2.0.0a54, proto a21, web alpha.31)
+
+"Is it possible to have a local super nice TTS with nice Bulgarian voices — on ardi's 3090
+where the STT is? I want local SOTA if possible." Research first: the strong open models do
+not speak Bulgarian — XTTS-v2 (17 languages), Chatterbox (23), Fish/Qwen3-TTS, MOSS-TTS 1.5
+(31, Macedonian in, Bulgarian out); Piper has one Bulgarian voice and it is not nice. One
+candidate: **OmniVoice** (k2-fsa, the Next-gen Kaldi people, April 2026, Apache-2.0) — a
+diffusion LM over a Qwen3-0.6B text encoder that clones any voice from a few seconds of it in
+600+ languages, Bulgarian among them; 3.1 GB of weights.
+
+Tested, not believed. `~/omnivoice-trial` on ardi, the card shared with Whisper: five
+sentences (four Bulgarian, one English) through today's voice (edge-tts Borislav) and through
+OmniVoice cloning that same Borislav from a 7-second clip of him, at 32/16/8 diffusion steps,
+plus two voices *designed* from words alone ("male, middle-aged, low pitch"). Time per
+sentence is flat, whatever its length: **1.75 s / 1.15 s / 0.55 s** for 4–6 s of audio, 1.9 GB
+of VRAM resident. Then a judge that cannot be charmed: every sample back through the resident
+Whisper large-v3, character error rate against the sentence it was asked to say — **edge 0.092,
+clone32 0.092, clone16 0.094, clone8 0.103, designed 0.089**, the "errors" being 9 for девет
+in all of them. Local Bulgarian is as intelligible as Microsoft's. Whether it is as *nice* is
+Arsen's ear to say: `SharedFolderAI/jarvis-tts-trial/listen.html` has all six side by side.
+
+So it is wired in, off by default:
+
+- `scripts/omnivoice/` — a Dockerfile, a compose file (GPU by UUID, `:9120` on the tailnet
+  IP and loopback), and `server.py`: the model resident in fp16, one voice-clone prompt per
+  `voices/name.wav` + `name.txt` (rescanned, so a new pair dropped in the folder is a voice
+  with no restart), `POST /tts {text, language, voice, steps}` → MP3, one sentence at a time
+  on the card. Running on ardi as `omnivoice`, with `borislav` (bg) and `ryan` (en) — both
+  clones of the edge voices, so switching engines changes where the voice is made, not who.
+- `Settings.voice.engine`: `"edge"` | `"omnivoice"`, with `omnivoice_url`, `omnivoice_voices`
+  per language (a name, or `design:…`) and `omnivoice_steps` (8/16/32 — fast/balanced/best).
+  The synthesiser's cache key carries the engine, voice and steps; a sentence the local server
+  cannot make (down, voice missing) is said by edge and not cached under the local key.
+- Settings → Voice: "Where the voice is made", the three fields under it when local is on.
+
+What this buys, beyond the sentence leaving the house or not: *any* voice. A clip and its
+transcript in `voices/` and Jarvis speaks with it, Bulgarian or English. The clip should be
+5–15 s, 24 kHz mono, one speaker, no music.

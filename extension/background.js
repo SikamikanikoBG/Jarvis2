@@ -387,6 +387,9 @@ function onFrame(raw) {
     case "browser.call":
       handleCall(msg);
       break;
+    case "browser.job_done":
+      jobDone(String(msg.session || ""));
+      break;
     case "ping":
       send({ type: "pong" });
       break;
@@ -416,11 +419,15 @@ async function handleCall(msg) {
   if (msg.call_id === undefined || msg.call_id === null) return; // nothing to answer to
   const name = String(msg.name || "");
   const args = (msg.arguments && typeof msg.arguments === "object") ? msg.arguments : {};
+  // Which chat this call belongs to: its own work tab, never another chat's. An older
+  // core that does not send one keeps the single shared tab it always had.
+  const session = String(msg.session || "default");
+  await cancelClose(session); // it is working again; the tab is not going anywhere
   let result;
   try {
     // browser.wait is the one call that is MEANT to take its time.
     const budget = name === "browser.wait" ? waitBudgetMs(args) + 5000 : CALL_TIMEOUT_MS;
-    result = await withTimeout(runTool(name, args), budget, () =>
+    result = await withTimeout(runTool(name, args, session), budget, () =>
       name + " did not complete within " + Math.round(budget / 1000) +
       "s — the tab is probably still loading or busy; wait a moment and retry once");
     if (!result || typeof result !== "object" || !result.kind) {
@@ -436,18 +443,18 @@ function data(text) { return { kind: "data", text: text }; }
 function empty(text) { return { kind: "empty", text: text }; }
 function fail(error) { return { kind: "error", text: "Error: " + error, error: error }; }
 
-async function runTool(name, args) {
+async function runTool(name, args, session) {
   switch (name) {
-    case "browser.tabs": return toolTabs();
-    case "browser.open": return toolOpen(args);
-    case "browser.read": return toolRead(args);
-    case "browser.find": return toolFind(args);
-    case "browser.click": return toolAct("click", args);
-    case "browser.type": return toolAct("type", args);
-    case "browser.scroll": return toolScroll(args);
-    case "browser.screenshot": return toolScreenshot();
-    case "browser.wait": return toolWait(args);
-    case "browser.eval": return toolEval(args);
+    case "browser.tabs": return toolTabs(session);
+    case "browser.open": return toolOpen(args, session);
+    case "browser.read": return toolRead(args, session);
+    case "browser.find": return toolFind(args, session);
+    case "browser.click": return toolAct("click", args, session);
+    case "browser.type": return toolAct("type", args, session);
+    case "browser.scroll": return toolScroll(args, session);
+    case "browser.screenshot": return toolScreenshot(session);
+    case "browser.wait": return toolWait(args, session);
+    case "browser.eval": return toolEval(args, session);
     default:
       return fail("unknown tool " + JSON.stringify(name) + "; this extension provides: " +
                   TOOLS.map((t) => t.name).join(", "));
@@ -463,34 +470,65 @@ async function activeTab() {
   return tabs && tabs[0] ? tabs[0] : null;
 }
 
-// THE Jarvis work tab. One tab, reused across every `open` — the user's browser
-// collected 30+ tabs in a day when each task opened a fresh one (V1, 21 Aug).
-// Persisted in chrome.storage.session because MV3 unloads this worker after
-// ~30s idle and a bare variable forgets the tab.
-let workTabId = null;
+// ONE WORK TAB PER SESSION. A session is a Jarvis chat (the core sends its
+// conversation id with every call). It used to be one tab for everything, which
+// was right when one chat browsed at a time and wrong the moment two did: the
+// second chat drove whatever the first had just opened, and both read each
+// other's pages (20 Sep 2026, "they are competing for the same tab").
+//
+// Still not a tab per TASK — a chat that opens five pages reuses its own one, or
+// the browser collects 30 tabs in a day (V1, 21 Aug). When a chat's run ends the
+// core says so (browser.job_done) and the tab closes after a short grace, so a
+// follow-up turn a few seconds later still finds its page where it left it.
+//
+// Persisted in chrome.storage.session because MV3 unloads this worker after ~30s
+// idle and a bare variable forgets everything.
+let workTabs = null; // { [session]: tabId }
+const CLOSE_GRACE_MIN = 3;
 
-async function rememberWorkTab(tabId) {
-  workTabId = tabId;
-  try { await chrome.storage.session.set({ workTabId: tabId }); } catch (e) {}
-}
-
-async function forgetWorkTab() {
-  workTabId = null;
-  try { await chrome.storage.session.remove("workTabId"); } catch (e) {}
-}
-
-async function getWorkTab() {
-  if (workTabId === null) {
-    try {
-      const stored = await chrome.storage.session.get("workTabId");
-      if (stored && stored.workTabId) workTabId = stored.workTabId;
-    } catch (e) {}
-  }
-  if (workTabId === null) return null;
+async function loadWorkTabs() {
+  if (workTabs) return workTabs;
   try {
-    return await chrome.tabs.get(workTabId);
+    const stored = await chrome.storage.session.get("workTabs");
+    workTabs = (stored && stored.workTabs) || {};
   } catch (e) {
-    await forgetWorkTab();
+    workTabs = {};
+  }
+  return workTabs;
+}
+
+async function saveWorkTabs() {
+  try { await chrome.storage.session.set({ workTabs: workTabs || {} }); } catch (e) {}
+}
+
+async function rememberWorkTab(session, tabId) {
+  const tabs = await loadWorkTabs();
+  tabs[session] = tabId;
+  await saveWorkTabs();
+}
+
+async function forgetWorkTab(session) {
+  const tabs = await loadWorkTabs();
+  delete tabs[session];
+  await saveWorkTabs();
+}
+
+// The session a tab belongs to, or null when it is the user's own.
+async function ownerOf(tabId) {
+  if (tabId === undefined || tabId === null) return null;
+  const tabs = await loadWorkTabs();
+  for (const session of Object.keys(tabs)) if (tabs[session] === tabId) return session;
+  return null;
+}
+
+async function getWorkTab(session) {
+  const tabs = await loadWorkTabs();
+  const id = tabs[session];
+  if (id === undefined) return null;
+  try {
+    return await chrome.tabs.get(id);
+  } catch (e) {
+    await forgetWorkTab(session);
     return null;
   }
 }
@@ -510,24 +548,29 @@ async function isProtectedTab(tab) {
   }
 }
 
-// ACTIVE tab first, work tab as fallback — not the other way round. Work-tab-
-// first broke co-browsing: the user opened a course in their own tab, said
-// "done, I opened it for you", and Jarvis kept reading its stale work tab.
-// Active-first serves both modes, because `open` makes the work tab active.
-async function targetTab() {
+// The user's own active tab first — co-browsing depends on it: he opens a course,
+// says "done, I opened it for you", and Jarvis must read THAT, not its own stale
+// page (13 Sep 2026). But a tab that belongs to ANOTHER session is not the user's
+// and is never targeted; that was the competition. So: the active tab if it is
+// the user's own or this session's, else this session's work tab.
+async function targetTab(session) {
   const tab = await activeTab();
-  if (tab && !(await isProtectedTab(tab))) return tab;
-  const work = await getWorkTab();
+  if (tab && !(await isProtectedTab(tab))) {
+    const owner = await ownerOf(tab.id);
+    if (!owner || owner === session) return tab;
+  }
+  const work = await getWorkTab(session);
   if (work) return work;
   if (!tab) throw new Error("no active tab — call browser.open with the URL you need");
   throw new Error(
-    "the active tab is the Jarvis app itself and there is no work tab yet — call browser.open " +
-    "with the URL you need; it opens in Jarvis's own work tab, never in the user's chat window");
+    "there is no work tab for this chat yet and the active tab is not available to it — call " +
+    "browser.open with the URL you need; it opens in this chat's own work tab, never in the " +
+    "user's chat window and never in another chat's tab");
 }
 
 // An explicit tab id is an instruction. Bring it to the front so the user sees
 // what Jarvis is looking at and the following click/type land on the same tab.
-async function pickTab(explicit) {
+async function pickTab(explicit, session) {
   if (explicit !== undefined && explicit !== null && explicit !== "") {
     const id = parseInt(explicit, 10);
     let tab;
@@ -542,7 +585,7 @@ async function pickTab(explicit) {
     }
     return tab;
   }
-  return targetTab();
+  return targetTab(session);
 }
 
 function assertScriptable(tab) {
@@ -555,9 +598,48 @@ function assertScriptable(tab) {
 }
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  if (tabId === workTabId) forgetWorkTab();
+  ownerOf(tabId).then((session) => { if (session) forgetWorkTab(session); });
   stickyFrame.delete(tabId);
 });
+
+// The core says a chat's run has ended. Its tab is given a few minutes in case the
+// next turn carries on with the same page, then closed — a job that is over should
+// not leave a tab behind (20 Sep 2026).
+async function jobDone(session) {
+  if (!session) return;
+  const tab = await getWorkTab(session);
+  if (!tab) return;
+  try { await chrome.alarms.create("closeWork:" + session, { delayInMinutes: CLOSE_GRACE_MIN }); } catch (e) {}
+}
+
+async function cancelClose(session) {
+  try { await chrome.alarms.clear("closeWork:" + session); } catch (e) {}
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  const name = (alarm && alarm.name) || "";
+  if (!name.startsWith("closeWork:")) return;
+  closeWorkTab(name.slice("closeWork:".length));
+});
+
+async function closeWorkTab(session) {
+  const tab = await getWorkTab(session);
+  await forgetWorkTab(session);
+  if (!tab) return;
+  // Never yank a page out from under the user: a tab he is looking at when the grace
+  // runs out is his now, not Jarvis's. And never take the window down with it.
+  let focusedWindow = null;
+  try { focusedWindow = await chrome.windows.getLastFocused(); } catch (e) {}
+  if (tab.active && focusedWindow && focusedWindow.id === tab.windowId) return;
+  try {
+    const inWindow = await chrome.tabs.query({ windowId: tab.windowId });
+    if (inWindow.length <= 1) {
+      await chrome.tabs.update(tab.id, { url: "about:blank" });
+      return;
+    }
+    await chrome.tabs.remove(tab.id);
+  } catch (e) {}
+}
 
 // ---------------------------------------------------------------------------
 // Injection and frames
@@ -785,14 +867,18 @@ function fromKernel(tab, res, op) {
   return data(head + "\n" + res.text);
 }
 
-async function toolTabs() {
+async function toolTabs(session) {
   const all = await chrome.tabs.query({});
-  const work = await getWorkTab();
+  const mine = await getWorkTab(session);
   const lines = [];
   for (const t of all) {
     const flags = [];
     if (t.active) flags.push("active");
-    if (work && t.id === work.id) flags.push("Jarvis work tab");
+    if (mine && t.id === mine.id) flags.push("this chat's work tab");
+    else {
+      const owner = await ownerOf(t.id);
+      if (owner) flags.push("another chat's work tab — leave it alone");
+    }
     if (await isProtectedTab(t)) flags.push("the Jarvis app itself — cannot be read or driven");
     else if (!/^https?:/i.test(t.url || t.pendingUrl || "")) flags.push("browser page — cannot be read");
     lines.push("[tab " + t.id + "] " + (t.title || "(untitled)") + " — " + (t.url || t.pendingUrl || "") +
@@ -802,20 +888,23 @@ async function toolTabs() {
   return data(lines.length + " tab" + (lines.length === 1 ? "" : "s") + ":\n" + lines.join("\n"));
 }
 
-async function toolOpen(args) {
+async function toolOpen(args, session) {
   let url = String(args.url || "").trim();
   if (!url) throw new Error("browser.open needs a url");
   if (!/^[a-z][a-z0-9+.-]*:/i.test(url)) url = "https://" + url;
   if (!/^https?:/i.test(url)) throw new Error("only http(s) URLs can be opened, not " + url.split(":")[0] + ":");
-  let tab = await getWorkTab();
+  let tab = await getWorkTab(session);
   let how;
   if (tab) {
-    await chrome.tabs.update(tab.id, { url: url, active: true });
-    how = "in the Jarvis work tab";
+    // No `active: true` on a reuse: with several chats browsing at once, each `open`
+    // stealing the foreground made the browser flicker between their tabs. The tab is
+    // brought to the front when it is CREATED, so the user sees what was started.
+    await chrome.tabs.update(tab.id, { url: url });
+    how = "in this chat's work tab";
   } else {
     tab = await chrome.tabs.create({ url: url, active: true });
-    await rememberWorkTab(tab.id);
-    how = "in a new Jarvis work tab";
+    await rememberWorkTab(session, tab.id);
+    how = "in a new work tab for this chat";
   }
   await waitForLoad(tab.id);
   const fresh = await chrome.tabs.get(tab.id);
@@ -835,8 +924,8 @@ async function toolOpen(args) {
   return data(text);
 }
 
-async function toolRead(args) {
-  const tab = await pickTab(args.tab);
+async function toolRead(args, session) {
+  const tab = await pickTab(args.tab, session);
   const mode = String(args.mode || "text").toLowerCase() === "outline" ? "outline" : "text";
   const p = { mode: mode, offset: Math.max(0, parseInt(args.offset, 10) || 0), max_chars: READ_CAP };
   const top = await runInFrame(tab, ["read", p]);
@@ -875,15 +964,15 @@ async function toolRead(args) {
   return data(text);
 }
 
-async function toolFind(args) {
-  const tab = await targetTab();
+async function toolFind(args, session) {
+  const tab = await targetTab(session);
   const query = String(args.query == null ? "" : args.query);
   const res = await readWithFrameFallback(tab, "find", { text: query });
   return fromKernel(tab, res, "find");
 }
 
-async function toolAct(op, args) {
-  const tab = await targetTab();
+async function toolAct(op, args, session) {
+  const tab = await targetTab(session);
   const ref = String(args.ref == null ? "" : args.ref).trim();
   if (!ref && op === "click") {
     throw new Error("browser.click needs a ref — @e12 from browser.read mode=outline or browser.find, " +
@@ -908,8 +997,8 @@ async function toolAct(op, args) {
   return out;
 }
 
-async function toolScroll(args) {
-  const tab = await targetTab();
+async function toolScroll(args, session) {
+  const tab = await targetTab(session);
   const ref = String(args.ref == null ? "" : args.ref).trim();
   if (ref) {
     const res = await actWithFrameFallback(tab, "scroll", { selector: ref, direction: "element" });
@@ -953,8 +1042,8 @@ function renderValue(v) {
 // Unlike the typed ops, eval carries the model's own code, so the frame it
 // runs in is stated every time and the page's main world is opt-in: a bank's
 // CSP may refuse it, and that refusal is reported as the fact it is.
-async function toolEval(args) {
-  const tab = await targetTab();
+async function toolEval(args, session) {
+  const tab = await targetTab(session);
   assertScriptable(tab);
   const code = String(args.code == null ? "" : args.code);
   if (!code.trim()) throw new Error("browser.eval needs code");
@@ -1014,8 +1103,8 @@ function newSince(before, after) {
   return { grew: grew, text: t };
 }
 
-async function toolWait(args) {
-  const tab = await targetTab();
+async function toolWait(args, session) {
+  const tab = await targetTab(session);
   const want = String(args.text == null ? "" : args.text).trim().toLowerCase();
   const total = waitBudgetMs(args);
   const started = Date.now();
@@ -1046,8 +1135,8 @@ async function toolWait(args) {
                "to see the page as it is. Do not re-send what you already sent.");
 }
 
-async function toolScreenshot() {
-  let tab = await targetTab();
+async function toolScreenshot(session) {
+  let tab = await targetTab(session);
   // captureVisibleTab shoots whatever is visible in the window, so a non-active
   // target would silently return the wrong page.
   if (!tab.active) {

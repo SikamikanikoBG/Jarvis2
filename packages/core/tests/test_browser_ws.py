@@ -80,7 +80,9 @@ def test_browser_tools_register_roundtrip_and_survive_a_disconnect(client: TestC
                     break
         ext.send_text(json.dumps({"type": "browser.context", "url": "https://x.y/z", "title": "Zed"}))
         ext.send_text(json.dumps({"type": "ping"}))
-        assert json.loads(ext.receive_text())["type"] == "pong"
+        # The run that browsed has ended, so its work tab is released first; then the pong.
+        frames = [json.loads(ext.receive_text()) for _ in range(2)]
+        assert [f["type"] for f in frames] == ["browser.job_done", "pong"]
         assert client.core.browser.context["title"] == "Zed"  # type: ignore[attr-defined]
     # Disconnected: the provider says so honestly, and the TOOLS STAY.
     #
@@ -117,3 +119,31 @@ def test_health_is_open_without_token(tmp_path: Path):
     with TestClient(create_app(core.config, core=core)) as c:
         assert c.get("/api/health").status_code == 200
         assert c.get("/api/tools").status_code == 401
+
+
+def test_each_chat_browses_in_its_own_session_and_is_told_when_the_job_ends(client: TestClient):
+    """Two chats, two work tabs: the call says which chat it is for, and when that chat's run
+    ends the extension is told its tab has nothing left to do (2026-09-20, "they are competing
+    for the same tab")."""
+    with client.websocket_connect("/ws?client=browser") as ext:
+        ext.send_text(json.dumps(HELLO))
+        assert json.loads(ext.receive_text())["type"] == "browser.ready"
+        conv = client.post("/api/conversations", json={"title": "Проучване"}).json()
+
+        client.fake.push(  # type: ignore[attr-defined]
+            FakeTurn(tool_calls=[ToolCall(id="c1", name="browser.tabs", arguments={})]),
+            FakeTurn(text="two tabs"),
+        )
+        with client.websocket_connect("/ws") as ui:
+            ui.send_text(json.dumps({"type": "run.create", "conversation_id": conv["id"], "text": "погледни"}))
+            call = json.loads(ext.receive_text())
+            assert call["session"] == conv["id"], "the call carries the chat it belongs to"
+            ext.send_text(json.dumps({"type": "browser.result", "call_id": call["call_id"], "kind": "data", "text": "ok"}))
+            while True:
+                ev = json.loads(ui.receive_text())
+                if ev["type"] in {"run.done", "run.failed"}:
+                    assert ev["type"] == "run.done"
+                    break
+        # The run is over: the extension hears about it, for that chat only.
+        done = json.loads(ext.receive_text())
+        assert done == {"type": "browser.job_done", "session": conv["id"]}

@@ -111,6 +111,7 @@ class Core:
         # A reconnected MCP server re-lists itself; tell the UI so the tool list on Status is real.
         self.registry.on_change(lambda provider: self.bus.publish(ToolsChanged(provider=provider)))
 
+
         # Engine.
         self.context = ContextAssembler(
             self.store,
@@ -155,6 +156,9 @@ class Core:
             titler=self.titler.title,
             attachments=self.attachments,
         )
+        # A run that browsed is a job; when it ends, that chat's work tab has nothing left
+        # to do and the extension may let it go (tools/ws_provider.py).
+        self.engine.on_finished(lambda run: self.browser.job_done(run.conversation_id))
         self.scheduler = Scheduler(self.schedules, self._fire_schedule)
         self.reaper = Reaper(self)
 

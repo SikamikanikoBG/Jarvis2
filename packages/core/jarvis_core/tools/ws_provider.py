@@ -1,4 +1,12 @@
-"""The browser extension as a tool provider over the WebSocket (namespace ``browser``)."""
+"""The browser extension as a tool provider over the WebSocket (namespace ``browser``).
+
+Every call carries the **session** it is made from — the conversation id, which the engine puts
+in a ContextVar for the run (``engine/current.py``). The extension keeps one work tab per
+session, so two chats browsing at the same time no longer drive the same tab: before this,
+whichever ran second read whatever the first had just opened (2026-09-20, "they are competing
+for the same tab"). When a run ends, ``job_done`` tells the extension that session's job is over
+and the tab can go.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +18,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from jarvis_core.engine.current import current_conversation_id
 from jarvis_proto import ToolImage, ToolResult, ToolResultKind, ToolSpec, new_id
 
 log = logging.getLogger(__name__)
@@ -33,6 +42,8 @@ class WsProvider:
         self.changed_at: datetime | None = None
         self.added: list[str] = []
         self.removed: list[str] = []
+        #: Sessions that have used the browser and have not been told their job is over.
+        self._working: set[str] = set()
 
     @property
     def connected(self) -> bool:
@@ -64,9 +75,26 @@ class WsProvider:
         self.error = None
         return tools
 
+    async def job_done(self, session: str) -> None:
+        """That session's run has ended: its work tab has nothing left to do.
+
+        Only for a session that actually browsed — a chat that never opened a page must not make
+        the extension think about tabs at all. The extension decides what "go" means (it gives
+        the tab a few minutes in case the next turn carries on with the same page).
+        """
+        send = self._send
+        if send is None or session not in self._working:
+            return
+        self._working.discard(session)
+        try:
+            await send({"type": "browser.job_done", "session": session})
+        except Exception as exc:  # a closing socket is not worth failing a run for
+            log.debug("browser job_done not delivered: %s", exc)
+
     def disconnect(self) -> None:
         self._send = None
         self._tools = []
+        self._working.clear()
         self.error = "browser extension not connected"
         for fut in self._pending.values():
             if not fut.done():
@@ -111,10 +139,21 @@ class WsProvider:
         if send is None:
             return ToolResult.failure("browser extension not connected")
         call_id = new_id("bcall")
+        # Which chat this is for: its own work tab, never another session's.
+        session = current_conversation_id.get() or "default"
+        self._working.add(session)
         fut: asyncio.Future[ToolResult] = asyncio.get_running_loop().create_future()
         self._pending[call_id] = fut
         try:
-            await send({"type": "browser.call", "call_id": call_id, "name": name, "arguments": arguments})
+            await send(
+                {
+                    "type": "browser.call",
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": arguments,
+                    "session": session,
+                }
+            )
         except Exception as exc:
             self._pending.pop(call_id, None)
             return ToolResult.failure(f"browser send failed: {exc}")

@@ -122,7 +122,7 @@ export async function startMockCore({ port = 0, token = "t0k", host = "127.0.0.1
     events,
 
     /** Send browser.call and resolve with the browser.result frame. */
-    call(client, name, args = {}, { timeout = 5000 } = {}) {
+    call(client, name, args = {}, { timeout = 5000, session } = {}) {
       const call_id = "call_" + (nextCall++);
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
@@ -130,8 +130,15 @@ export async function startMockCore({ port = 0, token = "t0k", host = "127.0.0.1
           reject(new Error(`no browser.result for ${name} (${call_id}) within ${timeout}ms`));
         }, timeout);
         pending.set(call_id, { resolve, reject, timer });
-        client.ws.send(JSON.stringify({ type: "browser.call", call_id, name, arguments: args }));
+        const frame = { type: "browser.call", call_id, name, arguments: args };
+        if (session) frame.session = session; // which chat this is for (one work tab each)
+        client.ws.send(JSON.stringify(frame));
       });
+    },
+
+    /** Tell the extension a chat's run has ended: its work tab may go. */
+    jobDone(client, session) {
+      client.ws.send(JSON.stringify({ type: "browser.job_done", session }));
     },
 
     /** Resolve with the emitted arguments of the next matching event. */

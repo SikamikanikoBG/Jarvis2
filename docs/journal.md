@@ -1295,3 +1295,35 @@ Measured again, idle, warm cache: first token **1.00 s** (vLLM's own 777 ms), wh
 1.22 s. The turn is now about **2.5 s** from his last word to the first spoken one, against ~5.
 What is left is Whisper (~1 s on a 4.7 s clip) and the model's own prefill; the first call after a
 restart still pays a cold prefix (4 s), which is the next thing to take.
+
+## 2026-09-20 — a work tab per chat, and a tab that closes when the job is done (core 2.0.0a59, extension 2.2.0)
+
+"Each chat session must use its own working browser tab. Right now they are competing for the
+same tab when parallel chats use the browser… and close the working tab at the end of the job."
+
+Both halves were true. The extension kept ONE work tab, from the days when one chat browsed at a
+time (V1, 21 Aug: a tab per task left thirty tabs by evening). Worse, `targetTab()` preferred the
+**active** tab — which is right for co-browsing ("I opened it for you") and exactly wrong with two
+chats working: whichever opened a page last made it active, and the other chat then read and
+clicked in it.
+
+- **The call says whose it is.** `browser.call` now carries `session` — the conversation id, taken
+  from the ContextVar the engine sets for every run (`engine/current.py`, added for the sessions
+  feature two entries ago). An older core that sends none keeps the single shared tab it had.
+- **One work tab per session**, kept in `chrome.storage.session` as a map (the MV3 worker unloads
+  after ~30 s and a bare variable forgets everything). `browser.open` opens or reuses **this
+  chat's** tab, and only brings it to the front when it is created — with several chats browsing,
+  every `open` stealing the foreground made the browser flicker between their tabs.
+- **Co-browsing survives.** The active tab is still used first when it is the user's own or this
+  chat's; a tab that belongs to ANOTHER session is never a target. `browser.tabs` marks each one:
+  "this chat's work tab", "another chat's work tab — leave it alone".
+- **The job ends, the tab goes.** The engine gained an after-run hook; the core tells the
+  extension `browser.job_done` for a chat that actually browsed, and the extension closes that
+  tab after a **three-minute grace** (a follow-up turn a few seconds later still finds its page).
+  Any new call for that chat cancels the close. It refuses to close a tab the user is looking at
+  when the grace runs out — that tab is his now — and blanks rather than closes a window's last
+  tab.
+
+Three tests in the extension (two chats, two tabs, neither driving the other's; the grace and the
+close; a chat that browses again keeping its tab) and one in the core (the call carries the
+session, and `browser.job_done` follows the run). 88 extension tests, 149 core, 128 web.

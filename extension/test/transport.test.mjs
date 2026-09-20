@@ -117,7 +117,7 @@ test("browser.hello announces agent, version and exactly the tools in API.md", (
   assert.equal(hello.agent, "jarvis-extension");
   assert.equal(hello.version, "2.0.0-test");
   assert.deepEqual(hello.tools.map((t) => t.name), API_TOOLS);
-  assert.equal(MANIFEST.version, "2.1.0");
+  assert.equal(MANIFEST.version, "2.2.0");
 });
 
 test("every ToolSpec has a closed JSON Schema, a description and the agreed read_only flags", () => {
@@ -333,20 +333,74 @@ test("browser.open → navigates Jarvis's own work tab (created once), waits for
   const work = chrome._tabs.at(-1);
   assert.equal(work.url, SECOND);
   assert.equal(work.active, true);
-  assert.match(r.text, new RegExp(`^Opened Second page — ${SECOND} in a new Jarvis work tab \\[tab ${work.id}\\]\\.`));
-  assert.equal(chrome._session.workTabId, work.id);
+  assert.match(r.text, new RegExp(`^Opened Second page — ${SECOND} in a new work tab for this chat \\[tab ${work.id}\\]\\.`));
+  assert.equal(chrome._session.workTabs.default, work.id);
 
   // A second open reuses the same tab; the user's tab 7 is never touched.
   const again = await core.call(client, "browser.open", { url: ARTICLE });
   assert.equal(again.kind, "data", again.text);
   assert.equal(chrome._tabs.length, before + 1);
-  assert.match(again.text, /in the Jarvis work tab/);
+  assert.match(again.text, /in this chat's work tab/);
   assert.equal(chrome._tabs.find((t) => t.id === 7).url, ARTICLE);
 
   // Reading now hits the active tab — which is the work tab.
   const read = await core.call(client, "browser.read", { mode: "text" });
   assert.match(read.text, new RegExp(`^\\[tab ${work.id}\\]`));
   await chrome.tabs.update(7, { active: true });
+});
+
+// ── one work tab per chat ────────────────────────────────────────────────
+
+test("two chats browsing at once get a work tab each, and neither drives the other's", async () => {
+  const before = chrome._tabs.length;
+  const a = await core.call(client, "browser.open", { url: SECOND }, { session: "conv_a" });
+  const b = await core.call(client, "browser.open", { url: ARTICLE }, { session: "conv_b" });
+  assert.equal(a.kind, "data", a.text);
+  assert.equal(b.kind, "data", b.text);
+  assert.equal(chrome._tabs.length, before + 2, "one tab each, not one shared");
+  const tabA = chrome._session.workTabs.conv_a;
+  const tabB = chrome._session.workTabs.conv_b;
+  assert.notEqual(tabA, tabB);
+
+  // B's tab was created last and is the active one; A reading must still read A's page.
+  const readA = await core.call(client, "browser.read", { mode: "text" }, { session: "conv_a" });
+  assert.ok(readA.text.startsWith("[tab " + tabA + "]"), readA.text.slice(0, 80));
+  const readB = await core.call(client, "browser.read", { mode: "text" }, { session: "conv_b" });
+  assert.ok(readB.text.startsWith("[tab " + tabB + "]"), readB.text.slice(0, 80));
+
+  // Each is told which tab is its own, and to leave the other chat's alone.
+  const listed = await core.call(client, "browser.tabs", {}, { session: "conv_a" });
+  const lineOf = (id) => listed.text.split("\n").find((l) => l.startsWith("[tab " + id + "]")) || "";
+  assert.match(lineOf(tabA), /this chat's work tab/);
+  assert.match(lineOf(tabB), /another chat's work tab/);
+});
+
+test("when a chat's run ends its tab is closed, after a grace in case the next turn carries on", async () => {
+  const opened = await core.call(client, "browser.open", { url: SECOND }, { session: "conv_c" });
+  assert.equal(opened.kind, "data", opened.text);
+  const tabC = chrome._session.workTabs.conv_c;
+  assert.ok(chrome._tabs.some((t) => t.id === tabC));
+
+  core.jobDone(client, "conv_c");
+  await new Promise((r) => setTimeout(r, 40));
+  assert.ok(chrome._calls.alarms.some((x) => x.name === "closeWork:conv_c"), "the close was scheduled");
+  assert.ok(chrome._tabs.some((t) => t.id === tabC), "and the tab lives through the grace");
+
+  await chrome.tabs.update(7, { active: true }); // the user is looking at his own tab
+  chrome.alarms.onAlarm._fire({ name: "closeWork:conv_c" });
+  await new Promise((r) => setTimeout(r, 40));
+  assert.ok(!chrome._tabs.some((t) => t.id === tabC), "the job is over and the tab is gone");
+  assert.equal(chrome._session.workTabs.conv_c, undefined);
+});
+
+test("a chat that starts browsing again keeps its tab: the close is called off", async () => {
+  await core.call(client, "browser.open", { url: SECOND }, { session: "conv_d" });
+  const tabD = chrome._session.workTabs.conv_d;
+  core.jobDone(client, "conv_d");
+  await new Promise((r) => setTimeout(r, 40));
+  await core.call(client, "browser.read", { mode: "text" }, { session: "conv_d" });
+  assert.ok(chrome._calls.alarmClears.includes("closeWork:conv_d"), "the scheduled close was cleared");
+  assert.ok(chrome._tabs.some((t) => t.id === tabD));
 });
 
 test("browser.open without a scheme gets https, and a non-http scheme is refused", async () => {

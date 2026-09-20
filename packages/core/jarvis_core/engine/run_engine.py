@@ -91,6 +91,13 @@ class RunEngine:
         self._wake = asyncio.Event()
         self._dispatcher: asyncio.Task[None] | None = None
         self._stopping = False
+        #: Called after every run ends; see on_finished().
+        self._finished_hook: Callable[[Run], Awaitable[None]] | None = None
+
+    def on_finished(self, hook: Callable[[Run], Awaitable[None]] | None) -> None:
+        """Called after every run ends, whatever happened to it. The browser uses it to let a
+        session's work tab go (tools/ws_provider.job_done)."""
+        self._finished_hook = hook
 
     def set_titler(self, titler: Callable[[str, str], Awaitable[str | None]] | None) -> None:
         """Swap or disable the auto-titler (tests script every model turn and switch it off)."""
@@ -358,6 +365,11 @@ class RunEngine:
         await emitter.emit(RunFailed(run_id="", conversation_id="", error=error))
 
     async def _after_run(self, run: Run) -> None:
+        if self._finished_hook is not None:
+            try:
+                await self._finished_hook(run)
+            except Exception as exc:  # a hook is a courtesy; a run does not fail for it
+                log.warning("after-run hook failed: %s", exc)
         unread = run.status.terminal and not self._bus.has_subscribers(run.conversation_id)
         conv = (
             await self._store.update_conversation(run.conversation_id, unread=int(unread))

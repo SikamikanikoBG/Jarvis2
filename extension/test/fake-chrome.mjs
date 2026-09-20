@@ -56,7 +56,7 @@ export function makeChrome({ storage = {}, tabs = [], fixtures = {}, manifest = 
   const session = {};
   const pages = new Map();                 // tabId -> {url, ctx, dom, win, doc}
   const hang = new Set();                  // tab ids whose injections never settle
-  const calls = { executeScript: [], captures: 0, alarms: [], updates: [] };
+  const calls = { executeScript: [], captures: 0, alarms: [], alarmClears: [], updates: [] };
   const tabList = tabs.map((t) => ({ windowId: 1, active: false, ...t }));
   let nextTabId = Math.max(0, ...tabList.map((t) => t.id)) + 1;
 
@@ -96,6 +96,7 @@ export function makeChrome({ storage = {}, tabs = [], fixtures = {}, manifest = 
     storage: { local: storageArea(local), session: storageArea(session), onChanged: fakeEvent() },
     alarms: {
       create: (name, info) => calls.alarms.push({ name, info }),
+      clear: async (name) => { calls.alarmClears.push(name); return true; },
       onAlarm: fakeEvent(),
     },
     tabs: {
@@ -137,7 +138,16 @@ export function makeChrome({ storage = {}, tabs = [], fixtures = {}, manifest = 
         return "data:image/jpeg;base64," + Buffer.from("not really a jpeg, but long enough to look like one").toString("base64");
       },
     },
-    windows: { WINDOW_ID_NONE: -1, onFocusChanged: fakeEvent(), async update() { return {}; } },
+    windows: {
+      WINDOW_ID_NONE: -1,
+      onFocusChanged: fakeEvent(),
+      async update() { return {}; },
+      // The window holding the active tab, as Chrome reports it.
+      async getLastFocused() {
+        const active = tabList.find((t) => t.active) || tabList[0];
+        return { id: active ? active.windowId : 1, focused: true };
+      },
+    },
     scripting: {
       async executeScript({ target, func, args }) {
         calls.executeScript.push({ target, args });

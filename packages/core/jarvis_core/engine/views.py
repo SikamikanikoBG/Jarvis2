@@ -44,11 +44,12 @@ _INLINE_WIDTH = 100  # a nested value shown on its parent's line
 _TAIL_MIN_LINES = 8  # fewer outline lines than this and the outline is grouped into ranges instead
 _HEADING = re.compile(r"^(#{1,6})\s+(\S.*)$")
 _OPAQUE = re.compile(r"[0-9A-Fa-f_\-]{32,}")
+_ID_KEY = re.compile(r"(^|_)id$")  # id, entry_id, store_id, folder_id ...
 _MARKER = re.compile(r"\n?\[(@[^\s:\]]+): ([\d,]+) chars in (\d+) sections?; shown: [^\]]*\]$")
 _TITLE_KEYS = (
     "subject", "title", "name", "headline", "summary", "text", "path", "url", "from", "sender", "to",
     "received", "date", "modified", "start", "when", "size", "unread", "flagged", "kind", "type", "status",
-    "count", "total", "id", "entry_id",
+    "count", "total",
 )  # fmt: skip
 
 
@@ -339,29 +340,40 @@ def _preview(v: Any, width: int) -> str:
 
 
 def _title(item: Any, width: int = _LINE_WIDTH) -> str:
-    """The fields that say what an item IS, in a fixed preference order, as far as one line holds."""
-    if isinstance(item, dict):
-        keys = [k for k in _TITLE_KEYS if k in item] + [k for k in item if k not in _TITLE_KEYS]
-        parts: list[str] = []
-        used = 0
-        for k in keys:
-            v = item[k]
-            if isinstance(v, dict | list):
-                if not v:
-                    continue
-                s = f"{k}: [{len(v)}]" if isinstance(v, list) else f"{k}: {{{len(v)} fields}}"
-            elif v is None or v == "":
+    """The fields that say what an item IS, in a fixed preference order, as far as one line holds.
+
+    Ids stay out (the ref is the handle in a preview; the body has them, one read away), and a
+    string value contained in a longer one on the same line is dropped - the path says the name.
+    """
+    if not isinstance(item, dict):
+        return _preview(item, width)
+    keys = [k for k in _TITLE_KEYS if k in item] + [k for k in item if k not in _TITLE_KEYS]
+    parts: list[tuple[str, str | None]] = []  # (rendered, the string value it shows)
+    for k in keys:
+        v = item[k]
+        if _ID_KEY.search(k):
+            continue
+        if isinstance(v, dict | list):
+            if not v:
                 continue
-            else:
-                s = f"{k}: {_short(v, 60)}"
-            if used + len(s) + 2 > width:
-                if not parts:
-                    parts.append(s[: width - 1] + "…")
-                break
-            parts.append(s)
-            used += len(s) + 2
-        return ", ".join(parts) or "{}"
-    return _preview(item, width)
+            parts.append((f"{k}: [{len(v)}]" if isinstance(v, list) else f"{k}: {{{len(v)} fields}}", None))
+        elif v is None or v == "":
+            continue
+        else:
+            text = _short(v, 60)
+            if isinstance(v, str):
+                if any(t is not None and t != text and text in t for _, t in parts):
+                    continue  # already said by a longer value on this line
+                parts = [(r, t) for r, t in parts if t is None or t == text or t not in text]  # this one says them
+            parts.append((f"{k}: {text}", text if isinstance(v, str) else None))
+    line = ""
+    for i, (rendered, _) in enumerate(parts):
+        if len(line) + len(rendered) + (2 if line else 0) > width:
+            if i == 0:
+                line = rendered[: width - 1] + "…"
+            break
+        line = f"{line}, {rendered}" if line else rendered
+    return line or "{}"
 
 
 # --- rendering under a limit --------------------------------------------------------------

@@ -1380,3 +1380,18 @@ Where the aged head lost the fishing argument, the outline wins it: the model se
 (every folder's name, every mail's subject) and reads the one it needs by ref, instead of either
 paging blind or carrying 48k whole for the rest of the run. Twelve new tests (`test_views.py`);
 the admission/ageing/wall tests rewritten to the new marker; 305 core tests and 88 extension tests pass.
+
+Same day, after the first live run (core 2.0.0a61): asked for the count of his mail folders and
+the three largest, the model got the 43.7k-char `outlook_folders` as a view (`res 4,970` estimated
+tokens where the whole rode at ~21k before), read two ranges by ref and answered — correct, but two
+reads for a listing question is one too many. Previews were carrying dead weight: an `id: …010A0000`
+tail on every line (the ref is the handle in a preview; the body has the id) and the name repeated
+inside the path. Ids stay out of previews now, and a string contained in a longer one on the same
+line is dropped — the path says the name. The same 16k names 180 of 208 folders instead of 136.
+
+Found on the way, not fixed here: the extension reconnecting to the new core announced itself as
+**2.1.0**. Brave loads it unpacked from `R:\Projects\Jarvis2\extension`, so the files are 2.3.0, but
+the `browser.reload` the deploy sends has not made it re-read them since 2.1.0 (2.2.0 this morning
+went unnoticed the same way) — no reconnect follows the reload frame in the core log. Until it is
+reloaded by hand (brave://extensions), pages still arrive cut at 12k from the source and the
+per-chat work tabs are not live. Why `chrome.runtime.reload()` does not take is the next thing to look at.

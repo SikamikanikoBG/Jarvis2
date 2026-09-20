@@ -81,8 +81,10 @@ def test_a_json_list_becomes_items_with_the_common_values_hoisted_and_ids_shorte
     assert first.ref == "@m.1"
     assert first.title.startswith("subject: [JIRA] Ticket 1")
     assert "EF000001D6052F34" not in first.title, "the preview names the mail, not its ids"
-    ids = parse(json.dumps([{"id": f"{i:02d}" * 40, "n": i} for i in range(3)]), "@i")
-    assert ids.sections[0].title == "id: …00000000, n: 0", "an opaque id is shortened to its tail in a preview"
+    ids = parse(json.dumps([{"id": f"{i:02d}" * 40, "token": f"{i:02d}" * 40, "n": i} for i in range(3)]), "@i")
+    assert ids.sections[0].title == "token: …00000000, n: 0", (
+        "ids stay out of previews; other opaque values keep their tail"
+    )
     assert "entry_id: EF000001D6052F34B5DEEB489B9BAE577B57448AE4123601" in first.body, "...and whole in the body"
     assert "store_id" not in first.body, "hoisted, not repeated twelve times"
     # Compact and whole, it is a third shorter than the minified JSON - and fits where the raw did not.
@@ -115,7 +117,9 @@ def test_a_big_list_arrives_as_an_outline_and_ages_into_grouped_ranges():
     assert "@f: 301 sections (" in view and "— outline:" in view
     lines = [ln for ln in view.split("\n") if ln.startswith("@f.")]
     assert lines[0].startswith("@f.0 account: arsen@example.com")
-    assert lines[1].startswith("@f.1 name: Folder 0, path: Root/Area 0/Folder 0")
+    assert lines[1].startswith("@f.1 path: Root/Area 0/Folder 0, unread: 0, total: 0"), (
+        "the path says the name; kind is common"
+    )
     assert "more sections: @f." in view, "what did not fit is named, not dropped"
     small = render(doc, AGED_VIEW_CHARS)
     assert len(small) <= AGED_VIEW_CHARS + 120

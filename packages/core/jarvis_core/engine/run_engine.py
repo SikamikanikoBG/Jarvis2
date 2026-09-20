@@ -49,6 +49,10 @@ from jarvis_proto.events import (
 
 log = logging.getLogger(__name__)
 
+#: What may still start while a call is going: what Arsen types is his own business, and a
+#: system run is the machine keeping itself alive. Everything else waits for the call to end.
+_BESIDE_A_CALL = frozenset({RunKind.CHAT, RunKind.SYSTEM})
+
 _PRIORITY = {
     RunKind.CHAT: 0,
     RunKind.COLLAB: 1,
@@ -276,14 +280,31 @@ class RunEngine:
         heapq.heappush(self._heap, (run.priority, run.created_at.isoformat(), run.id))
         self._wake.set()
 
+    def on_a_call(self) -> bool:
+        """A voice run is executing: someone is holding a phone to their ear, waiting."""
+        return any(
+            ctl.emitter.run.channel is Channel.VOICE and not ctl.emitter.run.status.terminal
+            for _, ctl in self._active.values()
+        )
+
     async def _dispatch(self) -> None:
         while True:
             await self._wake.wait()
             self._wake.clear()
+            held: list[tuple[int, str, str]] = []
             while self._heap and self._running_count() < self._max and not self._stopping:
-                _p, _t, run_id = heapq.heappop(self._heap)
+                entry = heapq.heappop(self._heap)
+                _p, _t, run_id = entry
                 run = self._queued.pop(run_id, None)
                 if run is None:
+                    continue
+                # Nothing starts beside a call. The lanes are one engine on one pair of cards:
+                # a newsletter beginning its 60k-token prefill while Arsen is mid-sentence took
+                # the model's first word from 1 s to 4 s (measured 2026-09-20), and a call with a
+                # four-second gap in it is not a call. They wait; a call is over in minutes.
+                if run.channel is not Channel.VOICE and run.kind not in _BESIDE_A_CALL and self.on_a_call():
+                    self._queued[run_id] = run
+                    held.append(entry)
                     continue
                 resumed = bool(getattr(run, "_resumed", False))
                 ctl = RunControl(emitter=RunEmitter(run, self._store, self._bus), resumed=resumed)
@@ -291,6 +312,8 @@ class RunEngine:
                 self._active[run.id] = (task, ctl)
                 self._tasks.add(task)
                 task.add_done_callback(self._tasks.discard)
+            for entry in held:
+                heapq.heappush(self._heap, entry)
 
     async def _execute(self, run: Run, ctl: RunControl) -> None:
         emitter = ctl.emitter

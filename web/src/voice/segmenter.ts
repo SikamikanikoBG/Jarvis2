@@ -17,7 +17,10 @@ export interface SegmenterOptions {
   /** The floor listens for this long before anything may count as speech: the first frames of
    *  a café are the café, not a voice. */
   warmupMs: number;
-  /** Silence must hold this long before the utterance is closed (a pause for breath is not the end). */
+  /** Silence must hold this long before the utterance is closed (a pause for breath is not the end).
+   *  500 ms since 2026-09-20: it was 750, and the quarter second was pure waiting on every turn.
+   *  A sentence he carries on with after the close is no longer a lost turn — the words that
+   *  follow join the run as a steer, which the core was taught to take even on its last step. */
   releaseMs: number;
   /** Silence this long is reported as a `pause` — maybe the end, maybe a breath — so the words
    *  so far can be recognised while the release is still being waited out. */
@@ -33,7 +36,7 @@ export const DEFAULT_SEGMENTER: SegmenterOptions = {
   minLevel: 0.012,
   attackMs: 200,
   warmupMs: 600,
-  releaseMs: 750,
+  releaseMs: 500,
   pauseMs: 250,
   minUtteranceMs: 400,
   maxUtteranceMs: 30_000,

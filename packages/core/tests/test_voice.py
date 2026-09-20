@@ -8,6 +8,7 @@ plan, it does not think, and a cut-in that arrives late becomes a voice run of i
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -18,8 +19,10 @@ from jarvis_core.app import Core, create_app
 from jarvis_core.config import CoreConfig
 from jarvis_core.models.base import reset_endpoint_semaphores
 from jarvis_core.models.fake import FakeAdapter, FakeTurn
-from jarvis_proto import Channel, RoleName, ToolCall, VoiceSettings
+from jarvis_proto import Channel, RoleName, RunKind, ToolCall, VoiceSettings
 from tests.conftest import Harness
+
+BR = chr(10)
 
 
 async def test_a_voice_turn_is_spoken_on_both_sides_and_briefed_in_the_turn_context(harness: Harness):
@@ -110,6 +113,67 @@ async def test_a_call_never_plans_even_with_planning_on(harness: Harness):
     seen = await harness.wait_for(sub, "run.done", timeout=10)
     assert not any(e.type == "plan.created" for e in seen)
     assert len(harness.chat.calls) == 1
+
+
+async def test_a_call_does_not_stop_to_ask_which_skill_applies(harness: Harness):
+    """The skills index is looked at, never asked about: a model round trip before the answer is
+    a second of a person listening to silence (measured on the live core, 2026-09-20). A trigger
+    phrase that is literally in what he said still counts — that costs nothing."""
+    core = harness.core
+    (core.skills.dir / "reporting.md").write_text(
+        "---" + BR + "name: reporting" + BR + "description: how to write the weekly report"
+        + BR + "triggers: [weekly report]" + BR + "---" + BR + "Body.",
+        encoding="utf-8",
+    )
+    harness.chat.push(FakeTurn(text="Добре."))
+    conv = await core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await core.engine.create_run(
+        text="какво мислиш за плана на Румен за следващата седмица",  # no trigger phrase in it
+        conversation_id=conv.id,
+        channel=Channel.VOICE,
+    )
+    await harness.wait_for(sub, "run.done", timeout=10)
+    assert len(harness.chat.calls) == 1, "the detector asked the model on a call"
+
+    # Typed, the same sentence is worth the round trip.
+    harness.chat.push(FakeTurn(text='{"skills": []}'), FakeTurn(text="Добре."))
+    conv2 = await core.store.create_conversation()
+    sub2 = harness.subscribe(conv2.id)
+    await core.engine.create_run(text="какво мислиш за плана на Румен за следващата седмица", conversation_id=conv2.id)
+    await harness.wait_for(sub2, "run.done", timeout=10)
+    assert len(harness.chat.calls) == 3
+
+
+async def test_nothing_starts_beside_a_call_except_what_he_types(harness: Harness):
+    """The lanes are one engine on one pair of cards. A scheduled run beginning its prefill while
+    Arsen is mid-sentence took the model's first word from 1 s to 4 s (measured 2026-09-20), so a
+    call holds the queue: schedules wait for it to end, typing does not."""
+    core = harness.core
+    harness.chat.push(
+        FakeTurn(text="one two three four five six", token_delay_s=0.05),  # the call, still speaking
+        FakeTurn(text="typed answer"),
+        FakeTurn(text="the newsletter"),
+    )
+    call_conv = await core.store.create_conversation()
+    sub = harness.subscribe(call_conv.id)
+    await core.engine.create_run(text="здравей", conversation_id=call_conv.id, channel=Channel.VOICE)
+    async with asyncio.timeout(10):
+        while not harness.chat.calls:
+            await asyncio.sleep(0.01)
+
+    typed = await core.store.create_conversation()
+    sched = await core.store.create_conversation()
+    await core.engine.create_run(text="а това написах", conversation_id=typed.id)
+    scheduled, _ = await core.engine.create_run(text="бюлетинът", conversation_id=sched.id, kind=RunKind.SCHEDULED)
+    await asyncio.sleep(0.15)
+    assert len(harness.chat.calls) == 2, "what he types runs beside the call"
+    assert scheduled.id not in core.engine.active_run_ids(), "the schedule waited"
+
+    await harness.wait_for(sub, "run.done", timeout=10)
+    sched_sub = harness.subscribe(sched.id)
+    await harness.wait_for(sched_sub, "run.done", timeout=10)
+    assert len(harness.chat.calls) == 3, "and started once the call was over"
 
 
 async def test_voice_think_setting_lets_a_call_reason_when_asked(harness: Harness):

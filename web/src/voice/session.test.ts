@@ -41,8 +41,12 @@ class FakeListener implements Listener {
 /** A speaker that finishes when the test says so. */
 class FakeSpeaker implements Speaker {
   spoken: { text: string; lang: string }[] = [];
+  prepared: string[] = [];
   cancelled = 0;
   private pending: (() => void)[] = [];
+  prepare(text: string): void {
+    this.prepared.push(text);
+  }
   available(): boolean {
     return true;
   }
@@ -233,6 +237,38 @@ describe('CallSession', () => {
     expect(t.speaker.spoken.map((s) => s.text).slice(-2)).toEqual(['Разбрах.', 'Ще го направя.']);
     // "И" — the half-sentence written before the cut — was never said.
     expect(t.speaker.spoken.some((s) => s.text === 'И')).toBe(false);
+  });
+
+  it('the voice of the first sentences is fetched while the model is still writing', async () => {
+    const t = build();
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    t.session.onRunQueued('r1', 'c1');
+    // Mid-step: nothing may be SAID yet (the step could still turn out to be tool calls), but
+    // the synthesis of what is already written need not wait for it.
+    t.session.onDelta('r1', 'Готово. Всичко мина. И още');
+    expect(t.speaker.prepared).toEqual(['Готово.', 'Всичко мина.']);
+    expect(t.speaker.spoken).toEqual([]);
+    t.session.onStepDone('r1', false);
+    await tick();
+    expect(t.speaker.spoken.map((s) => s.text)).toEqual(['Готово.']);
+  });
+
+  it('a step that was a plan prepares a voice nobody hears, and says nothing', async () => {
+    const t = build();
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    t.session.onRunQueued('r1', 'c1');
+    t.session.onDelta('r1', 'Трябва да проверя календара. Нека погледна.');
+    t.session.onStepDone('r1', true); // tool calls: that was the plan, not the reply
+    await tick();
+    expect(t.speaker.spoken).toEqual([]);
+    // ...and the next step starts its prefetch afresh (a sentence is only sure once something
+    // follows it, which is why the splitter holds the last one until the step ends).
+    t.session.onDelta('r1', 'Утре в девет. И');
+    expect(t.speaker.prepared.at(-1)).toBe('Утре в девет.');
   });
 
   it('a cut-in that comes to nothing lets him finish what he was saying', async () => {

@@ -11,12 +11,17 @@
 # the process was gone; -RestartCount does not help, because start-host.ps1 detaches the daemon
 # and exits 0, so the task always "succeeded". Nothing noticed for four and a half hours, and
 # the 07:20 news digest could not send: no Outlook, no files, no shell, on this machine.
+#
+# The action runs through start-host-hidden.vbs (wscript, no window) because a bare powershell.exe
+# action flashes a console for a few hundred ms on every firing, even with -WindowStyle Hidden.
+# The VBS just relaunches the same script, hidden.
 param([switch]$Remove)
 
 $ErrorActionPreference = 'Stop'
 $taskName = 'JarvisHost'
 $repo = Split-Path -Parent $PSScriptRoot
 $script = Join-Path $PSScriptRoot 'start-host.ps1'
+$hiddenLauncher = Join-Path $PSScriptRoot 'start-host-hidden.vbs'
 $everyMinutes = 5
 
 if ($Remove) {
@@ -30,9 +35,11 @@ if ($Remove) {
 }
 
 if (-not (Test-Path $script)) { throw "missing $script" }
+if (-not (Test-Path $hiddenLauncher)) { throw "missing $hiddenLauncher" }
 
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script`"" `
+# wscript never creates a console, so the hidden powershell it starts never flashes one.
+$action = New-ScheduledTaskAction -Execute 'wscript.exe' `
+    -Argument "`"$hiddenLauncher`"" `
     -WorkingDirectory $repo
 $atLogon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 # Start 40s after logon: Outlook and Tailscale want to be up first.
@@ -52,7 +59,7 @@ $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" 
 
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($atLogon, $watchdog) `
     -Settings $settings -Principal $principal -Force `
-    -Description "Keeps jarvis-host (Jarvis V2 Outlook/files/shell/screen MCP server) running: at logon and every $everyMinutes minutes." | Out-Null
+    -Description "Keeps jarvis-host (Jarvis V2 Outlook/files/shell/screen MCP server) running: at logon and every $everyMinutes minutes, via a windowless wscript launcher." | Out-Null
 
 Write-Host "registered '$taskName' - jarvis-host starts 40s after each logon, and is restarted within $everyMinutes min if it dies"
 Write-Host "  run now:  Start-ScheduledTask -TaskName $taskName"

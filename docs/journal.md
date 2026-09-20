@@ -1254,3 +1254,44 @@ with a TypeError (fixed, with a test); and of 259 conversations most are a sched
 chat named after its date, so the list offers plain chats and collab chats by name — 19 of them —
 while any other can still be addressed by handle or id. A chat created WITH a name now keeps it:
 the titler renamed "Тест сесия Б" after its first run and its handle moved under it.
+
+## 2026-09-20 — the four seconds before he says anything (core 2.0.0a58, web alpha.35)
+
+"Still not feeling like a regular human call… probably was not developed till the end." So the
+turn was measured instead of guessed, on the live core, stage by stage — and the answer was not
+where the last two days of work had been:
+
+| between his last word and the first spoken one | was |
+|---|---|
+| release: silence long enough to be the end | 750 ms |
+| Whisper large-v3 (overlapped from the pause) | ~1,050 ms |
+| **Jarvis, before the request reaches the model** | **~1,050 ms** |
+| vLLM's own time to first token | ~1,055 ms |
+| the rest of the reply, because nothing is spoken until the step ends | 300–500 ms |
+| OmniVoice, 16 steps | ~1,050 ms |
+| | **≈ 5 s** |
+
+Four cuts, each measured after:
+
+1. **The skills detector was asking the model on every turn.** A trigger phrase literally present
+   costs nothing; when none is, it spends a whole round trip on the classifier asking which skill
+   applies — before the answer has begun. The planner was already skipped on a call for exactly
+   this reason (a call is a conversation, not a plan); the detector now is too: it may look, it
+   may not ask. Core time before the model: **1,050 ms → ~220 ms**.
+2. **The voice is fetched while the model is still writing.** The words still wait for the step to
+   end (a step that turns out to be tool calls wrote a plan, not a reply — 2026-09-16), but the
+   *synthesis* of the first two sentences starts on the first delta. A second of OmniVoice moves
+   out of the silence and into the time the model is still typing. Nothing said changes.
+3. **Release 750 → 500 ms.** The quarter second was pure waiting; a sentence he carries on with
+   after the close is no longer a lost turn, because the words that follow join the run as a steer
+   (which the core learned to take even on its last step, 2026-09-19).
+4. **Nothing starts beside a call.** The lanes are one engine on one pair of cards, and
+   `run_routing` sends scheduled runs to the chat lane. A newsletter starting its prefill mid
+   sentence took the model's first word from 1.0 s to 4.0 s — measured, twice. The dispatcher now
+   holds every queued run that is not a call and not something Arsen typed until the call ends;
+   they start the moment it does.
+
+Measured again, idle, warm cache: first token **1.00 s** (vLLM's own 777 ms), whole short reply
+1.22 s. The turn is now about **2.5 s** from his last word to the first spoken one, against ~5.
+What is left is Whisper (~1 s on a 4.7 s clip) and the model's own prefill; the first call after a
+restart still pays a cold prefix (4 s), which is the next thing to take.

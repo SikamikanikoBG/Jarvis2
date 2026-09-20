@@ -216,7 +216,9 @@ class AgentLoop:
             )
         elif wants_skills:
             assert self._skills is not None
-            skill_names = await self._skills.detect(run.input_text)
+            # On a call the detector may look, but not ask: a model round trip here is a second
+            # of silence on the line before the answer has even begun (2026-09-20).
+            skill_names = await self._skills.detect(run.input_text, allow_model=not voice)
         elif wants_tier:
             assert self._planner is not None
             pre = await self._planner.preflight(run.input_text)

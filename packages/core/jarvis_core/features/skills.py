@@ -190,7 +190,13 @@ class SkillDetector:
         self.store = store
         self._classifier = classifier  # Callable[[], ModelAdapter]
 
-    async def detect(self, message: str) -> list[str]:
+    async def detect(self, message: str, *, allow_model: bool = True) -> list[str]:
+        """``allow_model=False`` keeps the free half only: a trigger phrase that is literally there.
+
+        The paid half is a whole model round trip before the real answer begins — measured at
+        about a second on a call (2026-09-20), which is a second of a human being listening to
+        silence. The planner was already skipped on a call for the same reason.
+        """
         skills = [s for s in await self.store.list() if s.enabled]
         if not skills or len(message.strip()) < 8:
             return []
@@ -199,6 +205,8 @@ class SkillDetector:
         structural = [s.name for s in skills if any(t.lower() in lowered for t in s.triggers if len(t) >= 4)]
         if structural:
             return structural[:2]
+        if not allow_model:
+            return []
         index = "\n".join(f"- {s.name}: {s.description or '(no description)'}" for s in skills)
         prompt = _DETECT_PROMPT.format(index=index, message=message[:1500])
         try:

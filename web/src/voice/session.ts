@@ -19,6 +19,10 @@ export type CallPhase = 'idle' | 'connecting' | 'listening' | 'transcribing' | '
 /** However he pauses, what was recognised is sent no later than this after its first words. */
 const JOIN_DEADLINE_MS = 1500;
 
+/** How many sentences of a reply have their voice fetched while the model is still writing.
+ *  Two: the one he will hear first, and the one that must be ready when it ends. */
+const PREFETCH_SENTENCES = 2;
+
 /** What the model is told when he talked over its answer: what he heard, and not to say it again. */
 const CUT_NOTE = (heard: number, total: number) =>
   `[The user cut you off: of your ${total} sentences he heard only the first ${heard}. Do not repeat what follows them — answer what he says now.]`;
@@ -186,6 +190,10 @@ export class CallSession {
   private replyLang: string | null = null;
   /** The current step's words, held until the step ends (see `onDelta`). */
   private stepText = '';
+  /** A second splitter, reading the step as it is written, purely to start fetching the voice
+   *  for a sentence before the step is known to be an answer. Nothing it produces is spoken. */
+  private preview = new SentenceSplitter();
+  private prefetched = 0;
 
   constructor(private readonly o: SessionOptions) {
     this.conversationId = o.conversationId;
@@ -410,12 +418,26 @@ export class CallSession {
   onDelta(runId: string, text: string): void {
     if (runId !== this.state.runId || this.state.phase === 'ended') return;
     this.stepText += text;
+    // The words are still held until the step ends — a step that turns out to be tool calls has
+    // written a plan, not a reply. But the VOICE for the first sentences can be fetched now, so
+    // that when the step does end there is nothing left to wait for: a second of synthesis moves
+    // out of the silence and into the time the model is still writing (2026-09-20).
+    if (this.prefetched >= PREFETCH_SENTENCES) return;
+    for (const sentence of this.preview.push(text)) {
+      const clean = speakable(sentence);
+      if (!clean) continue;
+      this.prefetched += 1;
+      this.o.speaker.prepare?.(clean, scriptLanguage(clean, this.o.language));
+      if (this.prefetched >= PREFETCH_SENTENCES) break;
+    }
   }
 
   onStepDone(runId: string, endedInToolCalls: boolean): void {
     if (runId !== this.state.runId || this.state.phase === 'ended') return;
     const text = this.stepText;
     this.stepText = '';
+    this.preview = new SentenceSplitter();
+    this.prefetched = 0;
     if (endedInToolCalls || !text) return;
     for (const sentence of this.splitter.push(text)) this.enqueue(sentence);
     const rest = this.splitter.flush();

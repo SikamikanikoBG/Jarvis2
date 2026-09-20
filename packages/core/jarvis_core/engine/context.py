@@ -551,3 +551,23 @@ class BrowserBlock:
         if run.kind is not RunKind.CHAT:
             return None
         return self._browser.context_block()  # type: ignore[attr-defined]
+
+
+class SessionsBlock:
+    """Who @name means, but only on a turn that says @something.
+
+    Arsen addresses another chat the way he addresses anyone — "@домо питай ги кога е
+    събранието". The model can find the handles with sessions.list, but that is a round trip for
+    something he has already written down, so the handles ride with the turn that mentions one.
+    Only then: the block is per-turn context and the ninety-nine turns with no @ in them must not
+    pay for it (the same rule as VoiceBlock).
+    """
+
+    def __init__(self, sessions: object) -> None:
+        self._sessions = sessions
+
+    async def context_block(self, run: Run, *, skill_names: list[str]) -> str | None:
+        if "@" not in run.input_text:
+            return None
+        listed = await self._sessions.handles_block(exclude=run.conversation_id)  # type: ignore[attr-defined]
+        return f"## Sessions you can address{chr(10)}{listed}" if listed else None

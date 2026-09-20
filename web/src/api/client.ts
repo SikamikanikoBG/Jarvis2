@@ -24,6 +24,7 @@ import type {
   ScheduleFire,
   ScheduleRunResponse,
   ServerEvent,
+  SessionRef,
   Settings,
   Skill,
   SkillContent,
@@ -266,6 +267,10 @@ export const api = {
   settings: {
     get: () => request<Settings>('GET', '/api/settings'),
     patch: (body: Partial<Settings>) => request<Settings>('PATCH', '/api/settings', body),
+  },
+  /** The chats as addressable sessions, with the @handle the core derives from each title. */
+  sessions: {
+    list: () => request<SessionRef[]>('GET', '/api/sessions'),
   },
   tools: {
     list: () => request<ToolSpec[]>('GET', '/api/tools'),

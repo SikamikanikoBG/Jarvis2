@@ -9,9 +9,12 @@ import { THINK_CHOICES, THINK_DEFAULT, thinkChoiceKey } from '../lib/think';
 import { selectIncognitoNow, selectSendRefusal } from '../store/selectors';
 import { NEW_CONVERSATION_KEY } from '../store/state';
 import { useStore } from '../store/store';
+import { mentionAt, type MentionQuery } from '../lib/mentions';
+import type { SessionRef } from '../protocol/types';
 import { PendingAttachments } from './Attachments';
 import { CameraDialog } from './CameraDialog';
 import { RecorderDialog } from './RecorderDialog';
+import { MentionMenu } from './MentionMenu';
 import { MicButton } from './MicButton';
 
 /** Pasted text longer than this becomes an attachment instead of filling the input. */
@@ -39,6 +42,11 @@ export function Composer({ runActive, stopping }: Props) {
   const sendEdit = useStore((s) => s.sendEdit);
   const [text, setText] = useState('');
   const ref = useRef<HTMLTextAreaElement>(null);
+  // Sessions: "@" offers Jarvis's other chats by the handle the core derives from their titles.
+  const sessions = useStore((s) => s.sessions);
+  const loadSessions = useStore((s) => s.loadSessions);
+  const openConversationId = useStore((s) => s.openConversationId);
+  const [mention, setMention] = useState<MentionQuery | null>(null);
   const pending = useStore((s) => s.pendingAttachments);
   const uploading = useStore((s) => s.uploadingAttachments);
   const attachFiles = useStore((s) => s.attachFiles);
@@ -157,6 +165,28 @@ export function Composer({ runActive, stopping }: Props) {
       e.preventDefault();
       submit();
     }
+  };
+
+  /** What is being typed after an "@", so the menu can offer the sessions that match. */
+  const trackMention = (el: HTMLTextAreaElement) => {
+    const q = mentionAt(el.value, el.selectionStart ?? el.value.length);
+    setMention(q);
+    if (q && sessions.length === 0) void loadSessions();
+  };
+
+  /** Complete the half-typed handle in place, and leave a space to go on writing. */
+  const completeMention = (s: SessionRef) => {
+    if (!mention) return;
+    const el = ref.current;
+    const caret = el?.selectionStart ?? text.length;
+    const next = `${text.slice(0, mention.at)}@${s.handle} ${text.slice(caret)}`;
+    setMention(null);
+    setText(next);
+    requestAnimationFrame(() => {
+      const at = mention.at + s.handle.length + 2;
+      el?.focus();
+      el?.setSelectionRange(at, at);
+    });
   };
 
   // The same rule the store enforces, so the button and the Enter key agree about what is sendable.
@@ -307,11 +337,25 @@ export function Composer({ runActive, stopping }: Props) {
             ]}
           />
         )}
+        {mention && (
+          <MentionMenu
+            sessions={sessions}
+            query={mention}
+            exclude={openConversationId}
+            onPick={completeMention}
+            onClose={() => setMention(null)}
+          />
+        )}
         <textarea
           ref={ref}
           rows={1}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            trackMention(e.currentTarget);
+          }}
+          onSelect={(e) => trackMention(e.currentTarget)}
+          onBlur={() => setMention(null)}
           onKeyDown={onKey}
           onPaste={onPaste}
           placeholder={runActive ? 'Jarvis is working — say more and he will read it' : 'Message Jarvis'}

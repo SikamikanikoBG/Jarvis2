@@ -1004,7 +1004,7 @@ async def test_a_step_that_reads_more_than_the_window_holds_is_cut_to_fit(harnes
 
     tools._entries["test.echo"].fn = read
     # A lane whose window, after the 16k default answer, holds ~3.6k tokens of prompt.
-    async def small_window(kind=None):  # noqa: ANN001
+    async def small_window(kind=None):
         return 20_000
 
     harness.core.loop._windows = small_window

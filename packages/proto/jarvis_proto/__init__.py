@@ -7,6 +7,7 @@ these pydantic models. The web client's TypeScript types are generated from them
 
 from jarvis_proto.events import (
     ClientMessage,
+    ContextBreakdown,
     ConversationDeleted,
     ConversationUpdated,
     FoldersChanged,
@@ -14,7 +15,6 @@ from jarvis_proto.events import (
     GuardConsumed,
     JudgeVerdict,
     MessageCreated,
-    ContextBreakdown,
     ModelCall,
     ModelDelta,
     ModelDone,
@@ -103,6 +103,7 @@ from jarvis_proto.settings import (
     Personality,
     Provider,
     RoleName,
+    SessionsSettings,
     Settings,
     TriageAlert,
     TriageRules,
@@ -113,6 +114,7 @@ from jarvis_proto.tools import ToolSpec
 
 __all__ = [
     "INCOGNITO_TITLE",
+    "LANES",
     "TTL_CHOICES",
     "Attachment",
     "AttachmentKind",
@@ -122,6 +124,7 @@ __all__ = [
     "ClientMessage",
     "CollabKey",
     "Confirmations",
+    "ContextBreakdown",
     "Conversation",
     "ConversationActivity",
     "ConversationDeleted",
@@ -143,7 +146,6 @@ __all__ = [
     "MeetingRsvpSettings",
     "Message",
     "MessageCreated",
-    "ContextBreakdown",
     "ModelCall",
     "ModelDelta",
     "ModelDone",
@@ -160,7 +162,6 @@ __all__ = [
     "Pong",
     "Provider",
     "Role",
-    "LANES",
     "RoleName",
     "RsvpDecision",
     "RsvpState",
@@ -185,6 +186,7 @@ __all__ = [
     "ScheduleFire",
     "SearchHit",
     "ServerEvent",
+    "SessionsSettings",
     "Settings",
     "Skill",
     "Subscribe",

@@ -105,6 +105,11 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     label: 'Meeting auto-RSVP',
     keywords: ['calendar', 'accept', 'decline', 'cancelled meetings', 'invite'],
   },
+  {
+    id: 'settings-sessions',
+    label: 'Sessions',
+    keywords: ['@', 'handle', 'mention', 'chats talking', 'another chat', 'wake', 'chain', 'hops'],
+  },
   { id: 'settings-collab', label: 'Collaborators', keywords: ['key', 'invite', 'access', 'mcp'] },
   {
     id: 'settings-routing',

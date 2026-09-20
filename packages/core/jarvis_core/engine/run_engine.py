@@ -18,6 +18,7 @@ from typing import Any
 from jarvis_core.db import Store
 from jarvis_core.engine.bus import EventBus
 from jarvis_core.engine.control import RunCancelledError, RunControl
+from jarvis_core.engine.current import current_conversation_id, current_run_id
 from jarvis_core.engine.emit import RunEmitter
 from jarvis_core.engine.loop import AgentLoop
 from jarvis_core.models.base import ModelError
@@ -254,6 +255,14 @@ class RunEngine:
     def active_run_ids(self) -> list[str]:
         return list(self._active)
 
+    def working_run_in(self, conversation_id: str) -> str | None:
+        """The run working in that conversation right now, if any — what tells a message to it
+        whether to join what is happening (a steer) or to start it (a new run)."""
+        for run_id, (_, ctl) in self._active.items():
+            if ctl.emitter.run.conversation_id == conversation_id and not ctl.emitter.run.status.terminal:
+                return run_id
+        return None
+
     def queued_count(self) -> int:
         return len(self._queued)
 
@@ -287,6 +296,9 @@ class RunEngine:
         emitter = ctl.emitter
         # Every model call made by this task — and by tasks it spawns — is routed to the run's lane.
         current_run_kind.set(run.kind)
+        # ...and every tool it calls can tell where it is standing (engine/current.py).
+        current_run_id.set(run.id)
+        current_conversation_id.set(run.conversation_id)
         try:
             await self._loop.run(run, ctl)
         except RunCancelledError as exc:

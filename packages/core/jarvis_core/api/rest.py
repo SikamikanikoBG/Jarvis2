@@ -11,6 +11,7 @@ from pydantic import BaseModel, ValidationError
 from jarvis_core import __version__
 from jarvis_core.api.deps import core_of, require_token
 from jarvis_core.features.expiry import valid_ttl
+from jarvis_core.features.sessions import ADDRESSABLE_KINDS, describe, handles_for
 from jarvis_proto import (
     INCOGNITO_TITLE,
     ChatFolder,
@@ -112,6 +113,11 @@ async def create_conversation(request: Request, body: ConversationCreate) -> Con
     conv = await core.store.create_conversation(
         kind=body.kind, title=title, incognito=body.incognito, ttl_seconds=body.ttl_seconds
     )
+    # A chat created WITH a name was named by whoever created it; the titler must leave it alone,
+    # as it does after a rename. Found by the session handles, which are made from titles: a chat
+    # called "Тест сесия Б" answered to @тест-сесия-б until its first run renamed it (2026-09-19).
+    if title not in {"New chat", INCOGNITO_TITLE}:
+        conv = await core.store.update_conversation(conv.id, title_auto=0) or conv
     core.bus.publish(ConversationUpdated(conversation=conv))
     return conv
 
@@ -330,6 +336,22 @@ async def get_run(request: Request, run_id: str) -> Run:
 @router.get("/runs/{run_id}/events")
 async def list_run_events(request: Request, run_id: str, after: int = 0) -> list[dict[str, Any]]:
     return await core_of(request).store.list_events(run_id, after_seq=after)
+
+
+# --- sessions ----------------------------------------------------------------------
+
+
+@router.get("/sessions")
+async def list_sessions(request: Request) -> list[dict[str, Any]]:
+    """The chats as addressable sessions: the @handle each answers to (features/sessions.py).
+
+    The handle is derived from the title, so the composer's @ list and the model's own
+    sessions.list must never compute it twice in two languages — the core says what it is.
+    """
+    core = core_of(request)
+    convs = [c for c in await core.store.list_conversations() if not c.incognito and c.kind in ADDRESSABLE_KINDS]
+    handles = handles_for(convs)
+    return [describe(c, handles[c.id]) for c in convs]
 
 
 # --- settings / tools --------------------------------------------------------------

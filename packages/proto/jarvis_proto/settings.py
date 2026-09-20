@@ -482,6 +482,22 @@ class VoiceSettings(BaseModel):
         return self.omnivoice_voices.get(short) or self.omnivoice_voices.get("en")
 
 
+class SessionsSettings(BaseModel):
+    """One chat writing to another (features/sessions.py).
+
+    Every conversation is a session with an @handle made from its title; `sessions.say` wakes an
+    idle one and joins a working one. Only ever at Arsen's asking — the guards here are for the
+    one thing a feature like this owes an answer for: two of Jarvis's own chats talking to each
+    other for ever.
+    """
+
+    enabled: bool = True
+    #: How many sessions one message may pass through. 2 = A asks B, B may ask C, and there it ends.
+    max_hops: int = 2
+    #: How long `sessions.say` waits for the other session's reply before saying "still working".
+    reply_timeout_s: int = 180
+
+
 class Settings(BaseModel):
     assistant_name: str = "Jarvis"
     user_name: str = "Arsen"
@@ -565,6 +581,7 @@ class Settings(BaseModel):
     triage: TriageSettings = Field(default_factory=TriageSettings)
     rsvp: MeetingRsvpSettings = Field(default_factory=MeetingRsvpSettings)
     voice: VoiceSettings = Field(default_factory=VoiceSettings)
+    sessions: SessionsSettings = Field(default_factory=SessionsSettings)
     # The address people actually reach this core on (e.g. the Tailscale Serve HTTPS URL).
     # Used for pairing/QR; without it the URL is derived from the request. The phone's mic and
     # the PWA need a secure context, so this is normally an https:// URL.

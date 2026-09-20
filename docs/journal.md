@@ -1216,3 +1216,41 @@ They play on the microphone's own AudioContext — the call's route, inside the 
 and each one hushes the microphone while it sounds, so a beep is never heard as a word.
 
 121 web tests, 133 core tests.
+
+## 2026-09-19 — a chat can talk to a chat (core 2.0.0a57, proto a22, web alpha.34)
+
+"Искам Джарвис да може да си говори и синква с други активни сесии… да излиства активните
+сесии и да си пише с @името" — the thing Claude Code does with its own sessions. A session here
+is a **chat**: its own history, its own persona, its own idea of what is going on. Until today
+they were sealed from each other and Arsen was the transport.
+
+- **A handle is the title, slugged.** "Домо — етажна собственост" is `@домо-етажна-собственост`
+  and answers to `@домо` while no other chat starts that way; two of one name are told apart
+  oldest-first (`домо`, `домо-2`). Nothing is stored — the handle IS the title, so a rename
+  renames the session and there is no second name to drift. An ambiguous `@дом` is refused with
+  the candidates rather than guessed.
+- **Three tools** (`features/sessions.py`): `sessions.list` (who is there, and which of them is
+  working right now), `sessions.read` (the last messages of one, waking nothing), `sessions.say`
+  (into another chat — a **steer** if a run is working there, a new run if it is idle, which is
+  what "може да не е активна, но другата да я събуди" means). With `wait` it brings that
+  session's reply back as the tool's result.
+- **Only when Arsen says so.** His decision: Jarvis does not strike up conversations with
+  itself. The tool says so, and every message lands visibly in both transcripts as
+  `[@отсреща] …`.
+- **The loop a feature like this owes an answer for.** A message carries the chain of
+  conversations it has passed through (a ContextVar the engine sets per run, `engine/current.py`);
+  a session already in the chain cannot be written to again, and the chain stops at
+  `settings.sessions.max_hops` (2). Settings → Sessions has the switch, the chain limit and how
+  long a reply is waited for.
+- **Incognito is not a session.** Never listed, never read, never written to.
+- **The web half**: `@` in the composer opens a menu of the chats (handles come from the core —
+  `GET /api/sessions` — so the two ends never slug a title differently), Enter or Tab completes.
+  A turn whose text contains an `@` carries the handles as per-turn context, so the model knows
+  what `@домо` means without a round trip; the other ninety-nine turns pay nothing.
+
+Two things the live core taught that the tests could not: conversations imported from V1 carry
+**naive timestamps**, and sorting them beside today's aware ones took the whole session list down
+with a TypeError (fixed, with a test); and of 259 conversations most are a scheduled run's own
+chat named after its date, so the list offers plain chats and collab chats by name — 19 of them —
+while any other can still be addressed by handle or id. A chat created WITH a name now keeps it:
+the titler renamed "Тест сесия Б" after its first run and its handle moved under it.

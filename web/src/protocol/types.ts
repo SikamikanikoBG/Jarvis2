@@ -364,6 +364,24 @@ export interface VoiceSettings {
   omnivoice_steps: number;
 }
 
+/** One chat writing to another: the guards, since Jarvis only does it when Arsen asks. */
+export interface SessionsSettings {
+  enabled: boolean;
+  max_hops: number;
+  reply_timeout_s: number;
+}
+
+/** A chat as an addressable session: what "@handle" means (core: features/sessions.py). */
+export interface SessionRef {
+  conversation_id: string;
+  handle: string;
+  title: string;
+  activity: 'idle' | 'running' | 'waiting';
+  archived: boolean;
+  message_count: number;
+  updated_at: string;
+}
+
 export interface Settings {
   assistant_name: string;
   user_name: string;
@@ -394,6 +412,7 @@ export interface Settings {
   triage: TriageSettings;
   rsvp: MeetingRsvpSettings;
   voice: VoiceSettings;
+  sessions: SessionsSettings;
   /** The address people reach this core on; used for pairing/QR. Normally https. */
   public_url: string | null;
   stt_url: string | null;

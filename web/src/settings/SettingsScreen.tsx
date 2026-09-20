@@ -11,6 +11,7 @@ import { ConfirmationsSection, EmailSection } from './SafetySections';
 import { RsvpSection } from './RsvpSection';
 import { SettingsNav } from './SettingsNav';
 import { TriageSection } from './TriageSection';
+import { SessionsSection } from './SessionsSection';
 import { VoiceSection } from './VoiceSection';
 
 const PROVIDERS: Provider[] = ['ollama', 'vllm'];
@@ -203,6 +204,10 @@ export function SettingsScreen() {
 
         <div id="settings-voice" className="settings-anchor">
           <VoiceSection value={draft.voice} namespaces={namespaces} onChange={(v) => patch('voice', v)} error={errors.voice} />
+        </div>
+
+        <div id="settings-sessions" className="settings-anchor">
+          <SessionsSection value={draft.sessions} onChange={(v) => patch('sessions', v)} error={errors.sessions} />
         </div>
 
         <div id="settings-confirmations" className="settings-anchor">

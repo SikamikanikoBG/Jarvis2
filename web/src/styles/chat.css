@@ -542,7 +542,9 @@
   padding: 6px var(--pad-x) calc(10px + env(safe-area-inset-bottom));
   background: var(--bg);
 }
+/* The "@" menu (chat/MentionMenu.tsx): Jarvis's other chats, above the box, never over it. */
 .composer {
+  position: relative;
   max-width: var(--composer-max);
   margin: 0 auto;
   display: flex;
@@ -556,6 +558,60 @@
 }
 .composer:focus-within {
   border-color: var(--accent);
+}
+.mention-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 22%);
+  overflow: hidden auto;
+  max-height: 46dvh;
+}
+.mention-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.mention-row .icon {
+  align-self: center;
+  color: var(--fg-muted);
+  flex: none;
+}
+.mention-row.active {
+  background: var(--accent-soft);
+}
+.mention-handle {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.mention-title {
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mention-state {
+  margin-left: auto;
+  padding-left: 8px;
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
 }
 .composer textarea {
   flex: 1;

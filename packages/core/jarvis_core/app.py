@@ -28,6 +28,7 @@ from jarvis_core.engine.context import (
     BrowserBlock,
     ContextAssembler,
     KnowledgeBlock,
+    SessionsBlock,
     SkillsBlock,
     VoiceBlock,
 )
@@ -46,6 +47,7 @@ from jarvis_core.features.reflection import PlaybookReflector
 from jarvis_core.features.results import ResultsTools
 from jarvis_core.features.rsvp import RsvpJob
 from jarvis_core.features.schedules import Scheduler, ScheduleStore, ScheduleTools
+from jarvis_core.features.sessions import SessionsTools
 from jarvis_core.features.skills import SkillDetector, SkillsTools, SkillStore
 from jarvis_core.features.stt import Transcriber
 from jarvis_core.features.titles import Titler
@@ -102,6 +104,7 @@ class Core:
 
         # Tools.
         self.builtin = CoreTools()
+        self.sessions = SessionsTools(self)
         self.mcp: list[McpProvider] = []
         self.policy = ExposurePolicy(self.settings.tool_exposure, self.settings.facade_threshold)
         self.registry = ToolRegistry([self.builtin], memory=self.store)
@@ -118,6 +121,7 @@ class Core:
                 KnowledgeBlock(self.knowledge),
                 BrowserBlock(self.browser),
                 VoiceBlock(settings),
+                SessionsBlock(self.sessions),
             ],
             compactor=self.compactor,
             attachments=self.attachments,
@@ -253,6 +257,7 @@ class Core:
                 ResultsTools(self.store),
                 SkillsTools(self.skills),
                 ScheduleTools(self.schedules, tz=lambda: self.settings.timezone),
+                self.sessions,
                 self.notify,
                 self.web,
                 self.browser,

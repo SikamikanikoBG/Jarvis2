@@ -22,6 +22,7 @@ import type {
   ConversationSummary,
   Message,
   Run,
+  SessionRef,
   RunScopedEvent,
   ServerEvent,
 } from '../protocol/types';
@@ -74,6 +75,8 @@ export interface UiState {
   notifyRuns: boolean;
   /** Arsen's own chat folders, in their order. */
   folders: ChatFolder[];
+  /** The chats as addressable sessions (@handle), for the composer's "@" menu. */
+  sessions: SessionRef[];
   /** The call in progress (docs/stories/10_voice.md), or null. A pure function of the session. */
   call: CallState | null;
   /** Sidebar multi-select: the chosen conversation ids. Empty means not selecting anything. */
@@ -154,6 +157,8 @@ export interface Actions {
   removeAttachment: (id: string) => void;
   exportConversation: (id: string, format: 'markdown' | 'json') => Promise<void>;
   loadFolders: () => Promise<void>;
+  /** The @handles, fetched when an "@" is typed (the core derives them from the titles). */
+  loadSessions: () => Promise<void>;
   /** Creates the folder and returns its id, or null when the server refused. */
   createFolder: (name: string) => Promise<string | null>;
   renameFolder: (id: string, name: string) => Promise<void>;
@@ -242,6 +247,7 @@ export const useStore = create<AppState>()((set, get) => ({
   uploadingAttachments: [],
   notifyRuns: readNotifyPref(),
   folders: [],
+  sessions: [],
   selection: [],
   selectionAnchor: null,
   collapsedFolders: readCollapsedFolders(),
@@ -722,6 +728,15 @@ export const useStore = create<AppState>()((set, get) => ({
     } catch (e) {
       // Not worth a toast: the sidebar simply shows the flat list until the next attempt.
       if (!(e instanceof ApiError && e.status === 401)) console.warn('folders:', errorText(e));
+    }
+  },
+
+  loadSessions: async () => {
+    try {
+      set({ sessions: await api.sessions.list() });
+    } catch (e) {
+      // The "@" menu simply stays empty; nothing else depends on this.
+      if (!(e instanceof ApiError && e.status === 401)) console.warn('sessions:', errorText(e));
     }
   },
 

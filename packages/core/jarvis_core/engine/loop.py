@@ -16,15 +16,14 @@ from pydantic import ValidationError
 from jarvis_core.db import Store
 from jarvis_core.engine.bus import EventBus
 from jarvis_core.engine.context import (
-    OLD_TOOL_RESULT_HEAD,
     ContextAssembler,
     admit,
     context_breakdown,
     prompt_chars,
-    tool_result_head,
 )
 from jarvis_core.engine.control import RunCancelledError, RunControl
 from jarvis_core.engine.supervision import Emit, RunWatch, StepRecord, Supervisor, args_hash, step_of
+from jarvis_core.engine.views import AGED_VIEW_CHARS, aged, view_of
 from jarvis_core.features.planner import PLAN_TOOLS
 from jarvis_core.models.base import (
     ModelAdapter,
@@ -1119,7 +1118,7 @@ _DEFAULT_MAX_TOKENS = 16_384
 def _fit_to_window(messages: list[Message], run_id: str, limit_chars: int) -> None:
     """Cut this step's fresh tool results, largest first and only by the overflow, so the whole
     prompt fits the lane's window. Ageing (above) is a budget the run lives within; this is the
-    wall it must not hit. The DB keeps every byte; the marker names the ref."""
+    wall it must not hit. The DB keeps every byte; each cut result becomes a view naming its refs."""
     total = sum(len(m.content) + sum(len(str(c.arguments)) for c in m.tool_calls) for m in messages)
     overflow = total - limit_chars
     if overflow <= 0:
@@ -1132,11 +1131,11 @@ def _fit_to_window(messages: list[Message], run_id: str, limit_chars: int) -> No
         if overflow <= 0:
             break
         m = messages[i]
-        room = len(m.content) - OLD_TOOL_RESULT_HEAD - 240  # what this one can give up (240 ~ the marker)
+        room = len(m.content) - AGED_VIEW_CHARS  # what this one can give up: down to the small view
         if room <= 0:
             continue
         cut = min(room, overflow)
-        shrunk = tool_result_head(m, head=len(m.content) - cut - 240, min_len=0)
+        shrunk = view_of(m, len(m.content) - cut)
         overflow -= len(m.content) - len(shrunk.content)
         messages[i] = shrunk
 
@@ -1164,9 +1163,9 @@ def _compress_old_tool_results(messages: list[Message], budget_tokens: int, *, c
         if i >= last_assistant:
             break  # the current step's results are what the model is answering
         m = messages[i]
-        shrunk = tool_result_head(m)
+        shrunk = aged(m)
         if shrunk is m:
-            continue  # short, or already a head
+            continue  # short, or already the small view
         messages[i] = shrunk
         total -= len(m.content) - len(shrunk.content)
         if total <= target:

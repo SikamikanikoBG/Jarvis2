@@ -1327,3 +1327,56 @@ clicked in it.
 Three tests in the extension (two chats, two tabs, neither driving the other's; the grace and the
 close; a chat that browses again keeping its tab) and one in the core (the call carries the
 session, and `browser.job_done` follows the run). 88 extension tests, 149 core, 128 web.
+
+## 2026-09-20 — every long result is an outline with @refs (core 2.0.0a60, proto a23, extension 2.3.0)
+
+Arsen, with the model tools and the harness in mind: "I feel we started again the patchwork …
+all tools must be able to provide the context, if long, as the browser does with sections
+@someid, so that the model is not burping from tokens and we keep the context small and cached."
+Audit first, over the live DB (14 days, 6,991 tool results, 4,489 model steps of 8k+ prompt):
+
+- The loop itself is not patchwork: one function shaped a result at admission, at ageing and at
+  the window wall; one ref (the tool call id); two retrieval tools. But the *shape* was a blind
+  head — the first N characters. For the JSON every host and MCP tool returns, 700 characters of
+  an `outlook_list` is one hex `store_id`; a 12k head of the 43k folder tree told the model so
+  little it fished with sixty calls (09-16), and the remedy was to admit results whole up to 48k.
+  That is how a newsletter step came to carry `res 118k` tokens, and how one run's prefix evicts
+  another's from the 358k-token KV pool (one step paid 124 s TTFT that way).
+- Three paging vocabularies, decided at three layers: the extension cut a page at 12k chars at
+  the SOURCE (`[truncated: characters X-Y of Z; browser.read offset=N]`), so the core never held
+  the rest and `result_search` could not find in it — the model continued past the cut 6 times in
+  499 reads; the host's own `max_chars`/`truncated`/`cursor` fields; the core's
+  `[truncated to save context … result_read/result_search]` with character offsets, through which
+  the model read 170 windows averaging 6.4k chars (it asked for 40k ones).
+- Cache: 83% of prompt tokens served from the prefix cache over 14 days, **92.7% over the last
+  three** — the 09-16 template fix worked; cold steps (cached=0) fell from 20–67 a day to 5/5/3.
+  A cold step costs a median 23.4 s to first token against 2.2 s warm. What remains is size.
+
+One layer, `engine/views.py`, gives every result the shape the browser gave pages: an **outline of
+sections with @refs**. A JSON list becomes one section per item — a one-line preview built from
+the fields that say what the item is (`subject`, `name`, `path`, `from`, `received`…), opaque ids
+shortened to their tail in the preview and whole in the body, values identical on every item
+hoisted into an envelope section `.0` (the 480-char `store_id` said once instead of twelve times);
+a JSON object without a list is one section per key; text splits at its headings, else into
+~3k-char paragraph chunks. The ref is `@<call id without chatcmpl-tool->.<n>`. Three sizes, one
+function (`view_of`): admitted (`tool_result_admit_chars`, now **16k**, was 48k), aged
+(**1,200** chars: the outline's first lines, or range lines covering every section when little
+fits — the memory of a 209-folder tree is six lines naming its ranges), and the window wall. When
+the compact rendering fits, the result is shown whole *and* smaller: the 16.7k `outlook_list` is
+9.1k compact, ids and all. Measured on live payloads: `outlook_folders` 42.9k → 15.9k (136 of
+209 folders named, the rest as a range); `fetch.fetch` of a 100k page → 2.2k; `shell_run` 43k →
+771 chars (`stdout` is one section of 20k, read by ref); `homelab.get_history` 45k → 726 chars.
+A view only shrinks and is never re-parsed as a document; views are cached per message.
+
+`jarvis.result_read(ref)` reads by ref: `@x.3` a section (a long one comes back as its own outline,
+`@x.3.2`), `@x.3-5` a range, `@x` the outline again; `offset` keeps the raw character window as the
+fallback. `jarvis.result_search` names the section each hit falls in. Rule 6 says so in one
+sentence, and distinguishes it from `[partial]` + cursor, which means the *server* holds more.
+The extension (2.3.0) sends the whole page (cap 150k) and no longer truncates at the source; the
+description of `browser.read` says where a long page goes. Host tools keep their own `max_chars`
+arguments — those are the model's choice per call, and 20k passes the view whole.
+
+Where the aged head lost the fishing argument, the outline wins it: the model sees *what is there*
+(every folder's name, every mail's subject) and reads the one it needs by ref, instead of either
+paging blind or carrying 48k whole for the rest of the run. Twelve new tests (`test_views.py`);
+the admission/ageing/wall tests rewritten to the new marker; 305 core tests and 88 extension tests pass.

@@ -554,16 +554,17 @@ class Settings(BaseModel):
     # background lane cost four minutes (2026-09-17: an hour, no newsletter). 120,000 keeps the
     # same room in chars; the lane's window is what actually caps it (effective_budgets).
     tool_context_token_budget: int = 120_000
-    # A single tool result longer than this enters the prompt as its head plus a marker naming
-    # the ref, from the step it arrives in; the DB keeps it whole and jarvis.result_search /
-    # jarvis.result_read reach the rest. Never a summary: what the model does not see is one
-    # call away. The limit is generous on purpose: at 12k a 43k-char folder listing (one line
-    # of JSON) made the model fish for it with 60 search/read calls over six minutes, where
-    # seeing it whole was one step (2026-09-16). Structured data has to be SEEN to be reasoned
-    # about; search helps only once the model knows what it is looking for. So the head is for
-    # the genuinely huge (page dumps, long shell output), and the effective limit also follows
-    # the lane: never more than half the step's results budget (Settings.admit_chars).
-    tool_result_admit_chars: int = 48_000
+    # A single tool result longer than this enters the prompt as its VIEW - sections with @refs:
+    # one per JSON item or heading, a one-line preview each, values common to every item hoisted,
+    # compact and whole when that fits, the outline when it does not (engine/views.py). The DB
+    # keeps it whole and jarvis.result_read hands back any section by ref. Never a summary: what
+    # the model does not see is one call away. 48k until 2026-09-20, because the view then was a
+    # blind head of the text (the first 12k chars of a 43k folder tree told the model nothing and
+    # it fished for six minutes); an outline shows the structure, so 16k is enough for a 12-mail
+    # listing to pass whole and compact and a 300-folder tree to arrive as 300 named lines. The
+    # effective limit also follows the lane: never more than half the step's results budget
+    # (Settings.admit_chars). Raise it towards 48k to go back to whole results.
+    tool_result_admit_chars: int = 16_000
     # How many pictures and clips, newest first, ride in the prompt as pixels. Every vLLM has a
     # per-prompt limit on them and refuses the whole request past it (the lanes allow 6 images
     # and 2 videos); older ones keep their note and can be shown again on request.

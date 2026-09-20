@@ -80,9 +80,10 @@ const TOOLS = [
   {
     name: "browser.read",
     description:
-      "Read the page in the active tab (or the tab id given). mode=text returns the readable text, up to 12000 " +
-      "characters, with an offset to continue; mode=outline returns headings, links, buttons and fields with " +
-      "@refs that browser.click, browser.type and browser.scroll accept.",
+      "Read the page in the active tab (or the tab id given). mode=text returns the page's readable text " +
+      "(a long page reaches you as an outline of sections with @refs; jarvis.result_read reads one); " +
+      "mode=outline returns headings, links, buttons and fields with @refs that browser.click, browser.type " +
+      "and browser.scroll accept.",
     input_schema: {
       type: "object",
       properties: {

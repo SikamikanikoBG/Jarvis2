@@ -224,5 +224,5 @@ def test_effective_budgets_follow_the_lane_window():
     with pytest.raises(ValueError):
         Settings(tool_result_admit_chars=500)
     # One result never takes more than half the step's results budget on a small lane.
-    assert s.admit_chars(40_000, 3.2) == 48_000
+    assert s.admit_chars(40_000, 3.2) == 16_000
     assert s.admit_chars(10_000, 3.2) == 16_000

@@ -693,11 +693,11 @@ async def test_old_tool_results_are_truncated_in_context_but_kept_in_db(harness:
     fourth_call_msgs = harness.chat.calls[3][0]
     first_at_call4 = next(m for m in fourth_call_msgs if m.role.value == "tool" and m.tool_call_id == "c1")
     third_at_call4 = next(m for m in fourth_call_msgs if m.role.value == "tool" and m.tool_call_id == "c3")
-    assert "[truncated to save context" in first_at_call4.content and len(first_at_call4.content) < 1000
+    assert "; shown:" in first_at_call4.content and len(first_at_call4.content) < 1_300
     assert len(third_at_call4.content) > 5000
     # The database keeps the full text.
     stored = [m for m in await harness.core.store.list_messages(conv.id) if m.role.value == "tool"]
-    assert all(len(m.content) > 5000 and "[truncated" not in m.content for m in stored)
+    assert all(len(m.content) > 5000 and "; shown:" not in m.content for m in stored)
 
 
 def _history_rewrites(calls: list) -> list[int]:
@@ -751,7 +751,7 @@ async def test_compressing_the_context_does_not_fire_on_every_step(harness: Harn
     rewrites = _history_rewrites(calls)
     # It must still do its job...
     assert rewrites, "the context was never compressed; the budget was not reached"
-    truncated = [m for m in calls[-1][0] if m.role.value == "tool" and "[truncated" in m.content]
+    truncated = [m for m in calls[-1][0] if m.role.value == "tool" and "; shown:" in m.content]
     assert truncated, "nothing was truncated by the end of the run"
     # ...but never twice in a row: a rewrite is followed by at least one step that only appends.
     assert not any(b + 1 in rewrites for b in rewrites), f"compressed on consecutive steps: {rewrites}"
@@ -779,7 +779,7 @@ async def test_tool_results_under_budget_are_never_truncated(harness: Harness):
     await harness.wait_for(sub, "run.done", timeout=10)
     last_call_msgs = harness.chat.calls[-1][0]
     tool_msgs = [m for m in last_call_msgs if m.role.value == "tool"]
-    assert len(tool_msgs) == 5 and all("[truncated" not in m.content for m in tool_msgs)
+    assert len(tool_msgs) == 5 and all("; shown:" not in m.content for m in tool_msgs)
 
 
 # --- E: read-only calls in one batch go out together ------------------------------------
@@ -872,8 +872,8 @@ async def test_a_trimmed_tool_result_names_a_ref_that_reads_it_back(harness: Har
 
     # By the third call the long result has been cut down, and the marker says how to get it back.
     third = harness.chat.calls[2][0]
-    trimmed = next(m for m in third if m.role.value == "tool" and "[truncated" in m.content)
-    assert 'jarvis.result_read(ref="L1")' in trimmed.content
+    trimmed = next(m for m in third if m.role.value == "tool" and "; shown:" in m.content)
+    assert 'jarvis.result_read(ref="@L1.N")' in trimmed.content
     assert len(trimmed.content) < 2000, "the head, not the whole thing"
 
     # And the tool actually returns it.
@@ -896,8 +896,10 @@ async def test_a_trimmed_tool_result_names_a_ref_that_reads_it_back(harness: Har
     # And it can be searched instead of paged: hits with offsets, a hit cap, a bad regex that
     # still works as plain text, and a clean miss.
     hit = await harness.core.registry.call(
-        "jarvis.result_search", {"ref": "L1", "pattern": "население", "max_hits": 2, "context": 10},
-        cancel=asyncio.Event(), idempotency_key="s1",
+        "jarvis.result_search",
+        {"ref": "L1", "pattern": "население", "max_hits": 2, "context": 10},
+        cancel=asyncio.Event(),
+        idempotency_key="s1",
     )
     assert hit.kind is ToolResultKind.DATA and hit.count == 2 and hit.total == 4000 and "@0:" in hit.text
     assert len(hit.text) < 400, "windows around the matches, merged where they touch — not the line (there is one line)"
@@ -935,14 +937,14 @@ async def test_a_big_result_is_admitted_as_a_head_in_the_very_next_step(harness:
 
     second = harness.chat.calls[1][0]  # the step right after the big result arrived
     big = next(m for m in second if m.role.value == "tool" and m.tool_call_id == "big")
-    assert "[truncated to save context: 92,000 chars in full" in big.content
-    assert 'jarvis.result_search(ref="big"' in big.content and 'jarvis.result_read(ref="big")' in big.content
+    assert "[@big: 92,000 chars in" in big.content
+    assert 'jarvis.result_search(ref="@big"' in big.content and 'jarvis.result_read(ref="@big.N")' in big.content
     assert len(big.content) < 2_400, "the admission head plus the marker, not 92k"
     whole = await harness.core.store.tool_result("big")
     assert whole is not None and len(whole[1]) == 92_000, "the DB keeps it whole"
     third = harness.chat.calls[2][0]
     small = next(m for m in third if m.role.value == "tool" and m.tool_call_id == "small")
-    assert "[truncated" not in small.content
+    assert "; shown:" not in small.content
     # The inspector can see where the prompt went.
     calls = [e for e in seen if e.type == "model.call"]
     ctx = calls[1].context
@@ -969,7 +971,7 @@ async def test_an_admitted_head_ages_down_to_the_small_head(harness: Harness):
     await harness.wait_for(sub, "run.done")
     third = harness.chat.calls[2][0]
     first = next(m for m in third if m.role.value == "tool" and m.tool_call_id == "L1")
-    assert len(first.content) < 1_000 and "92,000 chars in full" in first.content
+    assert len(first.content) < 1_300 and "[@L1: 92,000 chars in" in first.content
 
 
 def test_chars_per_token_calibrates_from_served_prompts():
@@ -1003,6 +1005,7 @@ async def test_a_step_that_reads_more_than_the_window_holds_is_cut_to_fit(harnes
         return ToolResult.data(mail)
 
     tools._entries["test.echo"].fn = read
+
     # A lane whose window, after the 16k default answer, holds ~3.6k tokens of prompt.
     async def small_window(kind=None):
         return 20_000
@@ -1022,9 +1025,9 @@ async def test_a_step_that_reads_more_than_the_window_holds_is_cut_to_fit(harnes
     # 12 x 7k = 84k chars of results against ~(20,000 - 16,384) * 3.2 ~ 11.5k... the window is
     # tiny, so most were cut; what matters is the prompt fits and the model still saw heads + refs.
     assert sent < 20_000 * 3.2
-    cut = [m for m in second if m.role.value == "tool" and "[truncated to save context" in m.content]
+    cut = [m for m in second if m.role.value == "tool" and "; shown:" in m.content]
     assert cut, "the largest results gave up their tails"
-    assert all(len(m.content) >= 700 for m in cut), "never below the small head"
+    assert all(len(m.content) >= 300 for m in cut), "a view, never an empty stub"
 
 
 async def test_an_unreachable_lane_falls_over_to_the_other_one(harness: Harness):

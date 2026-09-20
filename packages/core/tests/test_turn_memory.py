@@ -8,21 +8,23 @@ compaction summary covered only the question. Three turns, the mail hunted for t
 
 from __future__ import annotations
 
-from jarvis_core.engine.context import OLD_TOOL_RESULT_HEAD, earlier_turn_view, tool_result_head
+from jarvis_core.engine.context import earlier_turn_view
+from jarvis_core.engine.views import aged
 from jarvis_core.features.compaction import _cut_index
 from jarvis_proto import Message, Role, Run, RunKind, ToolCall
 from tests.conftest import Harness
 
 
-def test_the_head_is_idempotent_and_leaves_short_results_alone():
+def test_the_view_is_idempotent_and_leaves_short_results_alone():
     short = Message.tool("c1", "x.search", "small result", run_id="run_a")
-    assert tool_result_head(short) is short
+    assert aged(short) is short
     long = Message.tool("c2", "x.folders", "F" * 5_000, run_id="run_a")
-    head = tool_result_head(long)
-    assert head.content.startswith("F" * OLD_TOOL_RESULT_HEAD)
-    assert "[truncated to save context: 5,000 chars in full." in head.content
-    assert 'jarvis.result_read(ref="c2")' in head.content
-    assert tool_result_head(head) is head  # already a head: untouched
+    view = aged(long)
+    assert view.content.startswith("@c2: 1 sections (5,000 chars)")
+    assert "[@c2: 5,000 chars in 1 section; shown: outline." in view.content
+    assert 'jarvis.result_read(ref="@c2.N")' in view.content
+    assert len(view.content) <= 1_300
+    assert aged(view) is view  # already a view that fits: untouched
     assert long.content == "F" * 5_000  # a copy was made; the original (and the DB) keep the text
 
 
@@ -44,7 +46,7 @@ def test_earlier_turns_ride_as_heads_and_stubs_and_the_current_run_is_whole():
     assert view[0].content == "find the mail"
     assert view[1].content.startswith("[Context for the request above was injected for an earlier turn")
     assert "email_triage" in view[1].content and len(view[1].content) < 200
-    assert len(view[3].content) < 1_000 and 'ref="c1"' in view[3].content
+    assert len(view[3].content) < 1_300 and 'ref="@c1' in view[3].content
     assert view[4].content == "Found it: AI Masterclass, 6 October."  # the answer, whole
     # The current run: its context and its results are what the model is working from.
     assert view[6].content == ctx_b and view[7].content == "B" * 5_000
@@ -77,7 +79,7 @@ async def test_the_previous_turns_answer_survives_its_own_bulk(harness: Harness)
     texts = [m.content for m in messages[1:]]  # after the system message
     assert any("AI Masterclass" in t for t in texts), "the previous turn's answer is exactly what this question needs"
     folders = next(m for m in messages if m.role is Role.TOOL)
-    assert len(folders.content) < 1_000 and 'ref="c1"' in folders.content
+    assert len(folders.content) < 1_300 and 'ref="@c1' in folders.content
     assert not any("x" * 1_000 in t for t in texts), "an earlier turn's skill text does not ride along"
     assert texts[-1] == "предложи кратка визитка за събитието"
     # Under the budget with room to spare: the trim had nothing to throw away.

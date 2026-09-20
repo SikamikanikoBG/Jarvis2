@@ -1316,7 +1316,12 @@ function pageKernel(op, p) {
   // ---- read -------------------------------------------------------------
 
   function readText(p) {
-    const maxChars = clamp(p.max_chars, 500, 40000, 12000);
+    // The whole page goes to the core (up to a generous cap); the core decides what the model
+    // sees - a long page arrives there as an outline of sections with @refs, the same view every
+    // other tool's result gets, and jarvis.result_read hands back a section. Until 2.3.0 this
+    // cut the page at 12k chars HERE, so the core never held the rest, result_search could not
+    // find in it, and the model continued past the cut 6 times in 499 reads (2026-09-20).
+    const maxChars = clamp(p.max_chars, 500, 400000, 150000);
     const root = document.body || document.documentElement;
     let full = visibleText(root);
     let source = "walker";

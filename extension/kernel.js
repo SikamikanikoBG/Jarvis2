@@ -1844,13 +1844,22 @@ function pageKernel(op, p) {
       }
       const ctrlsBefore = nearbyControls(el);
       const typed = typeInto(el, value, { append: !!p.append });
+      let submittedHow = null;
       if (p.submit) {
-        if (el.form && el.form.requestSubmit) {
-          try { el.form.requestSubmit(); } catch (e) { fireKey(el, "keydown", "Enter", {}); }
+        // Enter FIRST. A tag chip, a chat composer, an autocomplete all handle the key
+        // themselves; the form is submitted only when the page did not (keydown not
+        // defaultPrevented), the field is a single-line input, and it lives in a form -
+        // which is what a bare Enter in such an input does. Never both: submitting dev.to's
+        // whole editor form under its tag input serialised the article into the URL and
+        // navigated away from an unsaved body (2026-09-20).
+        const handled = !fireKey(el, "keydown", "Enter", {});
+        fireKey(el, "keypress", "Enter", {});
+        fireKey(el, "keyup", "Enter", {});
+        const singleLine = el.tagName === "INPUT" && !el.isContentEditable;
+        if (!handled && singleLine && el.form && el.form.requestSubmit) {
+          try { el.form.requestSubmit(); submittedHow = "Enter, then the form was submitted"; } catch (e) { submittedHow = "Enter"; }
         } else {
-          fireKey(el, "keydown", "Enter", {});
-          fireKey(el, "keypress", "Enter", {});
-          fireKey(el, "keyup", "Enter", {});
+          submittedHow = handled ? "Enter (the page handled it)" : "Enter (no form to submit)";
         }
       }
       const ctrls = nearbyControls(el);
@@ -1878,7 +1887,7 @@ function pageKernel(op, p) {
       if (out.recovered) t += " (" + out.recovered + " had been re-rendered; matched the same label again.)";
       if (out.note) t += "\n" + out.note;
       t += '\nField now holds: "' + out.text_now + '"';
-      if (out.submitted) t += "\nSubmitted (Enter / form submit).";
+      if (out.submitted) t += "\nSubmitted: " + (submittedHow || "Enter") + ".";
       if (ctrls.length) {
         t += "\nButtons next to the field: " + ctrls.map((c) =>
           c.ref + " «" + c.label + "»" + (c.disabled ? " (disabled)" : "")).join(", ");

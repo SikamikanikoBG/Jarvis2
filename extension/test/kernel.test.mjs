@@ -282,6 +282,28 @@ test("native setter is used so React-style trackers see the write, and submit su
   assert.match(res.text, /Submitted/);
 });
 
+test("submit presses Enter first; a page that handles the key keeps its form unsubmitted", () => {
+  // dev.to's tag input lives inside the whole article form. Submitting that form on Enter
+  // serialised the article into the URL and navigated away from an unsaved body (2026-09-20).
+  const p = page(`
+    <main><form id="f"><input id="tag" placeholder="Add up to 4 tags"><ul id="chips"></ul>
+    <textarea id="body"></textarea></form></main>`);
+  p.win.__sub = 0;
+  p.$("#f").addEventListener("submit", (e) => { e.preventDefault(); p.win.__sub = 1; });
+  p.$("#tag").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); p.$("#chips").textContent += e.target.value + ";"; e.target.value = ""; }
+  });
+  const res = p.op("type", { selector: "Add up to 4 tags", value: "vllm", submit: true });
+  assert.equal(res.ok, true, res.text);
+  assert.equal(p.win.__sub, 0, "the form must not be submitted when the page handled Enter");
+  assert.equal(p.$("#chips").textContent, "vllm;");
+  assert.match(res.text, /Enter/);
+  // A textarea never submits its form on Enter either — Enter is a newline there.
+  const res2 = p.op("type", { selector: "#body", value: "line", submit: true });
+  assert.equal(res2.ok, true, res2.text);
+  assert.equal(p.win.__sub, 0);
+});
+
 test("a div with a role is clicked like a button: mousedown, then click", () => {
   const p = page(`<main><div role="button" tabindex="0" id="w">Publish</div></main>`);
   p.win.__hits = [];

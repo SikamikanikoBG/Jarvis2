@@ -117,7 +117,7 @@ test("browser.hello announces agent, version and exactly the tools in API.md", (
   assert.equal(hello.agent, "jarvis-extension");
   assert.equal(hello.version, "2.0.0-test");
   assert.deepEqual(hello.tools.map((t) => t.name), API_TOOLS);
-  assert.equal(MANIFEST.version, "2.3.0");
+  assert.equal(MANIFEST.version, "2.3.1");
 });
 
 test("every ToolSpec has a closed JSON Schema, a description and the agreed read_only flags", () => {

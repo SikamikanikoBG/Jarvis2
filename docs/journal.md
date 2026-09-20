@@ -1395,3 +1395,22 @@ the `browser.reload` the deploy sends has not made it re-read them since 2.1.0 (
 went unnoticed the same way) — no reconnect follows the reload frame in the core log. Until it is
 reloaded by hand (brave://extensions), pages still arrive cut at 12k from the source and the
 per-chat work tabs are not live. Why `chrome.runtime.reload()` does not take is the next thing to look at.
+
+## 2026-09-20 — Enter first, the form only if the page did not take it (extension 2.3.1)
+
+The dev.to draft lost its body twice today, and the published copy went out empty. The trace: `browser.type`
+with `submit: true` called `requestSubmit()` on the field's form before it ever pressed Enter. Under the
+editor's tag input that form is the whole article, so the browser serialised it into the URL as a GET and
+navigated away from an unsaved body — every time a tag was added. Now Enter is dispatched first; the form is
+submitted only when the page did not handle the key (`keydown` not defaultPrevented), the field is a
+single-line input, and it lives in a form — which is what a bare Enter does there — and never for a textarea
+or a rich editor. The result line says which happened. Kernel test: a tag input whose page handles Enter keeps
+its form unsubmitted; a textarea never submits. 89 extension tests. Still needs the manual reload in Brave.
+
+Around it, outside this repo: `jarvis_skills/article_reviewer.py` gained LINK (placeholder `](#)`), PROMISE
+("in the repo" without a URL) and METHOD (TTFT/prefill claimed without saying the runs were cold; a token
+rate no single-node 3090 can do) checks — on the flawed article it flags four lines the old checks passed.
+The `article_writing` playbook on the core now says: salt every benchmark request for cold numbers, save the
+draft right after the body, commit tags with a comma or a click, read the draft back before saying done. The
+article itself was re-measured (cold prefill +14% mean, not 3x), rewritten, and pushed into the draft through
+Jarvis's own browser tools, then verified against the source: all 165 numbers present.

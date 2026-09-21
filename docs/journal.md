@@ -1445,3 +1445,44 @@ comment — says what he would say, and he can read it in the UI before it goes.
 
 Also: `uv run ruff format packages` had been failing CI since the 09-19 voice commits and
 yesterday's two went out in one push (nine files, all mechanical). Green again.
+
+## 2026-09-21 — the wait that knows what it is waiting for (core 2.0.0a63)
+
+Arsen: "create wait tool for Jarvis and instruct how to use it. for example — needs to wait for
+a service to come up so it can set a wait for x seconds in order to retry periodically."
+
+Half of it already existed: `jarvis.wait` has been a blind pause since 13 September, and it is
+used (22 calls in the last fortnight). What was missing is the half his example is actually
+about — waiting for something to become TRUE. Done by hand that is a model step per attempt:
+call the check, read the result, `jarvis.wait 15`, call the check again. Each of those steps is
+a full prompt at 15–20k tokens on the chat lane, and the supervisor's progress guard sees the
+same call with the same result three times and summons the judge.
+
+`jarvis.wait_until` is that loop inside one tool call. It takes another tool's name and
+arguments, calls it every `interval_s` until the result matches `contains` (a regular
+expression, plain text tolerated) or stops matching `absent`, and returns **the matching result
+itself** so nothing has to be fetched twice. With no pattern at all the first non-error answer
+wins, which is the right test for an endpoint that is simply refusing connections. Rules that
+keep it honest:
+
+- **Read-only tools only.** Polling a mutation would send the mail once per attempt. The refusal
+  says so and points at the read-only check to wait on instead.
+- **It cannot poll itself**, and `ToolRegistry.cannot_route` (was `_cannot_route`) now answers
+  for an unknown tool name, so "wait for a tool that does not exist" reads the same as calling it.
+- **Clamped**: timeout 5–900 s (the core's own per-call ceiling is 1200), interval 1–300 s, and
+  each attempt gets its own deadline so one hung call cannot eat the whole wait.
+- **Credited back.** It joins `jarvis.wait` in `IS_WAIT_TOOL`, so the seconds it spends are
+  subtracted from the run's time budget: waiting is not work.
+- **Cancellable**, and a timeout comes back as a failure carrying the last result — the thing
+  the model needs in order to say what is wrong rather than "it did not come up".
+
+The instruction is in three places, because a description alone is not a habit: the tool's own
+description carries two worked examples (a container via `docker ps`, a health endpoint via
+`fetch.fetch`); `jarvis.wait`'s description now ends by pointing at it ("this is the blind pause;
+if there is anything you could CHECK, wait_until is the better tool"); and a new skill on the
+core, `/data/skills/waiting_for_something.md`, holds the table of which wait to reach for, five
+worked patterns and the rule for after a restart or a deploy — finish the job in the same run
+instead of telling him to check back in a minute.
+
+Eight tests. `CoreTools` takes a registry getter (a lambda, because the registry is built after
+the provider and holds it), which is the only wiring this needed.

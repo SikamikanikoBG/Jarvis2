@@ -204,7 +204,7 @@ class ToolRegistry:
         entry = self._index.get(name)
         return entry[1] if entry else None
 
-    def _cannot_route(self, name: str) -> str:
+    def cannot_route(self, name: str) -> str:
         """Why a call cannot be routed. An unreachable machine is not a missing capability.
 
         2026-09-07: jarvis-host died overnight and the core restarted with the laptop
@@ -232,7 +232,7 @@ class ToolRegistry:
         """Return an error string if ``arguments`` do not fit the tool's schema."""
         spec = self.get(name)
         if spec is None:
-            return self._cannot_route(name)
+            return self.cannot_route(name)
         if "__raw__" in arguments:
             return f"arguments for {name} were not valid JSON: {arguments['__raw__'][:200]!r}"
         try:
@@ -252,7 +252,7 @@ class ToolRegistry:
     ) -> ToolResult:
         entry = self._index.get(name)
         if entry is None:
-            return ToolResult.failure(self._cannot_route(name))
+            return ToolResult.failure(self.cannot_route(name))
         provider, _spec = entry
         try:
             return await asyncio.wait_for(

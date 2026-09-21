@@ -103,7 +103,9 @@ class Core:
         self.meetings = MeetingService(self)
 
         # Tools.
-        self.builtin = CoreTools()
+        # The getter is resolved at call time: jarvis.wait_until polls other tools through the
+        # very registry that holds this provider, which does not exist yet on this line.
+        self.builtin = CoreTools(registry=lambda: self.registry)
         self.sessions = SessionsTools(self)
         self.mcp: list[McpProvider] = []
         self.policy = ExposurePolicy(self.settings.tool_exposure, self.settings.facade_threshold)

@@ -284,7 +284,9 @@ class CoreTools(BuiltinProvider):
         deadline = started + timeout
         key = new_id("waituntil")
         attempts = 0
-        last: ToolResult | None = None
+        # Never Optional: the loop always completes an attempt before it can break, and an
+        # Optional here reads differently to pyright with and without the full dependency tree.
+        last = ToolResult.empty("no attempt completed")
 
         while True:
             attempts += 1
@@ -319,7 +321,7 @@ class CoreTools(BuiltinProvider):
                 continue
 
         waited = round(time.monotonic() - started)
-        seen = (last.to_model_text() if last is not None else "").strip()
+        seen = last.to_model_text().strip()  # the loop always calls at least once before it breaks
         why = "cancelled" if cancel.is_set() else "still not true"
         return ToolResult.failure(
             f"{name} was {why} after {attempts} attempt{'s' if attempts != 1 else ''} over {waited}s{tail}. "

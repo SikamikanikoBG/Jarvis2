@@ -338,13 +338,14 @@ class RsvpJob:
         reserved.extend(out)
         return out
 
-    @staticmethod
-    def _decline_comment(d: RsvpDecision) -> str:
+    def _decline_comment(self, d: RsvpDecision) -> str:
+        """What the organizer reads. The sign-off comes from ``rsvp.decline_signature``."""
         lines = ["Здравейте,", "", "за съжаление в този час имам друг ангажимент, който не мога да преместя."]
         if d.proposals:
             lines += ["Свободен съм в следващите часове:"] + [f"  - {p}" for p in d.proposals]
             lines.append("Ако някой от тях е удобен, моля преместете срещата там.")
-        lines += ["", "Поздрави,", "Арсен", "(автоматичен отговор от Jarvis според календара)"]
+        if signature := self.core.settings.rsvp.decline_signature.strip("\n"):
+            lines += ["", *signature.split("\n")]
         return "\n".join(lines)
 
     @staticmethod

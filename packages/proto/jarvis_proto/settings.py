@@ -305,6 +305,11 @@ class MeetingRsvpSettings(BaseModel):
     propose_slots: int = 3
     work_start_hour: int = 9
     work_end_hour: int = 18
+    # How a decline signs off. It is a setting because this text leaves the house: the assistant's
+    # name was written into the code here, and had already reached an organizer at the bank before
+    # Arsen ever saw it (2026-09-21). What the organizer needs to know is that a calendar answered,
+    # not who did. Empty = no sign-off at all.
+    decline_signature: str = "Поздрави,\nАрсен\n(автоматичен отговор според календара)"
 
     @staticmethod
     def _domain(address: str) -> str:

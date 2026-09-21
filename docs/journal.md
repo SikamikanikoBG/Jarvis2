@@ -1414,3 +1414,34 @@ The `article_writing` playbook on the core now says: salt every benchmark reques
 draft right after the body, commit tags with a comma or a click, read the draft back before saying done. The
 article itself was re-measured (cold prefill +14% mean, not 3x), rewritten, and pushed into the draft through
 Jarvis's own browser tools, then verified against the source: all 165 numbers present.
+
+## 2026-09-21 — the decline that signed itself (core 2.0.0a62, proto a24, web alpha.36)
+
+Arsen, reading a meeting decline: "това го слага Джарвис сам или е хардкодирано? Нямам нищо
+против да пише автоматичен отговор според календара, но не и Джарвис."
+
+Hardcoded — one line of Python in `RsvpMonitor._decline_comment`, on the decline path only:
+
+```
+lines += ["", "Поздрави,", "Арсен", "(автоматичен отговор от Jarvis според календара)"]
+```
+
+It had already gone out. The organizer of the Customer Issues Resolution Forum got it on
+2026-09-05 with three proposed slots under it, and the only reason it is in the database at all
+is that a context-enrichment run read his own sent mail back on the 7th. Auto-RSVP is on, every
+three minutes, for every organizer at the bank's domain: the name was one clash away from the
+next colleague, every time.
+
+So the sign-off is a setting now — `rsvp.decline_signature`, a textarea in Settings → Meeting
+auto-RSVP, default `Поздрави, / Арсен / (автоматичен отговор според календара)`, empty for no
+sign-off at all. `_decline_comment` stopped being a `@staticmethod` to read it. The body of the
+note (the apology, the free slots) is unchanged; only the last lines are his to write. Two tests:
+a custom sign-off arrives at the organizer, an empty one leaves the note ending on the proposals,
+and the old test that asserted the word "Jarvis" now asserts its absence.
+
+The general rule this is an instance of: **text that leaves the house belongs in settings, not in
+code.** Anything the core sends to someone who is not Arsen — a decline, an auto-reply, a calendar
+comment — says what he would say, and he can read it in the UI before it goes.
+
+Also: `uv run ruff format packages` had been failing CI since the 09-19 voice commits and
+yesterday's two went out in one push (nine files, all mechanical). Green again.

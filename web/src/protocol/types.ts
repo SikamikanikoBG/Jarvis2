@@ -301,6 +301,8 @@ export interface MeetingRsvpSettings {
   propose_slots: number;
   work_start_hour: number;
   work_end_hour: number;
+  /** How a decline signs off. The organizer reads it, so it names no assistant. */
+  decline_signature: string;
 }
 
 export type ToolExposure = 'auto' | 'flat' | 'facade';

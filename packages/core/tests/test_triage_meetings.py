@@ -701,7 +701,10 @@ async def test_rsvp_accepts_free_declines_clashes_never_declines_vip_and_answers
     assert live.errors == [] and live.removed_canceled == 1 and host.canceled_calls == 1
     assert [(r[0], r[1]) for r in host.responses] == [("i1", "accept"), ("i2", "decline"), ("i4", "accept")]
     decline_comment = host.responses[1][2]
-    assert "09:00-09:30" in decline_comment and "14:00-14:30" in decline_comment and "Jarvis" in decline_comment
+    assert "09:00-09:30" in decline_comment and "14:00-14:30" in decline_comment
+    # The sign-off names no assistant: this text goes to the organizer (2026-09-21).
+    assert decline_comment.endswith("(автоматичен отговор според календара)")
+    assert "Jarvis" not in decline_comment and "Джарвис" not in decline_comment
     state = await core.rsvp.state()
     assert state and state.answered_total == 3 and state.removed_canceled_total == 1 and state.last_error is None
 
@@ -716,6 +719,34 @@ async def test_rsvp_accepts_free_declines_clashes_never_declines_vip_and_answers
     assert len(convs) == 1
     msgs = await core.store.list_messages(convs[0].id)
     assert msgs[-1].name == "rsvp" and "'Clash'" in msgs[-1].content and "left_external" in msgs[-1].content
+
+
+async def test_the_decline_sign_off_is_a_setting_and_can_be_switched_off(harness: Harness):
+    """What the organizer reads is Arsen's to write.
+
+    The sign-off used to be a line of Python that named the assistant, and it had already gone
+    out to an organizer at the bank before he saw one (2026-09-21). It is a setting now: his own
+    wording, or nothing at all.
+    """
+    core = harness.core
+    host = await _with_host(harness)
+    base = dict(host="laptop", account="Work", allowed_domains=["bank.bg"], vip=["boss@bank.bg"], propose_slots=1)
+    harness.enable(rsvp=MeetingRsvpSettings(**base, decline_signature="Regards,\nArsen\n(sent by my calendar)"))
+    await core.rsvp.run_once()
+    comment = next(c for eid, d, c in host.responses if d == "decline")
+    assert comment.endswith("Regards\nArsen\n(sent by my calendar)".replace("Regards", "Regards,"))
+    assert "друг ангажимент" in comment, "the body itself is unchanged"
+
+    # Empty: the note ends with the proposals, with no dangling blank lines.
+    harness2 = harness
+    core2 = harness2.core
+    host.responses.clear()
+    await core2.db.execute("DELETE FROM rsvp_decisions")
+    await core2.db.execute("DELETE FROM rsvp_state")
+    harness2.enable(rsvp=MeetingRsvpSettings(**base, decline_signature=""))
+    await core2.rsvp.run_once()
+    bare = next(c for eid, d, c in host.responses if d == "decline")
+    assert bare.endswith("моля преместете срещата там.")
 
 
 async def test_rsvp_retries_an_invite_it_could_not_answer(harness: Harness):

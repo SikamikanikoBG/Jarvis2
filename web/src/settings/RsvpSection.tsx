@@ -73,6 +73,11 @@ export function RsvpSection({ value, hosts, onChange, error }: Props) {
           <label>VIPs — never declined (one address or domain per line)</label>
           <textarea className="textarea mono" rows={4} value={value.vip.join('\n')} onChange={(e) => patch({ vip: lines(e.target.value) })} placeholder="ceo@postbank.bg" />
         </div>
+        <div className="field span-2">
+          <label>How a decline signs off</label>
+          <textarea className="textarea" rows={3} value={value.decline_signature} onChange={(e) => patch({ decline_signature: e.target.value })} placeholder="no sign-off" />
+          <span className="field-hint">The organizer reads this. Say that a calendar answered, not who answered.</span>
+        </div>
         <div className="field">
           <label>Work day starts (hour)</label>
           <input className="input" type="number" min={0} max={23} value={value.work_start_hour} onChange={(e) => patch({ work_start_hour: int(e.target.value, 0, 23, 9) })} />

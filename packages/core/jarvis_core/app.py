@@ -111,7 +111,6 @@ class Core:
         # A reconnected MCP server re-lists itself; tell the UI so the tool list on Status is real.
         self.registry.on_change(lambda provider: self.bus.publish(ToolsChanged(provider=provider)))
 
-
         # Engine.
         self.context = ContextAssembler(
             self.store,

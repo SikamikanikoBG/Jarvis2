@@ -138,7 +138,9 @@ def test_each_chat_browses_in_its_own_session_and_is_told_when_the_job_ends(clie
             ui.send_text(json.dumps({"type": "run.create", "conversation_id": conv["id"], "text": "погледни"}))
             call = json.loads(ext.receive_text())
             assert call["session"] == conv["id"], "the call carries the chat it belongs to"
-            ext.send_text(json.dumps({"type": "browser.result", "call_id": call["call_id"], "kind": "data", "text": "ok"}))
+            ext.send_text(
+                json.dumps({"type": "browser.result", "call_id": call["call_id"], "kind": "data", "text": "ok"})
+            )
             while True:
                 ev = json.loads(ui.receive_text())
                 if ev["type"] in {"run.done", "run.failed"}:

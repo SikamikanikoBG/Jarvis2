@@ -301,7 +301,11 @@ class AgentLoop:
             # any budget and was refused by the server outright. The largest fresh results give
             # up their tails first, only as much as the window demands.
             if view.window is not None:
-                limit_tokens = view.window - (lane_spec.max_tokens or _DEFAULT_MAX_TOKENS) - self._settings().context_reserve_tokens
+                limit_tokens = (
+                    view.window
+                    - (lane_spec.max_tokens or _DEFAULT_MAX_TOKENS)
+                    - self._settings().context_reserve_tokens
+                )
                 _fit_to_window(messages, run.id, int(limit_tokens * self._context.chars_per_token) - view.tools_chars)
             if plan_trailer is not None:
                 messages.append(plan_trailer)
@@ -348,8 +352,12 @@ class AgentLoop:
                 other = self._settings().other_lane(main_role) if self._settings().lane_failover else None
                 if not exc.retryable or other is None:
                     raise
-                log.warning("run %s: lane %s unreachable (%s); falling over to %s", run.id, main_role.value, exc, other.value)
-                adapter = self._adapters(other, think=adapter.spec.think, think_level=adapter.spec.think_level, exact=True)
+                log.warning(
+                    "run %s: lane %s unreachable (%s); falling over to %s", run.id, main_role.value, exc, other.value
+                )
+                adapter = self._adapters(
+                    other, think=adapter.spec.think, think_level=adapter.spec.think_level, exact=True
+                )
                 await emit(
                     ModelCall(
                         run_id="",
@@ -1140,7 +1148,9 @@ def _fit_to_window(messages: list[Message], run_id: str, limit_chars: int) -> No
         messages[i] = shrunk
 
 
-def _compress_old_tool_results(messages: list[Message], budget_tokens: int, *, chars_per_token: float = _CHARS_PER_TOKEN) -> None:
+def _compress_old_tool_results(
+    messages: list[Message], budget_tokens: int, *, chars_per_token: float = _CHARS_PER_TOKEN
+) -> None:
     """Keep this run's tool results under a token budget by truncating the OLDEST first.
 
     Nothing is touched while the results fit: a "read 26 mails and summarise" run must keep the

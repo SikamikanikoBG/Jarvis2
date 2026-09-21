@@ -496,12 +496,16 @@ async def test_only_the_newest_pictures_ride_as_pixels(harness: Harness):
     older ones as a note — the server refuses a prompt with more images than it allows, whole."""
     harness.core.apply_settings(harness.core.settings.model_copy(update={"media_in_context": 1}))
     conv = await harness.core.store.create_conversation()
-    first = await harness.core.attachments.add_file(data=png(64, 64), filename="one.png", mime="image/png", conversation_id=conv.id)
+    first = await harness.core.attachments.add_file(
+        data=png(64, 64), filename="one.png", mime="image/png", conversation_id=conv.id
+    )
     harness.chat.push(FakeTurn(text="a red square"))
     sub = harness.subscribe(conv.id)
     await harness.core.engine.create_run(text="what is this", conversation_id=conv.id, attachment_ids=[first.id])
     await harness.wait_for(sub, "run.done")
-    second = await harness.core.attachments.add_file(data=png(64, 64), filename="two.png", mime="image/png", conversation_id=conv.id)
+    second = await harness.core.attachments.add_file(
+        data=png(64, 64), filename="two.png", mime="image/png", conversation_id=conv.id
+    )
     harness.chat.push(FakeTurn(text="another one"))
     await harness.core.engine.create_run(text="and this", conversation_id=conv.id, attachment_ids=[second.id])
     await harness.wait_for(sub, "run.done")

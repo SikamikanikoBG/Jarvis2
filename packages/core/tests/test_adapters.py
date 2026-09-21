@@ -238,7 +238,7 @@ async def test_context_length_400_retries_once_with_max_tokens_that_fit():
     refusal = (
         '{"error":{"message":"This model\'s maximum context length is 65536 tokens. However, you requested '
         "16384 output tokens and your prompt contains at least 49153 input tokens, for a total of at least "
-        '65537 tokens. Please reduce the length of the input prompt or the number of requested output tokens. '
+        "65537 tokens. Please reduce the length of the input prompt or the number of requested output tokens. "
         '(parameter=input_tokens, value=49153)","type":"BadRequestError","param":"input_tokens","code":400}}'
     )
 
@@ -322,7 +322,9 @@ async def test_probe_reads_the_context_window_and_the_factory_keeps_it_per_lane(
 
     s = Settings()
     s.roles[RoleName.CHAT] = ModelSpec(provider=Provider.VLLM, base_url="http://x/v1", model="m", think=True)
-    s.roles[RoleName.BACKGROUND] = ModelSpec(provider=Provider.VLLM, base_url="http://y/v1", model="m", think=True, num_ctx=4096)
+    s.roles[RoleName.BACKGROUND] = ModelSpec(
+        provider=Provider.VLLM, base_url="http://y/v1", model="m", think=True, num_ctx=4096
+    )
     f = AdapterFactory(s)
     f.for_role(RoleName.CHAT)._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     assert await f.context_window(RunKind.CHAT) == 131072

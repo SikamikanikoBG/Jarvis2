@@ -192,8 +192,12 @@ def test_every_call_of_a_run_goes_to_its_lane():
 
     s = Settings()
     s.roles[RoleName.CHAT] = ModelSpec(provider=Provider.VLLM, base_url="http://chat-lane/v1", model="m", think=True)
-    s.roles[RoleName.BACKGROUND] = ModelSpec(provider=Provider.VLLM, base_url="http://bg-lane/v1", model="m", think=True)
-    s.roles[RoleName.PLANNER] = ModelSpec(provider=Provider.OLLAMA, base_url="http://elsewhere", model="p", temperature=0.1)
+    s.roles[RoleName.BACKGROUND] = ModelSpec(
+        provider=Provider.VLLM, base_url="http://bg-lane/v1", model="m", think=True
+    )
+    s.roles[RoleName.PLANNER] = ModelSpec(
+        provider=Provider.OLLAMA, base_url="http://elsewhere", model="p", temperature=0.1
+    )
     f = AdapterFactory(s)
     assert f.spec_for(RoleName.PLANNER).base_url == "http://elsewhere"
     planner_in_scheduled = f.spec_for(RoleName.PLANNER, kind=RunKind.TRIAGE)

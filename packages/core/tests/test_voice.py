@@ -121,8 +121,17 @@ async def test_a_call_does_not_stop_to_ask_which_skill_applies(harness: Harness)
     phrase that is literally in what he said still counts — that costs nothing."""
     core = harness.core
     (core.skills.dir / "reporting.md").write_text(
-        "---" + BR + "name: reporting" + BR + "description: how to write the weekly report"
-        + BR + "triggers: [weekly report]" + BR + "---" + BR + "Body.",
+        "---"
+        + BR
+        + "name: reporting"
+        + BR
+        + "description: how to write the weekly report"
+        + BR
+        + "triggers: [weekly report]"
+        + BR
+        + "---"
+        + BR
+        + "Body.",
         encoding="utf-8",
     )
     harness.chat.push(FakeTurn(text="Добре."))

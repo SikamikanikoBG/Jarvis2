@@ -200,7 +200,9 @@ class SessionsTools(BuiltinProvider):
             state = {"running": "working", "waiting": "waiting on Arsen"}.get(conv.activity.value, "idle")
             when = conv.updated_at.strftime("%Y-%m-%d %H:%M")
             archived = ", archived" if conv.archived else ""
-            lines.append(f"@{handles[conv.id]} — {conv.title} [{state}{archived}, {conv.message_count} msgs, {when}]{mark}")
+            lines.append(
+                f"@{handles[conv.id]} — {conv.title} [{state}{archived}, {conv.message_count} msgs, {when}]{mark}"
+            )
         more = f"\n…and {len(rows) - limit} more" if len(rows) > limit else ""
         return ToolResult.data("\n".join(lines) + more)
 

@@ -621,11 +621,11 @@ class Settings(BaseModel):
     def admit_chars(self, results_budget_tokens: int, chars_per_token: float) -> int:
         """How much of one tool result a step admits: the configured limit, or half the step's
         results budget on a lane too small for it — one result never crowds out the rest."""
-        return max(_ADMIT_FLOOR_CHARS, min(self.tool_result_admit_chars, int(results_budget_tokens * chars_per_token / 2)))
+        return max(
+            _ADMIT_FLOOR_CHARS, min(self.tool_result_admit_chars, int(results_budget_tokens * chars_per_token / 2))
+        )
 
-    def effective_budgets(
-        self, *, window: int | None, max_tokens: int | None, fixed_tokens: int
-    ) -> tuple[int, int]:
+    def effective_budgets(self, *, window: int | None, max_tokens: int | None, fixed_tokens: int) -> tuple[int, int]:
         """(history, this run's tool results) token budgets for one step, as configured unless
         the lane's context window cannot hold them next to the fixed part of the prompt
         (system + tool schemas), the answer and the reserve — then both shrink in the
@@ -651,7 +651,9 @@ class Settings(BaseModel):
                 )
         for kind, lane in self.run_routing.items():
             if lane not in LANES:
-                raise ValueError(f"run_routing[{kind.value}] must be one of {[r.value for r in LANES]}, not {lane.value!r}")
+                raise ValueError(
+                    f"run_routing[{kind.value}] must be one of {[r.value for r in LANES]}, not {lane.value!r}"
+                )
         if self.tool_result_admit_chars < _ADMIT_FLOOR_CHARS:
             raise ValueError(f"tool_result_admit_chars must be at least {_ADMIT_FLOOR_CHARS}")
         names = [s.name for s in self.mcp_servers]

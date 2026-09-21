@@ -114,6 +114,44 @@ export function installLayoutShims(win) {
  *   const { op, doc, win } = page("<button>Go</button>");
  *   op("read", { mode: "outline" })
  */
+// jsdom has no DataTransfer and makes input.files read-only, so the one path a
+// browser DOES allow for filling a file field — build a File, hand it over in a
+// DataTransfer, assign it — cannot run here without these two shims. They copy
+// Chrome's behaviour exactly: `items.add` collects files, `input.files` takes a
+// FileList and keeps it, and everything else about the input is jsdom's own.
+export function installUploadShims(win) {
+  if (!win.DataTransfer) {
+    win.DataTransfer = class DataTransfer {
+      constructor() {
+        const files = [];
+        files.item = (i) => files[i] || null;
+        this._files = files;
+        this.items = {
+          add: (f) => { files.push(f); return f; },
+          clear: () => { files.length = 0; },
+          get length() { return files.length; },
+        };
+      }
+      get files() { return this._files; }
+    };
+  }
+  // jsdom does have a `files` setter, but it type-checks for a real FileList
+  // and refuses to construct one — so the shimmed DataTransfer above can never
+  // satisfy it. Replace the property with one that simply keeps what it is
+  // given, which is what Chrome's does once the FileList is genuine.
+  const proto = win.HTMLInputElement.prototype;
+  const own = Object.getOwnPropertyDescriptor(proto, "files");
+  const store = new WeakMap();
+  Object.defineProperty(proto, "files", {
+    configurable: true,
+    get() {
+      if (store.has(this)) return store.get(this);
+      return own && own.get ? own.get.call(this) : null;
+    },
+    set(v) { store.set(this, v); },
+  });
+}
+
 export function page(html, opts = {}) {
   const title = opts.title ?? "Fixture";
   const dom = new JSDOM(
@@ -122,6 +160,7 @@ export function page(html, opts = {}) {
   );
   const win = dom.window;
   installLayoutShims(win);
+  installUploadShims(win);
   const ctx = dom.getInternalVMContext();
   const kernel = vm.runInContext(KERNEL_SRC + "\n;pageKernel", ctx, { filename: "kernel.js" });
   return {

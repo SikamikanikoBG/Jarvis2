@@ -1486,3 +1486,52 @@ instead of telling him to check back in a minute.
 
 Eight tests. `CoreTools` takes a registry getter (a lambda, because the registry is built after
 the provider and holds it), which is the only wiring this needed.
+
+## 2026-09-21 — the file dialog nobody may open (extension 2.4.0)
+
+He asked why Claude Code can do anything on dev.to and Jarvis cannot — "it could not even put
+the images in". The answer is not the model and not the prompt. It is the boundary each of us
+drives the browser from.
+
+Claude Code drives Brave over CDP, from outside the page. Playwright's `setInputFiles` is a
+protocol command: it puts a real `File` on an `<input type=file>` without the operating system's
+dialog ever existing. Jarvis drives the page from inside an MV3 extension, and from there:
+
+- clicking an upload button opens the **OS file dialog**, which is not part of the web page, not
+  part of the browser's DOM, and not something any extension API may touch. The run stops there
+  with the dialog open over the user's screen.
+- the escape hatch was no help either: `browser.eval` compiles the model's code with
+  `new Function`, and a content script's isolated world **inherits the page's CSP for eval** in
+  Chromium. dev.to ships `script-src` without `unsafe-eval`, so the constructor throws before a
+  character of the code is read — and the kernel reported that as "The code does not parse",
+  which sent the model off rewriting perfectly good JavaScript.
+
+So there was no path at all, and the tool list said as much: ten tools, none of them about files.
+
+**`browser.upload` (the eleventh tool).** Bytes reach the page one of two ways: `url=`, which the
+service worker fetches itself (host permissions, so no CORS to argue with — a raw GitHub link to a
+chart is the common case), or `data=`, base64 from the core for a file only it holds. The worker
+decodes nothing; it passes base64 through `executeScript`'s JSON arguments, and the kernel rebuilds
+the `File`, hands it over in a `DataTransfer`, assigns `input.files` and fires `input` + `change`
+bubbling — which is what React is actually listening for. The end state is byte-for-byte the one
+the OS dialog would have produced.
+
+Finding the field is part of the tool, because the field is hidden on every site worth uploading
+to: dev.to's `input#image-upload-field` sits behind a toolbar button with `display:none`. With no
+`ref` the kernel takes the page's only file input; with several it narrows by `accept` and
+otherwise asks, listing them. Given a `ref` that resolves to the *button* (which is what an outline
+hands out, since the input is invisible) it walks to the input the button drives — inside it, via
+`label[for]`, or in the enclosing form. A field whose `accept` would reject the file is refused
+here rather than by the site, and a disabled one is refused too.
+
+`browser.eval` now names a CSP refusal as a CSP refusal: nothing was executed, the page forbids
+compiled strings in either world, and here are the typed tools that still work because they are
+DOM calls. Wrong diagnosis is worse than no diagnosis.
+
+Seven tests, and two new shims in the jsdom harness: `DataTransfer` does not exist there and
+`input.files` refuses anything that is not a real `FileList`, so the one path a browser allows
+could not otherwise be exercised at all.
+
+No core change and no deploy — the extension is loaded unpacked, so this lands when it is reloaded
+at `brave://extensions`. The `browser.reload` frame still does not take (see 2026-09-20); verify
+with `docker logs jarvis2-core | grep "extension connected"` and expect 2.4.0.

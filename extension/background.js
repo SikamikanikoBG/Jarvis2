@@ -142,6 +142,30 @@ const TOOLS = [
     read_only: false, destructive: false, idempotent: false,
   },
   {
+    name: "browser.upload",
+    description:
+      "Attach a file to an upload field — an editor's image button, an attachment box, a profile picture. " +
+      "Give the bytes as `url` (the extension fetches it, so anything already on the web works: a raw " +
+      "GitHub link, a chart you pushed, an image on another page) or as `data` (base64, for a file only " +
+      "the core has). Clicking an upload button opens the operating system's file dialog, which no " +
+      "extension can drive — so this tool puts the file straight onto the page's <input type=file>, " +
+      "which is the same thing the dialog would have done. The field is usually hidden behind the button; " +
+      "it is found for you, so pass `ref` only when the page has several. Follow with browser.wait for the " +
+      "site to finish uploading, then browser.read to see the link it inserted.",
+    input_schema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Absolute http(s) URL of the file to attach." },
+        data: { type: "string", description: "The file as base64, or a data: URI — when it is not reachable on the web." },
+        filename: { type: "string", description: "The name to hand the site. Defaults to the URL's last segment." },
+        mime: { type: "string", description: "Content type such as image/png. Taken from the response or the name when omitted." },
+        ref: { type: "string", description: "@ref or css=input#… of the upload field. Omit when the page has one." },
+      },
+      additionalProperties: false,
+    },
+    read_only: false, destructive: false, idempotent: false,
+  },
+  {
     name: "browser.scroll",
     description:
       "Scroll the page or its main scrolling list one screen: direction up, down, top or bottom; or give a @ref " +
@@ -452,6 +476,7 @@ async function runTool(name, args, session) {
     case "browser.find": return toolFind(args, session);
     case "browser.click": return toolAct("click", args, session);
     case "browser.type": return toolAct("type", args, session);
+    case "browser.upload": return toolUpload(args, session);
     case "browser.scroll": return toolScroll(args, session);
     case "browser.screenshot": return toolScreenshot(session);
     case "browser.wait": return toolWait(args, session);
@@ -996,6 +1021,123 @@ async function toolAct(op, args, session) {
     } catch (e) {}
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Upload
+// ---------------------------------------------------------------------------
+// An <input type=file> is the one control a page cannot be talked into filling:
+// clicking it opens the operating system's dialog, which lives outside the
+// browser and outside anything an extension may touch. What IS allowed is to
+// hand the input a File object directly — the same end state the dialog would
+// have produced. The bytes come from the service worker's own fetch (host
+// permissions, so no CORS to argue with) or from the core as base64, and they
+// travel to the page as base64 because executeScript arguments are JSON.
+const UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
+const UPLOAD_FETCH_MS = 30000;
+
+const MIME_BY_EXT = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+  webp: "image/webp", svg: "image/svg+xml", avif: "image/avif", bmp: "image/bmp",
+  pdf: "application/pdf", txt: "text/plain", md: "text/markdown", csv: "text/csv",
+  json: "application/json", zip: "application/zip", mp4: "video/mp4", webm: "video/webm",
+  mp3: "audio/mpeg", wav: "audio/wav", ogg: "audio/ogg",
+};
+const EXT_BY_MIME = { "image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif",
+                      "image/webp": ".webp", "image/svg+xml": ".svg", "application/pdf": ".pdf" };
+
+function mimeFromName(name) {
+  const m = /\.([A-Za-z0-9]+)$/.exec(String(name || ""));
+  return m ? MIME_BY_EXT[m[1].toLowerCase()] || "" : "";
+}
+
+function base64FromBuffer(buf) {
+  const bytes = new Uint8Array(buf);
+  let out = "";
+  const CHUNK = 0x8000; // String.fromCharCode.apply dies on a whole large file
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    out += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(out);
+}
+
+function humanBytes(n) {
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  return (n / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+async function toolUpload(args, session) {
+  const url = String(args.url == null ? "" : args.url).trim();
+  const data = String(args.data == null ? "" : args.data).trim();
+  if (url && data) return fail("browser.upload takes either url or data, not both.");
+  if (!url && !data) {
+    return fail("browser.upload needs the file itself: url= for something reachable on the web " +
+                "(a raw GitHub link, an image on a page), or data= for base64 bytes.");
+  }
+
+  let b64 = "";
+  let mime = String(args.mime == null ? "" : args.mime).trim();
+  let name = String(args.filename == null ? "" : args.filename).trim();
+  let bytes = 0;
+
+  if (url) {
+    if (!/^https?:\/\//i.test(url)) {
+      return fail("browser.upload's url must be http(s) — got " + JSON.stringify(url.slice(0, 80)) +
+                  ". A file on this machine is not reachable from the browser; send it as data=base64.");
+    }
+    let resp;
+    try {
+      resp = await withTimeout(fetch(url, { credentials: "omit", redirect: "follow" }),
+                               UPLOAD_FETCH_MS, () => "fetching " + url + " took longer than 30s");
+    } catch (e) {
+      return fail("could not fetch " + url + ": " + String((e && e.message) || e));
+    }
+    if (!resp.ok) return fail("fetching " + url + " returned HTTP " + resp.status + " " + resp.statusText);
+    const buf = await resp.arrayBuffer();
+    bytes = buf.byteLength;
+    if (!bytes) return fail(url + " returned an empty body — nothing to upload.");
+    if (bytes > UPLOAD_MAX_BYTES) {
+      return fail(url + " is " + humanBytes(bytes) + "; browser.upload carries at most " +
+                  humanBytes(UPLOAD_MAX_BYTES) + ".");
+    }
+    b64 = base64FromBuffer(buf);
+    if (!mime) mime = String(resp.headers.get("content-type") || "").split(";")[0].trim();
+    if (!name) {
+      try { name = decodeURIComponent(new URL(url).pathname.split("/").filter(Boolean).pop() || ""); }
+      catch (e) { name = ""; }
+    }
+  } else {
+    let raw = data;
+    const m = /^data:([^;,]*)(;base64)?,([\s\S]*)$/i.exec(raw);
+    if (m) {
+      if (!mime && m[1]) mime = m[1];
+      if (m[2]) raw = m[3];
+      else { try { raw = btoa(decodeURIComponent(m[3])); } catch (e) { return fail("the data: URI is not readable."); } }
+    }
+    b64 = raw.replace(/\s+/g, "");
+    if (!b64 || !/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) {
+      return fail("browser.upload's data is not base64. Send the file's bytes base64-encoded, " +
+                  "or a data: URI, or give url= instead.");
+    }
+    bytes = Math.floor((b64.length * 3) / 4);
+    if (bytes > UPLOAD_MAX_BYTES) {
+      return fail("that is " + humanBytes(bytes) + "; browser.upload carries at most " + humanBytes(UPLOAD_MAX_BYTES) + ".");
+    }
+  }
+
+  if (!mime) mime = mimeFromName(name);
+  if (!name) name = "upload" + (EXT_BY_MIME[mime] || "");
+  if (!mime) mime = "application/octet-stream";
+
+  const tab = await targetTab(session);
+  const res = await actWithFrameFallback(tab, "upload", {
+    selector: String(args.ref == null ? "" : args.ref).trim(),
+    name: name, mime: mime, b64: b64, bytes: bytes,
+    source: url ? url : "base64 (" + humanBytes(bytes) + ")",
+  });
+  if (AFTER_ACTION_MS) await sleep(AFTER_ACTION_MS);
+  return fromKernel(tab, res, "upload");
 }
 
 async function toolScroll(args, session) {

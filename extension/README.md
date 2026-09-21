@@ -4,7 +4,7 @@ Puts the Jarvis V2 web app in the browser sidebar and lets Jarvis read, navigate
 and act in **your own tabs** — real profile, real logins, no launch flags.
 
 The extension is a **tool provider** for the core: it connects to the core's
-WebSocket, announces ten `browser.*` tools, and executes them when a run asks.
+WebSocket, announces eleven `browser.*` tools, and executes them when a run asks.
 The core decides *whether* a tool may be called (its tool policy); the
 extension decides *how* (the page kernel). There is no on/off switch in the
 extension — disable it at `brave://extensions` if you want Jarvis blind.
@@ -54,7 +54,7 @@ ext → core  browser.context {url, title, selection?, tab_id}   on active-tab c
 both        ping / pong
 ```
 
-- `browser.hello` carries the ten `ToolSpec`s (name, description, JSON Schema
+- `browser.hello` carries the eleven `ToolSpec`s (name, description, JSON Schema
   with `additionalProperties:false`, `read_only`, `destructive`, `idempotent`).
   The core registers them on hello and drops them when the socket closes, so the
   extension re-announces on every reconnect.
@@ -82,10 +82,11 @@ both        ping / pong
 | `browser.find` | `query` | snippets around each mention + matching controls with `@refs` |
 | `browser.click` | `ref` | scored resolution, scroll into view, refuses disabled/covered, reports field diffs and navigation |
 | `browser.type` | `ref`, `text`, `submit?` | native setter for inputs (React sees it), `execCommand` line-by-line for rich editors, reports nearby buttons and their enabled/disabled transitions |
+| `browser.upload` | `url` \| `data`, `filename?`, `mime?`, `ref?` | attaches a file to the page's `<input type=file>`: the worker fetches the URL (host permissions, no CORS) or decodes the base64, the kernel rebuilds it as a `File`, hands it over in a `DataTransfer` and fires `input` + `change`. The OS file dialog an upload button opens is outside the browser, so this is the only route; the input is usually hidden and is found for you, disambiguated by `accept` |
 | `browser.scroll` | `ref?` \| `direction` | page or its main scrolling container; by ref → into view |
 | `browser.screenshot` | — | visible tab as JPEG (`image` field) |
 | `browser.wait` | `text?`, `timeout_s?` | blocks (default 30 s, max 120) until the visible text changes and holds still, or `text` appears; returns only the new text; `empty` on timeout — the clock for chatbots and slow forms, instead of sleep-and-re-read |
-| `browser.eval` | `code`, `page_world?` | the escape hatch: the model's own JavaScript in the work tab (frame last read), value back as JSON; helpers `$`, `$$`, `$ref('e9')`, `describe(el)`, `evidence(el)`; isolated world by default, `page_world` opts into the page's globals (its CSP applies) |
+| `browser.eval` | `code`, `page_world?` | the escape hatch: the model's own JavaScript in the work tab (frame last read), value back as JSON; helpers `$`, `$$`, `$ref('e9')`, `describe(el)`, `evidence(el)`; isolated world by default, `page_world` opts into the page's globals (its CSP applies). A page whose CSP forbids `unsafe-eval` (dev.to, GitHub, most banks) refuses the compiled string in either world — that refusal is reported as a CSP refusal and points at the typed tools, which are DOM calls and keep working |
 
 Refs (`@e12`) are `data-jarvis-ref` attributes stamped by `read`/`find`; they
 stay valid until the page navigates, and a recycled node (virtualised lists) is

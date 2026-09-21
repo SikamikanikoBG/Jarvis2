@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Jarvis Side Panel",
-  "version": "2.3.1",
+  "version": "2.4.0",
   "description": "Jarvis in the browser sidebar — reads and acts on the page you are on, as a tool provider for the Jarvis V2 core.",
   "minimum_chrome_version": "116",
   "permissions": [

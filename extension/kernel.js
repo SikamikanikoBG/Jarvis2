@@ -1485,8 +1485,22 @@ function pageKernel(op, p) {
         fn = new Function("$", "$$", "$ref", "describe", "evidence",
                           "return (async () => {\n" + code + "\n})();");
       } catch (e) {
+        const msg = (e && e.message) || String(e);
+        // A strict page CSP (dev.to, GitHub, most banks) refuses compiled
+        // strings in this world too, and the refusal arrives as an EvalError
+        // from `new Function` — which is not a syntax error, and saying so
+        // sends the model off rewriting perfectly good code.
+        if ((e && e.name === "EvalError") || /unsafe-eval|Content Security Policy|Refused to evaluate/i.test(msg)) {
+          return finalize({ ok: false, kernel_error: false, csp_blocked: true,
+            error: "This page's Content Security Policy refuses code built from a string, so browser.eval " +
+                   "cannot run here at all (" + msg.split("\n")[0] + "). Nothing was executed. Use the typed " +
+                   "tools instead: browser.find and browser.read mode=outline to locate a control, " +
+                   "browser.click and browser.type to drive it, browser.upload to put a file into an upload " +
+                   "field, browser.wait for what follows. They work on this page — they are DOM calls, not " +
+                   "compiled code." });
+        }
         return finalize({ ok: false, kernel_error: false,
-          error: "The code does not parse: " + ((e && e.message) || String(e)) +
+          error: "The code does not parse: " + msg +
                  ". Write the body of an async function; use `return` for the value you want back." });
       }
       // Not awaited here: executeScript needs a sync return for the value to
@@ -1895,6 +1909,147 @@ function pageKernel(op, p) {
       if (transitions.length) {
         t += "\n" + transitions.map((c) =>
           c.ref + " «" + c.label + "» became " + (c.disabled_now ? "disabled" : "enabled")).join("; ");
+      }
+      out.text = t;
+      return out;
+    }
+
+    case "upload": {
+      // The OS file dialog is off limits to everything in the browser, so the
+      // only honest way to fill a file field is to build the File here and put
+      // it on the input, then fire the events the page would have received.
+      const FILE_FIELD = 'input[type="file" i]';
+      const name = String(p.name == null ? "upload" : p.name);
+      const mime = String(p.mime == null ? "" : p.mime);
+      const accepts = (input) => {
+        const acc = String(input.getAttribute("accept") || "").trim().toLowerCase();
+        if (!acc) return true;
+        const ext = (/\.[A-Za-z0-9]+$/.exec(name) || [""])[0].toLowerCase();
+        return acc.split(",").map((s) => s.trim()).filter(Boolean).some((a) =>
+          a === "*/*" || a === ext || a === mime.toLowerCase() ||
+          (a.slice(-2) === "/*" && mime.toLowerCase().indexOf(a.slice(0, -1)) === 0));
+      };
+      const label = (input) => "@" + refOf(input) + " " + describe(input) +
+        (input.getAttribute("accept") ? " accept=" + input.getAttribute("accept") : "");
+
+      let el = null;
+      let r = { how: "the page's only file field" };
+      const sel = String(p.selector || "").trim();
+      if (sel) {
+        r = resolve(sel, "clickable");
+        if (!r.el) return notFound(sel, r);
+        el = unwrapLabel(r.el);
+        if (!el.matches(FILE_FIELD)) {
+          // An upload BUTTON or its label is the visible thing, and that is
+          // what an outline hands out; the input it drives is next to it.
+          let found = el.querySelector ? el.querySelector(FILE_FIELD) : null;
+          const forId = el.getAttribute && el.getAttribute("for");
+          if (!found && forId) {
+            const t = document.getElementById(forId);
+            if (t && t.matches(FILE_FIELD)) found = t;
+          }
+          if (!found && el.closest) {
+            const box = el.closest("form, label, fieldset, div, section");
+            if (box) found = box.querySelector(FILE_FIELD);
+          }
+          if (found) el = found;
+        }
+        if (!el.matches(FILE_FIELD)) {
+          const others = Array.prototype.slice.call(deepQueryAll(FILE_FIELD));
+          return finalize({
+            ok: false,
+            error: "Resolved " + describe(el) + ", which is not a file field and has none inside it." +
+              (others.length
+                ? " The page's file fields are: " + others.slice(0, 5).map(label).join(", ") +
+                  " — pass one of those as ref."
+                : " This page has no <input type=file> at all, so there is nothing to upload to."),
+            candidates: candidateList(r),
+          });
+        }
+      } else {
+        const all = Array.prototype.slice.call(deepQueryAll(FILE_FIELD));
+        if (!all.length) {
+          return finalize({
+            ok: false,
+            error: "This page has no <input type=file>, so there is nothing to attach a file to. " +
+              "Some editors create one only after their upload button is clicked — browser.click it " +
+              "first, then browser.upload again. A dialog the click opens outside the page cannot be " +
+              "driven from here.",
+          });
+        }
+        const fits = all.filter(accepts);
+        if (all.length === 1) el = all[0];
+        else if (fits.length === 1) { el = fits[0]; r = { how: "the only field that accepts " + (mime || name) }; }
+        else {
+          return finalize({
+            ok: false,
+            error: all.length + " file fields are on this page and " +
+              (fits.length ? fits.length + " of them accept " + (mime || name) : "none declares what it accepts") +
+              ". Pass ref= to say which: " + all.slice(0, 6).map(label).join(", "),
+          });
+        }
+      }
+
+      if (disabled(el)) {
+        return finalize({ ok: false, error: "That file field is disabled: " + describe(el) + "." });
+      }
+      if (!accepts(el)) {
+        return finalize({
+          ok: false,
+          error: describe(el) + " accepts " + el.getAttribute("accept") + ", and this file is " +
+            name + " (" + (mime || "unknown type") + "). The site would reject it.",
+        });
+      }
+
+      let file;
+      try {
+        const bin = atob(String(p.b64 || ""));
+        const arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        file = new File([arr], name, { type: mime || "application/octet-stream" });
+      } catch (e) {
+        return finalize({ ok: false, error: "Could not rebuild the file in the page: " + ((e && e.message) || String(e)) });
+      }
+
+      try {
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        el.files = dt.files;
+      } catch (e) {
+        return finalize({
+          ok: false,
+          error: "The page would not take the file: " + ((e && e.message) || String(e)) +
+            ". Some frameworks lock their file input; try the visible upload control's ref instead.",
+        });
+      }
+      if (!el.files || el.files.length !== 1) {
+        return finalize({
+          ok: false,
+          error: "The field did not keep the file — it now holds " +
+            ((el.files && el.files.length) || 0) + ". Nothing was uploaded.",
+        });
+      }
+
+      // React and friends listen for the native events, not for the assignment.
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+
+      const out = {
+        ok: true, action: "upload", element: describe(el), how: r.how,
+        filename: el.files[0].name, mime: el.files[0].type,
+        bytes: p.bytes || el.files[0].size, source: p.source || "",
+        hidden: !visible(el), controls: nearbyControls(el),
+      };
+      if (r.recovered) out.recovered = r.recovered;
+      let t = "Attached " + out.filename + " (" + (out.mime || "no type") + ", " + out.bytes +
+              " bytes) to " + out.element + " and fired input + change.";
+      if (out.source) t += "\nFrom: " + out.source;
+      if (out.hidden) t += "\nThe field is hidden, which is normal — the page's button opens it.";
+      t += "\nThe site uploads in the background: browser.wait for its confirmation, then browser.read " +
+           "to pick up the URL or the markdown it inserted.";
+      if (out.controls.length) {
+        t += "\nButtons next to the field: " + out.controls.map((c) =>
+          c.ref + " «" + c.label + "»" + (c.disabled ? " (disabled)" : "")).join(", ");
       }
       out.text = t;
       return out;

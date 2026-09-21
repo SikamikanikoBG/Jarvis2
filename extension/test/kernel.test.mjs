@@ -641,3 +641,119 @@ test("an unknown op is an error, never silence", () => {
   assert.equal(res.ok, false);
   assert.match(res.text, /Kernel has no op: extract/);
 });
+
+// ── file upload (dev.to's editor is the shape that broke) ────────────────
+//
+// dev.to hides its <input type=file> behind a toolbar button: clicking the
+// button opens the OS dialog, which nothing inside the browser may drive. The
+// only path that works is to build the File and put it on the input — these
+// cover that path and the ways a page can make it ambiguous.
+
+const DEVTO_EDITOR = `
+<form id="article-form">
+  <input id="article-form-title" type="text" value="Draft">
+  <div class="toolbar">
+    <button type="button" id="img-btn" aria-label="Upload image">Upload image</button>
+    <input id="image-upload-field" type="file" accept="image/*" style="display:none">
+  </div>
+  <textarea id="article_body_markdown">body</textarea>
+  <button type="button" id="save">Save Draft</button>
+</form>`;
+
+const HELLO_PNG = "aGVsbG8="; // five bytes; the kernel only has to carry them intact
+
+function uploadArgs(extra) {
+  return Object.assign({ name: "decode.png", mime: "image/png", b64: HELLO_PNG,
+                         bytes: 5, source: "https://example.test/decode.png" }, extra || {});
+}
+
+test("upload puts the file on the editor's hidden input and fires change", () => {
+  const p = page(DEVTO_EDITOR);
+  const seen = [];
+  p.$("#image-upload-field").addEventListener("change", (e) => {
+    seen.push({ type: e.type, bubbles: e.bubbles, name: e.target.files[0].name, size: e.target.files[0].size });
+  });
+  p.$("#image-upload-field").addEventListener("input", (e) => seen.push({ type: e.type }));
+
+  const res = p.op("upload", uploadArgs());
+  assert.equal(res.ok, true, res.error);
+  assert.equal(res.filename, "decode.png");
+  assert.equal(res.mime, "image/png");
+  assert.equal(res.hidden, true, "the field is hidden, as dev.to's is");
+  assert.match(res.text, /Attached decode\.png \(image\/png, 5 bytes\)/);
+  assert.match(res.text, /From: https:\/\/example\.test\/decode\.png/);
+  assert.match(res.text, /browser\.wait/, "tells the model the upload is asynchronous");
+
+  assert.deepEqual(seen.map((s) => s.type), ["input", "change"]);
+  assert.equal(seen[1].bubbles, true, "React listens at the root, so the event must bubble");
+  assert.equal(seen[1].name, "decode.png");
+  assert.equal(seen[1].size, 5, "the bytes survived base64 -> File");
+});
+
+test("upload finds the input from the visible button's ref", () => {
+  const p = page(DEVTO_EDITOR);
+  const out = p.op("read", { mode: "outline" });
+  const btn = out.elements.find((e) => /Upload image/i.test(e.label || e.text || ""));
+  assert.ok(btn, "the toolbar button is in the outline");
+  const res = p.op("upload", uploadArgs({ selector: btn.ref }));
+  assert.equal(res.ok, true, res.error);
+  assert.match(res.element, /input#image-upload-field/);
+});
+
+test("a page with no file field says so and says what to try instead", () => {
+  const p = page("<button id=b>Add image</button>");
+  const res = p.op("upload", uploadArgs());
+  assert.equal(res.ok, false);
+  assert.match(res.error, /no <input type=file>/);
+  assert.match(res.error, /browser\.click it\s+first/);
+});
+
+test("several file fields: accept picks the one that fits, otherwise ask for a ref", () => {
+  const p = page(`
+    <input id="avatar" type="file" accept="image/*">
+    <input id="resume" type="file" accept=".pdf">`);
+  const ok = p.op("upload", uploadArgs());
+  assert.equal(ok.ok, true, ok.error);
+  assert.match(ok.element, /input#avatar/);
+
+  const p2 = page(`<input id="a" type="file"><input id="b" type="file">`);
+  const amb = p2.op("upload", uploadArgs());
+  assert.equal(amb.ok, false);
+  assert.match(amb.error, /2 file fields/);
+  assert.match(amb.error, /input#a/);
+  assert.match(amb.error, /input#b/);
+});
+
+test("a field that would reject the file refuses before the site does", () => {
+  const p = page(`<input id="only-pdf" type="file" accept="application/pdf">`);
+  const res = p.op("upload", uploadArgs());
+  assert.equal(res.ok, false);
+  assert.match(res.error, /accepts application\/pdf/);
+  assert.match(res.error, /decode\.png/);
+});
+
+test("a disabled file field is refused, not silently skipped", () => {
+  const p = page(`<input id="f" type="file" disabled>`);
+  const res = p.op("upload", uploadArgs());
+  assert.equal(res.ok, false);
+  assert.match(res.error, /disabled/);
+});
+
+test("a CSP refusal from eval is named as a CSP refusal, not a syntax error", () => {
+  const p = page("<p>x</p>");
+  // What Chrome does on a page whose CSP has no 'unsafe-eval': the constructor
+  // itself throws, before a single character of the model's code is looked at.
+  p.ctx.Function = function () {
+    const e = new Error("Refused to evaluate a string as JavaScript because 'unsafe-eval' " +
+                        "is not an allowed source of script in the following Content Security Policy directive");
+    e.name = "EvalError";
+    throw e;
+  };
+  const res = p.op("eval", { code: "return 1;" });
+  assert.equal(res.ok, false);
+  assert.equal(res.csp_blocked, true);
+  assert.doesNotMatch(res.error, /does not parse/);
+  assert.match(res.error, /Content Security Policy refuses code built from a string/);
+  assert.match(res.error, /Nothing was executed/);
+  assert.match(res.error, /browser\.upload/);
+});

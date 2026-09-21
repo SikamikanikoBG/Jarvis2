@@ -246,7 +246,9 @@ both        ping / pong
 ```
 Tools the extension exposes (V1 pageKernel, ported): `browser.tabs`, `browser.open {url}`,
 `browser.read {tab?, mode: "text"|"outline"}`, `browser.find {query}`, `browser.click {ref}`,
-`browser.type {ref, text, submit?}`, `browser.scroll {ref?|direction}`, `browser.screenshot`,
+`browser.type {ref, text, submit?}`, `browser.upload {url|data, filename?, mime?, ref?}` (attaches a
+file to the page's `<input type=file>`, since the OS file dialog an upload button opens is outside
+anything the browser lets an extension touch), `browser.scroll {ref?|direction}`, `browser.screenshot`,
 `browser.wait {text?, timeout_s?}` (blocks until the visible text changes and settles, or the phrase
 appears; empty on timeout — the model's clock, so it never sleeps-and-re-reads),
 `browser.eval {code, page_world?}` (the model's own JavaScript in the page; the escape hatch that keeps

@@ -23,7 +23,7 @@ const TIMEOUTS = { call: 400, inject: 250, load: 400, settle: 60, retryMin: 40, 
                    waitPoll: 40, waitSettle: 100 };
 
 const API_TOOLS = ["browser.tabs", "browser.open", "browser.read", "browser.find",
-                   "browser.click", "browser.type", "browser.scroll", "browser.screenshot",
+                   "browser.click", "browser.type", "browser.upload", "browser.scroll", "browser.screenshot",
                    "browser.eval", "browser.wait"];
 
 const ARTICLE = "https://example.test/article";
@@ -117,7 +117,7 @@ test("browser.hello announces agent, version and exactly the tools in API.md", (
   assert.equal(hello.agent, "jarvis-extension");
   assert.equal(hello.version, "2.0.0-test");
   assert.deepEqual(hello.tools.map((t) => t.name), API_TOOLS);
-  assert.equal(MANIFEST.version, "2.3.1");
+  assert.equal(MANIFEST.version, "2.4.0");
 });
 
 test("every ToolSpec has a closed JSON Schema, a description and the agreed read_only flags", () => {

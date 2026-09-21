@@ -124,7 +124,7 @@ class _WaitArgs(BaseModel):
 
 
 class _WaitUntilArgs(BaseModel):
-    tool: str = Field(description="The read-only tool to call again and again, e.g. 'workocholic.shell_run'.")
+    tool: str = Field(description="The tool to call again and again, e.g. 'workocholic.shell_run'. It must only read.")
     args: dict[str, Any] = Field(
         default_factory=dict, description="Its arguments, exactly as you would pass them calling it yourself."
     )
@@ -164,9 +164,15 @@ class CoreTools(BuiltinProvider):
 
     name = "builtin"
 
-    def __init__(self, registry: Callable[[], ToolRegistry] | None = None) -> None:
-        # A getter, not the registry: the registry is built after this provider and holds it.
+    def __init__(
+        self,
+        registry: Callable[[], ToolRegistry] | None = None,
+        settings: Callable[[], Any] | None = None,
+    ) -> None:
+        # Getters, not the objects: the registry is built after this provider and holds it, and
+        # settings are replaced wholesale on every PATCH.
         self._registry = registry
+        self._settings = settings
         super().__init__()
 
     @tool(
@@ -228,7 +234,8 @@ class CoreTools(BuiltinProvider):
             "itself, so there is no need to call the tool again afterwards. Two examples: a container — "
             "tool='workocholic.shell_run', args={'command': 'docker ps --filter name=app --format \"{{.Status}}\"'}, "
             "contains='Up '; an HTTP service — tool='fetch.fetch', args={'url': 'http://host:9800/healthz'}, "
-            "contains='ok'. Only read-only tools can be polled, so nothing is sent or changed twice. The run "
+            "contains='ok'. Only tools that read can be polled — every read-only one, plus those Arsen listed "
+            "in settings.wait_until_pollable — so nothing is ever sent twice. The run "
             "clock is paused while it waits, so this never counts as taking too long or as a loop, and Arsen "
             "interrupting ends it at once. For a plain pause with nothing to check use jarvis.wait; for a page "
             "that will change on its own, browser.wait is better."
@@ -257,11 +264,14 @@ class CoreTools(BuiltinProvider):
         spec = registry.get(name)
         if spec is None:
             return ToolResult.failure(registry.cannot_route(name))
-        if not spec.read_only:
-            # Polling a mutation would send the mail, or press the button, once per attempt.
+        settings = self._settings() if self._settings is not None else None
+        allowed = settings.may_poll(name, read_only=spec.read_only) if settings else spec.read_only
+        if not allowed:
+            # Polling repeats the call: a mail or a message would go out once per attempt.
             return ToolResult.failure(
-                f"jarvis.wait_until only repeats read-only tools, and {name} can change things. "
-                "Wait on a read-only check of the same thing, then act once when it comes true."
+                f"{name} may not be polled: it is not read-only and not in settings.wait_until_pollable. "
+                "Wait on a read-only check of the same thing and act once when it comes true — or ask "
+                "Arsen to add it to that list if it only reads."
             )
         if error := registry.validate(name, dict(args or {})):
             return ToolResult.failure(error)

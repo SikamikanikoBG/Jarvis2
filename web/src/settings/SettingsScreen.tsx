@@ -264,6 +264,9 @@ export function SettingsScreen() {
             <Field label="Pictures and clips in context" hint="Newest first; older ones stay as a note. Keep under the lane's per-prompt limit (6 images)." error={errors.media_in_context}>
               <NumberInput value={draft.media_in_context} min={0} onChange={(v) => patch('media_in_context', v ?? 0)} />
             </Field>
+            <Field label="Tools jarvis.wait_until may poll" hint="Comma-separated, on top of every read-only tool. A namespace glob works (homelab.*). Never put anything that sends here." error={errors.wait_until_pollable}>
+              <input className="input mono" value={draft.wait_until_pollable.join(', ')} onChange={(e) => patch('wait_until_pollable', e.target.value.split(',').map((x) => x.trim()).filter(Boolean))} placeholder="fetch.fetch, homelab.*" />
+            </Field>
             <Field label="Boards in context (chars)" error={errors.boards_context_chars}>
               <NumberInput value={draft.boards_context_chars} min={0} onChange={(v) => patch('boards_context_chars', v ?? 0)} />
             </Field>

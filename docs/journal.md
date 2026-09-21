@@ -1535,3 +1535,27 @@ could not otherwise be exercised at all.
 No core change and no deploy — the extension is loaded unpacked, so this lands when it is reloaded
 at `brave://extensions`. The `browser.reload` frame still does not take (see 2026-09-20); verify
 with `docker logs jarvis2-core | grep "extension connected"` and expect 2.4.0.
+
+## 2026-09-21 — what a wait is allowed to poll (core 2.0.0a64, proto a25, web alpha.37)
+
+The first live call of `jarvis.wait_until` against the deployed core refused its own documented
+example: `fetch.fetch can change things`. The guard was `spec.read_only`, and the flag comes from
+MCP's `readOnlyHint`, which almost nobody sends. Counted on the running instance: **38 of 91
+tools carry it**, and the three that matter for waiting are not among them — `fetch.fetch`,
+every `homelab.get_*` (from a server whose own description says it never mutates), and
+`workocholic.shell_run`, which the host marks *destructive* because it runs commands, and which
+is also exactly how you ask whether a service is up.
+
+So the flag is not the test. `Settings.wait_until_pollable` is: an allow-list of names and
+`namespace.*` globs on top of every read-only tool, shipping as `fetch.fetch`, `homelab.*`,
+`workocholic.shell_run`, editable in Settings → Behaviour. The line that matters is not
+read-versus-write but **read-versus-send**: polling repeats the call, so a mail or a Discord
+message going out twenty times is the harm worth preventing, and `outlook_send`, `notify.*`,
+`browser.click` and the memory writers stay off the list by construction. Three tests pin the
+shipped list, the globs, and that the senders are refused.
+
+Two lessons, and the second is the reason the first was found. A capability's *guard* has to be
+verified against the live tool catalogue, not against the data model — `read_only` is a hint
+from whoever wrote the server, not a fact about the tool. And a feature is not finished when its
+tests pass: this one passed eight tests and was useless in production until it was called once,
+for real, on the box it runs on.

@@ -406,6 +406,8 @@ export interface Settings {
   tool_result_admit_chars: number;
   context_reserve_tokens: number;
   media_in_context: number;
+  /** Tools jarvis.wait_until may poll although they are not marked read-only ("ns.*" allowed). */
+  wait_until_pollable: string[];
   boards_context_chars: number;
   skill_max_chars: number;
   planning_enabled: boolean;

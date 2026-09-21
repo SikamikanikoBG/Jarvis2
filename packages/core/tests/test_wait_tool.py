@@ -17,7 +17,7 @@ from jarvis_core.engine.supervision import RunBudget, RunWatch
 from jarvis_core.models.base import reset_endpoint_semaphores
 from jarvis_core.models.fake import FakeAdapter, FakeTurn
 from jarvis_core.tools.builtin import WAIT_MAX_S, CoreTools
-from jarvis_proto import RoleName, ToolCall, ToolResult, ToolResultKind
+from jarvis_proto import RoleName, Settings, ToolCall, ToolResult, ToolResultKind
 
 
 @pytest.fixture
@@ -127,11 +127,12 @@ def test_the_core_gives_a_wait_its_full_duration_not_the_default_cap():
 class _Probe(CoreTools):
     """A CoreTools wired to a fake registry whose one tool answers a scripted sequence."""
 
-    def __init__(self, answers: list[ToolResult], *, read_only: bool = True) -> None:
+    def __init__(self, answers: list[ToolResult], *, read_only: bool = True, pollable: list[str] | None = None) -> None:
         self.answers = answers
         self.calls: list[dict] = []
         self.read_only = read_only
-        super().__init__(registry=lambda: self)  # type: ignore[arg-type]
+        self.settings = Settings(wait_until_pollable=pollable) if pollable is not None else None
+        super().__init__(registry=lambda: self, settings=(lambda: self.settings) if pollable is not None else None)  # type: ignore[arg-type]
 
     # -- the slice of ToolRegistry that wait_until uses
     def get(self, name: str):
@@ -209,7 +210,37 @@ def test_wait_until_refuses_a_tool_that_can_change_things():
     """Polling a mutation would send the mail once per attempt."""
     probe = _Probe([ToolResult.data("sent")], read_only=False)
     res = asyncio.run(probe._wait_until(tool="probe.check", timeout_s=5, cancel=asyncio.Event()))
-    assert res.kind is ToolResultKind.ERROR and "read-only" in res.text and probe.calls == []
+    assert res.kind is ToolResultKind.ERROR and "may not be polled" in res.text and probe.calls == []
+
+
+def test_a_listed_tool_is_polled_even_without_the_read_only_flag():
+    """Most MCP servers never send readOnlyHint, so the flag alone rules out the tools a wait is
+    FOR: fetch.fetch, every homelab.get_*, the shell that runs a health check (live, 21 Sep)."""
+    probe = _Probe([ToolResult.data("pong")], read_only=False, pollable=["probe.check"])
+    res = asyncio.run(probe._wait_until(tool="probe.check", timeout_s=5, cancel=asyncio.Event()))
+    assert res.kind is ToolResultKind.DATA and "pong" in res.text and len(probe.calls) == 1
+
+    # A namespace glob works, and what is not listed is still refused.
+    glob = _Probe([ToolResult.data("pong")], read_only=False, pollable=["probe.*"])
+    assert (
+        asyncio.run(glob._wait_until(tool="probe.check", timeout_s=5, cancel=asyncio.Event())).kind
+        is ToolResultKind.DATA
+    )
+    other = _Probe([ToolResult.data("sent")], read_only=False, pollable=["something.else"])
+    assert (
+        asyncio.run(other._wait_until(tool="probe.check", timeout_s=5, cancel=asyncio.Event())).kind
+        is ToolResultKind.ERROR
+    )
+    assert other.calls == []
+
+
+def test_the_shipped_allow_list_covers_the_checks_and_none_of_the_senders():
+    s = Settings()
+    for name in ("fetch.fetch", "homelab.get_gpu", "workocholic.shell_run"):
+        assert s.may_poll(name, read_only=False), f"{name} is how you check whether something is up"
+    for name in ("workocholic.outlook_send", "notify.discord", "browser.click", "kg.remember"):
+        assert not s.may_poll(name, read_only=False), f"{name} would go out once per attempt"
+    assert s.may_poll("workocholic.fs_list", read_only=True), "read-only never needs listing"
 
 
 def test_wait_until_refuses_an_unknown_tool_and_itself():

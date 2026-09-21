@@ -580,6 +580,17 @@ class Settings(BaseModel):
     # Ceiling for a single tool call. A tool that asks for its own timeout_s (shell_run running a
     # long report) is honoured up to this; everything else gets the 120 s default.
     tool_timeout_max_s: int = 1200  # Arsen's Outlook workload report takes ~14 min
+    # Tools jarvis.wait_until may poll although they are not marked read-only. Most MCP servers
+    # never send readOnlyHint, so the flag alone rules out exactly the tools a wait is FOR: the
+    # fetch server, every homelab.get_*, and the shell that runs a health check (verified live
+    # 2026-09-21 — 38 of 91 tools carry the flag, and none of those three do). An exact name or
+    # a `namespace.*` glob. What must never be here is anything that SENDS: polling repeats the
+    # call, and a mail or a Discord post repeated twenty times is the harm this list exists to
+    # prevent. `workocholic.shell_run` is on it because checking a service is what it is for;
+    # take it off if you would rather the model wait on fs_list or host_status instead.
+    wait_until_pollable: list[str] = Field(
+        default_factory=lambda: ["fetch.fetch", "homelab.*", "workocholic.shell_run"]
+    )
     boards_context_chars: int = 6_000
     skill_max_chars: int = 6_000
     planning_enabled: bool = True
@@ -622,6 +633,13 @@ class Settings(BaseModel):
         """The lane to fall over to: the other one, when it is a different endpoint."""
         other = RoleName.BACKGROUND if lane is RoleName.CHAT else RoleName.CHAT
         return other if self.roles[other].endpoint_key != self.roles[lane].endpoint_key else None
+
+    def may_poll(self, name: str, *, read_only: bool) -> bool:
+        """Whether jarvis.wait_until may call ``name`` over and over."""
+        if read_only:
+            return True
+        namespace = name.split(".", 1)[0]
+        return any(rule in (name, f"{namespace}.*") for rule in self.wait_until_pollable)
 
     def admit_chars(self, results_budget_tokens: int, chars_per_token: float) -> int:
         """How much of one tool result a step admits: the configured limit, or half the step's

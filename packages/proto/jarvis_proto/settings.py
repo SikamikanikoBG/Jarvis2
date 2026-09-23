@@ -503,6 +503,46 @@ class SessionsSettings(BaseModel):
     reply_timeout_s: int = 180
 
 
+class ShadowSettings(BaseModel):
+    """A second opinion that is recorded, never obeyed (features/shadow.py).
+
+    After a real decision (a mail filed, an alert matched, an invite answered, a run pre-flighted,
+    a message about to go out) the same input goes to a typed-decision model - Laya, a 421M
+    encoder on ardi - and both answers land side by side in ``<home>/shadow.db``. Nothing Jarvis
+    does depends on it: Laya down, slow or wrong changes nothing but a row's ``laya_error``.
+    It exists to measure whether a small classifier could take decisions off the 27B.
+    """
+
+    enabled: bool = False
+    #: The laya-service base URL (POST /predict). Empty = record the input and production's answer
+    #: only, so a model can still be replayed over them later.
+    laya_url: str = ""
+    timeout_s: float = 10.0
+    #: Shadow calls in flight at once; past it a new observation is dropped (and counted), so a
+    #: burst of mail can never queue work behind the real thing.
+    max_pending: int = 32
+    #: Which decision points are observed: mail (category + alert), rsvp, preflight (tier +
+    #: skills), guardrail (outgoing text).
+    points: list[str] = Field(default_factory=lambda: ["mail", "rsvp", "preflight", "guardrail"])
+    #: Tools whose text leaves the house on Arsen's behalf: an exact name or a `*.suffix` glob.
+    guardrail_tools: list[str] = Field(
+        default_factory=lambda: [
+            "*.outlook_send",
+            "*.outlook_reply",
+            "*.outlook_forward",
+            "*.calendar_respond",
+            "*.teams_send",
+            "notify.discord",
+        ]
+    )
+
+    def observes(self, point: str) -> bool:
+        return self.enabled and point in self.points
+
+    def guards(self, tool: str) -> bool:
+        return any(tool == g or (g.startswith("*.") and tool.endswith(g[1:])) for g in self.guardrail_tools)
+
+
 class Settings(BaseModel):
     assistant_name: str = "Jarvis"
     user_name: str = "Arsen"
@@ -599,6 +639,7 @@ class Settings(BaseModel):
     rsvp: MeetingRsvpSettings = Field(default_factory=MeetingRsvpSettings)
     voice: VoiceSettings = Field(default_factory=VoiceSettings)
     sessions: SessionsSettings = Field(default_factory=SessionsSettings)
+    shadow: ShadowSettings = Field(default_factory=ShadowSettings)
     # The address people actually reach this core on (e.g. the Tailscale Serve HTTPS URL).
     # Used for pairing/QR; without it the URL is derived from the request. The phone's mic and
     # the PWA need a secure context, so this is normally an https:// URL.

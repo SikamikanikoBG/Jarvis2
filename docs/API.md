@@ -341,6 +341,27 @@ Host tools behind it: `calendar_invites(account, days)`, `calendar_respond(entry
 comment, account)`, `calendar_free_slots(account, start, days, duration_min, work_start_hour,
 work_end_hour, limit)`, `calendar_remove_canceled(account, days_back, days_ahead)`.
 
+## Shadow decisions (experiment, core 2.0.0a65)
+
+A second opinion recorded next to production and never obeyed (`features/shadow.py`). After a
+real decision the same input goes to a typed-decision model (Laya, `laya_url` → `POST /predict`)
+and both answers are written to `<home>/shadow.db`, table `shadow` - its own file, so the
+experiment can be copied or deleted without touching `jarvis2.db`. Points: `mail` (triage
+category + alert), `rsvp` (policy decision), `preflight` (tier + skill), `guardrail` (text about
+to leave through a `guardrail_tools` tool). Incognito chats are never recorded. Laya down, slow
+or wrong changes nothing but a row's `laya_error`.
+
+```
+GET  /api/shadow/stats                 → {settings, open, path, pending, dropped,
+                                          points: [{point, source, n, answered, errors, laya_ms, rtt_ms, prod_ms, first, last}]}
+GET  /api/shadow/rows?since_id=&limit= → {rows: [{id, at, point, ref, source, input, questions, prod, prod_ms,
+                                          laya, laya_ms, laya_rtt_ms, laya_error, meta}], last_id}
+```
+Settings: `shadow {enabled, laya_url, timeout_s, max_pending, points: string[], guardrail_tools:
+string[] (exact or "*.suffix")}`. `source` is `live | dry_run | folder_sample | rsvp | <run kind>`;
+a triage folder sample (`/api/triage/run?dry_run=true&folder=`) is recorded with the folder as
+`meta.current_folder`, which is how the history is backfilled with a ground truth.
+
 ## STT (Phase 6)
 
 ```

@@ -1,4 +1,4 @@
-"""STT upload, meetings, triage endpoints (docs/API.md)."""
+"""STT upload, meetings, triage, RSVP and shadow endpoints (docs/API.md)."""
 
 from __future__ import annotations
 
@@ -213,3 +213,20 @@ async def rsvp_run(request: Request, dry_run: bool = False) -> dict[str, Any]:
         "errors": report.errors,
         "decisions": [d.model_dump(mode="json") for d in report.decisions],
     }
+
+
+# --- shadow decisions (features/shadow.py) ----------------------------------------------------
+
+
+@router.get("/shadow/stats")
+async def shadow_stats(request: Request) -> dict[str, Any]:
+    """Rows per decision point and source, Laya's answer and error counts, mean latencies."""
+    core = core_of(request)
+    return {"settings": core.settings.shadow.model_dump(mode="json"), **await core.shadow.stats()}
+
+
+@router.get("/shadow/rows")
+async def shadow_rows(request: Request, since_id: int = 0, limit: int = 1000) -> dict[str, Any]:
+    """The recorded rows after ``since_id``, oldest first - page through with the last id."""
+    rows = await core_of(request).shadow.rows(since_id=since_id, limit=max(1, min(limit, 5000)))
+    return {"rows": rows, "last_id": rows[-1]["id"] if rows else since_id}

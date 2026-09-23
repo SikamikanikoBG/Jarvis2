@@ -48,6 +48,7 @@ from jarvis_core.features.results import ResultsTools
 from jarvis_core.features.rsvp import RsvpJob
 from jarvis_core.features.schedules import Scheduler, ScheduleStore, ScheduleTools
 from jarvis_core.features.sessions import SessionsTools
+from jarvis_core.features.shadow import ShadowRecorder
 from jarvis_core.features.skills import SkillDetector, SkillsTools, SkillStore
 from jarvis_core.features.stt import Transcriber
 from jarvis_core.features.titles import Titler
@@ -98,6 +99,7 @@ class Core:
         self.synthesizer = Synthesizer(settings, self.config.home)
         self.mcp_server = build_mcp_server(self)
         self.attachments = AttachmentStore(self)
+        self.shadow = ShadowRecorder(config.home / "shadow.db", settings)
         self.triage = TriageJob(self)
         self.rsvp = RsvpJob(self)
         self.meetings = MeetingService(self)
@@ -146,6 +148,7 @@ class Core:
             attachments=self.attachments,
             reflector=self.reflector,
             windows=self.adapters.context_window,
+            shadow=self.shadow,
         )
         self.titler = Titler(lambda: self.adapters.for_role(RoleName.CLASSIFIER))
         self.engine = RunEngine(
@@ -189,6 +192,7 @@ class Core:
 
     async def start(self) -> None:
         await self.db.open()
+        await self.shadow.open()
         # Before anything else runs: an incognito chat's attachments are never on the disk, and
         # whatever a previous build left there is removed now, not on the next delete.
         await self.attachments.scrub_private()
@@ -239,6 +243,7 @@ class Core:
         await self.transcriber.aclose()
         await self.notify.aclose()
         await self.web.aclose()
+        await self.shadow.close()
         await self.db.close()
 
     def apply_settings(self, settings: Settings) -> None:

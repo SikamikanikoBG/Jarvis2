@@ -25,6 +25,7 @@ from jarvis_core.engine.control import RunCancelledError, RunControl
 from jarvis_core.engine.supervision import Emit, RunWatch, StepRecord, Supervisor, args_hash, step_of
 from jarvis_core.engine.views import AGED_VIEW_CHARS, aged, view_of
 from jarvis_core.features.planner import PLAN_TOOLS
+from jarvis_core.features.shadow import ShadowRecorder, preflight_questions
 from jarvis_core.models.base import (
     ModelAdapter,
     ModelCancelled,
@@ -134,6 +135,7 @@ class AgentLoop:
         attachments: AttachmentStore | None = None,
         reflector: PlaybookReflector | None = None,
         windows: Callable[[RunKind], Awaitable[int | None]] | None = None,
+        shadow: ShadowRecorder | None = None,
     ) -> None:
         self._store = store
         self._bus = bus
@@ -152,6 +154,36 @@ class AgentLoop:
         self._learner = learner
         self._attachments = attachments
         self._reflector = reflector
+        self._shadow = shadow
+
+    def _shadow_preflight(
+        self, run: Run, skill_names: list[str], trace: dict[str, object], pre: Preflight | None, pre_ms: float
+    ) -> None:
+        """The same request to Laya, next to the 27B's tier and skills (features/shadow.py). The
+        skill list is read in the background task, never on the run's path."""
+        shadow, skills = self._shadow, self._skills
+        if shadow is None or not self._settings().shadow.observes("preflight"):
+            return
+
+        async def go() -> None:
+            listed = [(s.name, s.description or "") for s in await skills.store.list() if s.enabled] if skills else []
+            shadow.observe(
+                "preflight",
+                ref=run.id,
+                source=run.kind.value,
+                input={"request": run.input_text[:2000]},
+                questions=preflight_questions(listed),
+                prod={
+                    "tier": pre.tier if pre is not None else None,
+                    "tier_by": "model" if pre is not None and len(run.input_text.strip()) >= 25 else "rule",
+                    "skills": skill_names,
+                    "skills_by": trace.get("by", "none"),
+                },
+                prod_ms=pre_ms,
+            )
+
+        task = asyncio.create_task(go(), name="shadow:preflight")
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
 
     def _exposed_tools(self, plan_active: bool, *, incognito: bool = False, voice: bool = False) -> list[ToolSpec]:
         s = self._settings()
@@ -208,19 +240,22 @@ class AgentLoop:
         )
         skill_names: list[str] = []
         pre: Preflight | None = None
+        skill_trace: dict[str, object] = {}  # how the detector decided, for the shadow record
+        t_pre = time.perf_counter()
         if wants_skills and wants_tier:
             assert self._skills is not None and self._planner is not None
             skill_names, pre = await asyncio.gather(
-                self._skills.detect(run.input_text), self._planner.preflight(run.input_text)
+                self._skills.detect(run.input_text, trace=skill_trace), self._planner.preflight(run.input_text)
             )
         elif wants_skills:
             assert self._skills is not None
             # On a call the detector may look, but not ask: a model round trip here is a second
             # of silence on the line before the answer has even begun (2026-09-20).
-            skill_names = await self._skills.detect(run.input_text, allow_model=not voice)
+            skill_names = await self._skills.detect(run.input_text, allow_model=not voice, trace=skill_trace)
         elif wants_tier:
             assert self._planner is not None
             pre = await self._planner.preflight(run.input_text)
+        pre_ms = (time.perf_counter() - t_pre) * 1000
         if skill_names:
             await emit(ContextSkills(run_id="", conversation_id="", names=skill_names))
         if pre is not None and self._planner is not None:
@@ -240,6 +275,8 @@ class AgentLoop:
                     await emit(PlanStepStarted(run_id="", conversation_id="", index=0, title=plan.steps[0].title))
 
         incognito = await self._is_incognito(run)
+        if (wants_skills or wants_tier) and not voice and not incognito:
+            self._shadow_preflight(run, skill_names, skill_trace, pre, pre_ms)
         tools = self._exposed_tools(run.plan is not None, incognito=incognito, voice=voice)
         # Built against the lane's window: the tool schemas and the system message are the fixed
         # part of every step's prompt, and what is left after them, the answer and the reserve is
@@ -779,6 +816,8 @@ class AgentLoop:
             )
         )
         policy_note = call.arguments.pop("_policy_note", None)
+        if self._shadow is not None and not await self._is_incognito(run):
+            self._shadow.outgoing(call.name, call.arguments, ref=key, source=run.kind.value)
         t0 = time.perf_counter()
         result = await self._registry.call(
             call.name,

@@ -40,6 +40,7 @@ class Harness:
 
     async def start(self) -> None:
         await self.core.db.open()
+        await self.core.shadow.open()
         await self.core.store.save_settings(fake_settings())
         self.core.apply_settings(await self.core.store.load_settings())
         self.core.adapters.fakes = {r: self.chat for r in RoleName}

@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
+from jarvis_core.features.shadow import RSVP_QUESTIONS, rsvp_policy
 from jarvis_proto import ConversationKind, Message, RsvpDecision, RsvpState
 from jarvis_proto.events import ConversationUpdated, MessageCreated
 
@@ -246,6 +247,7 @@ class RsvpJob:
                 if address
                 else "organizer address could not be resolved; left for you"
             )
+            self._shadow(cfg, inv, d, key=key, dry_run=dry_run)
             return d
         if not conflicts:
             d.decision = "accept"
@@ -262,9 +264,14 @@ class RsvpJob:
                 if slots
                 else f"clashes with {len(conflicts)} committed meeting(s); no free alternative in the lookahead window"
             )
+        self._shadow(cfg, inv, d, key=key, dry_run=dry_run)
         if dry_run:
             return d
         comment = self._decline_comment(d) if d.decision == "decline" else ""
+        if comment:
+            self.core.shadow.outgoing(
+                f"{cfg.host}.calendar_respond", {"comment": comment, "to": d.organizer_address}, ref=key, source="rsvp"
+            )
         try:
             await self._call(
                 cfg.host,
@@ -282,6 +289,31 @@ class RsvpJob:
             d.decision = "failed"
             d.detail = str(exc)[:200]
         return d
+
+    def _shadow(self, cfg: Any, inv: dict[str, Any], d: RsvpDecision, *, key: str, dry_run: bool) -> None:
+        """The same invite to Laya, recorded next to the policy's answer (features/shadow.py).
+
+        Called for every decision the policy reaches, the external ones included, BEFORE anything is
+        sent: what is compared is the decision, not whether Outlook then managed to deliver it.
+        """
+        if not self.core.settings.shadow.observes("rsvp"):
+            return
+        self.core.shadow.observe(
+            "rsvp",
+            ref=key,
+            source="dry_run" if dry_run else "live",
+            input={
+                "subject": d.subject,
+                "organizer": f"{d.organizer} <{d.organizer_address}>" if d.organizer_address else d.organizer,
+                "start": d.start,
+                "end": d.end,
+                "conflicts": d.conflicts or ["none"],
+                "policy": rsvp_policy(list(cfg.allowed_domains), list(cfg.vip)),
+            },
+            questions=RSVP_QUESTIONS,
+            prod={"decision": d.decision, "by": "rules"},
+            meta={"is_allowed": cfg.is_allowed(d.organizer_address), "is_vip": cfg.is_vip(d.organizer_address)},
+        )
 
     async def _free_slots(
         self, cfg: Any, inv: dict[str, Any], reserved: list[tuple[datetime, datetime]]

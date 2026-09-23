@@ -190,8 +190,11 @@ class SkillDetector:
         self.store = store
         self._classifier = classifier  # Callable[[], ModelAdapter]
 
-    async def detect(self, message: str, *, allow_model: bool = True) -> list[str]:
+    async def detect(
+        self, message: str, *, allow_model: bool = True, trace: dict[str, object] | None = None
+    ) -> list[str]:
         """``allow_model=False`` keeps the free half only: a trigger phrase that is literally there.
+        ``trace`` (optional) is told how the answer was reached: ``by`` = trigger | model | none.
 
         The paid half is a whole model round trip before the real answer begins — measured at
         about a second on a call (2026-09-20), which is a second of a human being listening to
@@ -204,9 +207,13 @@ class SkillDetector:
         # Structural first: a trigger phrase literally present needs no model.
         structural = [s.name for s in skills if any(t.lower() in lowered for t in s.triggers if len(t) >= 4)]
         if structural:
+            if trace is not None:
+                trace["by"] = "trigger"
             return structural[:2]
         if not allow_model:
             return []
+        if trace is not None:
+            trace["by"] = "model"
         index = "\n".join(f"- {s.name}: {s.description or '(no description)'}" for s in skills)
         prompt = _DETECT_PROMPT.format(index=index, message=message[:1500])
         try:

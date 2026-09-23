@@ -14,11 +14,13 @@ import contextlib
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
+from jarvis_core.features.shadow import mail_input, mail_questions
 from jarvis_core.models.base import ModelTextChunk
 from jarvis_proto import ConversationKind, Message, RunKind, TriageState
 from jarvis_proto.events import ConversationUpdated, MessageCreated
@@ -213,11 +215,14 @@ class TriageJob:
                 entry_id = str(item.get("entry_id") or "")
                 if not entry_id or (not dry_run and await self._decided(entry_id, account)):
                     continue
+                t_route = time.perf_counter()
                 category, target = await self._route(item, cfg, account, rules)
+                route_ms = (time.perf_counter() - t_route) * 1000
                 subject = str(item.get("subject") or "")
                 # Structural, before any judgement: a VIP mail must never be missed because a
                 # classifier had an opinion about it.
                 alert = rules.alert_for(self._sender_address(item), self._sender(item), subject)
+                self._shadow(item, account, rules, category, target, alert, route_ms, dry_run=dry_run, folder=folder)
                 if alert:
                     report.alerts.append(
                         {
@@ -293,6 +298,47 @@ class TriageJob:
         if report.alerts and not dry_run:
             await self._push_alerts(report)
         return report
+
+    def _shadow(
+        self,
+        item: dict[str, Any],
+        account: str,
+        rules: Any,
+        category: str | None,
+        target: str | None,
+        alert: str | None,
+        route_ms: float,
+        *,
+        dry_run: bool,
+        folder: str | None,
+    ) -> None:
+        """The same mail to Laya, recorded next to what production did (features/shadow.py)."""
+        if not self.core.settings.shadow.observes("mail"):
+            return
+        address = self._sender_address(item)
+        sender = f"{self._sender(item)} <{address}>" if address else self._sender(item)
+        subject = str(item.get("subject") or "")
+        preview = str(item.get("preview") or item.get("body_preview") or item.get("snippet") or "")
+        # Who decided: the DM-regex needs no model; with no categories nothing is asked at all.
+        by = "regex" if category == "demand" else ("model" if rules.categories else "none")
+        self.core.shadow.observe(
+            "mail",
+            ref=str(item.get("entry_id") or ""),
+            source="folder_sample" if folder else ("dry_run" if dry_run else "live"),
+            input=mail_input(
+                sender=sender,
+                to=str(item.get("to") or ""),
+                cc=str(item.get("cc") or ""),
+                subject=subject,
+                preview=preview,
+                account=account,
+                rules=rules,
+            ),
+            questions=mail_questions(rules.categories, rules.alerts),
+            prod={"category": category, "folder": target, "category_by": by, "alert": alert, "alert_by": "rules"},
+            prod_ms=route_ms if by == "model" else None,
+            meta={"current_folder": folder or "Inbox", "received": str(item.get("received") or "")},
+        )
 
     async def _push_alerts(self, report: TriageReport) -> None:
         """One push per pass, not per mail: a VIP thread of five replies is one buzz."""

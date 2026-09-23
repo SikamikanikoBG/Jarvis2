@@ -1559,3 +1559,39 @@ verified against the live tool catalogue, not against the data model — `read_o
 from whoever wrote the server, not a fact about the tool. And a feature is not finished when its
 tests pass: this one passed eight tests and was useless in production until it was called once,
 for real, on the box it runs on.
+
+## 2026-09-23 — a second opinion that is written down and never obeyed (core 2.0.0a65, proto a26)
+
+Every decision Jarvis makes on its own is taken either by the 27B or by a rule. The question for
+the next two days is whether a 421M typed-decision encoder - Laya, open weights, one forward pass,
+answers choice / score / yes-no with probabilities - could take some of them off the 27B. The
+honest way to find out is to ask it the same question at the same moment and change nothing.
+
+`features/shadow.py` does that at four points: the mail triage (category from the 27B or the
+DM-regex, alert from the rules), the RSVP policy's answer to an invite, the pre-flight before a
+run (tier + skill), and text about to leave on Arsen's behalf (a guard production does not have).
+Production decides first and exactly as before; the recorder then sends the same input to the
+laya-service on ardi:9140 in a task of its own and writes both answers to `/data/shadow.db`. A
+file of its own, so the experiment is copied or deleted without touching `jarvis2.db`. Every row
+keeps the full input, so the 27B can be replayed OFFLINE on the rule-based points - no extra load
+on either lane - and a fine-tuned Laya can be replayed on the same rows later.
+
+What the first probe of Laya on ardi taught, before a line of this was written:
+
+* torch 2.14 sends ModernBERT's RoPE matmul through a Triton kernel compiled on first use; the
+  slim image has no C compiler, so the first `predict()` died. The service image carries gcc.
+* A question's head (instructions + every option text) has its own budget - 192 tokens on the
+  English checkpoint, 256 on the multilingual one - and an overflowing option list raises. A
+  2.4k-character policy in the instructions was silently cut to what fit. So the policy goes in
+  the STATE, last (a state is truncated from the end: the rules give way before the mail), and
+  the service shrinks a head that still does not fit and says so in `fitted`.
+* 56 skills do not fit any head: the service first shortlists to 20 with the checkpoint's own
+  encoder (`laya.shortlist_choice`) on the full descriptions, then fits.
+* Bulgarian needs the multilingual checkpoint: "report by Friday" was `todo` at 0.93 there and a
+  0.34 shrug on the English one. ~36 ms warm on the 3090 either way.
+
+Two guards that are not optional: nothing from an incognito chat reaches the shadow (the pre-
+flight and the guardrail both check, the registry cannot - it does not know the run - which is
+why the guardrail hook lives in the loop and not in `ToolRegistry.call`), and a burst past
+`max_pending` is dropped and counted, never queued behind the real work. Nine tests; the triage
+and RSVP ones assert the same moves and answers with the shadow on, off, and with Laya down.

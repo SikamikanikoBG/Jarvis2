@@ -1,8 +1,19 @@
-"""``shell_run`` — a command in PowerShell 7 (falling back to Windows PowerShell) with a deadline."""
+"""``shell_run`` — a command in PowerShell 7 (falling back to Windows PowerShell) with a deadline.
+
+The deadline has to hold for the whole process tree, not just the interpreter. ``subprocess.run(timeout=)``
+kills only the direct child and then, on Windows, reads the pipes to the end: a grandchild that inherited
+them (an ``ssh`` waiting at a password prompt, 2026-09-27) keeps them open, so the read never returns and
+the worker thread is lost for good. A few of those and every later call, ``Write-Output hi`` included,
+timed out. So the command runs in its own process group with stdin closed (a prompt gets EOF instead of
+waiting), a timeout kills the whole tree, and the leftover output is read with a deadline of its own.
+"""
 
 from __future__ import annotations
 
+import contextlib
+import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -12,6 +23,7 @@ from typing import Any
 
 MAX_OUTPUT_CHARS = 20_000
 MAX_TIMEOUT_S = 600.0
+DRAIN_TIMEOUT_S = 5.0  # after a kill: how long to wait for the pipes to close before giving up on the tail
 
 
 class ShellError(RuntimeError):
@@ -44,6 +56,24 @@ def cap(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
     return text[:head] + f"\n… [{len(text) - limit} chars omitted] …\n" + text[-tail:]
 
 
+def kill_tree(proc: subprocess.Popen[bytes]) -> None:
+    """Kill `proc` and everything it started. Best effort: the tree may already be (partly) gone."""
+    if sys.platform == "win32":
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                capture_output=True,
+                timeout=10,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+    else:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGKILL)  # the command runs in its own session: pgid == pid
+    with contextlib.suppress(OSError):
+        proc.kill()
+
+
 def _decode(data: bytes | None) -> str:
     if not data:
         return ""
@@ -74,23 +104,49 @@ class Shell:
         argv = [*self.launcher, command]
         t0 = time.monotonic()
         try:
-            proc = subprocess.run(argv, cwd=str(workdir), capture_output=True, timeout=timeout_s, check=False)
+            # own process group / session, so a timeout can take the whole tree down (kill_tree)
+            if sys.platform == "win32":
+                proc = subprocess.Popen(
+                    argv,
+                    cwd=str(workdir),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                )
+            else:
+                proc = subprocess.Popen(
+                    argv,
+                    cwd=str(workdir),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    start_new_session=True,
+                )
+        except FileNotFoundError as exc:
+            raise ShellError(f"interpreter not found: {argv[0]} ({exc})") from exc
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout_s)
         except subprocess.TimeoutExpired as exc:
-            out = cap(_decode(exc.stdout if isinstance(exc.stdout, bytes) else None))
-            err = cap(_decode(exc.stderr if isinstance(exc.stderr, bytes) else None))
+            kill_tree(proc)
+            try:
+                stdout, stderr = proc.communicate(timeout=DRAIN_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                # something outside the tree still holds the pipes: keep what was read, never block on the rest
+                stdout = exc.stdout if isinstance(exc.stdout, bytes) else None
+                stderr = exc.stderr if isinstance(exc.stderr, bytes) else None
+            out, err = cap(_decode(stdout)), cap(_decode(stderr))
             raise ShellTimeout(
-                f"command did not finish within {timeout_s:g}s and was killed"
+                f"command did not finish within {timeout_s:g}s and was killed (with every process it started)"
                 + (f"; partial stdout:\n{out}" if out else "")
                 + (f"; partial stderr:\n{err}" if err else ""),
                 out,
                 err,
             ) from None
-        except FileNotFoundError as exc:
-            raise ShellError(f"interpreter not found: {argv[0]} ({exc})") from exc
         return {
             "exit_code": proc.returncode,
-            "stdout": cap(_decode(proc.stdout)),
-            "stderr": cap(_decode(proc.stderr)),
+            "stdout": cap(_decode(stdout)),
+            "stderr": cap(_decode(stderr)),
             "duration_ms": int((time.monotonic() - t0) * 1000),
             "cwd": str(workdir),
             "interpreter": self.interpreter,

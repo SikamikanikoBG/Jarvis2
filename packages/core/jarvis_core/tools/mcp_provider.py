@@ -209,6 +209,10 @@ class McpProvider:
                 return ToolResult.failure(f"mcp server {self.name!r}: {self.error}")
             finally:
                 waiter.cancel()
+                # The caller's own deadline (registry wait_for) cancels us mid-wait: take the call
+                # down too, or it keeps waiting on the host and dies later with nobody listening.
+                if not call.done():
+                    call.cancel()
             return _convert(result)
         return ToolResult.failure(f"mcp server {self.name!r}: {self.error}")  # pragma: no cover
 

@@ -112,3 +112,27 @@ async def test_other_failures_are_not_retried(provider: McpProvider):
     provider._session = Broken()  # type: ignore[assignment]
     res = await provider.call("echo.write", {"text": "x"}, cancel=asyncio.Event(), idempotency_key="k", timeout_s=10)
     assert res.kind is ToolResultKind.ERROR and "connection reset" in res.text and Broken.calls == 1
+
+
+async def test_a_call_abandoned_by_its_caller_is_cancelled_not_left_running(provider: McpProvider):
+    # 2026-09-27: core logged "Task exception was never retrieved ... McpError: Timed out ... 330 s" -
+    # the registry's deadline cancelled provider.call, but the call_tool task inside kept waiting on
+    # the host and later failed with nobody listening.
+    state = {"cancelled": False}
+
+    class Slow:
+        async def call_tool(self, *args: object, **kwargs: object) -> object:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                state["cancelled"] = True
+                raise
+            return None
+
+    provider._session = Slow()  # type: ignore[assignment]
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(
+            provider.call("echo.echo", {"text": "x"}, cancel=asyncio.Event(), idempotency_key="k", timeout_s=60), 0.2
+        )
+    await asyncio.sleep(0.05)
+    assert state["cancelled"]

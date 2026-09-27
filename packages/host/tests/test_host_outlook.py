@@ -510,7 +510,9 @@ async def test_restart_stops_starts_and_waits_until_outlook_answers():
     world = World()
     svc = Svc(OutlookBackend(world.dispatch), ComWorker(init=None))
     started: list[bool] = []
-    res = await svc.restart(wait_s=5, stop=lambda: [111, 222], start=lambda: started.append(True), pause_s=0.01)
+    res = await svc.restart(
+        wait_s=5, stop=lambda: [111, 222], start=lambda: started.append(True), windows=lambda: None, pause_s=0.01
+    )
     assert res["connected"] is True and res["stopped_pids"] == [111, 222] and started == [True]
     assert calls == ["ping", "ping", "ping"]
 
@@ -522,5 +524,41 @@ async def test_restart_reports_a_dialog_when_outlook_never_answers():
 
     world = World()
     svc = Svc(OutlookBackend(world.dispatch), ComWorker(init=None))
-    res = await svc.restart(wait_s=0.1, stop=lambda: [], start=lambda: None, pause_s=0.02)
+    res = await svc.restart(
+        wait_s=0.2,
+        stop=lambda: [],
+        start=lambda: None,
+        windows=lambda: {"running": True, "processes": [{"window": "Sign in to set up Office"}]},
+        pause_s=0.02,
+    )
     assert res["connected"] is False and "dialog" in res["hint"] and "not reachable" in res["error"]
+    assert res["windows"] == ["Sign in to set up Office"]
+
+
+async def test_restart_waits_for_the_window_before_the_first_com_call():
+    # A COM call before the new Outlook registered launched a second, windowless -Embedding instance.
+    order: list[str] = []
+    seen = iter(
+        [
+            {"running": False, "processes": []},
+            {"running": False, "processes": []},
+            {"running": True, "processes": [{"window": "Inbox - AApostolov@postbank.bg - Outlook"}]},
+        ]
+    )
+
+    class Svc(OutlookService):
+        async def call(self, name, *args, **kwargs):  # type: ignore[override]
+            order.append(name)
+            return {"ok": True}
+
+    def windows():
+        order.append("windows")
+        return next(seen)
+
+    world = World()
+    svc = Svc(OutlookBackend(world.dispatch), ComWorker(init=None))
+    res = await svc.restart(
+        wait_s=5, stop=lambda: [], start=lambda: order.append("start"), windows=windows, pause_s=0.01
+    )
+    assert res["connected"] is True
+    assert order == ["start", "windows", "windows", "windows", "ping"]

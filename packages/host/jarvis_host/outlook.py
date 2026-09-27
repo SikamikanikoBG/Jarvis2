@@ -1821,14 +1821,30 @@ class OutlookService:
         *,
         stop: Callable[[], list[int]] = stop_outlook,
         start: Callable[[], None] = start_outlook,
+        windows: Callable[[], dict[str, Any] | None] | None = None,
         pause_s: float = 3.0,
     ) -> dict[str, Any]:
         """Stop every OUTLOOK.EXE, start classic Outlook again, and wait until COM answers."""
+        if windows is None:
+            from jarvis_host.status import (
+                outlook_process_state as windows,
+            )
         t0 = time.monotonic()
         stopped = await asyncio.to_thread(stop)
         self.backend.reset()
         await asyncio.sleep(pause_s)
         await asyncio.to_thread(start)
+        # No COM call until the started Outlook shows a window: a call before it has registered makes
+        # COM launch a second, windowless `-Embedding` instance, and the visible one quits (2026-09-27).
+        titles: list[str] = []
+        while time.monotonic() - t0 < wait_s / 2:
+            state = await asyncio.to_thread(windows)
+            if state is None:  # not a Windows desktop: nothing to wait for
+                break
+            if state.get("running"):
+                titles = [str(p.get("window") or "") for p in state.get("processes", [])]
+                break
+            await asyncio.sleep(pause_s)
         last = ""
         while time.monotonic() - t0 < wait_s:
             await asyncio.sleep(pause_s)
@@ -1842,6 +1858,7 @@ class OutlookService:
             "stopped_pids": stopped,
             "waited_s": round(time.monotonic() - t0),
             "error": last,
+            "windows": [t for t in titles if t],
             "hint": "Outlook started but does not answer: it is most likely showing a dialog (Office sign-in, "
-            "profile choice, 'Keep using Outlook'). screen_grab shows it; Arsen may have to click it.",
+            "profile choice, 'Keep using Outlook') - see `windows`. screen_grab shows it; Arsen may have to click it.",
         }

@@ -97,10 +97,20 @@ one em-dash makes the whole file a parse error.
 
 ```bash
 bash scripts/deploy_ardi.sh          # builds ON ardi from a source tarball, SPA included
+bash scripts/deploy_workspace.sh     # Jarvis's own Linux host next to the core (see below)
 # or by hand:
 docker build -t jarvis2-core .
 docker run -d --name jarvis2 -p 9020:9020 -v jarvis2-data:/data -e JARVIS_TOKEN=... jarvis2-core
 ```
+
+### The workspace host
+
+`scripts/deploy_workspace.sh` runs the host daemon in a Linux container (`Dockerfile.workspace`) on the
+core's private `jarvis2` network and registers it as the MCP server `workspace`: `shell_run` (bash)
+and `fs_*` over `/workspace`, with python3, git, curl, jq, pandoc, headless Chromium and office/PDF
+libraries. `[desktop] enabled = false` in its `host.toml` drops the Outlook/OneNote/calendar/meeting/
+volume/screen tools, which need a Windows session and stay on the Windows hosts. Everything else no
+longer depends on the laptop or the VM being awake.
 
 ## Verify against a real model
 

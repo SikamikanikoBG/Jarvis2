@@ -35,6 +35,12 @@ class HostConfig:
     fs_roots: tuple[Path, ...] = ()
     shell_allow: bool = True
     screen_enabled: bool = True
+    # Outlook, calendar, OneNote, meeting audio, volume and screen: Windows-desktop tools. Off on a
+    # headless host (the Linux workspace next to the core), where they could only ever fail.
+    desktop_enabled: bool = True
+    # One line on what this host is for; it leads the shell_run/fs_list descriptions, which is all the
+    # model sees of a host behind a facade - so it knows to use it without being told each time.
+    about: str = ""
     # Host headers the MCP transport accepts. The SDK's DNS-rebinding guard trusts localhost
     # only, so a core on another machine (ardi reaching this laptop over Tailscale) gets a
     # 421 Misdirected Request until its address is listed here. "*" trusts any Host header —
@@ -83,6 +89,7 @@ def render_toml(cfg: HostConfig) -> str:
         f"# jarvis-host configuration — created {datetime.now(UTC).isoformat(timespec='seconds')}\n"
         f"# The token is the bearer secret the core sends; keep this file private.\n"
         f"name = {q(cfg.name)}\n"
+        f"about = {q(cfg.about)}\n"
         f"listen = {q(cfg.listen)}\n"
         f"token = {q(cfg.token)}\n"
         f"\n[outlook]\n"
@@ -95,6 +102,9 @@ def render_toml(cfg: HostConfig) -> str:
         f"allow = {'true' if cfg.shell_allow else 'false'}\n"
         f"\n[screen]\n"
         f"enabled = {'true' if cfg.screen_enabled else 'false'}\n"
+        f"\n[desktop]\n"
+        f"# Outlook, calendar, OneNote, meeting audio, volume, screen. false on a headless host.\n"
+        f"enabled = {'true' if cfg.desktop_enabled else 'false'}\n"
     )
 
 
@@ -115,6 +125,7 @@ def parse_config(text: str, path: Path | None = None) -> HostConfig:
     fs = raw.get("fs") or {}
     shell = raw.get("shell") or {}
     screen = raw.get("screen") or {}
+    desktop = raw.get("desktop") or {}
     roots = _as_str_list(fs.get("roots"), "fs.roots") or (str(Path.home()),)
     cfg = HostConfig(
         name=str(raw.get("name") or default_name()),
@@ -124,6 +135,8 @@ def parse_config(text: str, path: Path | None = None) -> HostConfig:
         fs_roots=tuple(Path(r).expanduser() for r in roots),
         shell_allow=bool(shell.get("allow", True)),
         screen_enabled=bool(screen.get("enabled", True)),
+        desktop_enabled=bool(desktop.get("enabled", True)),
+        about=str(raw.get("about") or ""),
         path=path,
     )
     cfg.port  # noqa: B018 — validates listen early

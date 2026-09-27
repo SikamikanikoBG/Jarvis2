@@ -43,8 +43,10 @@ if [ -z "${TOKEN:-}" ]; then
 else
   echo "    reusing the existing token"
 fi
+# The private network the workspace container (scripts/deploy_workspace.sh) is reached on.
+$SSH "docker network inspect jarvis2 >/dev/null 2>&1 || docker network create jarvis2 >/dev/null"
 $SSH "docker rm -f $NAME >/dev/null 2>&1 || true; \
-  docker run -d --name $NAME --restart unless-stopped \
+  docker run -d --name $NAME --restart unless-stopped --network jarvis2 \
     -p $BIND:$PORT:9020 \
     -p 127.0.0.1:$PORT:9020 \
     -v jarvis2-data:/data \

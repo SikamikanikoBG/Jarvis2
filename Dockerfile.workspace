@@ -1,0 +1,31 @@
+# Jarvis V2 workspace — Jarvis's own always-on Linux machine next to the core: the jarvis-host daemon
+# (shell_run + fs_* only; no Windows desktop tools) with the everyday tooling agents reach for, so work
+# that is not tied to a Windows desktop keeps running when the laptop or the VM is down.
+FROM python:3.12-slim
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git curl wget jq ca-certificates openssh-client rsync zip unzip xz-utils procps iproute2 less \
+        pandoc fonts-dejavu fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+# Agent scripts run on the system python: documents, data, HTTP, and a headless browser for rendering.
+RUN pip install --no-cache-dir requests httpx beautifulsoup4 lxml markdown pyyaml \
+        python-pptx python-docx openpyxl pypdf reportlab pandas matplotlib pillow playwright \
+    && playwright install --with-deps chromium && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy PYTHONUNBUFFERED=1 TZ=Europe/Sofia \
+    JARVIS_HOST_CONFIG=/config/host.toml HOME=/workspace
+COPY pyproject.toml uv.lock ./
+COPY packages ./packages
+RUN uv sync --package jarvis-host --no-dev --frozen
+RUN useradd --uid 1000 --home-dir /workspace --no-create-home jarvis \
+    && mkdir -p /workspace /config && chown jarvis /workspace /config \
+    && cp -r /root/.cache/ms-playwright /opt/ms-playwright && chmod -R a+rX /opt/ms-playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+USER jarvis
+WORKDIR /workspace
+VOLUME ["/workspace", "/config"]
+EXPOSE 9030
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD curl -fsS -m 4 http://127.0.0.1:9030/healthz >/dev/null || exit 1
+# The config is written on first start (token printed once); scripts/deploy_workspace.sh seeds it.
+CMD ["/app/.venv/bin/jarvis-host"]

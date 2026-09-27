@@ -58,8 +58,8 @@ def default_launcher() -> list[str]:
     return [shutil.which("bash") or "/bin/sh", "-c"]
 
 
-_NAME = r"['\"]?(?:python|pythonw|py|uv)(?:\.exe)?['\"]?(?![\w.-])"  # the daemon's own process names
-_KILL = r"(?:Stop-Process|spps|kill|taskkill|Terminate)"
+_NAME = r"['\"]?(?:python[\d.]*|pythonw|py|uv)(?:\.exe)?['\"]?(?![\w.-])"  # the daemon's own process names
+_KILL = r"(?:Stop-Process|spps|kill|pkill|killall|taskkill|Terminate)"
 _KILL_BY_NAME = [
     re.compile(p, re.IGNORECASE)
     for p in (
@@ -69,6 +69,10 @@ _KILL_BY_NAME = [
         rf"\b(?:Stop-Process|spps|kill)\b[^;\n|]*?-(?:Name|ProcessName|n)\s+(?:[\w.'\"]+\s*,\s*)*{_NAME}",
         # taskkill /F /IM python.exe
         rf"\btaskkill\b[^;\n|]*?/IM\s+{_NAME}",
+        # pkill python3,  killall -9 python,  kill $(pgrep python),  pgrep -f python | xargs kill
+        rf"\b(?:pkill|killall)\b(?:\s+-\S+)*\s+{_NAME}",
+        rf"\bkill\b[^;\n]*\$\(\s*pgrep\b(?:\s+-\S+)*\s+{_NAME}",
+        rf"\bpgrep\b(?:\s+-\S+)*\s+{_NAME}[^;\n]*\|\s*xargs\s+(?:-\S+\s+)*kill\b",
         # wmic process where name='python.exe' delete,  Win32_Process -Filter "Name='python.exe'" | Invoke-CimMethod Terminate
         rf"\bname\s*=\s*{_NAME}[^;\n]*?\b(?:{_KILL}|delete)\b",
     )
@@ -80,9 +84,10 @@ def refusal(command: str, own_pids: Sequence[int] = ()) -> str | None:
     if any(p.search(command) for p in _KILL_BY_NAME):
         return (
             "refused: this stops python/uv processes by name, and the host daemon you are talking to is one of "
-            "them - it would cut you off from this machine. Stop only what you started, by PID: keep the id from "
-            "`$p = Start-Process ... -PassThru` (`$p.Id`) and run `Stop-Process -Id <pid> -Force`; to find a "
-            "server you started, `Get-NetTCPConnection -LocalPort <port> -State Listen | Select OwningProcess`."
+            "them - it would cut you off from this machine. Stop only what you started, by PID. Windows: keep "
+            "`$p = Start-Process ... -PassThru` and run `Stop-Process -Id $p.Id -Force` (a server's PID: "
+            "`Get-NetTCPConnection -LocalPort <port> -State Listen | Select OwningProcess`). Linux: `cmd & echo $!` "
+            "and `kill <pid>` (a server's PID: `ss -ltnp 'sport = :<port>'`)."
         )
     if re.search(rf"\b{_KILL}\b", command, re.IGNORECASE):
         for pid in own_pids:

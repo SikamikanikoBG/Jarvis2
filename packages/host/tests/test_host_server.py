@@ -19,7 +19,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from jarvis_host.config import HostConfig
-from jarvis_host.server import BearerAuth, build_app, make_deps
+from jarvis_host.server import DESKTOP_TOOL_PREFIXES, BearerAuth, build_app, build_mcp, make_deps
 
 TOKEN = "s3cret-token"
 
@@ -262,3 +262,20 @@ def test_transport_security_wildcard_disables_the_guard_and_a_list_enables_it():
     listed = transport_security(HostConfig(name="t", token="x", allowed_hosts=("100.75.37.17:9030", "localhost:*")))
     assert listed.enable_dns_rebinding_protection is True
     assert "100.75.37.17:9030" in listed.allowed_hosts and "localhost:*" in listed.allowed_hosts
+
+
+async def test_headless_host_drops_desktop_tools_and_says_what_it_is_for(world: World, tmp_path: Path):
+    # The Linux workspace next to the core: no Outlook/OneNote/screen to reach, so no tools that could only fail,
+    # and `about` leads the descriptions the model sees behind a facade (only their first line survives there).
+    cfg = HostConfig(
+        name="workspace", token=TOKEN, fs_roots=(tmp_path,), desktop_enabled=False, about="Jarvis's own box."
+    )
+    tools = {t.name: t for t in await build_mcp(make_deps(cfg, dispatch=world.dispatch), cfg).list_tools()}
+    assert not [n for n in tools if n.startswith(DESKTOP_TOOL_PREFIXES)]
+    assert {"shell_run", "fs_list", "fs_read", "fs_write", "fs_edit", "fs_search", "host_status"} <= set(tools)
+    assert (tools["shell_run"].description or "").startswith("Jarvis's own box. Run a ")
+    assert (tools["fs_list"].description or "").startswith("Jarvis's own box. Entries of a directory")
+
+    desktop = HostConfig(name="laptop", token=TOKEN, fs_roots=(tmp_path,))
+    names = {t.name for t in await build_mcp(make_deps(desktop, dispatch=world.dispatch), desktop).list_tools()}
+    assert {"outlook_send", "onenote_read", "screen_grab", "volume_set", "meeting_start"} <= names

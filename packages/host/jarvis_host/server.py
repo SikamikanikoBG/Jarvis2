@@ -13,6 +13,7 @@ import asyncio
 import hmac
 import json
 import logging
+import sys
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -143,6 +144,24 @@ def transport_security(config: HostConfig | None) -> TransportSecuritySettings:
     )
 
 
+# Tools that need a Windows desktop session; skipped when [desktop] enabled = false.
+DESKTOP_TOOL_PREFIXES = ("outlook_", "calendar_", "onenote_", "meeting_", "volume_", "screen_")
+
+_SHELL_WINDOWS = (
+    "Run a command in PowerShell (pwsh if installed) with a deadline; returns exit_code, stdout, stderr (each capped "
+    "at 20k chars). A timeout is an error, not a result. Stop processes only by PID, and only ones you started "
+    "(`$p = Start-Process ... -PassThru`, then `Stop-Process -Id $p.Id -Force`); never by name "
+    "(`Get-Process python | Stop-Process`, `taskkill /IM python.exe`): this host daemon is itself python.exe, and "
+    "killing it cuts you off from this machine - such commands are refused."
+)
+_SHELL_POSIX = (
+    "Run a bash command with a deadline; returns exit_code, stdout, stderr (each capped at 20k chars). A timeout is "
+    "an error, not a result. Stop processes only by PID, and only ones you started (`cmd & echo $!`, then "
+    "`kill <pid>`); never by name (`pkill python`, `killall python3`): this host daemon is itself a python process, "
+    "and killing it cuts you off from this machine - such commands are refused."
+)
+
+
 def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
     mcp = FastMCP("jarvis-host", instructions=INSTRUCTIONS, transport_security=transport_security(config))
 
@@ -163,8 +182,15 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
             raise FsError(f"attachment {raw!r} is not a file")
         return path
 
-    def tool(name: str, annotations: ToolAnnotations) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        return mcp.tool(name=name, annotations=annotations, structured_output=False)
+    cfg = config or deps.config
+    about = f"{cfg.about.strip()} " if cfg.about.strip() else ""
+
+    def tool(
+        name: str, annotations: ToolAnnotations, description: str | None = None
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        if not cfg.desktop_enabled and name.startswith(DESKTOP_TOOL_PREFIXES):
+            return lambda fn: fn  # a headless host: these could only ever fail
+        return mcp.tool(name=name, annotations=annotations, description=description, structured_output=False)
 
     # --- Outlook -------------------------------------------------------------------------
 
@@ -396,9 +422,12 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
 
     # --- files ---------------------------------------------------------------------------
 
-    @tool("fs_list", READ)
+    @tool(
+        "fs_list",
+        READ,
+        about + "Entries of a directory (name, type, size, modified) under the allowed roots; directories first.",
+    )
     async def fs_list(path: str) -> str:
-        """Entries of a directory (name, type, size, modified) under the allowed roots; directories first."""
         return json_text(await _run("fs_list", lambda: asyncio.to_thread(deps.files.list, path)))
 
     @tool("fs_read", READ)
@@ -425,9 +454,8 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
 
     # --- shell / screen / status ---------------------------------------------------------
 
-    @tool("shell_run", DESTRUCTIVE)
+    @tool("shell_run", DESTRUCTIVE, about + (_SHELL_WINDOWS if sys.platform == "win32" else _SHELL_POSIX))
     async def shell_run(command: str, cwd: str | None = None, timeout_s: int = 60) -> str:
-        """Run a command in PowerShell (pwsh if installed) with a deadline; returns exit_code, stdout, stderr (each capped at 20k chars). A timeout is an error, not a result. Stop processes only by PID, and only ones you started (`$p = Start-Process ... -PassThru`, then `Stop-Process -Id $p.Id -Force`); never by name (`Get-Process python | Stop-Process`, `taskkill /IM python.exe`): this host daemon is itself python.exe, and killing it cuts you off from this machine - such commands are refused."""
         return json_text(
             await _run("shell_run", lambda: asyncio.to_thread(deps.shell.run, command, cwd, float(timeout_s)))
         )

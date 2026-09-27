@@ -110,6 +110,12 @@ def test_cap_keeps_head_and_tail():
         'taskkill /im "uv.exe" /t /f',
         "wmic process where name='python.exe' delete",
         "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Invoke-CimMethod -MethodName Terminate",
+        # the same on the Linux workspace
+        "pkill python3",
+        "pkill -9 -f python",
+        "killall python3.12",
+        "kill $(pgrep python)",
+        "pgrep -f python | xargs -r kill -9",
     ],
 )
 def test_refuses_killing_python_by_name(command: str):
@@ -127,6 +133,9 @@ def test_refuses_killing_python_by_name(command: str):
         "Get-Process node | Stop-Process",  # not the daemon's name: allowed
         "taskkill /PID 10716 /F",
         "uv pip install python-pptx",
+        "pkill -f 'http.server 8899'",
+        "kill 10716",
+        "server_pid=$!; kill $server_pid",
     ],
 )
 def test_allows_everything_else(command: str):

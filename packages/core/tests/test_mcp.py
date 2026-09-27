@@ -78,3 +78,37 @@ async def test_mcp_tools_flow_through_the_loop(harness: Harness):
     health = harness.core.registry.provider_health()
     echo = next(h for h in health if h["name"] == "echo")
     assert echo["ok"] and echo["tools"] == 4
+
+
+async def test_a_session_the_server_forgot_is_reopened_and_the_call_goes_through(provider: McpProvider):
+    # 2026-09-27: the workspace host was redeployed while the core held a session to it; the next
+    # workspace.fs_list came back "Session terminated" to the model although a fresh session would
+    # have answered. The server refuses such a request before running it, so one retry is safe even
+    # for a mutating tool.
+    from mcp.shared.exceptions import McpError
+    from mcp.types import ErrorData
+
+    class Forgotten:
+        calls = 0
+
+        async def call_tool(self, *args: object, **kwargs: object) -> object:
+            Forgotten.calls += 1
+            raise McpError(ErrorData(code=32600, message="Session terminated"))
+
+    provider._session = Forgotten()  # type: ignore[assignment]
+    res = await provider.call("echo.write", {"text": "once"}, cancel=asyncio.Event(), idempotency_key="k", timeout_s=10)
+    assert res.kind is ToolResultKind.DATA, res.text
+    assert Forgotten.calls == 1 and provider.connected
+
+
+async def test_other_failures_are_not_retried(provider: McpProvider):
+    class Broken:
+        calls = 0
+
+        async def call_tool(self, *args: object, **kwargs: object) -> object:
+            Broken.calls += 1
+            raise RuntimeError("connection reset mid-call")
+
+    provider._session = Broken()  # type: ignore[assignment]
+    res = await provider.call("echo.write", {"text": "x"}, cancel=asyncio.Event(), idempotency_key="k", timeout_s=10)
+    assert res.kind is ToolResultKind.ERROR and "connection reset" in res.text and Broken.calls == 1

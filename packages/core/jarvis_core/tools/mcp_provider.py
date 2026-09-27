@@ -181,32 +181,47 @@ class McpProvider:
         idempotency_key: str,
         timeout_s: float,
     ) -> ToolResult:
-        try:
-            session = await self._ensure()
-        except RuntimeError as exc:
-            return ToolResult.failure(f"mcp server {self.name!r} unavailable: {exc}")
         inner = name.split(".", 1)[1] if "." in name else name
-        call = asyncio.create_task(
-            session.call_tool(inner, arguments, read_timeout_seconds=timedelta(seconds=timeout_s))
-        )
-        waiter = asyncio.create_task(cancel.wait())
-        try:
-            done, _ = await asyncio.wait({call, waiter}, return_when=asyncio.FIRST_COMPLETED)
-            if call not in done:
-                call.cancel()
-                return ToolResult.failure("cancelled")
-            result = call.result()
-        except Exception as exc:
-            self.error = _describe(exc)
-            await self.stop()
-            return ToolResult.failure(f"mcp server {self.name!r}: {self.error}")
-        finally:
-            waiter.cancel()
-        return _convert(result)
+        for attempt in (1, 2):
+            try:
+                session = await self._ensure()
+            except RuntimeError as exc:
+                return ToolResult.failure(f"mcp server {self.name!r} unavailable: {exc}")
+            call = asyncio.create_task(
+                session.call_tool(inner, arguments, read_timeout_seconds=timedelta(seconds=timeout_s))
+            )
+            waiter = asyncio.create_task(cancel.wait())
+            try:
+                done, _ = await asyncio.wait({call, waiter}, return_when=asyncio.FIRST_COMPLETED)
+                if call not in done:
+                    call.cancel()
+                    return ToolResult.failure("cancelled")
+                result = call.result()
+            except Exception as exc:
+                self.error = _describe(exc)
+                await self.stop()
+                # The server restarted (a deploy, the host supervisor) and no longer knows our
+                # session: it refused the request without running it, so one retry on a fresh
+                # session is safe even for a mutating tool. Anything else is not retried.
+                if attempt == 1 and _session_forgotten(exc):
+                    log.info("mcp %s: session forgotten by the server; reconnecting for %s", self.name, name)
+                    continue
+                return ToolResult.failure(f"mcp server {self.name!r}: {self.error}")
+            finally:
+                waiter.cancel()
+            return _convert(result)
+        return ToolResult.failure(f"mcp server {self.name!r}: {self.error}")  # pragma: no cover
 
 
 def _resolve_command(command: str) -> str:
     return sys.executable if command == "{python}" else command
+
+
+def _session_forgotten(exc: BaseException) -> bool:
+    """The server answered 'Session terminated' (HTTP 404 on a session id it no longer has)."""
+    if isinstance(exc, BaseExceptionGroup):
+        return any(_session_forgotten(e) for e in exc.exceptions)
+    return "Session terminated" in str(exc)
 
 
 def _describe(exc: BaseException) -> str:

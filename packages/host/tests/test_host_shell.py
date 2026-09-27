@@ -48,7 +48,8 @@ def test_timeout_kills_grandchildren_that_hold_the_pipes(tmp_path: Path):
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline and _alive(grandchild):
         time.sleep(0.1)
-    assert not _alive(grandchild)
+    # Seen alive ~1 in 10 full-suite runs on ardi, never alone (0/40 under load): say what it was.
+    assert not _alive(grandchild), _describe_proc(grandchild)
 
 
 def test_a_prompt_gets_eof_instead_of_waiting(tmp_path: Path):
@@ -56,6 +57,17 @@ def test_a_prompt_gets_eof_instead_of_waiting(tmp_path: Path):
     t0 = time.monotonic()
     res = shell.run("import sys; line = sys.stdin.readline(); print(repr(line))", timeout_s=10)
     assert res["stdout"].strip() == "''" and time.monotonic() - t0 < 5
+
+
+def _describe_proc(pid: int) -> str:
+    try:
+        with open(f"/proc/{pid}/stat") as fh:
+            fields = fh.read().split(")")[-1].split()
+        with open(f"/proc/{pid}/cmdline") as fh:
+            cmd = fh.read().replace("\0", " ")[:120]
+    except OSError as exc:
+        return f"pid {pid}: {exc}"
+    return f"pid {pid} still alive: state={fields[0]} ppid={fields[1]} pgid={fields[2]} cmd={cmd!r}"
 
 
 def _alive(pid: int) -> bool:
@@ -151,3 +163,21 @@ def test_refuses_the_daemons_own_pid(tmp_path: Path):
     shell = Shell(launcher=PY, default_cwd=tmp_path)
     with pytest.raises(ShellRefused, match="is the host daemon"):
         shell.run(f"import os; os.kill({__import__('os').getpid()}, 9)  # taskkill")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "Start-Process OUTLOOK.EXE -ArgumentList '/profile','Default'; Start-Sleep -Seconds 12",
+        "Start-Process 'C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE'",
+        '& "C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE" /profile Outlook',
+        "cmd /c start outlook",
+    ],
+)
+def test_refuses_starting_outlook_by_hand(command: str):
+    why = refusal(command)
+    assert why and "outlook_restart" in why
+
+
+def test_looking_at_outlook_is_fine():
+    assert refusal("Get-Process OUTLOOK -ErrorAction SilentlyContinue | Select-Object Id,Responding") is None

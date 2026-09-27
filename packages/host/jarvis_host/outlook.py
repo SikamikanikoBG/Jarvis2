@@ -1815,7 +1815,9 @@ class OutlookService:
 
     async def restart(
         self,
-        wait_s: float = 120.0,
+        # Under the core's 120 s per-call limit for a host, stop and start included: a restart
+        # that outlives the caller's deadline reads as a failure and invites a manual retry.
+        wait_s: float = 90.0,
         *,
         stop: Callable[[], list[int]] = stop_outlook,
         start: Callable[[], None] = start_outlook,

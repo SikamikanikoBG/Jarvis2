@@ -79,6 +79,14 @@ _KILL_BY_NAME = [
 ]
 
 
+# Starting Outlook by hand (`Start-Process OUTLOOK.EXE /profile Default`, 2026-09-27, three times in one
+# evening) gives an instance with a guessed profile or another privilege level that COM cannot attach to.
+_START_OUTLOOK = re.compile(
+    r"(?:\b(?:Start-Process|saps|start)\b[^;\n|]*?\bOUTLOOK(?:\.EXE)?\b|\bOUTLOOK(?:\.EXE)?['\"]?\s+/profile\b)",
+    re.IGNORECASE,
+)
+
+
 def refusal(command: str, own_pids: Sequence[int] = ()) -> str | None:
     """Why `command` must not run, or None. It would kill this daemon: python/uv by name, or one of `own_pids`."""
     if any(p.search(command) for p in _KILL_BY_NAME):
@@ -88,6 +96,12 @@ def refusal(command: str, own_pids: Sequence[int] = ()) -> str | None:
             "`$p = Start-Process ... -PassThru` and run `Stop-Process -Id $p.Id -Force` (a server's PID: "
             "`Get-NetTCPConnection -LocalPort <port> -State Listen | Select OwningProcess`). Linux: `cmd & echo $!` "
             "and `kill <pid>` (a server's PID: `ss -ltnp 'sport = :<port>'`)."
+        )
+    if _START_OUTLOOK.search(command):
+        return (
+            "refused: do not start Outlook from the shell - use the outlook_restart tool. It starts classic Outlook "
+            "with the right profile in this host's own session, which is the only instance the Outlook tools can "
+            "reach; a hand-started one (guessed /profile, other privilege level) cannot be attached to."
         )
     if re.search(rf"\b{_KILL}\b", command, re.IGNORECASE):
         for pid in own_pids:

@@ -427,7 +427,7 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
 
     @tool("shell_run", DESTRUCTIVE)
     async def shell_run(command: str, cwd: str | None = None, timeout_s: int = 60) -> str:
-        """Run a command in PowerShell (pwsh if installed) with a deadline; returns exit_code, stdout, stderr (each capped at 20k chars). A timeout is an error, not a result."""
+        """Run a command in PowerShell (pwsh if installed) with a deadline; returns exit_code, stdout, stderr (each capped at 20k chars). A timeout is an error, not a result. Stop processes only by PID, and only ones you started (`$p = Start-Process ... -PassThru`, then `Stop-Process -Id $p.Id -Force`); never by name (`Get-Process python | Stop-Process`, `taskkill /IM python.exe`): this host daemon is itself python.exe, and killing it cuts you off from this machine - such commands are refused."""
         return json_text(
             await _run("shell_run", lambda: asyncio.to_thread(deps.shell.run, command, cwd, float(timeout_s)))
         )

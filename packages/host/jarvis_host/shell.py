@@ -6,12 +6,18 @@ them (an ``ssh`` waiting at a password prompt, 2026-09-27) keeps them open, so t
 the worker thread is lost for good. A few of those and every later call, ``Write-Output hi`` included,
 timed out. So the command runs in its own process group with stdin closed (a prompt gets EOF instead of
 waiting), a timeout kills the whole tree, and the leftover output is read with a deadline of its own.
+
+The daemon is itself a python.exe (under uv.exe). Agents cleaning up their own ``python -m http.server``
+ran ``Get-Process python | Stop-Process -Force`` and killed the host with it (2026-09-27), then waited for
+"zombie processes" to let go of a host that was gone. Commands that stop python/uv by name, or this
+daemon by its PID, are refused with a pointer to ``Stop-Process -Id``: kill what you started, by PID.
 """
 
 from __future__ import annotations
 
 import contextlib
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -34,6 +40,10 @@ class ShellDisabled(ShellError):
     pass
 
 
+class ShellRefused(ShellError):
+    pass
+
+
 class ShellTimeout(ShellError):
     def __init__(self, message: str, stdout: str, stderr: str) -> None:
         super().__init__(message)
@@ -46,6 +56,39 @@ def default_launcher() -> list[str]:
         exe = shutil.which("pwsh") or shutil.which("powershell") or "powershell"
         return [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"]
     return [shutil.which("bash") or "/bin/sh", "-c"]
+
+
+_NAME = r"['\"]?(?:python|pythonw|py|uv)(?:\.exe)?['\"]?(?![\w.-])"  # the daemon's own process names
+_KILL = r"(?:Stop-Process|spps|kill|taskkill|Terminate)"
+_KILL_BY_NAME = [
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        # Get-Process python | Stop-Process,  gps python | % { $_.Kill() },  (Get-Process python).Kill()
+        rf"\b(?:Get-Process|gps)\b[^;\n|]*?\s{_NAME}[^;\n]*?(?:\|[^;\n]*?\b{_KILL}\b|\)\s*\.\s*Kill\s*\()",
+        # Stop-Process -Name python,  spps -n node, python
+        rf"\b(?:Stop-Process|spps|kill)\b[^;\n|]*?-(?:Name|ProcessName|n)\s+(?:[\w.'\"]+\s*,\s*)*{_NAME}",
+        # taskkill /F /IM python.exe
+        rf"\btaskkill\b[^;\n|]*?/IM\s+{_NAME}",
+        # wmic process where name='python.exe' delete,  Win32_Process -Filter "Name='python.exe'" | Invoke-CimMethod Terminate
+        rf"\bname\s*=\s*{_NAME}[^;\n]*?\b(?:{_KILL}|delete)\b",
+    )
+]
+
+
+def refusal(command: str, own_pids: Sequence[int] = ()) -> str | None:
+    """Why `command` must not run, or None. It would kill this daemon: python/uv by name, or one of `own_pids`."""
+    if any(p.search(command) for p in _KILL_BY_NAME):
+        return (
+            "refused: this stops python/uv processes by name, and the host daemon you are talking to is one of "
+            "them - it would cut you off from this machine. Stop only what you started, by PID: keep the id from "
+            "`$p = Start-Process ... -PassThru` (`$p.Id`) and run `Stop-Process -Id <pid> -Force`; to find a "
+            "server you started, `Get-NetTCPConnection -LocalPort <port> -State Listen | Select OwningProcess`."
+        )
+    if re.search(rf"\b{_KILL}\b", command, re.IGNORECASE):
+        for pid in own_pids:
+            if re.search(rf"(?<![\w.]){pid}(?![\w.])", command):
+                return f"refused: PID {pid} is the host daemon (or its launcher); stopping it would cut you off from this machine."
+    return None
 
 
 def cap(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
@@ -97,6 +140,9 @@ class Shell:
             raise ShellDisabled("shell_run is disabled on this host (shell.allow = false in host.toml)")
         if not command.strip():
             raise ShellError("command is empty")
+        why = refusal(command, (os.getpid(), os.getppid()))
+        if why:
+            raise ShellRefused(why)
         timeout_s = max(1.0, min(float(timeout_s or 60.0), MAX_TIMEOUT_S))
         workdir = Path(cwd).expanduser() if cwd else self.default_cwd
         if not workdir.is_dir():

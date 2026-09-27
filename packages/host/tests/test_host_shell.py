@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from jarvis_host.shell import Shell, ShellDisabled, ShellError, ShellTimeout, cap
+from jarvis_host.shell import Shell, ShellDisabled, ShellError, ShellRefused, ShellTimeout, cap, refusal
 
 PY = [sys.executable, "-c"]
 
@@ -94,3 +94,51 @@ def test_cap_keeps_head_and_tail():
     capped = cap(text, limit=50)
     assert capped.startswith("a" * 25) and capped.endswith("b" * 25) and "150 chars omitted" in capped
     assert cap("short", limit=50) == "short"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # what an agent actually ran on JarvisVM (2026-09-27), killing the host daemon with its http.servers
+        "Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep -Milliseconds 300",
+        "Get-Process -Name python,pythonw | Where-Object { $_.Id -ne 4 } | Stop-Process",
+        "gps python | % { $_.Kill() }",
+        "(Get-Process python).Kill()",
+        "Stop-Process -Name python -Force",
+        "spps -n node, python",
+        "taskkill /F /IM python.exe",
+        'taskkill /im "uv.exe" /t /f',
+        "wmic process where name='python.exe' delete",
+        "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Invoke-CimMethod -MethodName Terminate",
+    ],
+)
+def test_refuses_killing_python_by_name(command: str):
+    why = refusal(command)
+    assert why and "by PID" in why and "Stop-Process -Id" in why
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "Stop-Process -Id 10716 -Force",
+        "$p = Start-Process python -ArgumentList '-m','http.server','8899' -PassThru; Stop-Process -Id $p.Id",
+        "Get-Process python | Select-Object Id, StartTime",
+        "python -m http.server 8899",
+        "Get-Process node | Stop-Process",  # not the daemon's name: allowed
+        "taskkill /PID 10716 /F",
+        "uv pip install python-pptx",
+    ],
+)
+def test_allows_everything_else(command: str):
+    assert refusal(command) is None
+
+
+def test_refuses_the_daemons_own_pid(tmp_path: Path):
+    assert refusal("Stop-Process -Id 4242 -Force", own_pids=(4242,)) == (
+        "refused: PID 4242 is the host daemon (or its launcher); stopping it would cut you off from this machine."
+    )
+    assert refusal("Stop-Process -Id 42420 -Force", own_pids=(4242,)) is None
+    assert refusal("Get-Process -Id 4242", own_pids=(4242,)) is None  # looking is fine
+    shell = Shell(launcher=PY, default_cwd=tmp_path)
+    with pytest.raises(ShellRefused, match="is the host daemon"):
+        shell.run(f"import os; os.kill({__import__('os').getpid()}, 9)  # taskkill")

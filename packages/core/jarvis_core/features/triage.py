@@ -60,6 +60,22 @@ class TriageReport:
     # VIP / keyword alerts this pass tripped: {account, alert, sender, subject, folder}
     alerts: list[dict[str, str]] = field(default_factory=list)
 
+    @property
+    def blind(self) -> bool:
+        """No account could even be listed: the host or its mail client is down, not the mail."""
+        failed = {e.split(":", 1)[0] for e in self.errors if ": list failed:" in e}
+        return bool(self.accounts) and set(self.accounts) <= failed
+
+
+# While Outlook is unreachable (2026-09-27: an Office sign-in dialog for hours) every pass still sent
+# folder_create + list at it and kept the host's COM worker busy on calls that could not succeed.
+# Blind passes double the wait up to this; the first pass that lists anything resets it.
+TRIAGE_BACKOFF_MAX_S = 30 * 60
+
+
+def backoff_interval(base_s: float, blind_passes: int) -> float:
+    return max(base_s, min(base_s * 2 ** min(blind_passes, 8), TRIAGE_BACKOFF_MAX_S))
+
 
 _WELL_KNOWN = {"inbox", "sent", "drafts", "deleted", "trash", "junk", "spam", "outbox", "archive"}
 
@@ -84,14 +100,26 @@ class TriageJob:
             self._task = None
 
     async def _loop(self) -> None:
+        blind = 0
         while True:
-            interval = max(1, self.core.settings.triage.interval_min) * 60
+            interval = backoff_interval(max(1, self.core.settings.triage.interval_min) * 60, blind)
             await asyncio.sleep(interval)
             if self.core.settings.triage.enabled:
                 try:
-                    await self.run_once()
+                    report = await self.run_once()
                 except Exception:
                     log.exception("triage run failed")
+                    continue
+                if report.blind:
+                    blind += 1
+                    log.warning(
+                        "triage: no account could be listed (%d pass(es) in a row); next pass in %.0f min",
+                        blind,
+                        backoff_interval(max(1, self.core.settings.triage.interval_min) * 60, blind) / 60,
+                    )
+                elif blind:
+                    log.info("triage: mail reachable again after %d blind pass(es)", blind)
+                    blind = 0
 
     # --- state -------------------------------------------------------------------------
 

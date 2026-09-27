@@ -11,6 +11,7 @@ import httpx
 from pydantic import BaseModel
 
 from jarvis_core.features.stt import SttResult
+from jarvis_core.features.triage import TriageReport, backoff_interval
 from jarvis_core.models.fake import FakeTurn
 from jarvis_core.tools import BuiltinProvider, tool
 from jarvis_proto import MeetingRsvpSettings, RunStatus, ToolResult, TriageSettings
@@ -970,3 +971,23 @@ def _drain(sub: Any) -> list[Any]:
 
 def test_httpx_available_for_stt_mock():
     assert httpx.__version__
+
+
+def test_a_pass_that_could_list_no_account_is_blind():
+    # 2026-09-27/28 on JarvisVM: Outlook sat on an Office sign-in for hours; every 5-minute pass still
+    # fired folder_create + list at it, keeping the COM worker permanently busy on calls that could not work.
+    both = ["a@x.bg", "b@x.bg"]
+    down = TriageReport(
+        accounts=both, errors=[f"{a}: list failed: Error: outlook.list_items did not finish" for a in both]
+    )
+    assert down.blind
+    half = TriageReport(accounts=both, errors=["a@x.bg: list failed: Error: timeout"])
+    assert not half.blind
+    assert not TriageReport(accounts=both).blind
+    assert not TriageReport().blind  # nothing configured is not "down"
+
+
+def test_blind_passes_back_off_to_half_an_hour_and_recover_at_once():
+    base = 5 * 60
+    assert [backoff_interval(base, n) for n in range(6)] == [300, 600, 1200, 1800, 1800, 1800]
+    assert backoff_interval(45 * 60, 3) == 45 * 60  # a slow base interval is never shortened

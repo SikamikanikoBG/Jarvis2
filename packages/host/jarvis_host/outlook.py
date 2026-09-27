@@ -21,11 +21,13 @@ through :class:`jarvis_host.com.ComWorker` with a per-call timeout.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import ctypes
 import html
 import logging
 import re
+import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -35,7 +37,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
-from jarvis_host.com import ComWorker
+from jarvis_host.com import ComTimeout, ComWorker
 
 log = logging.getLogger(__name__)
 
@@ -1711,6 +1713,46 @@ class OutlookBackend:
 # --- async facade over the COM worker -----------------------------------------------------------
 
 
+def outlook_exe() -> str:
+    """Full path of classic OUTLOOK.EXE from App Paths (falls back to the bare name on PATH)."""
+    if sys.platform == "win32":
+        import winreg
+
+        with contextlib.suppress(OSError):
+            key = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\OUTLOOK.EXE"
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as k:
+                return str(winreg.QueryValue(k, None))
+    return "OUTLOOK.EXE"
+
+
+def stop_outlook() -> list[int]:
+    """Kill every OUTLOOK.EXE (the visible one and COM-started ``-Embedding`` ones) by PID."""
+    if sys.platform != "win32":
+        return []
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    out = subprocess.run(
+        ["tasklist", "/FI", "IMAGENAME eq OUTLOOK.EXE", "/FO", "CSV", "/NH"],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+        creationflags=flags,
+    ).stdout
+    pids = [int(m) for m in re.findall(r'^"OUTLOOK\.EXE","(\d+)"', out, re.IGNORECASE | re.MULTILINE)]
+    for pid in pids:
+        subprocess.run(
+            ["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=20, check=False, creationflags=flags
+        )
+    return pids
+
+
+def start_outlook() -> None:
+    """Start classic Outlook with the default profile, in this daemon's own session and integrity level:
+    an Outlook started any other way (elevated vs not, another session) is one COM cannot attach to
+    (CO_E_SERVER_EXEC_FAILURE)."""
+    subprocess.Popen([outlook_exe()], close_fds=True)
+
+
 class OutlookService:
     """``OutlookBackend`` marshalled through the COM worker with per-call deadlines."""
 
@@ -1770,3 +1812,34 @@ class OutlookService:
     async def call(self, name: str, *args: Any, **kwargs: Any) -> Any:
         timeout = self.TIMEOUTS.get(name, 30.0)
         return await self.worker.acall(self._guarded, name, *args, label=f"outlook.{name}", timeout_s=timeout, **kwargs)
+
+    async def restart(
+        self,
+        wait_s: float = 120.0,
+        *,
+        stop: Callable[[], list[int]] = stop_outlook,
+        start: Callable[[], None] = start_outlook,
+        pause_s: float = 3.0,
+    ) -> dict[str, Any]:
+        """Stop every OUTLOOK.EXE, start classic Outlook again, and wait until COM answers."""
+        t0 = time.monotonic()
+        stopped = await asyncio.to_thread(stop)
+        self.backend.reset()
+        await asyncio.sleep(pause_s)
+        await asyncio.to_thread(start)
+        last = ""
+        while time.monotonic() - t0 < wait_s:
+            await asyncio.sleep(pause_s)
+            try:
+                await self.call("ping")
+                return {"connected": True, "stopped_pids": stopped, "waited_s": round(time.monotonic() - t0)}
+            except (OutlookError, ComTimeout) as exc:
+                last = str(exc)
+        return {
+            "connected": False,
+            "stopped_pids": stopped,
+            "waited_s": round(time.monotonic() - t0),
+            "error": last,
+            "hint": "Outlook started but does not answer: it is most likely showing a dialog (Office sign-in, "
+            "profile choice, 'Keep using Outlook'). screen_grab shows it; Arsen may have to click it.",
+        }

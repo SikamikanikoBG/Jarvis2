@@ -10,6 +10,13 @@ thread parked on a lock: V1 accumulated 20 such zombies in 8 minutes with ``wait
 
 ``busy`` / ``abandoned`` are exposed so ``host_status`` can say "Outlook is still chewing on the
 last call" instead of the next caller discovering it by timing out too.
+
+"Finishes the slow call" assumed Outlook eventually answers. It does not when it sits on a modal
+dialog ("Sign in to set up Office", 2026-09-27): one call stayed in flight for 3.6 hours and every
+call after it timed out until the daemon was restarted. So a call busy longer than ``wedge_after_s``
+counts as wedged: the next caller gets a fresh COM thread (the queued jobs move with it, and the
+``on_respawn`` hooks drop the Outlook/OneNote objects so they reconnect from the new apartment). The
+wedged thread is written off; if its call ever returns, it exits instead of taking more work.
 """
 
 from __future__ import annotations
@@ -30,6 +37,8 @@ log = logging.getLogger(__name__)
 T = TypeVar("T")
 
 DEFAULT_TIMEOUT_S = 30.0
+# Longer than any per-call deadline (the slowest Outlook op allows 120 s): a call past this is not slow, it is stuck.
+WEDGE_AFTER_S = 180.0
 
 
 class ComTimeout(TimeoutError):
@@ -45,6 +54,7 @@ class ComStatus:
     pending: int
     abandoned: int
     completed: int
+    restarts: int = 0
 
 
 class _Job:
@@ -67,9 +77,18 @@ def _default_init() -> Callable[[], None] | None:
 
 
 class ComWorker:
-    def __init__(self, *, init: Callable[[], None] | None = None, name: str = "com") -> None:
+    def __init__(
+        self,
+        *,
+        init: Callable[[], None] | None = None,
+        name: str = "com",
+        wedge_after_s: float | None = WEDGE_AFTER_S,
+    ) -> None:
         self._init = init if init is not None else _default_init()
         self._name = name
+        self._wedge_after_s = wedge_after_s
+        self._on_respawn: list[Callable[[], None]] = []
+        self._restarts = 0
         self._queue: queue.SimpleQueue[_Job | None] = queue.SimpleQueue()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
@@ -86,14 +105,56 @@ class ComWorker:
             if self._thread is not None and self._thread.is_alive():
                 return
             self._stopped = False
-            self._thread = threading.Thread(target=self._run, name=f"jarvis-host-{self._name}", daemon=True)
-            self._thread.start()
+            self._spawn()
+
+    def _spawn(self) -> None:
+        """Start a thread on the current queue. Caller holds the lock."""
+        self._thread = threading.Thread(
+            target=self._run, args=(self._queue,), name=f"jarvis-host-{self._name}", daemon=True
+        )
+        self._thread.start()
+
+    def on_respawn(self, hook: Callable[[], None]) -> None:
+        """Called after a wedged thread is replaced: drop COM objects that belong to the old apartment."""
+        self._on_respawn.append(hook)
+
+    def _respawn_if_wedged(self) -> None:
+        if self._wedge_after_s is None:
+            return
+        with self._lock:
+            cur = self._current
+            if cur is None or self._stopped or time.monotonic() - self._current_since < self._wedge_after_s:
+                return
+            old = self._queue
+            self._queue = queue.SimpleQueue()
+            while True:  # the waiting jobs move to the new thread
+                try:
+                    job = old.get_nowait()
+                except queue.Empty:
+                    break
+                if job is not None:
+                    self._queue.put(job)
+            old.put(None)  # the wedged thread exits if its call ever returns
+            self._current = None
+            self._restarts += 1
+            self._spawn()
+            stuck_for = time.monotonic() - self._current_since
+        log.error(
+            "com: %s wedged for %.0fs; replaced the COM thread (restart %d)", cur.label, stuck_for, self._restarts
+        )
+        for hook in self._on_respawn:
+            try:
+                hook()
+            except Exception as exc:
+                log.warning("com: respawn hook failed: %s", exc)
 
     def stop(self, *, wait_s: float = 2.0) -> None:
         with self._lock:
             self._stopped = True
             thread = self._thread
-        self._queue.put(None)
+        with self._lock:
+            jobs = self._queue
+        jobs.put(None)
         if thread is not None:
             thread.join(wait_s)
 
@@ -113,6 +174,7 @@ class ComWorker:
                 pending=self._queue.qsize(),
                 abandoned=self._abandoned,
                 completed=self._completed,
+                restarts=self._restarts,
             )
 
     # --- submission ----------------------------------------------------------------------
@@ -120,6 +182,7 @@ class ComWorker:
     def submit(self, fn: Callable[..., T], *args: Any, label: str | None = None, **kwargs: Any) -> Future[T]:
         if self._thread is None or not self._thread.is_alive():
             self.start()
+        self._respawn_if_wedged()
         job = _Job(fn, args, kwargs, label or getattr(fn, "__name__", "call"))
         self._queue.put(job)
         return job.future
@@ -174,14 +237,14 @@ class ComWorker:
 
     # --- the thread -----------------------------------------------------------------------
 
-    def _run(self) -> None:
+    def _run(self, jobs: queue.SimpleQueue[_Job | None]) -> None:
         if self._init is not None:
             try:
                 self._init()
             except Exception as exc:  # pragma: no cover — only on a broken COM runtime
                 log.error("com: CoInitialize failed: %s", exc)
         while True:
-            job = self._queue.get()
+            job = jobs.get()
             if job is None or self._stopped:
                 break
             if not job.future.set_running_or_notify_cancel():
@@ -198,7 +261,8 @@ class ComWorker:
             # Book-keeping BEFORE the future is resolved: whoever wakes up on the result must
             # not be able to observe a status snapshot that still calls this job in flight.
             with self._lock:
-                self._current = None
+                if self._current is job:  # a written-off (wedged) thread no longer owns the status
+                    self._current = None
                 self._completed += 1
             if error is not None:
                 job.future.set_exception(error)

@@ -145,6 +145,7 @@ class Status:
                 "alive": com.alive,
                 "busy": com.busy,
                 "busy_for_s": com.busy_for_s,
+                "restarts": com.restarts,
                 "current": com.current,
                 "pending": com.pending,
                 "abandoned": com.abandoned,

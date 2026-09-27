@@ -33,6 +33,7 @@ EXPECTED_ANNOTATIONS = {
     "outlook_folder_create": ("mutating", True),
     "outlook_flag": ("mutating", True),
     "outlook_send": ("destructive", False),
+    "outlook_restart": ("mutating", False),
     "calendar_list": ("read", True),
     "calendar_create": ("destructive", False),
     "calendar_delete": ("destructive", False),

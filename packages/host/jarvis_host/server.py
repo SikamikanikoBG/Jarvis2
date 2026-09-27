@@ -87,6 +87,9 @@ def make_deps(
     backend = OutlookBackend(dispatch or outlook_dispatch, config.outlook_accounts)
     outlook = OutlookService(backend, worker)
     onenote = OneNoteService(OneNoteBackend(onenote_dispatch_fn or onenote_dispatch), worker)
+    # A replaced (wedged) COM thread takes its apartment with it: reconnect from the new one.
+    worker.on_respawn(backend.reset)
+    worker.on_respawn(onenote.backend.reset)
     roots = config.fs_roots or ()
     files = Files(roots)
     shell = Shell(allowed=config.shell_allow, default_cwd=files.roots[0])
@@ -193,6 +196,11 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
         return mcp.tool(name=name, annotations=annotations, description=description, structured_output=False)
 
     # --- Outlook -------------------------------------------------------------------------
+
+    @tool("outlook_restart", MUTATING)
+    async def outlook_restart() -> str:
+        """Restart classic Outlook the right way when it is hung, not running, or 'not reachable': stops every OUTLOOK.EXE, starts it with the default profile in this host's own session (so COM can attach), reconnects and waits up to 2 min until it answers. Use this instead of Stop-Process/Start-Process in shell_run - a hand-started Outlook (other profile name, other privilege level) is one the Outlook tools cannot reach."""
+        return json_text(await _run("outlook_restart", lambda: outlook().restart()))
 
     @tool("outlook_accounts", READ)
     async def outlook_accounts() -> str:

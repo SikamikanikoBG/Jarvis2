@@ -491,3 +491,36 @@ async def test_service_times_out_without_blocking_later_calls(service: OutlookSe
         await service.call("accounts")
     assert service.worker.status().busy
     assert (await service.call("ping"))["connected"] is True
+
+
+async def test_restart_stops_starts_and_waits_until_outlook_answers():
+    # 2026-09-27: asked to "restart Outlook", the agent killed it and started `OUTLOOK.EXE /profile Default`
+    # (the profile is "Outlook") at another privilege level; COM could not attach for the rest of the run.
+    calls: list[str] = []
+    answers = iter([OutlookError("not reachable"), OutlookError("not reachable"), {"ok": True}])
+
+    class Svc(OutlookService):
+        async def call(self, name, *args, **kwargs):  # type: ignore[override]
+            calls.append(name)
+            a = next(answers)
+            if isinstance(a, Exception):
+                raise a
+            return a
+
+    world = World()
+    svc = Svc(OutlookBackend(world.dispatch), ComWorker(init=None))
+    started: list[bool] = []
+    res = await svc.restart(wait_s=5, stop=lambda: [111, 222], start=lambda: started.append(True), pause_s=0.01)
+    assert res["connected"] is True and res["stopped_pids"] == [111, 222] and started == [True]
+    assert calls == ["ping", "ping", "ping"]
+
+
+async def test_restart_reports_a_dialog_when_outlook_never_answers():
+    class Svc(OutlookService):
+        async def call(self, name, *args, **kwargs):  # type: ignore[override]
+            raise OutlookError("Outlook is not reachable")
+
+    world = World()
+    svc = Svc(OutlookBackend(world.dispatch), ComWorker(init=None))
+    res = await svc.restart(wait_s=0.1, stop=lambda: [], start=lambda: None, pause_s=0.02)
+    assert res["connected"] is False and "dialog" in res["hint"] and "not reachable" in res["error"]

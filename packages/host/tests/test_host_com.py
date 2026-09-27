@@ -93,3 +93,40 @@ async def test_acall_has_the_same_semantics(worker: ComWorker):
 def test_status_when_idle(worker: ComWorker):
     s = worker.status()
     assert s.alive and not s.busy and s.pending == 0 and s.current is None
+
+
+def test_a_wedged_call_gets_the_next_caller_a_fresh_thread():
+    # 2026-09-27: OUTLOOK.EXE sat on a modal "Sign in to set up Office" dialog; one list_items never
+    # returned, the single COM thread stayed parked on it for 3.6 hours, and 65 calls queued behind it
+    # all timed out until the daemon was restarted by hand.
+    release = threading.Event()
+    resets: list[int] = []
+    w = ComWorker(init=None, wedge_after_s=0.3)
+    w.on_respawn(lambda: resets.append(1))
+    try:
+        w.start()
+        first = w.thread_ident
+        stuck = w.submit(release.wait, label="outlook.list_items")
+        time.sleep(0.5)  # longer than wedge_after_s: the worker is wedged
+        assert w.call(threading.get_ident, timeout_s=2) != first  # served by a new thread, promptly
+        assert resets == [1]  # the Outlook/OneNote connections were told to reconnect
+        status = w.status()
+        assert status.restarts == 1 and not status.busy  # the stuck call no longer counts as the current one
+        release.set()  # the old call finally returns: its thread exits instead of competing for jobs
+        assert stuck.result(timeout=2) is True
+        assert w.call(threading.get_ident, timeout_s=2) == w.thread_ident
+    finally:
+        release.set()
+        w.stop()
+
+
+def test_a_slow_call_under_the_wedge_limit_keeps_its_thread():
+    w = ComWorker(init=None, wedge_after_s=5)
+    try:
+        w.start()
+        slow = w.submit(time.sleep, 0.3)
+        assert w.call(threading.get_ident, timeout_s=2) == w.thread_ident
+        slow.result(timeout=2)
+        assert w.status().restarts == 0
+    finally:
+        w.stop()

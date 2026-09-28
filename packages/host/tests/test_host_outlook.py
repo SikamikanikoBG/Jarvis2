@@ -524,15 +524,24 @@ async def test_restart_reports_a_dialog_when_outlook_never_answers():
 
     world = World()
     svc = Svc(OutlookBackend(world.dispatch), ComWorker(init=None))
-    res = await svc.restart(
-        wait_s=0.2,
-        stop=lambda: [],
-        start=lambda: None,
-        windows=lambda: {"running": True, "processes": [{"window": "Sign in to set up Office"}]},
-        pause_s=0.02,
-    )
-    assert res["connected"] is False and "dialog" in res["hint"] and "not reachable" in res["error"]
-    assert res["windows"] == ["Sign in to set up Office"]
+    started: list[bool] = []
+
+    def attempt():
+        return svc.restart(
+            wait_s=0.2,
+            stop=lambda: [],
+            start=lambda: started.append(True),
+            windows=lambda: {"running": True, "processes": [{"window": "Sign in to set up Office"}]},
+            pause_s=0.02,
+        )
+
+    # A failure, not a result: the caller's repeat guard must see it (2026-09-28: 35 restarts in an hour).
+    with pytest.raises(OutlookError, match="Sign in to set up Office"):
+        await attempt()
+    # ...and the next restart is refused without touching Outlook, so the dialog stays up for Arsen.
+    with pytest.raises(OutlookError, match="refused: Outlook was restarted"):
+        await attempt()
+    assert started == [True]
 
 
 async def test_restart_waits_for_the_window_before_the_first_com_call():

@@ -1786,9 +1786,15 @@ class OutlookService:
         "calendar_free_slots",
     }
 
+    # After a restart that did not connect, further restarts are refused for this long: each one
+    # kills the very dialog (Office sign-in) a human has to answer. 2026-09-28: one scheduled run
+    # restarted Outlook 35 times in an hour while "Sign in to set up Office" waited for Arsen.
+    RESTART_COOLDOWN_S = 15 * 60
+
     def __init__(self, backend: OutlookBackend, worker: ComWorker) -> None:
         self.backend = backend
         self.worker = worker
+        self._failed_restart: tuple[float, list[str]] | None = None  # (monotonic time, window titles)
 
     def _guarded(self, name: str, *args: Any, **kwargs: Any) -> Any:
         fn = getattr(self.backend, name)
@@ -1824,7 +1830,20 @@ class OutlookService:
         windows: Callable[[], dict[str, Any] | None] | None = None,
         pause_s: float = 3.0,
     ) -> dict[str, Any]:
-        """Stop every OUTLOOK.EXE, start classic Outlook again, and wait until COM answers."""
+        """Stop every OUTLOOK.EXE, start classic Outlook again, and wait until COM answers.
+
+        Raises OutlookError when Outlook does not answer (so a caller's repeat guard sees a failure,
+        not a result), and refuses to restart again within RESTART_COOLDOWN_S of such a failure."""
+        if self._failed_restart is not None:
+            ago = time.monotonic() - self._failed_restart[0]
+            if ago < self.RESTART_COOLDOWN_S:
+                seen = ", ".join(f"'{t}'" for t in self._failed_restart[1]) or "a dialog"
+                raise OutlookError(
+                    f"refused: Outlook was restarted {ago / 60:.0f} min ago and stayed stuck on {seen}; that needs "
+                    "Arsen at the screen, and every restart closes the dialog he has to answer. Do not restart it "
+                    f"again (allowed in {(self.RESTART_COOLDOWN_S - ago) / 60:.0f} min). Deliver the result another "
+                    "way - save it to a file, send it with notify.discord, or use mail.* for an IMAP account."
+                )
         if windows is None:
             from jarvis_host.status import (
                 outlook_process_state as windows,
@@ -1850,15 +1869,15 @@ class OutlookService:
             await asyncio.sleep(pause_s)
             try:
                 await self.call("ping")
+                self._failed_restart = None
                 return {"connected": True, "stopped_pids": stopped, "waited_s": round(time.monotonic() - t0)}
             except (OutlookError, ComTimeout) as exc:
                 last = str(exc)
-        return {
-            "connected": False,
-            "stopped_pids": stopped,
-            "waited_s": round(time.monotonic() - t0),
-            "error": last,
-            "windows": [t for t in titles if t],
-            "hint": "Outlook started but does not answer: it is most likely showing a dialog (Office sign-in, "
-            "profile choice, 'Keep using Outlook') - see `windows`. screen_grab shows it; Arsen may have to click it.",
-        }
+        shown = [t for t in titles if t]
+        self._failed_restart = (time.monotonic(), shown)
+        raise OutlookError(
+            f"Outlook was restarted (stopped pids {stopped}) but does not answer after {round(time.monotonic() - t0)} s "
+            f"({last or 'no reply'}). Its window shows {', '.join(repr(t) for t in shown) or 'nothing yet'}: most likely a "
+            "dialog (Office sign-in, profile choice, 'Keep using Outlook') that Arsen has to answer - screen_grab shows it. "
+            "Do not restart it again; further restarts are refused for 15 min."
+        )

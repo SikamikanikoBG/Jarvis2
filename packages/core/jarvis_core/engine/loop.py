@@ -772,7 +772,9 @@ class AgentLoop:
 
         # Sending: anyone not on the approved list gets a draft instead. This rewrites the
         # call before it is dispatched, so the model cannot talk its way past it.
-        if call.name.split(".")[-1] == "outlook_send" and not call.arguments.get("draft"):
+        # Outlook on a host (`<host>.outlook_send`) and the core's own IMAP/SMTP mail (`mail.send`) alike.
+        is_send = call.name.split(".")[-1] == "outlook_send" or call.name == "mail.send"
+        if is_send and not call.arguments.get("draft"):
             blocked = self._settings().email.unapproved(
                 str(call.arguments.get("to", "")), str(call.arguments.get("cc", ""))
             )

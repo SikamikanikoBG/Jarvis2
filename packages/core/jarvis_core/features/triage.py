@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
+from jarvis_core.features.mail import triage_tool
 from jarvis_core.features.shadow import mail_input, mail_questions
 from jarvis_core.models.base import ModelTextChunk
 from jarvis_proto import ConversationKind, Message, RunKind, TriageState
@@ -205,7 +206,10 @@ class TriageJob:
         if folder and not dry_run:
             report.errors.append("a folder sample is only allowed as a dry run")
             return report
-        if not cfg.host:
+        imap_only = bool(cfg.accounts) and all(
+            cfg.host_for(a, self.core.settings.mail_accounts) == "mail" for a in cfg.accounts
+        )
+        if not cfg.host and not imap_only:
             report.errors.append("triage.host is not set (name of the jarvis-host MCP server)")
             return report
         accounts = list(cfg.accounts) or await self._discover_accounts(cfg.host, report)
@@ -215,16 +219,17 @@ class TriageJob:
         today = datetime.now(ZoneInfo(self.core.settings.timezone)).strftime("%Y-%m-%d")
         for account in accounts:
             report.accounts.append(account)
+            host = cfg.host_for(account, self.core.settings.mail_accounts)
             rules = cfg.rules_for(account)
             state = await self._state(account)
             if state.day != today:
                 state.day, state.processed_today, state.routed_today = today, 0, 0
             if not dry_run:
                 wanted = [*rules.folders(), *([cfg.demand_root] if rules.demand_routing else [])]
-                await self._ensure_folders(cfg.host, account, wanted, report)
+                await self._ensure_folders(host, account, wanted, report)
             try:
                 if folder:
-                    items, cursor = await self._list(cfg.host, account, folder=folder, limit=limit or 30)
+                    items, cursor = await self._list(host, account, folder=folder, limit=limit or 30)
                 else:
                     # No `since`: the INBOX is the queue. Filtering by a received-time watermark
                     # let the watermark outrun mail that was never sorted, and nothing could ever
@@ -232,7 +237,7 @@ class TriageJob:
                     # in the Inbox while the cursor stood two hours past them and every pass
                     # reported "0 processed, no errors". A mail is skipped because it has been
                     # DECIDED, not because of when it arrived.
-                    items, cursor = await self._list(cfg.host, account, limit=limit or 50)
+                    items, cursor = await self._list(host, account, limit=limit or 50)
             except Exception as exc:
                 state.last_error = f"list failed: {exc}"
                 report.errors.append(f"{account}: {state.last_error}")
@@ -284,7 +289,7 @@ class TriageJob:
                     failure = ""
                     try:
                         res = await self.core.registry.call(
-                            f"{cfg.host}.outlook_move",
+                            triage_tool(host, "move"),
                             {"entry_id": entry_id, "folder": target, "account": account, "create": True},
                             cancel=asyncio.Event(),
                             idempotency_key=f"triage:{account}:{entry_id}",
@@ -395,7 +400,7 @@ class TriageJob:
                 continue
             try:
                 res = await self.core.registry.call(
-                    f"{host}.outlook_folder_create",
+                    triage_tool(host, "folder_create"),
                     {"path": folder, "account": account},
                     cancel=asyncio.Event(),
                     idempotency_key=f"triage:mkdir:{account}:{folder}",
@@ -411,7 +416,7 @@ class TriageJob:
 
     async def _discover_accounts(self, host: str, report: TriageReport) -> list[str]:
         res = await self.core.registry.call(
-            f"{host}.outlook_accounts", {}, cancel=asyncio.Event(), idempotency_key="triage:accounts"
+            triage_tool(host, "accounts"), {}, cancel=asyncio.Event(), idempotency_key="triage:accounts"
         )
         if res.kind.value == "error":
             report.errors.append(f"outlook_accounts: {res.text[:120]}")
@@ -436,7 +441,7 @@ class TriageJob:
         # A long preview so the demand rule can tell a digest (many DM ids) from a thread (one).
         args: dict[str, Any] = {"account": account, "folder": folder, "limit": limit, "preview_chars": 1500}
         res = await self.core.registry.call(
-            f"{host}.outlook_list",
+            triage_tool(host, "list"),
             args,
             cancel=asyncio.Event(),
             idempotency_key=f"triage:list:{account}",
@@ -478,7 +483,7 @@ class TriageJob:
         """First ``max_chars`` of the real body, or None when it cannot be read."""
         try:
             res = await self.core.registry.call(
-                f"{host}.outlook_read",
+                triage_tool(host, "read"),
                 {"entry_id": entry_id, "account": account, "max_chars": max_chars},
                 cancel=asyncio.Event(),
                 idempotency_key=f"triage:read:{account}:{entry_id}",
@@ -506,7 +511,11 @@ class TriageJob:
             # A demand named only in the body: the table preview is too short to tell a thread
             # (one demand) from a digest (many), so read the body the way V1 did (4,000 chars).
             entry_id = str(item.get("entry_id") or "")
-            body = await self._body(cfg.host, account, entry_id) if entry_id else None
+            body = (
+                await self._body(cfg.host_for(account, self.core.settings.mail_accounts), account, entry_id)
+                if entry_id
+                else None
+            )
             demand = demand_folder(subject, body or preview, prefixes=cfg.demand_prefixes, root=cfg.demand_root)
             if demand:
                 return "demand", demand

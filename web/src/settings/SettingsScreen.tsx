@@ -5,6 +5,7 @@ import type { ThemePref } from '../lib/theme';
 import { LANES, ROLE_NAMES, RUN_KINDS, THINK_LEVELS, type Lane, type ModelSpec, type Provider, type RoleName, type RunKind, type Settings, type SttKind, type ThinkLevel, type ToolExposure } from '../protocol/types';
 import { useStore } from '../store/store';
 import { CollabSection } from './CollabSection';
+import { MailAccountsSection } from './MailAccountsSection';
 import { McpServersSection } from './McpServersSection';
 import { PersonalitySection } from './PersonalitySection';
 import { ConfirmationsSection, EmailSection } from './SafetySections';
@@ -216,6 +217,10 @@ export function SettingsScreen() {
 
         <div id="settings-email" className="settings-anchor">
           <EmailSection value={draft.email} onChange={(e) => patch('email', e)} error={errors.email} />
+        </div>
+
+        <div id="settings-mail" className="settings-anchor">
+          <MailAccountsSection value={draft.mail_accounts ?? []} onChange={(m) => patch('mail_accounts', m)} error={errors.mail_accounts} />
         </div>
 
         <section id="settings-behaviour" className="card role-card settings-anchor">

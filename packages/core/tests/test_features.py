@@ -715,3 +715,27 @@ async def test_notify_discord_posts_and_reports_honestly(harness: Harness):
     tools2 = NotifyTools(lambda: harness.core.settings, client=httpx.AsyncClient(transport=httpx.MockTransport(bad)))
     res = await tools2.call("notify.discord", {"text": "x"}, cancel=asyncio.Event(), idempotency_key="k", timeout_s=5)
     assert res.kind.value == "error" and "429" in res.text
+
+
+async def test_the_email_policy_covers_imap_mail_too(harness: Harness):
+    """mail.send (Gmail over IMAP/SMTP, no Outlook) is held to the same approved-recipient list."""
+    from jarvis_proto.settings import EmailPolicy
+    from tests.test_mail import GMAIL, FakeImap
+
+    server = FakeImap()
+    harness.core.mail._connect = lambda _a: server
+    harness.enable(email=EmailPolicy(approved_direct_send=["boss@bank.bg"]), mail_accounts=[GMAIL])
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    harness.chat.push(
+        FakeTurn(
+            tool_calls=[
+                ToolCall(id="m1", name="mail.send", arguments={"to": "stranger@x.com", "subject": "hi", "body": "b"})
+            ]
+        ),
+        FakeTurn(text="drafted it"),
+    )
+    await harness.core.engine.create_run(text="mail the stranger", conversation_id=conv.id, kind=RunKind.SCHEDULED)
+    await harness.wait_for(sub, "run.done", timeout=10)
+    drafts = server.folders["[Gmail]/Drafts"]["msgs"]
+    assert len(drafts) == 1 and b"stranger@x.com" in next(iter(drafts.values()))[0]

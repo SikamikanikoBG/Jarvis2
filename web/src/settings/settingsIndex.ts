@@ -60,6 +60,11 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     keywords: ['allow list', 'recipient', 'send', 'outlook', 'direct send', 'draft', 'gmail'],
   },
   {
+    id: 'settings-mail',
+    label: 'Mail accounts',
+    keywords: ['gmail', 'imap', 'smtp', 'app password', 'google', 'mail without outlook', 'mailbox', 'account', '2-step'],
+  },
+  {
     id: 'settings-behaviour',
     label: 'Context and behaviour',
     keywords: [

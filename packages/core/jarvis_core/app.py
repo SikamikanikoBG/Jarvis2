@@ -40,6 +40,7 @@ from jarvis_core.features.collab import CollabAuthMiddleware, CollabKeys, build_
 from jarvis_core.features.compaction import Compactor
 from jarvis_core.features.expiry import Reaper, delete_conversation
 from jarvis_core.features.knowledge import KnowledgeLearner, KnowledgeStore, KnowledgeTools
+from jarvis_core.features.mail import MailTools
 from jarvis_core.features.meetings import MeetingService
 from jarvis_core.features.notify import NotifyTools
 from jarvis_core.features.planner import Planner
@@ -94,6 +95,7 @@ class Core:
         self.browser = WsProvider()
         self.notify = NotifyTools(settings)
         self.web = WebTools(settings)
+        self.mail = MailTools(settings)
         self.collab_keys = CollabKeys(self.db)
         self.transcriber = Transcriber(settings)
         self.synthesizer = Synthesizer(settings, self.config.home)
@@ -270,6 +272,7 @@ class Core:
                 self.sessions,
                 self.notify,
                 self.web,
+                self.mail,
                 self.browser,
                 *self.mcp,
             ]

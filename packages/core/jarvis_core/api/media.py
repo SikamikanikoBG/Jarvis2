@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
@@ -9,9 +10,10 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from jarvis_core.api.deps import core_of, require_token
+from jarvis_core.features.mail import Mailbox, MailError
 from jarvis_core.features.stt import SttError
 from jarvis_core.features.tts import TtsError
-from jarvis_proto import Meeting, MeetingDetail, TriageState
+from jarvis_proto import MailAccount, Meeting, MeetingDetail, TriageState
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
 
@@ -149,6 +151,26 @@ async def meeting_frame_file(request: Request, meeting_id: str, seq: int) -> Fil
     if path is None or not path.exists():
         raise HTTPException(404, "frame not found")
     return FileResponse(path, media_type="image/png")
+
+
+# --- mail accounts (IMAP) -------------------------------------------------------------------
+
+
+@router.post("/mail/test")
+async def mail_test(request: Request, account: MailAccount) -> dict[str, Any]:
+    """Log in with these (unsaved) details and count the Inbox - the Settings "Test" button.
+    An empty app_password means "the one already saved for this address"."""
+    if not account.app_password:
+        saved = next(
+            (a for a in core_of(request).settings.mail_accounts if a.address.lower() == account.address.lower()), None
+        )
+        if saved is None:
+            return {"ok": False, "error": "no app password entered"}
+        account = account.model_copy(update={"app_password": saved.app_password})
+    try:
+        return await asyncio.to_thread(Mailbox(account).check)
+    except (MailError, OSError) as exc:
+        return {"ok": False, "error": str(exc)[:300]}
 
 
 # --- triage ---------------------------------------------------------------------------------

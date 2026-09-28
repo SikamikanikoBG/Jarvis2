@@ -257,6 +257,23 @@ class TriageRules(BaseModel):
         return None
 
 
+class MailAccount(BaseModel):
+    """A mailbox the core reaches directly over IMAP/SMTP - no Outlook, no Windows host.
+
+    Gmail: ``app_password`` is a Google *app password* (16 letters, needs 2-Step Verification),
+    never the account password. Secret: never echoed in logs or tool results.
+    """
+
+    address: str
+    app_password: str = ""
+    username: str = ""  # "" = the address
+    imap_host: str = "imap.gmail.com"
+    imap_port: int = 993
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 465
+    enabled: bool = True
+
+
 class TriageSettings(BaseModel):
     enabled: bool = False
     interval_min: int = 15
@@ -272,6 +289,13 @@ class TriageSettings(BaseModel):
     # Per-account overrides, keyed by the account name `outlook_accounts` reports (case-insensitive).
     # The work mailbox and a personal Gmail want different folders and different rules.
     account_rules: dict[str, TriageRules] = Field(default_factory=dict)
+
+    def host_for(self, account: str, mail_accounts: list[MailAccount] | None = None) -> str:
+        """``mail`` (the core's IMAP backend) for an account in ``mail_accounts``, else ``host``."""
+        wanted = account.strip().lower()
+        if any(m.enabled and m.address.strip().lower() == wanted for m in mail_accounts or []):
+            return "mail"
+        return self.host
 
     def rules_for(self, account: str) -> TriageRules:
         wanted = account.strip().lower()
@@ -647,6 +671,9 @@ class Settings(BaseModel):
     # The push channel for reminders and scheduled-run summaries (notify.discord). Secret:
     # never echoed in logs or the UI beyond "configured".
     discord_webhook_url: str | None = None
+    # Mailboxes served by the core itself over IMAP/SMTP (features/mail.py): Gmail with an app
+    # password, so personal mail does not depend on Outlook on a Windows host.
+    mail_accounts: list[MailAccount] = Field(default_factory=list)
     # SearXNG base URL for web.search (ardi runs one). None = no search tool.
     searxng_url: str | None = None
     stt_url: str | None = None

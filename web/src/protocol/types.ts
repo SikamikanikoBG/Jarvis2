@@ -384,6 +384,27 @@ export interface SessionRef {
   updated_at: string;
 }
 
+/** A mailbox the core reaches directly over IMAP/SMTP (no Outlook): Gmail with an app password. */
+export interface MailAccount {
+  address: string;
+  /** Google app password (16 letters) - never the account password. */
+  app_password: string;
+  /** "" = the address. */
+  username: string;
+  imap_host: string;
+  imap_port: number;
+  smtp_host: string;
+  smtp_port: number;
+  enabled: boolean;
+}
+
+export interface MailTestResult {
+  ok: boolean;
+  inbox_messages?: number;
+  folders?: number;
+  error?: string;
+}
+
 export interface Settings {
   assistant_name: string;
   user_name: string;
@@ -414,6 +435,8 @@ export interface Settings {
   kg_learning: boolean;
   lane_failover: boolean;
   triage: TriageSettings;
+  /** Mailboxes served by the core over IMAP/SMTP (features/mail.py). */
+  mail_accounts: MailAccount[];
   rsvp: MeetingRsvpSettings;
   voice: VoiceSettings;
   sessions: SessionsSettings;

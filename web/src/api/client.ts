@@ -2,6 +2,8 @@ import type {
   Attachment,
   Board,
   BulkConversationAction,
+  MailAccount,
+  MailTestResult,
   BulkResult,
   ChatFolder,
   CollabKey,
@@ -199,6 +201,10 @@ export const api = {
     remove: (id: string) => request<null>('DELETE', `/api/schedules/${encodeURIComponent(id)}`),
     run: (id: string) => request<ScheduleRunResponse>('POST', `/api/schedules/${encodeURIComponent(id)}/run`),
     fires: (id: string, limit = 20) => request<ScheduleFire[]>('GET', `/api/schedules/${encodeURIComponent(id)}/fires?limit=${limit}`),
+  },
+  mail: {
+    /** Log in with these (unsaved) details and count the Inbox. Empty app_password = the saved one. */
+    test: (account: MailAccount) => request<MailTestResult>('POST', '/api/mail/test', account),
   },
   triage: {
     state: () => request<TriageState[]>('GET', '/api/triage/state'),

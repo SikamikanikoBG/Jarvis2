@@ -190,6 +190,7 @@ class McpProvider:
             call = asyncio.create_task(
                 session.call_tool(inner, arguments, read_timeout_seconds=timedelta(seconds=timeout_s))
             )
+            call.add_done_callback(_observe)
             waiter = asyncio.create_task(cancel.wait())
             try:
                 done, _ = await asyncio.wait({call, waiter}, return_when=asyncio.FIRST_COMPLETED)
@@ -219,6 +220,14 @@ class McpProvider:
 
 def _resolve_command(command: str) -> str:
     return sys.executable if command == "{python}" else command
+
+
+def _observe(task: asyncio.Task[Any]) -> None:
+    """Read a call task's outcome whatever happens to its caller. Cancelled, the MCP client ends it
+    with McpError("Timed out ... deadline exceeded") rather than as cancelled - unread, asyncio logs
+    "Task exception was never retrieved" (2026-09-28)."""
+    if not task.cancelled():
+        task.exception()
 
 
 def _session_forgotten(exc: BaseException) -> bool:

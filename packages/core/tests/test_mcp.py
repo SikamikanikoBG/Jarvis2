@@ -136,3 +136,37 @@ async def test_a_call_abandoned_by_its_caller_is_cancelled_not_left_running(prov
         )
     await asyncio.sleep(0.05)
     assert state["cancelled"]
+
+
+async def test_a_call_that_turns_its_cancellation_into_an_error_is_still_observed(provider: McpProvider):
+    # The MCP client answers a cancel with McpError("Timed out ... deadline exceeded") instead of ending
+    # cancelled, so the task finished with an exception nobody read: "Task exception was never retrieved"
+    # kept showing up in the core log (2026-09-28 06:10) after the cancel fix.
+    import gc
+
+    unretrieved: list[object] = []
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, ctx: unretrieved.append(ctx.get("exception")))
+
+    class Converts:
+        async def call_tool(self, *args: object, **kwargs: object) -> object:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise RuntimeError("Timed out while waiting for response") from None
+            return None
+
+    try:
+        provider._session = Converts()  # type: ignore[assignment]
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(
+                provider.call("echo.echo", {"text": "x"}, cancel=asyncio.Event(), idempotency_key="k", timeout_s=60),
+                0.2,
+            )
+        await asyncio.sleep(0.05)
+        gc.collect()
+        await asyncio.sleep(0)
+        assert unretrieved == []
+    finally:
+        loop.set_exception_handler(previous)

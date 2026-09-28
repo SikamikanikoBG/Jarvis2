@@ -130,3 +130,19 @@ def test_a_slow_call_under_the_wedge_limit_keeps_its_thread():
         assert w.status().restarts == 0
     finally:
         w.stop()
+
+
+def test_looking_at_the_status_also_replaces_a_wedged_thread():
+    # 2026-09-28: host_status showed "busy for 655s on outlook.list_items" - the watchdog only ran on the
+    # next submit, and host_status skips its ping while busy, so nothing ever submitted.
+    release = threading.Event()
+    w = ComWorker(init=None, wedge_after_s=0.3)
+    try:
+        w.start()
+        w.submit(release.wait, label="outlook.list_items")
+        time.sleep(0.5)
+        status = w.status()
+        assert status.restarts == 1 and not status.busy
+    finally:
+        release.set()
+        w.stop()

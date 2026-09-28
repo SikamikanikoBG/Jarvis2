@@ -163,6 +163,9 @@ class ComWorker:
         return self._thread.ident if self._thread is not None else None
 
     def status(self) -> ComStatus:
+        # Checked here too: host_status reads this and skips its own call while busy, so a wedge
+        # seen only by status readers would never be replaced (655 s on 2026-09-28).
+        self._respawn_if_wedged()
         with self._lock:
             cur = self._current
             since = self._current_since

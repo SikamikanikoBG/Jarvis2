@@ -308,3 +308,20 @@ async def test_the_registry_works_when_its_memory_does_not():
     await registry.load_memory()  # must not raise
     await registry.refresh()
     assert [s.name for s in registry.specs()] == ["laptop.one"]
+
+
+async def test_a_misspelled_namespace_is_answered_with_the_one_that_exists():
+    """2026-09-28: `jarvm.host_status` and `jarvm.plan_step_done` came back as a bare "unknown tool"."""
+    host = FakeMcp("jarvisvm", ["host_status", "shell_run"])
+    registry = ToolRegistry([host])
+    await registry.refresh()
+    assert (
+        registry.validate("jarvm.host_status", {})
+        == "unknown tool 'jarvm.host_status'; did you mean 'jarvisvm.host_status'?"
+    )
+    assert (
+        registry.validate("jarvisvn.shell_run", {})
+        == "unknown tool 'jarvisvn.shell_run'; did you mean 'jarvisvm.shell_run'?"
+    )
+    # nothing close: stays plain
+    assert registry.validate("outlook.send", {}) == "unknown tool 'outlook.send'"

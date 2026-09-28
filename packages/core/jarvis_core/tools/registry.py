@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import difflib
 import logging
 from collections.abc import Callable
 from typing import Any, Protocol
@@ -215,7 +216,9 @@ class ToolRegistry:
         """
         namespace = name.split(".", 1)[0]
         if namespace not in {p.name for p in self._providers}:
-            return f"unknown tool {name!r}"
+            # A slip in the namespace (`jarvm.host_status`, 2026-09-28): name the real tool.
+            close = difflib.get_close_matches(name, [s.name for s in self.specs()], n=1, cutoff=0.8)
+            return f"unknown tool {name!r}" + (f"; did you mean {close[0]!r}?" if close else "")
         known = sorted(s.name for s in self._last_known.get(namespace, []))
         if known and name not in known:
             # We know this provider's real tool set, so the name is wrong whether it is reachable

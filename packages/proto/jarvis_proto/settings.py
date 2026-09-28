@@ -54,6 +54,9 @@ class ModelSpec(BaseModel):
     max_tokens: int | None = None
     timeout_s: int = 180
     keep_alive: str | None = None  # Ollama only, e.g. "30m"
+    # Pictures + clips per request the endpoint accepts (vLLM --limit-mm-per-prompt; both lanes: 6).
+    # The newest this many keep their pixels; older ones become a line. None = no cap.
+    max_media: int | None = 6
 
     @model_validator(mode="after")
     def _level_needs_think(self) -> ModelSpec:

@@ -223,6 +223,8 @@ export interface ModelSpec {
   max_tokens: number | null;
   timeout_s: number;
   keep_alive: string | null;
+  /** Pictures + clips per request the endpoint accepts (vLLM --limit-mm-per-prompt); null = no cap. */
+  max_media?: number | null;
 }
 
 export type McpTransport = 'stdio' | 'streamable_http';

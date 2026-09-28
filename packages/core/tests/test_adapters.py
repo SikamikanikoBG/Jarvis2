@@ -331,3 +331,51 @@ async def test_probe_reads_the_context_window_and_the_factory_keeps_it_per_lane(
     assert await f.context_window(RunKind.CHAT) == 131072 and calls["n"] == 1, "asked once, then remembered"
     assert await f.context_window(RunKind.TRIAGE) == 4096, "num_ctx is the explicit answer"
     assert calls["n"] == 1, "a lane with num_ctx is never probed for it"
+
+
+def test_a_prompt_never_carries_more_pictures_than_the_endpoint_accepts():
+    # 2026-09-28: the Weekly LinkedIn draft took 7+ browser screenshots in one run and vLLM refused the
+    # whole request: "At most 6 image(s) may be provided in one prompt". Only chat attachments were
+    # budgeted (media_in_context); tool screenshots were not. The newest ones win, older ones become a line.
+    from jarvis_core.models.openai_compat import to_openai_messages
+    from jarvis_proto import Attachment, AttachmentKind, Message, Role
+
+    def shot(i: int) -> Message:
+        pic = Attachment(
+            id=f"a{i}",
+            kind=AttachmentKind.IMAGE,
+            name=f"s{i}.png",
+            mime="image/png",
+            bytes=10,
+            data_url=f"data:image/png;base64,{i}",
+        )
+        return Message(
+            role=Role.TOOL,
+            content=f"screenshot {i}",
+            tool_call_id=f"c{i}",
+            name="browser.screenshot",
+            attachments=[pic],
+        )
+
+    out = to_openai_messages([shot(i) for i in range(9)], max_media=6)
+    urls = [
+        p["image_url"]["url"]
+        for m in out
+        if isinstance(m["content"], list)
+        for p in m["content"]
+        if p.get("type") == "image_url"
+    ]
+    assert urls == [f"data:image/png;base64,{i}" for i in range(3, 9)]  # the newest six
+    assert "not shown again" in json.dumps(out[0], ensure_ascii=False)  # the oldest says it was dropped
+    assert (
+        len(
+            [
+                p
+                for m in to_openai_messages([shot(i) for i in range(9)])
+                if isinstance(m["content"], list)
+                for p in m["content"]
+                if p.get("type") == "image_url"
+            ]
+        )
+        == 9
+    )

@@ -31,7 +31,34 @@ from jarvis_proto import AttachmentKind, Message, ModelSpec, ModelUsage, Role, T
 log = logging.getLogger(__name__)
 
 
-def to_openai_messages(messages: list[Message]) -> list[dict[str, Any]]:
+def _cap_media(messages: list[Message], max_media: int) -> list[Message]:
+    """Keep pixels for the newest ``max_media`` pictures/clips in the whole prompt; the rest become a
+    line in the text. vLLM refuses the entire request past its per-prompt limit ("At most 6 image(s)
+    may be provided in one prompt", 2026-09-28 - browser screenshots of one LinkedIn run)."""
+    keep = max_media
+    capped: list[Message] = []
+    for m in reversed(messages):
+        media = [a for a in m.attachments if a.data_url and a.kind in (AttachmentKind.IMAGE, AttachmentKind.VIDEO)]
+        if not media:
+            capped.append(m)
+            continue
+        kept_ids = {a.id for a in media[-keep:]} if keep > 0 else set()
+        keep -= len(kept_ids)
+        dropped = [a for a in media if a.id not in kept_ids]
+        if not dropped:
+            capped.append(m)
+            continue
+        atts = [a.model_copy(update={"data_url": None}) if a in dropped else a for a in m.attachments]
+        note = f"[{len(dropped)} earlier picture(s) not shown again - the model takes at most {max_media} per request]"
+        capped.append(
+            m.model_copy(update={"attachments": atts, "content": f"{m.content}\n{note}" if m.content else note})
+        )
+    return list(reversed(capped))
+
+
+def to_openai_messages(messages: list[Message], max_media: int | None = None) -> list[dict[str, Any]]:
+    if max_media is not None:
+        messages = _cap_media(messages, max_media)
     out: list[dict[str, Any]] = []
     for m in messages:
         if m.role is Role.TOOL:
@@ -138,7 +165,7 @@ class OpenAICompatAdapter:
     def _payload(self, messages: list[Message], tools: list[ToolSpec]) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.spec.model,
-            "messages": to_openai_messages(messages),
+            "messages": to_openai_messages(messages, self.spec.max_media),
             "stream": True,
             "stream_options": {"include_usage": True},
             "temperature": self.spec.temperature,

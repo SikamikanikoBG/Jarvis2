@@ -74,3 +74,19 @@ async def test_busy_worker_skips_the_ping(worker: ComWorker):
     assert ol["connected"] is None and "busy" in ol["error"] and "outlook.list_items" in ol["error"]
     assert snap["com"]["busy"] is True and snap["com"]["current"] == "outlook.list_items"
     assert "process" not in ol  # process_state returned None (non-Windows path)
+
+
+async def test_a_window_scan_that_hangs_does_not_freeze_the_server(worker: ComWorker):
+    # 2026-09-28: host_status timed out at the core's 120 s limit and took outlook_accounts with it -
+    # the window scan ran on the event loop, and asking a hung Outlook window for its title blocks.
+    def stuck() -> dict:
+        time.sleep(30)
+        return {"running": True, "hung": False, "processes": []}
+
+    status = make_status(World(), worker, stuck)
+    status.SCAN_TIMEOUT_S = 0.3
+    t0 = time.monotonic()
+    other = asyncio.create_task(asyncio.sleep(0.05))  # the event loop keeps serving others meanwhile
+    snap = await status.snapshot()
+    assert time.monotonic() - t0 < 5 and other.done()
+    assert snap["outlook"]["process"] == {"running": None, "error": "window scan did not finish within 0.3s"}

@@ -8,6 +8,7 @@ for the whole afternoon: a status call must never queue behind a COM call that i
 
 from __future__ import annotations
 
+import asyncio
 import platform
 import sys
 import time
@@ -62,10 +63,10 @@ def outlook_process_state() -> dict[str, Any] | None:
         if user32.IsHungAppWindow(hwnd):
             entry["hung"] = True
         if not entry["window"]:
-            length = user32.GetWindowTextLengthW(hwnd)
-            if length:
-                title = ctypes.create_unicode_buffer(length + 1)
-                user32.GetWindowTextW(hwnd, title, length + 1)
+            # InternalGetWindowText never messages the window: GetWindowTextLength sends WM_GETTEXTLENGTH
+            # and blocks for as long as a hung Outlook does not answer (2026-09-28).
+            title = ctypes.create_unicode_buffer(512)
+            if user32.InternalGetWindowText(hwnd, title, 512):
                 entry["window"] = title.value
         return True
 
@@ -78,6 +79,8 @@ def outlook_process_state() -> dict[str, Any] | None:
 
 
 class Status:
+    SCAN_TIMEOUT_S = 5.0
+
     def __init__(
         self,
         config: HostConfig,
@@ -97,8 +100,12 @@ class Status:
     async def _outlook(self, busy: bool) -> dict[str, Any]:
         if self.outlook is None:
             return {"connected": False, "error": "Outlook is only available on Windows"}
-        # Cheap facts first (a window-message probe, no COM): they decide whether a ping is even sane.
-        process = self.process_state()
+        # Cheap facts first (a window scan, no COM): they decide whether a ping is even sane. Off the event
+        # loop and bounded - a scan that hangs must not freeze every other tool call on this host.
+        try:
+            process = await asyncio.wait_for(asyncio.to_thread(self.process_state), self.SCAN_TIMEOUT_S)
+        except TimeoutError:
+            process = {"running": None, "error": f"window scan did not finish within {self.SCAN_TIMEOUT_S:g}s"}
         hung = bool(process and process.get("running") and process.get("hung"))
         result: dict[str, Any]
         if busy:

@@ -739,3 +739,39 @@ async def test_the_email_policy_covers_imap_mail_too(harness: Harness):
     await harness.wait_for(sub, "run.done", timeout=10)
     drafts = server.folders["[Gmail]/Drafts"]["msgs"]
     assert len(drafts) == 1 and b"stranger@x.com" in next(iter(drafts.values()))[0]
+
+
+async def test_notify_discord_attaches_files():
+    """A digest that could not go out as an Outlook draft is delivered as a Discord message + the HTML file."""
+    import json as _json
+
+    import httpx
+
+    from jarvis_core.features.notify import NotifyTools
+    from jarvis_proto import Settings
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200)
+
+    settings = Settings(discord_webhook_url="https://discord.example/webhook")
+    tools = NotifyTools(lambda: settings, client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    res = await tools.call(
+        "notify.discord",
+        {
+            "text": "**World news — 28.09**",
+            "files": [{"filename": "news_2026-09-28.html", "content": "<h1>Новини</h1>"}],
+        },
+        cancel=None,  # type: ignore[arg-type]
+        idempotency_key="k",
+        timeout_s=10,
+    )
+    assert res.kind.value == "data" and "1 file" in res.text
+    body = seen[-1].read()
+    assert b'filename="news_2026-09-28.html"' in body and "<h1>Новини</h1>".encode() in body
+    assert (
+        _json.loads(body.split(b'name="payload_json"')[1].split(b"\r\n\r\n", 1)[1].split(b"\r\n--")[0])["content"]
+        == "**World news — 28.09**"
+    )

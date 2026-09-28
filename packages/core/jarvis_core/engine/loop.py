@@ -840,10 +840,9 @@ class AgentLoop:
             await self._store.record_idempotent_result(key, result.model_dump_json())
         if call.name.startswith("browser."):
             result = await self._with_site_playbook(result, watch)
-        return (
-            await self._tool_message(run, call, result, duration, emit),
-            step_of(call.name, call.arguments, result),
-        )
+        step = step_of(call.name, call.arguments, result)
+        shown = _already_in_context(watch, step, result, read_only=read_only)
+        return await self._tool_message(run, call, shown or result, duration, emit), step
 
     async def _with_site_playbook(self, result: ToolResult, watch: RunWatch) -> ToolResult:
         """Arriving on a site Jarvis has a playbook for: the playbook rides on the tool result,
@@ -1134,6 +1133,29 @@ def _dispatch_groups(
 
 
 _URL_IN_RESULT = re.compile(r"""https?://[^\s"'<>)\]]+""")
+
+
+# A result shorter than this is cheaper to repeat than to point at.
+_REPEAT_POINTER_MIN_CHARS = 600
+
+
+def _already_in_context(watch: RunWatch, step: StepRecord, result: ToolResult, *, read_only: bool) -> ToolResult | None:
+    """A pointer instead of a second copy when a read-only call returns exactly what the same call
+    already returned in this run. 7 days to 2026-09-28: 1,135 of 5,655 calls repeated an identical
+    earlier call - 412 of them browser.read {"mode": "text"} on an unchanged page, each re-adding up
+    to 16k chars of context. The step record (and the DB event) keep the real result."""
+    if not read_only or result.kind is not ToolResultKind.DATA or result.images:
+        return None
+    if len(result.text) < _REPEAT_POINTER_MIN_CHARS:
+        return None
+    for n, earlier in enumerate(watch.steps, 1):
+        if earlier.args_hash == step.args_hash and earlier.result_hash == step.result_hash:
+            return ToolResult.data(
+                f"[identical to the result of step {n} ({step.tool}, same arguments): nothing changed since, and "
+                "that result is already in your context above. Use it instead of reading again; if you are "
+                "waiting for a change, act first or use jarvis.wait_until.]"
+            )
+    return None
 
 
 def _repeated_failure(watch: RunWatch, call: ToolCall) -> str | None:

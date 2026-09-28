@@ -1063,3 +1063,40 @@ async def test_an_unreachable_lane_falls_over_to_the_other_one(harness: Harness)
     await harness.core.engine.create_run(text="hi", conversation_id=conv2.id)
     seen2 = await harness.wait_for(sub2, "run.failed", timeout=15)
     assert seen2[-1].type == "run.failed"
+
+
+async def test_a_read_that_returns_the_same_as_before_is_not_repeated_into_the_context(harness: Harness):
+    """7 days to 2026-09-28: 1,135 of 5,655 tool calls repeated an identical earlier call in the same run -
+    412 of them browser.read {"mode": "text"} on an unchanged page, each re-adding up to 16k chars.
+    An identical read-only call with an identical, sizable result gets a pointer instead of a second copy."""
+    from pydantic import BaseModel
+
+    from jarvis_core.tools import BuiltinProvider, tool
+    from jarvis_proto import ToolResult
+
+    page = "Patzer discussions\n" + "lorem ipsum dolor sit amet " * 100
+
+    class _Args(BaseModel):
+        mode: str = "text"
+
+    class Pages(BuiltinProvider):
+        name = "pages"
+
+        @tool("pages.read", description="read the page", args=_Args, read_only=True)
+        async def _read(self, mode: str = "text") -> ToolResult:
+            return ToolResult.data(page)
+
+    harness.core.registry.add(Pages())
+    await harness.core.registry.refresh()
+    harness.chat.push(
+        FakeTurn(tool_calls=[ToolCall(id="r1", name="pages.read", arguments={"mode": "text"})]),
+        FakeTurn(tool_calls=[ToolCall(id="r2", name="pages.read", arguments={"mode": "text"})]),
+        FakeTurn(text="read it"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="read the page twice", conversation_id=conv.id)
+    await harness.wait_for(sub, "run.done")
+    tools = [m for m in await harness.core.store.list_messages(conv.id) if m.role.value == "tool"]
+    assert tools[0].content.startswith("Patzer discussions") and len(tools[0].content) > 2000
+    assert len(tools[1].content) < 400 and "identical" in tools[1].content

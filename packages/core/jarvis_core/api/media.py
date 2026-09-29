@@ -208,6 +208,19 @@ async def triage_run(
     }
 
 
+@router.post("/triage/audit")
+async def triage_audit(
+    request: Request, hours: int = 24, sample: int | None = None, post: bool = False
+) -> dict[str, Any]:
+    """Audit the live triage decisions of the last ``hours`` now (the daily one runs at
+    ``settings.triage.audit_hour``): mix per folder, rule violations, judge agreement on a
+    sample and each disagreement. ``post=true`` also writes it to the Triage audit conversation
+    and pushes the one-line summary. Reads only; never moves mail."""
+    audit = core_of(request).triage_audit
+    report = await audit.run(hours=max(1, min(hours, 24 * 14)), sample=sample, post=post)
+    return {**report, "text": audit.render(report)}
+
+
 # --- meeting auto-RSVP ------------------------------------------------------------------------
 
 

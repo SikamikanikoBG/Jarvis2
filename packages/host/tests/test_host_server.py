@@ -280,3 +280,18 @@ async def test_headless_host_drops_desktop_tools_and_says_what_it_is_for(world: 
     desktop = HostConfig(name="laptop", token=TOKEN, fs_roots=(tmp_path,))
     names = {t.name for t in await build_mcp(make_deps(desktop, dispatch=world.dispatch), desktop).list_tools()}
     assert {"outlook_send", "onenote_read", "screen_grab", "volume_set", "meeting_start"} <= names
+
+
+def test_a_reply_with_half_an_emoji_still_encodes():
+    """2026-09-29: a mail preview cut inside an emoji (a lone UTF-16 surrogate) made the MCP
+    transport fail to encode the whole reply, and the caller waited out its timeout."""
+    import json
+
+    from jarvis_host.server import json_text
+
+    hi, lo = chr(0xD83D), chr(0xDE00)  # the two UTF-16 halves of U+1F600, as COM can hand them over
+    text = json_text({"subject": f"ok {hi}{lo}", "preview": f"cut here {hi}"})
+    text.encode("utf-8")  # must not raise
+    data = json.loads(text)
+    assert data["subject"] == "ok " + chr(0x1F600)  # a split pair is rejoined
+    assert data["preview"] == "cut here " + chr(0xFFFD)  # a lone half is replaced

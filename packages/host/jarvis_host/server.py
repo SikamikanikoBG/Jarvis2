@@ -109,7 +109,12 @@ def make_deps(
 
 
 def json_text(obj: Any) -> str:
-    return json.dumps(obj, ensure_ascii=False, default=str)
+    """Outlook hands over UTF-16 text, and a cut preview can end in half an emoji - a lone
+    surrogate the MCP transport cannot encode. The whole reply was then lost ("Error in SSE
+    writer") and the caller waited out its timeout: measured 2026-09-29, one mail made a page of
+    Action Hub/Reference unreadable. Split pairs are rejoined; a lone half becomes U+FFFD."""
+    text = json.dumps(obj, ensure_ascii=False, default=str)
+    return text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
 
 
 async def _run(name: str, fn: Callable[[], Awaitable[Any]]) -> Any:

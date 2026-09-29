@@ -354,6 +354,56 @@ async def test_per_account_rules_override_the_defaults_and_folders_are_created_o
     assert host.folders_created == ["Trash/Delete"]
 
 
+async def test_a_sender_gated_category_takes_only_its_senders_and_only_none_falls_back(harness: Harness):
+    """Measured on the real mailbox: Bosses filled with mail where a boss was only in Cc, and
+    Reference swallowed every answer the classifier fumbled. A boss writing is filed as a boss
+    without asking the model; nobody else can be put there; only an explicit 'none' is caught."""
+    from jarvis_proto import TriageRules
+
+    core = harness.core
+    host = await _with_host(harness)
+    harness.enable(
+        triage=TriageSettings(
+            host="laptop",
+            accounts=["Work"],
+            account_rules={
+                "work": TriageRules(
+                    categories=[
+                        {
+                            "name": "bosses",
+                            "folder": "Leadership/Bosses",
+                            "rule": "my bosses",
+                            "senders": "maria@bank.bg",
+                        },
+                        {"name": "reference", "folder": "Action Hub/Reference", "rule": "FYI"},
+                    ],
+                    fallback_category="reference",
+                    demand_routing=False,
+                )
+            },
+        )
+    )
+    # e2 (Maria, the boss) never reaches the model: three turns for e1, e3, e4.
+    harness.chat.push(
+        FakeTurn(text='{"category": "bosses"}'),  # e1 Rumen: not a boss, so not on offer
+        FakeTurn(text="I think this is an invoice"),  # e3: garbled
+        FakeTurn(text='{"category": "none"}'),  # e4: an honest none
+    )
+    report = await core.triage.run_once()
+    assert report.errors == []
+    assert host.moves == [("e2", "Leadership/Bosses"), ("e4", "Action Hub/Reference")]
+    assert len(harness.chat.calls) == 3
+    prompt = harness.chat.calls[0][0][-1].content
+    assert "- reference:" in prompt and "- bosses:" not in prompt
+
+    # A meeting response from a boss is the mail system talking: it goes to the model. Addresses
+    # match case-insensitively, a bare domain admits the whole domain, no address admits nobody.
+    rules = TriageRules(categories=[{"name": "b", "folder": "B", "senders": "Maria@Bank.bg; @board.bg"}])
+    assert rules.sender_category("maria@bank.bg", "Accepted: Weekly sync") is None
+    assert rules.sender_category("ceo@board.bg", "RE: budget")["folder"] == "B"
+    assert not rules.admits(rules.categories[0], "rumen@bank.bg") and not rules.admits(rules.categories[0], "")
+
+
 async def test_vip_alerts_are_structural_and_push_once_per_pass(harness: Harness):
     """Ported from V1's alerts_config.json: a named sender (or a subject keyword) buzzes Arsen's
     phone the moment it arrives, whatever the classifier thinks of the mail."""

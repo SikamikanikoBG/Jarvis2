@@ -434,6 +434,72 @@ async def test_a_pass_pages_past_mail_left_in_the_inbox(harness: Harness):
     assert (await core.triage.run_once()).processed == 0
 
 
+async def test_the_audit_flags_gate_violations_and_reports_the_judges_disagreements(harness: Harness):
+    """The daily audit reads the live decisions from the shadow log: a boss's mail filed
+    elsewhere and a non-boss in Bosses are rule violations whatever any model thinks; the judge
+    re-checks a sample and every disagreement is listed with its reason."""
+    from datetime import UTC, datetime
+
+    from jarvis_proto import TriageRules
+
+    core = harness.core
+    harness.enable(
+        triage=TriageSettings(
+            host="laptop",
+            accounts=["Work"],
+            account_rules={
+                "work": TriageRules(
+                    categories=[
+                        {"name": "bosses", "folder": "Leadership/Bosses", "rule": "boss", "senders": "maria@bank.bg"},
+                        {"name": "reference", "folder": "Action Hub/Reference", "rule": "FYI"},
+                    ],
+                    fallback_category="reference",
+                )
+            },
+        )
+    )
+    now = datetime.now(UTC).isoformat()
+
+    def row(n: int, sender: str, category: str, folder: str, source: str = "live") -> dict:
+        return {
+            "id": n, "point": "mail", "source": source, "at": now,
+            "input": {"from": sender, "to": "", "cc": "", "subject": f"mail {n}", "preview": "", "_account": "Work"},
+            "prod": {"category": category, "folder": folder},
+        }  # fmt: skip
+
+    rows = [
+        row(1, "Maria <maria@bank.bg>", "reference", "Action Hub/Reference"),  # a boss filed elsewhere
+        row(2, "Rumen <rumen@bank.bg>", "bosses", "Leadership/Bosses"),  # a non-boss in Bosses
+        row(3, "X <x@bank.bg>", "reference", "Action Hub/Reference"),
+        row(4, "Y <y@bank.bg>", "reference", "Action Hub/Reference", source="dry_run"),  # not live: ignored
+    ]
+
+    async def fake_rows(*, since_id: int = 0, limit: int = 1000) -> list[dict]:
+        return [r for r in rows if r["id"] > since_id][:limit]
+
+    core.shadow.rows = fake_rows  # type: ignore[method-assign]
+    harness.judge.push(
+        FakeTurn(text='{"verdict": "ok", "better": "", "why": ""}'),
+        FakeTurn(text='{"verdict": "wrong", "better": "none", "why": "asks nothing"}'),
+        FakeTurn(text="not json at all"),
+    )
+    report = await core.triage_audit.run(sample=3, post=True)
+    a = report["accounts"]["Work"]
+    assert report["decisions"] == 3 and a["decisions"] == 3
+    assert a["folders"] == {"Action Hub/Reference": 2, "Leadership/Bosses": 1}
+    assert a["catch_all"] == "Action Hub/Reference" and a["catch_all_share"] == round(2 / 3, 3)
+    assert len(a["violations"]) == 2
+    assert any("does not admit: rumen@bank.bg" in v for v in a["violations"])
+    assert any("from maria@bank.bg but filed as reference" in v for v in a["violations"])
+    assert a["judged"] == 2 and a["agreement"] == 0.5 and a["judge_errors"] == 1
+    assert [d["why"] for d in a["disagreements"]] == ["asks nothing"]
+    # Posted to the day's Triage audit conversation.
+    convs = [c for c in await core.store.list_conversations() if c.folder_key == "triage-audit"]
+    assert len(convs) == 1
+    text = (await core.store.list_messages(convs[0].id))[-1].content
+    assert "2 rule violation(s)" in text and "judge agrees 50% of 2 sampled" in text
+
+
 async def test_vip_alerts_are_structural_and_push_once_per_pass(harness: Harness):
     """Ported from V1's alerts_config.json: a named sender (or a subject keyword) buzzes Arsen's
     phone the moment it arrives, whatever the classifier thinks of the mail."""

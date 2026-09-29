@@ -316,6 +316,10 @@ class TriageSettings(BaseModel):
     instructions: str = ""
     fallback_category: str = ""
     alerts: list[TriageAlert] = Field(default_factory=list)
+    # Daily quality audit of the live decisions (features/triage_audit.py): local hour, -1 = off;
+    # how many decisions per account the judge re-checks.
+    audit_hour: int = 19
+    audit_sample: int = 30
     # Per-account overrides, keyed by the account name `outlook_accounts` reports (case-insensitive).
     # The work mailbox and a personal Gmail want different folders and different rules.
     account_rules: dict[str, TriageRules] = Field(default_factory=dict)

@@ -55,6 +55,7 @@ from jarvis_core.features.skills import SkillDetector, SkillsTools, SkillStore
 from jarvis_core.features.stt import Transcriber
 from jarvis_core.features.titles import Titler
 from jarvis_core.features.triage import TriageJob
+from jarvis_core.features.triage_audit import TriageAudit
 from jarvis_core.features.tts import Synthesizer
 from jarvis_core.features.web import WebTools
 from jarvis_core.models import AdapterFactory
@@ -105,6 +106,7 @@ class Core:
         self.attachments = AttachmentStore(self)
         self.shadow = ShadowRecorder(config.home / "shadow.db", settings)
         self.triage = TriageJob(self)
+        self.triage_audit = TriageAudit(self)
         self.rsvp = RsvpJob(self)
         self.meetings = MeetingService(self)
 
@@ -217,6 +219,7 @@ class Core:
         await self.engine.start()
         await self.scheduler.start()
         await self.triage.start()
+        await self.triage_audit.start()
         await self.rsvp.start()
         await self.reaper.start()
         self._mcp_watch = asyncio.create_task(self._watch_mcp(), name="mcp-watch")
@@ -246,6 +249,7 @@ class Core:
                 await watch
         await self.reaper.stop()
         await self.triage.stop()
+        await self.triage_audit.stop()
         await self.rsvp.stop()
         await self.meetings.stop_all()
         await self.scheduler.stop()

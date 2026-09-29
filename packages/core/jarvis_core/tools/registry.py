@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import difflib
+import json
 import logging
 from collections.abc import Callable
 from typing import Any, Protocol
@@ -238,6 +239,7 @@ class ToolRegistry:
             return self.cannot_route(name)
         if "__raw__" in arguments:
             return f"arguments for {name} were not valid JSON: {arguments['__raw__'][:200]!r}"
+        _decode_stringified(arguments, spec.input_schema)
         try:
             jsonschema.validate(arguments, spec.input_schema)
         except jsonschema.ValidationError as exc:
@@ -269,3 +271,24 @@ class ToolRegistry:
         except Exception as exc:
             log.exception("tool %s raised", name)
             return ToolResult.failure(f"{type(exc).__name__}: {exc}")
+
+
+def _decode_stringified(arguments: dict[str, Any], schema: dict[str, Any]) -> None:
+    """Models send a nested list or object as its JSON text now and then (notify.discord
+    files='[{...}]', 2026-09-29: refused twice before a real list came). Where the schema wants an
+    array/object and the value is a string that decodes to exactly that, take the decoded value -
+    in place, so the call itself gets it. A string property is never touched."""
+    props = schema.get("properties") or {}
+    for key, value in list(arguments.items()):
+        want = (props.get(key) or {}).get("type") if isinstance(props.get(key), dict) else None
+        if want not in ("array", "object") or not isinstance(value, str):
+            continue
+        text = value.strip()
+        if not text.startswith("[" if want == "array" else "{"):
+            continue
+        try:
+            decoded = json.loads(text)
+        except ValueError:
+            continue
+        if isinstance(decoded, list if want == "array" else dict):
+            arguments[key] = decoded

@@ -325,3 +325,33 @@ async def test_a_misspelled_namespace_is_answered_with_the_one_that_exists():
     )
     # nothing close: stays plain
     assert registry.validate("outlook.send", {}) == "unknown tool 'outlook.send'"
+
+
+async def test_a_list_sent_as_a_json_string_is_taken_as_the_list():
+    """2026-09-29: World news sent notify.discord files='[{"filename": ...}]' - a string - twice, and was
+    refused twice ("is not of type 'array'") before it sent a real list. Models do this with nested
+    arrays/objects; the text is unambiguous, so it is decoded instead of refused."""
+
+    class Files:
+        name = "note"
+
+        async def list_tools(self) -> list[ToolSpec]:
+            schema = {
+                "type": "object",
+                "properties": {"text": {"type": "string"}, "files": {"type": "array", "items": {"type": "object"}}},
+                "required": ["text"],
+            }
+            return [ToolSpec(name="note.send", description="send", input_schema=schema)]
+
+        async def call(self, name, arguments, *, cancel, idempotency_key, timeout_s) -> ToolResult:  # type: ignore[no-untyped-def]
+            return ToolResult.data("ok")
+
+    registry = ToolRegistry([Files()])  # type: ignore[list-item]
+    await registry.refresh()
+    args = {"text": "hi", "files": '[{"filename": "a.html", "content": "<p>x</p>"}]'}
+    assert registry.validate("note.send", args) is None
+    assert args["files"] == [{"filename": "a.html", "content": "<p>x</p>"}]  # the call itself gets the list
+    # a string that is not the right JSON stays an error, and a string field is never touched
+    assert "not of type 'array'" in (registry.validate("note.send", {"text": "hi", "files": "a.html"}) or "")
+    text_args = {"text": '["not", "decoded"]'}
+    assert registry.validate("note.send", text_args) is None and text_args["text"] == '["not", "decoded"]'

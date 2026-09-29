@@ -133,13 +133,26 @@ class TriageAudit:
                 if at >= since:
                     out.append(r)
 
+    @staticmethod
+    def _gate_filed(row: dict[str, Any], rules: Any) -> bool:
+        inp, prod = row.get("input") or {}, row.get("prod") or {}
+        owned = rules.sender_category(_address(str(inp.get("from") or "")), str(inp.get("subject") or ""))
+        return bool(owned) and prod.get("category") == owned.get("name")
+
     async def _judge(self, row: dict[str, Any], rules: Any) -> dict[str, str]:
         inp = row.get("input") or {}
         address = _address(str(inp.get("from") or ""))
         offered = [c for c in rules.categories if c.get("name") and rules.admits(c, address)]
+        cats = [f"- {c['name']}: {c.get('rule', '')}" for c in offered]
+        if rules.demand_routing:
+            # Filed by a regex before any model, so it is not in the category list - but it is
+            # a real choice, and whether a DM number alone should decide is worth a judgement.
+            cats.insert(
+                0, "- demand: the mail is about ONE specific demand (DM-nnnn) and is filed in that demand's folder"
+            )
         prompt = _JUDGE.format(
             instructions=str(rules.instructions or "").strip() or "(none)",
-            categories="\n".join(f"- {c['name']}: {c.get('rule', '')}" for c in offered),
+            categories="\n".join(cats),
             sender=inp.get("from", ""),
             to=inp.get("to", ""),
             cc=inp.get("cc", ""),
@@ -186,11 +199,14 @@ class TriageAudit:
                     violations.append(f"from {address} but filed as {chosen or 'none'}: {subject}")
 
             # The sample: every decision in a rare category first (they matter most and are
-            # few), then a random share of the rest.
+            # few), then a random share of the rest. A mail the sender gate filed is not the
+            # judge's to question - the judge cannot see who the bosses are (measured: it called
+            # a boss "not a boss"); the violation check above covers those.
+            judgeable = [r for r in arows if not self._gate_filed(r, rules)]
             common = {f for f, _ in folders.most_common(2)}
-            rare = [r for r in arows if str((r.get("prod") or {}).get("folder") or LEFT) not in common]
+            rare = [r for r in judgeable if str((r.get("prod") or {}).get("folder") or LEFT) not in common]
             rare_ids = {r["id"] for r in rare}
-            rest = [r for r in arows if r["id"] not in rare_ids]
+            rest = [r for r in judgeable if r["id"] not in rare_ids]
             rng = random.Random(f"{account}{since.date()}")
             picked = (rare + rng.sample(rest, min(len(rest), max(0, sample - len(rare)))))[:sample]
             verdicts = []

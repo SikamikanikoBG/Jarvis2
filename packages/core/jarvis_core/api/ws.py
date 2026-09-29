@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from jarvis_core.api.deps import core_of_ws, ws_token_ok
 from jarvis_core.engine.bus import Subscriber
 from jarvis_core.features.expiry import valid_ttl
+from jarvis_core.tools.ws_provider import BrowserConn
 from jarvis_proto import (
     INCOGNITO_TITLE,
     Pong,
@@ -133,9 +134,7 @@ async def _ui_leg(ws: WebSocket) -> None:
 async def _browser_leg(ws: WebSocket) -> None:
     core = core_of_ws(ws)
     provider = core.browser
-    if provider.connected:
-        await ws.close(code=4409, reason="another browser extension is already connected")
-        return
+    # Any number of browsers: each registers under its own name (tools/ws_provider.py).
     await ws.accept()
     lock = asyncio.Lock()
 
@@ -143,7 +142,8 @@ async def _browser_leg(ws: WebSocket) -> None:
         async with lock:
             await ws.send_text(json.dumps(frame))
 
-    registered = False
+    peer = ws.client.host if ws.client else None
+    conn: BrowserConn | None = None
     try:
         while True:
             raw = await ws.receive_text()
@@ -155,26 +155,35 @@ async def _browser_leg(ws: WebSocket) -> None:
                 continue
             kind = str(frame.get("type") or "")
             if kind == "browser.hello":
-                tools = provider.connect(send, frame)
-                registered = True
+                if conn is not None:
+                    provider.disconnect(conn)  # a second hello on one socket re-registers it
+                conn = provider.connect(send, frame, peer=peer)
                 await core.registry.refresh()
                 core.bus.publish(ToolsChanged(provider="browser"))
-                log.info("browser extension connected: %s %s (%d tools)", provider.agent, provider.version, len(tools))
-                await send({"type": "browser.ready", "tools": len(tools)})
+                log.info(
+                    "browser extension connected: %s from %s, %s %s (%d tools)",
+                    conn.name,
+                    peer,
+                    conn.agent,
+                    conn.version,
+                    len(conn.tools),
+                )
+                await send({"type": "browser.ready", "tools": len(conn.tools), "name": conn.name})
             elif kind == "browser.result":
                 provider.handle_result(frame)
             elif kind == "browser.context":
-                provider.handle_context(frame)
+                provider.handle_context(frame, conn)
             elif kind == "ping":
                 await send({"type": "pong"})
     except WebSocketDisconnect:
         pass
     finally:
-        if registered or provider.connected:
+        if conn is not None:
             # Synchronous on purpose: this may run inside a cancelled scope where awaits fail.
-            provider.disconnect()
-            # The tools STAY in the prompt: closing a browser is not losing a capability, and
-            # dropping them here re-prefilled every conversation (docs/journal_ttft.md).
-            core.registry.mark_unavailable(provider)
+            provider.disconnect(conn)
+            if not provider.connected:
+                # The tools STAY in the prompt: closing a browser is not losing a capability, and
+                # dropping them here re-prefilled every conversation (docs/journal_ttft.md).
+                core.registry.mark_unavailable(provider)
             core.bus.publish(ToolsChanged(provider="browser"))
-            log.info("browser extension disconnected")
+            log.info("browser extension disconnected: %s", conn.name)

@@ -51,7 +51,7 @@ def test_browser_tools_register_roundtrip_and_survive_a_disconnect(client: TestC
     with client.websocket_connect("/ws?client=browser") as ext:
         ext.send_text(json.dumps(HELLO))
         ready = json.loads(ext.receive_text())
-        assert ready == {"type": "browser.ready", "tools": 2}
+        assert ready == {"type": "browser.ready", "tools": 2, "name": "testclient"}  # named after its address
         tools = {t["name"]: t for t in client.get("/api/tools").json()}
         assert tools["browser.tabs"]["read_only"] is True and tools["browser.click"]["provider"] == "browser"
         status = client.get("/api/status").json()

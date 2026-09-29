@@ -9,6 +9,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -92,7 +93,8 @@ class Core:
         self.learner = KnowledgeLearner(self.knowledge, lambda: self.adapters.for_role(RoleName.CLASSIFIER))
         self.reflector = PlaybookReflector(self.skills, lambda: self.adapters.for_role(RoleName.CLASSIFIER))
         self.schedules = ScheduleStore(self.db, self.bus)
-        self.browser = WsProvider()
+        # An extension is named after the MCP host at its address: the laptop's is "workocholic".
+        self.browser = WsProvider(namer=self._host_named)
         self.notify = NotifyTools(settings)
         self.web = WebTools(settings)
         self.mail = MailTools(settings)
@@ -167,6 +169,15 @@ class Core:
         self.engine.on_finished(lambda run: self.browser.job_done(run.conversation_id))
         self.scheduler = Scheduler(self.schedules, self._fire_schedule)
         self.reaper = Reaper(self)
+
+    def _host_named(self, address: str | None) -> str | None:
+        """The MCP server that lives at ``address`` — the machine a browser extension runs on."""
+        if not address:
+            return None
+        for spec in self.settings.mcp_servers:
+            if spec.url and urlparse(spec.url).hostname == address:
+                return spec.name
+        return None
 
     async def delete_conversation(self, conversation_id: str) -> None:
         """Remove a conversation and everything it owns; see features.expiry."""

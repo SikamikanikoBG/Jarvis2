@@ -237,8 +237,17 @@ timeouts, no zombie waiters.
 The extension connects to the same `/ws` with `?client=browser&token=…` and is a tool
 provider (`WsProvider`, namespace `browser`):
 
+Any number of extensions may be connected at once, each under a name: `name` from its hello, else
+the MCP server whose URL host is the extension's address (the laptop's Brave is `workocholic`),
+else the address. The same name reconnecting replaces its old socket. Every `browser.*` tool takes
+an optional `browser` argument naming where to act; left out, a chat stays in the browser its work
+tab is in, and otherwise the call goes to the browser whose side panel Arsen used last. The core
+strips `browser` before the call reaches the extension. The connected names are in the context
+block, never in the tool schema (that renders into the system prompt).
+
 ```
-ext → core  browser.hello   {agent, version, tools: ToolSpec[]}      (on connect; registers tools)
+ext → core  browser.hello   {agent, version, tools: ToolSpec[], name?} (on connect; registers tools)
+core → ext  browser.ready   {tools, name}                            (the name it was registered as)
 core → ext  browser.call    {call_id, name, arguments}
 ext → core  browser.result  {call_id, kind: "data"|"empty"|"error", text, error?}
 ext → core  browser.context {url, title, selection?}                (on tab change; optional)

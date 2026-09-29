@@ -72,6 +72,8 @@ class TriageReport:
 # folder_create + list at it and kept the host's COM worker busy on calls that could not succeed.
 # Blind passes double the wait up to this; the first pass that lists anything resets it.
 TRIAGE_BACKOFF_MAX_S = 30 * 60
+# How deep one pass may page past already-decided Inbox mail (x the pass size, 50 → 1,000 mails).
+_QUEUE_MAX_PAGES = 20
 
 
 def backoff_interval(base_s: float, blind_passes: int) -> float:
@@ -229,7 +231,7 @@ class TriageJob:
                 await self._ensure_folders(host, account, wanted, report)
             try:
                 if folder:
-                    items, cursor = await self._list(host, account, folder=folder, limit=limit or 30)
+                    items, cursor, _ = await self._list(host, account, folder=folder, limit=limit or 30)
                 else:
                     # No `since`: the INBOX is the queue. Filtering by a received-time watermark
                     # let the watermark outrun mail that was never sorted, and nothing could ever
@@ -237,7 +239,7 @@ class TriageJob:
                     # in the Inbox while the cursor stood two hours past them and every pass
                     # reported "0 processed, no errors". A mail is skipped because it has been
                     # DECIDED, not because of when it arrived.
-                    items, cursor = await self._list(host, account, limit=limit or 50)
+                    items, cursor = await self._queue(host, account, want=limit or 50, dry_run=dry_run)
             except Exception as exc:
                 state.last_error = f"list failed: {exc}"
                 report.errors.append(f"{account}: {state.last_error}")
@@ -430,33 +432,67 @@ class TriageJob:
                 out.append(str(name))
         return out
 
-    async def _list(
-        self, host: str, account: str, *, folder: str = "Inbox", limit: int = 50
+    async def _queue(
+        self, host: str, account: str, *, want: int, dry_run: bool
     ) -> tuple[list[dict[str, Any]], str | None]:
-        """The newest ``limit`` messages of a folder, and the newest received time among them.
+        """The newest ``want`` Inbox mails not decided yet, paging past the decided ones.
+
+        Mail triage leaves in the Inbox on purpose ("none") stays at the top. Reading only the
+        newest page let those fill it: measured 2026-09-29, ~50 left mails on top and older,
+        never-sorted mail trickling through three per pass, then not at all. A page that brings
+        nothing new ends the walk too (a backend that ignores ``cursor`` repeats page one).
+        """
+        queue: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        newest: str | None = None
+        cursor: str | None = None
+        for _ in range(_QUEUE_MAX_PAGES):
+            page, page_newest, cursor = await self._list(host, account, limit=want, cursor=cursor)
+            newest = max(filter(None, (newest, page_newest)), default=None)
+            fresh = [i for i in page if str(i.get("entry_id") or "") and str(i["entry_id"]) not in seen]
+            if not fresh:
+                break
+            for item in fresh:
+                entry_id = str(item["entry_id"])
+                seen.add(entry_id)
+                if dry_run or not await self._decided(entry_id, account):
+                    queue.append(item)
+            if len(queue) >= want or not cursor:
+                break
+        return queue[:want], newest
+
+    async def _list(
+        self, host: str, account: str, *, folder: str = "Inbox", limit: int = 50, cursor: str | None = None
+    ) -> tuple[list[dict[str, Any]], str | None, str | None]:
+        """The newest ``limit`` messages of a folder (after ``cursor``), the newest received time
+        among them, and the backend's cursor for the next page (None when nothing remains).
 
         Deliberately no ``since``: the returned time is recorded so the UI can show how far
         triage has seen, never to filter the next listing. See ``_run``.
         """
         # A long preview so the demand rule can tell a digest (many DM ids) from a thread (one).
         args: dict[str, Any] = {"account": account, "folder": folder, "limit": limit, "preview_chars": 1500}
+        if cursor:
+            args["cursor"] = cursor
         res = await self.core.registry.call(
             triage_tool(host, "list"),
             args,
             cancel=asyncio.Event(),
-            idempotency_key=f"triage:list:{account}",
+            idempotency_key=f"triage:list:{account}:{folder}:{cursor or ''}",
             timeout_s=120,
         )
         if res.kind.value == "error":
             raise RuntimeError(res.text[:200])
         data = _json(res.text)
+        next_cursor: str | None = None
         if isinstance(data, dict):
             items = [i for i in data.get("items", []) if isinstance(i, dict)]
+            next_cursor = str(data["cursor"]) if data.get("cursor") else None
         elif isinstance(data, list):
             items = [i for i in data if isinstance(i, dict)]
         else:
-            return [], None
-        return items, max((str(i.get("received", "")) for i in items), default=None)
+            return [], None, None
+        return items, max((str(i.get("received", "")) for i in items), default=None), next_cursor
 
     @staticmethod
     def _sender(item: dict[str, Any]) -> str:

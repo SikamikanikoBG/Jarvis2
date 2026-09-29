@@ -23,6 +23,7 @@ class _ListArgs(BaseModel):
     folder: str = "Inbox"
     since: str | None = None
     limit: int = 50
+    cursor: str | None = None
 
 
 class _MoveArgs(BaseModel):
@@ -214,12 +215,16 @@ class FakeHost(BuiltinProvider):
         return ToolResult.data(json.dumps({"accounts": [{"name": "Work"}]}))
 
     @tool("laptop.outlook_list", description="list", args=_ListArgs, read_only=True)
-    async def _list(self, account: str, folder: str = "Inbox", since: str | None = None, limit: int = 50) -> ToolResult:
+    async def _list(
+        self, account: str, folder: str = "Inbox", since: str | None = None, limit: int = 50, cursor: str | None = None
+    ) -> ToolResult:
         self.since_seen.append(since)
         items = [i for i in self.items if since is None or i["received"] > since]
-        # Newest first and capped, exactly like the host's GetTable read.
-        items = sorted(items, key=lambda i: str(i["received"]), reverse=True)[:limit]
-        return ToolResult.data(json.dumps({"items": items, "cursor": None}))
+        # Newest first and capped, exactly like the host's GetTable read; the cursor is an offset.
+        items = sorted(items, key=lambda i: str(i["received"]), reverse=True)
+        start = int(cursor or 0)
+        nxt = str(start + limit) if start + limit < len(items) else None
+        return ToolResult.data(json.dumps({"items": items[start : start + limit], "cursor": nxt}))
 
     @tool("laptop.outlook_move", description="move", args=_MoveArgs)
     async def _move(self, entry_id: str, folder: str) -> ToolResult:
@@ -402,6 +407,31 @@ async def test_a_sender_gated_category_takes_only_its_senders_and_only_none_fall
     assert rules.sender_category("maria@bank.bg", "Accepted: Weekly sync") is None
     assert rules.sender_category("ceo@board.bg", "RE: budget")["folder"] == "B"
     assert not rules.admits(rules.categories[0], "rumen@bank.bg") and not rules.admits(rules.categories[0], "")
+
+
+async def test_a_pass_pages_past_mail_left_in_the_inbox(harness: Harness):
+    """Measured 2026-09-29: ~50 mails left in the Inbox on purpose sat on top, and the pass only
+    ever read the newest 50 - older, never-sorted mail trickled through and then stopped."""
+    core = harness.core
+    host = await _with_host(harness)
+    host.items = [
+        {"entry_id": f"m{n:03d}", "subject": f"mail {n}", "from": {"name": "X", "address": "x@bank.bg"},
+         "received": f"2026-09-{1 + n // 24:02d}T{n % 24:02d}:00:00", "preview": ""}
+        for n in range(120)
+    ]  # fmt: skip
+    harness.enable(triage=TriageSettings(host="laptop", accounts=["Work"]))
+    newest_first = sorted(host.items, key=lambda i: i["received"], reverse=True)
+    for item in newest_first[:60]:  # decided earlier and left in the Inbox
+        await core.triage._record(item["entry_id"], "Work", None, "left")
+    report = await core.triage.run_once()
+    assert report.errors == [] and report.processed == 50
+    # The 50 processed are the next 50 after the 60 left ones, not a re-read of the top.
+    decided = {i["entry_id"] for i in newest_first[60:110]}
+    assert all([await core.triage._decided(e, "Work") for e in decided])
+    assert not await core.triage._decided(newest_first[110]["entry_id"], "Work")
+    # Next pass: the last 10; then nothing, and the walk ends at the end of the folder.
+    assert (await core.triage.run_once()).processed == 10
+    assert (await core.triage.run_once()).processed == 0
 
 
 async def test_vip_alerts_are_structural_and_push_once_per_pass(harness: Harness):

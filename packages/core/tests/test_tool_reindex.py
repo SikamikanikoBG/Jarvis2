@@ -355,3 +355,15 @@ async def test_a_list_sent_as_a_json_string_is_taken_as_the_list():
     assert "not of type 'array'" in (registry.validate("note.send", {"text": "hi", "files": "a.html"}) or "")
     text_args = {"text": '["not", "decoded"]'}
     assert registry.validate("note.send", text_args) is None and text_args["text"] == '["not", "decoded"]'
+
+
+async def test_a_misspelled_namespace_is_corrected_even_for_a_tool_the_registry_does_not_list():
+    """2026-09-29: `jarvm.plan_step_done` three times - plan tools are handled by the loop, not listed in the
+    registry, so no full tool name was close. The namespace alone is still worth naming."""
+    host = FakeMcp("jarvisvm", ["host_status"])
+    jarvis = FakeMcp("jarvis", ["time", "wait"])
+    registry = ToolRegistry([host, jarvis])
+    await registry.refresh()
+    assert registry.validate("jarvm.plan_step_done", {}) == (
+        "unknown tool 'jarvm.plan_step_done'; did you mean 'jarvisvm.plan_step_done' or 'jarvis.plan_step_done'?"
+    )

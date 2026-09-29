@@ -219,6 +219,14 @@ class ToolRegistry:
         if namespace not in {p.name for p in self._providers}:
             # A slip in the namespace (`jarvm.host_status`, 2026-09-28): name the real tool.
             close = difflib.get_close_matches(name, [s.name for s in self.specs()], n=1, cutoff=0.8)
+            if not close and "." in name:
+                # Tools the loop handles itself (jarvis.plan_step_done) are not listed here: fix just the namespace.
+                spaces = {s.name.split(".", 1)[0] for s in self.specs()} | {"jarvis"}
+                op = name.split(".", 1)[1]
+                # Name every close one: `jarvm` is nearer `jarvisvm` than `jarvis`, but plan tools live in `jarvis`.
+                ns = difflib.get_close_matches(namespace, sorted(spaces), n=2, cutoff=0.7)
+                close = [" or ".join(repr(f"{n}.{op}") for n in ns)] if ns else []
+                return f"unknown tool {name!r}" + (f"; did you mean {close[0]}?" if close else "")
             return f"unknown tool {name!r}" + (f"; did you mean {close[0]!r}?" if close else "")
         known = sorted(s.name for s in self._last_known.get(namespace, []))
         if known and name not in known:

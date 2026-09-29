@@ -521,9 +521,15 @@ class TriageJob:
                 return "demand", demand
         if not rules.categories:
             return None, None
-        cats = "\n".join(f"- {c.get('name')}: {c.get('rule', '')}" for c in rules.categories if c.get("name"))
-        instructions = str(rules.instructions or "").strip()
         address = self._sender_address(item)
+        owned = rules.sender_category(address, subject)
+        if owned:
+            return str(owned.get("name")), str(owned["folder"])
+        # A gated category (Bosses) is not offered for a sender it does not admit: the model
+        # cannot pick what it never sees.
+        offered = [c for c in rules.categories if c.get("name") and rules.admits(c, address)]
+        cats = "\n".join(f"- {c.get('name')}: {c.get('rule', '')}" for c in offered)
+        instructions = str(rules.instructions or "").strip()
         sender = f"{self._sender(item)} <{address}>" if address else self._sender(item)
         prompt = _CLASSIFY.format(
             instructions=f"\nRules:\n{instructions}\n" if instructions else "",
@@ -544,14 +550,19 @@ class TriageJob:
                 if isinstance(chunk, ModelTextChunk):
                     text += chunk.text
             data = _json(text)
-            name = str(data.get("category", "none")).strip() if isinstance(data, dict) else "none"
+            name = str(data.get("category") or "").strip() if isinstance(data, dict) else ""
         except Exception as exc:
             log.warning("triage classify skipped: %s", exc)
             return None, None
-        for c in rules.categories:
+        for c in offered:
             if c.get("name") == name and c.get("folder"):
                 return name, str(c["folder"])
-        # "none" or an unknown name: the configured catch-all, if there is one (inbox zero).
+        # Only an explicit "none" goes to the catch-all. A garbled answer or a name that is not
+        # on offer (a hallucination, or Bosses for a non-boss) stays in the Inbox for Arsen:
+        # it used to land in Reference, which is how Reference swelled.
+        if name.lower() != "none":
+            log.info("triage: %r is not an offered category for %s; left in Inbox", name, address or "?")
+            return None, None
         fallback = str(rules.fallback_category or "")
         for c in rules.categories:
             if fallback and c.get("name") == fallback and c.get("folder"):

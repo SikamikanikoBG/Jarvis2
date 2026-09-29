@@ -7,6 +7,7 @@ host that owns them and are not here.
 from __future__ import annotations
 
 import copy
+import re
 from enum import StrEnum
 from typing import Literal
 
@@ -257,6 +258,32 @@ class TriageRules(BaseModel):
         for alert in self.alerts:
             if alert.matches(address, display_name, subject):
                 return alert.name or "alert"
+        return None
+
+    @staticmethod
+    def _senders(category: dict[str, str]) -> set[str]:
+        raw = str(category.get("senders") or "")
+        return {s.strip().lower().lstrip("@") for s in re.split(r"[,;\s]+", raw) if s.strip()}
+
+    def admits(self, category: dict[str, str], address: str) -> bool:
+        """A category with ``senders`` ("a@x.bg, @board.bg") takes only mail FROM them - by the
+        sender's address, never To/Cc or a look-alike display name. Measured: Bosses filled with
+        threads where a boss was only in Cc, so the gate is structural, not a prompt rule."""
+        gate = self._senders(category)
+        if not gate:
+            return True
+        addr = address.strip().lower()
+        domain = addr.rsplit("@", 1)[-1] if "@" in addr else ""
+        return bool(addr) and (addr in gate or (bool(domain) and domain in gate))
+
+    def sender_category(self, address: str, subject: str) -> dict[str, str] | None:
+        """The gated category this sender owns, before any model: a boss writing is filed as a
+        boss. An auto-reply or meeting response is the mail system, not the boss - left to the model."""
+        if is_auto_reply(subject):
+            return None
+        for c in self.categories:
+            if c.get("folder") and self._senders(c) and self.admits(c, address):
+                return c
         return None
 
 

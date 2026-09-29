@@ -472,6 +472,7 @@ async def test_the_audit_flags_gate_violations_and_reports_the_judges_disagreeme
         row(2, "Rumen <rumen@bank.bg>", "bosses", "Leadership/Bosses"),  # a non-boss in Bosses
         row(3, "X <x@bank.bg>", "reference", "Action Hub/Reference"),
         row(4, "Y <y@bank.bg>", "reference", "Action Hub/Reference", source="dry_run"),  # not live: ignored
+        row(5, "Maria <maria@bank.bg>", "bosses", "Leadership/Bosses"),  # the gate's own call: not judged
     ]
 
     async def fake_rows(*, since_id: int = 0, limit: int = 1000) -> list[dict]:
@@ -485,13 +486,15 @@ async def test_the_audit_flags_gate_violations_and_reports_the_judges_disagreeme
     )
     report = await core.triage_audit.run(sample=3, post=True)
     a = report["accounts"]["Work"]
-    assert report["decisions"] == 3 and a["decisions"] == 3
-    assert a["folders"] == {"Action Hub/Reference": 2, "Leadership/Bosses": 1}
-    assert a["catch_all"] == "Action Hub/Reference" and a["catch_all_share"] == round(2 / 3, 3)
+    assert report["decisions"] == 4 and a["decisions"] == 4
+    assert a["folders"] == {"Action Hub/Reference": 2, "Leadership/Bosses": 2}
+    assert a["catch_all"] == "Action Hub/Reference" and a["catch_all_share"] == 0.5
     assert len(a["violations"]) == 2
     assert any("does not admit: rumen@bank.bg" in v for v in a["violations"])
     assert any("from maria@bank.bg but filed as reference" in v for v in a["violations"])
+    # Three judged (rows 1-3); row 5 was filed by the sender gate and is not the judge's call.
     assert a["judged"] == 2 and a["agreement"] == 0.5 and a["judge_errors"] == 1
+    assert len(harness.judge.calls) == 3
     assert [d["why"] for d in a["disagreements"]] == ["asks nothing"]
     # Posted to the day's Triage audit conversation.
     convs = [c for c in await core.store.list_conversations() if c.folder_key == "triage-audit"]

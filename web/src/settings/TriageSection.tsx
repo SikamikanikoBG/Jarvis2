@@ -50,6 +50,16 @@ export function TriageSection({ value, hosts, onChange, error }: Props) {
           <input className="input" type="number" min={1} step="any" value={value.interval_min} onChange={(e) => patch({ interval_min: Math.max(1, Number(e.target.value) || 1) })} />
         </div>
         <div className="field">
+          <label>Daily audit at (hour)</label>
+          <input className="input" type="number" min={-1} max={23} step={1} value={value.audit_hour} onChange={(e) => patch({ audit_hour: Math.min(23, Math.max(-1, Math.round(Number(e.target.value)))) })} />
+          <div className="field-hint">Local hour for the quality audit (rule violations, folder mix, judge agreement); -1 = off.</div>
+        </div>
+        <div className="field">
+          <label>Audit sample (mails per account)</label>
+          <input className="input" type="number" min={1} step={1} value={value.audit_sample} onChange={(e) => patch({ audit_sample: Math.max(1, Math.round(Number(e.target.value)) || 1) })} />
+          <div className="field-hint">How many of the day&apos;s decisions the judge re-checks.</div>
+        </div>
+        <div className="field">
           <label>Host (MCP server)</label>
           <select className="select" value={value.host} onChange={(e) => patch({ host: e.target.value })}>
             <option value="">— none —</option>

@@ -260,6 +260,10 @@ export interface TriageSettings {
   /** Category used when the classifier answers "none"; empty = leave the mail in the inbox. */
   fallback_category: string;
   alerts: TriageAlert[];
+  /** Local hour of the daily triage audit; -1 = off. */
+  audit_hour: number;
+  /** Decisions per account the audit's judge re-checks. */
+  audit_sample: number;
   /** Per-account overrides, keyed by the account name (work mailbox vs personal Gmail). */
   account_rules: Record<string, TriageRules>;
 }
@@ -422,6 +426,12 @@ export interface Settings {
   mcp_servers: McpServerSpec[];
   max_concurrent_runs_per_endpoint: number;
   repeated_call_threshold: number;
+  /** Read-only calls from one batch that may run at once. */
+  max_parallel_tools: number;
+  /** Think only on steps with something new to work out (first step, error, steer, plan move); off = every step. */
+  adaptive_thinking: boolean;
+  /** Ceiling for one tool call's own timeout_s. */
+  tool_timeout_max_s: number;
   tool_exposure: ToolExposure;
   facade_threshold: number;
   history_token_budget: number;
@@ -448,6 +458,25 @@ export interface Settings {
   stt_kind: SttKind;
   stt_model: string;
   stt_languages: string[];
+  /** Push channel for notify.discord and scheduled-run summaries. Secret. */
+  discord_webhook_url: string | null;
+  /** SearXNG base URL for web.search; null = no search tool. */
+  searxng_url: string | null;
+  shadow: ShadowSettings;
+}
+
+/** A second opinion from Laya that is recorded, never obeyed (features/shadow.py). */
+export interface ShadowSettings {
+  enabled: boolean;
+  /** laya-service base URL; empty = record inputs and production's answer only. */
+  laya_url: string;
+  timeout_s: number;
+  /** Shadow calls in flight at once; past it an observation is dropped. */
+  max_pending: number;
+  /** Observed decision points: mail, rsvp, preflight, guardrail. */
+  points: string[];
+  /** Tools whose outgoing text the guardrail point observes: exact names or *.suffix globs. */
+  guardrail_tools: string[];
 }
 
 // ---- features.py ---------------------------------------------------------------------

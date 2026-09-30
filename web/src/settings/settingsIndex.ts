@@ -37,6 +37,11 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
       'threshold',
       'judge',
       'language hint',
+      'searxng',
+      'web search',
+      'discord',
+      'webhook',
+      'push',
     ],
   },
   {
@@ -86,6 +91,12 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
       'tokens',
       'boards context',
       'skill size limit',
+      'adaptive thinking',
+      'thinking',
+      'reasoning',
+      'parallel',
+      'tool timeout',
+      'longest tool call',
     ],
   },
   {
@@ -103,7 +114,7 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   {
     id: 'settings-triage',
     label: 'Triage',
-    keywords: ['demand routing', 'dm-1234', 'alerts', 'categories', 'inbox', 'mail', 'folder'],
+    keywords: ['demand routing', 'dm-1234', 'alerts', 'categories', 'inbox', 'mail', 'folder', 'audit', 'sample'],
   },
   {
     id: 'settings-rsvp',
@@ -114,6 +125,11 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     id: 'settings-sessions',
     label: 'Sessions',
     keywords: ['@', 'handle', 'mention', 'chats talking', 'another chat', 'wake', 'chain', 'hops'],
+  },
+  {
+    id: 'settings-shadow',
+    label: 'Second opinion',
+    keywords: ['laya', 'shadow', 'guardrail', 'preflight', 'classifier', 'recorded'],
   },
   { id: 'settings-collab', label: 'Collaborators', keywords: ['key', 'invite', 'access', 'mcp'] },
   {

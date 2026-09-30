@@ -13,6 +13,7 @@ import { RsvpSection } from './RsvpSection';
 import { SettingsNav } from './SettingsNav';
 import { TriageSection } from './TriageSection';
 import { SessionsSection } from './SessionsSection';
+import { ShadowSection } from './ShadowSection';
 import { VoiceSection } from './VoiceSection';
 
 const PROVIDERS: Provider[] = ['ollama', 'vllm'];
@@ -187,6 +188,12 @@ export function SettingsScreen() {
                 }
               />
             </Field>
+            <Field label="SearXNG URL" error={errors.searxng_url} hint="web.search goes here; empty = no search tool.">
+              <input className="input" value={draft.searxng_url ?? ''} onChange={(e) => patch('searxng_url', e.target.value || null)} placeholder="http://…:8085" />
+            </Field>
+            <Field label="Discord webhook" error={errors.discord_webhook_url} hint="Push channel for reminders and scheduled-run summaries (notify.discord). Secret.">
+              <input className="input" type="password" autoComplete="off" value={draft.discord_webhook_url ?? ''} onChange={(e) => patch('discord_webhook_url', e.target.value || null)} placeholder="https://discord.com/api/webhooks/…" />
+            </Field>
             <Field label="Concurrent runs per endpoint" error={errors.max_concurrent_runs_per_endpoint}>
               <NumberInput value={draft.max_concurrent_runs_per_endpoint} min={1} onChange={(v) => patch('max_concurrent_runs_per_endpoint', v ?? 1)} />
             </Field>
@@ -210,6 +217,12 @@ export function SettingsScreen() {
         <div id="settings-sessions" className="settings-anchor">
           <SessionsSection value={draft.sessions} onChange={(v) => patch('sessions', v)} error={errors.sessions} />
         </div>
+
+        {draft.shadow && (
+          <div id="settings-shadow" className="settings-anchor">
+            <ShadowSection value={draft.shadow} onChange={(v) => patch('shadow', v)} error={errors.shadow} />
+          </div>
+        )}
 
         <div id="settings-confirmations" className="settings-anchor">
           <ConfirmationsSection value={draft.confirmations} onChange={(c) => patch('confirmations', c)} error={errors.confirmations} />
@@ -243,6 +256,13 @@ export function SettingsScreen() {
             <span className="small">Knowledge learning</span>
             <span className="field-hint">After each run the classifier extracts entities and relations into Knowledge.</span>
           </div>
+          <div className="think-row">
+            <Switch checked={draft.adaptive_thinking} onChange={(v) => patch('adaptive_thinking', v)} label="Adaptive thinking" />
+            <span className="small">Adaptive thinking</span>
+            <span className="field-hint">
+              On: the model thinks only on a run&apos;s first step and after an error, a steer or a plan move — cheaper, but it acts on results without weighing them. Off: it thinks on every step.
+            </span>
+          </div>
           <div className="form-grid">
             <Field label="Tool exposure" error={errors.tool_exposure} hint="facade = one tool per namespace; flat = every tool; auto switches at the threshold.">
               <select className="select" value={draft.tool_exposure} onChange={(e) => patch('tool_exposure', e.target.value as ToolExposure)}>
@@ -262,6 +282,12 @@ export function SettingsScreen() {
             </Field>
             <Field label="Admit a tool result up to (chars)" hint="Longer results enter as a head + ref; result_search / result_read reach the rest. Capped at half the results budget on a small lane." error={errors.tool_result_admit_chars}>
               <NumberInput value={draft.tool_result_admit_chars} min={2000} onChange={(v) => patch('tool_result_admit_chars', v ?? 2000)} />
+            </Field>
+            <Field label="Parallel read-only calls" hint="Read-only calls from one batch that may run at once." error={errors.max_parallel_tools}>
+              <NumberInput value={draft.max_parallel_tools} min={1} onChange={(v) => patch('max_parallel_tools', v ?? 1)} />
+            </Field>
+            <Field label="Longest tool call (seconds)" hint="Ceiling for a tool's own timeout (a long shell_run report); others get 120 s." error={errors.tool_timeout_max_s}>
+              <NumberInput value={draft.tool_timeout_max_s} min={1} onChange={(v) => patch('tool_timeout_max_s', v ?? 1)} />
             </Field>
             <Field label="Context reserve (tokens)" hint="Kept free of the lane's window besides the answer." error={errors.context_reserve_tokens}>
               <NumberInput value={draft.context_reserve_tokens} min={0} onChange={(v) => patch('context_reserve_tokens', v ?? 0)} />

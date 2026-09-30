@@ -13,6 +13,14 @@ export interface WsHandlers {
 const MIN_BACKOFF = 1_000;
 const MAX_BACKOFF = 30_000;
 const PING_INTERVAL = 25_000;
+/**
+ * Silence longer than this on an "open" socket means it is dead. A phone that slept or a laptop
+ * that changed networks keeps a zombie socket open: no close event for minutes, no events either,
+ * so a scheduled chat that turned unread never showed in the "waiting for me" filter until
+ * something happened to close it (Arsen, 2026-09-30). The server answers every ping with a pong,
+ * so a live socket is never silent this long.
+ */
+export const SILENCE_LIMIT = PING_INTERVAL * 2 + 5_000;
 
 export function wsUrl(): string {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -34,8 +42,41 @@ export class WsClient {
   private flushScheduled = false;
   private everOpened = false;
   private stopped = false;
+  private lastHeard = 0;
 
   constructor(private readonly handlers: WsHandlers) {}
+
+  /**
+   * The page came back (visible again, network back): a socket that has been silent too long is
+   * dropped and reopened now instead of at the next ping - the reopen refetches the conversation
+   * list, so what changed meanwhile shows at once.
+   */
+  revive(): void {
+    if (this.stopped) return;
+    if (!this.isOpen) {
+      if (this.timer) clearTimeout(this.timer);
+      this.attempt = 0;
+      this.open();
+    } else if (Date.now() - this.lastHeard > PING_INTERVAL) {
+      this.reopen();
+    }
+  }
+
+  /** Drop the current socket without waiting for a close event that may never come, and reconnect. */
+  private reopen(): void {
+    const dead = this.socket;
+    this.socket = null;
+    if (dead) {
+      dead.onopen = dead.onmessage = dead.onclose = dead.onerror = null;
+      try {
+        dead.close();
+      } catch {
+        /* already gone */
+      }
+    }
+    this.attempt = 0;
+    this.open();
+  }
 
   connect(): void {
     this.stopped = false;
@@ -77,10 +118,18 @@ export class WsClient {
       this.everOpened = true;
       this.attempt = 0;
       this.handlers.onState('open', 0);
-      this.pingTimer = setInterval(() => this.send({ type: 'ping' }), PING_INTERVAL);
+      this.lastHeard = Date.now();
+      this.pingTimer = setInterval(() => {
+        if (Date.now() - this.lastHeard > SILENCE_LIMIT) {
+          this.reopen(); // a zombie: open on paper, silent in fact
+          return;
+        }
+        this.send({ type: 'ping' });
+      }, PING_INTERVAL);
       this.handlers.onOpen(isReconnect);
     };
     ws.onmessage = (e: MessageEvent<string>) => {
+      this.lastHeard = Date.now();
       let data: unknown;
       try {
         data = JSON.parse(e.data);

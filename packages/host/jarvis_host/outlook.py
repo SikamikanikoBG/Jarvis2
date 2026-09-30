@@ -804,6 +804,12 @@ class OutlookBackend:
             raise OutlookError(
                 f"GetTable failed on {_text(_prop(folder, 'FolderPath', ''))}: {describe_com_error(exc)} (filter: {filt})"
             ) from exc
+        return self._read_table(tbl, limit, skip, preview_chars)
+
+    def _read_table(
+        self, tbl: Any, limit: int, skip: set[str], preview_chars: int = PREVIEW_CHARS
+    ) -> tuple[list[Row], bool, int | None]:
+        """Our columns on an ``Outlook.Table`` (a folder's, or a conversation's), newest first."""
         columns: list[str] = []
         cols = tbl.Columns
         cols.RemoveAll()
@@ -927,6 +933,39 @@ class OutlookBackend:
         if dropped:
             result["unverified_dropped"] = dropped
         return result
+
+    def thread(self, entry_id: str, account: str = "", limit: int = 8, preview_chars: int = 600) -> dict[str, Any]:
+        """The conversation ``entry_id`` belongs to, across every folder of its store - Sent Items
+        too, so the owner's own replies are there - as the newest ``limit`` messages, oldest first.
+        ``mine`` marks the owner's messages. A store without conversations (some IMAP stores)
+        answers ``conversation: false`` and no items; the caller then judges the mail alone."""
+        limit = max(1, min(int(limit or 8), 50))
+        preview_chars = max(0, min(int(preview_chars or 600), 4000))
+        item, store = self._item(entry_id, account)
+        try:
+            conv = item.GetConversation()
+        except Exception:
+            conv = None
+        base: dict[str, Any] = {
+            "account": _text(_prop(store, "DisplayName", "")),
+            "conversation_id": _text(_prop(item, "ConversationID", "")),
+        }
+        if conv is None:
+            return {**base, "conversation": False, "items": [], "total": 0}
+        try:
+            tbl = conv.GetTable()
+        except Exception as exc:
+            raise OutlookError(f"conversation table failed: {describe_com_error(exc)}") from exc
+        rows, _more, total = self._read_table(tbl, limit, set(), preview_chars)
+        acct = self._account_for_store(store)
+        owner = _text(_prop(acct, "SmtpAddress", "")).lower() if acct is not None else ""
+        store_id = _text(_prop(store, "StoreID", ""))
+        items = []
+        for r in reversed(rows):  # the table reads newest first; a thread reads oldest first
+            it = r.as_item(store_id)
+            it["mine"] = bool(owner) and r.sender_addr.lower() == owner
+            items.append(it)
+        return {**base, "conversation": True, "items": items, "total": total if total is not None else len(items)}
 
     # -- single items -------------------------------------------------------------------------
 
@@ -1781,6 +1820,7 @@ class OutlookService:
         "list_items",
         "search",
         "read",
+        "thread",
         "calendar_list",
         "calendar_invites",
         "calendar_free_slots",

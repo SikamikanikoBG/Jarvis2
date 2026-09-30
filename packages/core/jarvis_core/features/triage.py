@@ -38,7 +38,7 @@ _CLASSIFY = """Classify this email for filing.
 Categories (name: rule):
 {categories}
 - none: nothing above applies
-
+{thread}
 Email:
 From: {sender}
 To: {to}
@@ -47,6 +47,38 @@ Subject: {subject}
 Preview: {preview}
 
 Answer JSON only: {{"category": "<name or none>"}}"""
+
+# "No structural rule decided this mail" - distinct from a decision to leave it (None, None).
+_UNDECIDED = object()
+# Earlier messages of a conversation shown to the classifier (the newest ones).
+_THREAD_MESSAGES = 6
+
+
+def _thread_block(thread: list[dict[str, Any]], item: dict[str, Any]) -> str:
+    """The conversation before ``item`` as prompt lines, or "" when it has none."""
+    own = (str(item.get("entry_id") or ""), str(item.get("received") or ""), str(item.get("subject") or ""))
+    earlier = [
+        m
+        for m in thread
+        if str(m.get("entry_id") or "") != own[0]
+        and (str(m.get("received") or ""), str(m.get("subject") or "")) != own[1:]
+    ]
+    if not earlier:
+        return ""
+    lines = []
+    for m in earlier[-_THREAD_MESSAGES:]:
+        frm = m.get("from") if isinstance(m.get("from"), dict) else {}
+        who = str(frm.get("name") or m.get("sender") or frm.get("address") or "?")
+        mark = " [OWNER]" if m.get("mine") else ""
+        preview = " ".join(str(m.get("preview") or "").split())[:300]
+        lines.append(
+            f"- {str(m.get('received') or '')[:16]} {who}{mark}: {str(m.get('subject') or '')[:120]} | {preview}"
+        )
+    return (
+        "\nThe email below is the latest in a conversation. Judge the CONVERSATION as a whole: who asks whom "
+        "for what, and whether the mailbox owner takes part ([OWNER] marks his own messages). "
+        "Earlier messages, oldest first:\n" + "\n".join(lines) + "\n"
+    )
 
 
 @dataclass(slots=True)
@@ -246,13 +278,15 @@ class TriageJob:
                 await self._save_state(state)
                 continue
             lines: list[str] = []
+            pending = []
             for item in items:
                 entry_id = str(item.get("entry_id") or "")
-                if not entry_id or (not dry_run and await self._decided(entry_id, account)):
-                    continue
-                t_route = time.perf_counter()
-                category, target = await self._route(item, cfg, account, rules)
-                route_ms = (time.perf_counter() - t_route) * 1000
+                if entry_id and (dry_run or not await self._decided(entry_id, account)):
+                    pending.append(item)
+            decisions = await self._decide(pending, cfg, account, rules, host)
+            for item in pending:
+                entry_id = str(item["entry_id"])
+                category, target, route_ms = decisions[entry_id]
                 subject = str(item.get("subject") or "")
                 # Structural, before any judgement: a VIP mail must never be missed because a
                 # classifier had an opinion about it.
@@ -535,10 +569,85 @@ class TriageJob:
             return str(data.get("body") or data.get("text") or "")
         return res.text
 
+    async def _decide(
+        self, items: list[dict[str, Any]], cfg: Any, account: str, rules: Any, host: str
+    ) -> dict[str, tuple[str | None, str | None, float]]:
+        """Where each mail goes: entry_id -> (category, folder, ms).
+
+        Structural rules first, per mail (a DM number, a boss writing). The rest is judged a
+        CONVERSATION at a time: a reply alone ("Agreed, let's go") says nothing, and replies of
+        one thread used to scatter over three folders. The newest Inbox mail of each thread is
+        classified with the whole conversation as context - earlier messages from any folder,
+        Arsen's own replies from Sent Items marked - and every Inbox mail of that thread follows.
+        """
+        out: dict[str, tuple[str | None, str | None, float]] = {}
+        threads: dict[str, list[dict[str, Any]]] = {}
+        for item in items:
+            entry_id = str(item["entry_id"])
+            t0 = time.perf_counter()
+            pre = await self._structural(item, cfg, account, rules)
+            if pre is not _UNDECIDED:
+                out[entry_id] = (*pre, (time.perf_counter() - t0) * 1000)
+                continue
+            key = str(item.get("conversation_id") or "") or f"single:{entry_id}"
+            threads.setdefault(key, []).append(item)
+        for key, members in threads.items():
+            t0 = time.perf_counter()
+            newest = max(members, key=lambda i: str(i.get("received") or ""))
+            context = [] if key.startswith("single:") else await self._thread(host, account, newest)
+            category, target = await self._classify(newest, rules, thread=context)
+            ms = (time.perf_counter() - t0) * 1000
+            for item in members:
+                out[str(item["entry_id"])] = (category, target, ms)
+        return out
+
+    async def _thread(self, host: str, account: str, item: dict[str, Any]) -> list[dict[str, Any]]:
+        """The conversation around ``item`` (oldest first), or [] when the backend has none -
+        the IMAP one has no thread tool, and a failure only costs the context, never the mail."""
+        if host == "mail":
+            return []
+        try:
+            res = await self.core.registry.call(
+                triage_tool(host, "thread"),
+                {
+                    "entry_id": str(item["entry_id"]),
+                    "account": account,
+                    "limit": _THREAD_MESSAGES,
+                    "preview_chars": 400,
+                },
+                cancel=asyncio.Event(),
+                idempotency_key=f"triage:thread:{account}:{item['entry_id']}",
+                timeout_s=60,
+            )
+        except Exception as exc:
+            log.info("triage: no thread context for %s: %s", str(item.get("subject") or "")[:40], exc)
+            return []
+        if res.kind.value == "error":
+            return []
+        data = _json(res.text)
+        if not isinstance(data, dict) or not data.get("conversation"):
+            return []
+        return [i for i in data.get("items", []) if isinstance(i, dict)]
+
     async def _route(
-        self, item: dict[str, Any], cfg: Any, account: str = "", rules: Any = None
+        self,
+        item: dict[str, Any],
+        cfg: Any,
+        account: str = "",
+        rules: Any = None,
+        *,
+        thread: list[dict[str, Any]] | None = None,
     ) -> tuple[str | None, str | None]:
+        """(category, folder) for one mail: the structural rules, then the model."""
         rules = rules if rules is not None else cfg.rules_for(account)
+        pre = await self._structural(item, cfg, account, rules)
+        if pre is not _UNDECIDED:
+            return pre  # type: ignore[return-value]
+        return await self._classify(item, rules, thread=thread)
+
+    async def _structural(self, item: dict[str, Any], cfg: Any, account: str, rules: Any) -> Any:
+        """The decisions no model makes - a DM number, a boss writing, no categories at all -
+        as (category, folder), or ``_UNDECIDED`` when none applies."""
         subject = str(item.get("subject") or "")
         preview = str(item.get("preview") or item.get("body_preview") or item.get("snippet") or "")
         if rules.demand_routing and demand_ids(subject, cfg.demand_prefixes):
@@ -561,6 +670,16 @@ class TriageJob:
         owned = rules.sender_category(address, subject)
         if owned:
             return str(owned.get("name")), str(owned["folder"])
+        return _UNDECIDED
+
+    async def _classify(
+        self, item: dict[str, Any], rules: Any, *, thread: list[dict[str, Any]] | None = None
+    ) -> tuple[str | None, str | None]:
+        """The model's (category, folder) for a mail no structural rule decided; ``thread`` is
+        its conversation, oldest first, and makes it judge the conversation as a whole."""
+        subject = str(item.get("subject") or "")
+        preview = str(item.get("preview") or item.get("body_preview") or item.get("snippet") or "")
+        address = self._sender_address(item)
         # A gated category (Bosses) is not offered for a sender it does not admit: the model
         # cannot pick what it never sees.
         offered = [c for c in rules.categories if c.get("name") and rules.admits(c, address)]
@@ -570,6 +689,7 @@ class TriageJob:
         prompt = _CLASSIFY.format(
             instructions=f"\nRules:\n{instructions}\n" if instructions else "",
             categories=cats,
+            thread=_thread_block(thread or [], item),
             sender=sender,
             to=str(item.get("to") or "")[:300],
             cc=str(item.get("cc") or "")[:300],

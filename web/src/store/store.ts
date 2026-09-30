@@ -278,6 +278,17 @@ export const useStore = create<AppState>()((set, get) => ({
       },
     });
     ws.connect();
+    // Back from sleep, a background tab or a network change: events may have been missed on a
+    // socket that looked open. Reload the list now (a chat that turned unread must show at once)
+    // and let the socket reopen itself if it has been silent.
+    const wake = () => {
+      ws?.revive();
+      void loadConversations(set, get);
+    };
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') wake();
+    });
+    window.addEventListener('online', wake);
 
     void loadConversations(set, get);
     void get().loadFolders();

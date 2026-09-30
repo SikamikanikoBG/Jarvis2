@@ -200,6 +200,37 @@ def test_search_verifies_every_match_and_drops_dasl_leaks(backend: OutlookBacken
         backend.search("", "  ")
 
 
+def test_thread_spans_folders_oldest_first_and_marks_the_owners_replies(backend: OutlookBackend, world: World):
+    """Triage judges a reply by its whole conversation: every message, Sent Items included, so
+    the owner's own participation shows (`mine`)."""
+    from fake_com import Mail
+
+    t0 = world.mails[0].ReceivedTime
+    first = world.inbox.add(Mail("Branch plan", "pm@postbank.bg", t0 + timedelta(hours=1), body="Can we meet?"))
+    mine = world.sent.add(Mail("RE: Branch plan", "aapostolov@postbank.bg", t0 + timedelta(hours=2)))
+    last = world.inbox.add(Mail("RE: Branch plan", "pm@postbank.bg", t0 + timedelta(hours=3)))
+    for m in (mine, last):
+        m.ConversationID = first.ConversationID
+    res = backend.thread(last.EntryID)
+    assert res["conversation"] is True and res["total"] == 3
+    assert [(i["subject"], i["mine"]) for i in res["items"]] == [
+        ("Branch plan", False),
+        ("RE: Branch plan", True),
+        ("RE: Branch plan", False),
+    ]
+    # `limit` keeps the newest, still oldest first.
+    assert [i["mine"] for i in backend.thread(last.EntryID, limit=2)["items"]] == [True, False]
+    # A store that keeps no conversations says so instead of failing.
+    world.exchange.conversations = False
+    assert backend.thread(last.EntryID) | {"account": ""} == {
+        "account": "",
+        "conversation_id": first.ConversationID,
+        "conversation": False,
+        "items": [],
+        "total": 0,
+    }
+
+
 # --- single items ------------------------------------------------------------------------------
 
 

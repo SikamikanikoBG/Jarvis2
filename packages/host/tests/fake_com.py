@@ -190,6 +190,30 @@ class Mail:
             self.Parent.Store.sent.append(self)
         self.sent = True
 
+    def GetConversation(self) -> Conversation | None:
+        """None on a store that keeps no conversations (Outlook does the same)."""
+        if self.Parent is None or not self.Parent.store.conversations:
+            return None
+        return Conversation(self)
+
+
+class Conversation:
+    """``Outlook.Conversation``: its table spans every folder of the store (Sent Items too)."""
+
+    def __init__(self, mail: Mail) -> None:
+        self.mail = mail
+
+    def GetTable(self) -> Table:
+        store = self.mail.Parent.store  # type: ignore[union-attr]
+        tbl = Table(self.mail.Parent, None)  # type: ignore[arg-type]
+        tbl._rows = [
+            m
+            for f in store.folders()
+            for m in f._items
+            if isinstance(m, Mail) and m.ConversationID == self.mail.ConversationID
+        ]
+        return tbl
+
 
 class Appointment:
     Class = 26
@@ -502,6 +526,7 @@ class Store:
         self.default_columns = ["EntryID", "Subject", "CreationTime", "LastModificationTime", "MessageClass"]
         self.rejected_columns: set[str] = set()
         self.dasl_leaks = False
+        self.conversations = True
         self.root = Folder(display_name, self)
         self.defaults: dict[int, Folder] = {}
 

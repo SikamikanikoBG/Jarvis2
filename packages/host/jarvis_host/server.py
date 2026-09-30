@@ -256,6 +256,13 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
             )
         )
 
+    @tool("outlook_thread", READ)
+    async def outlook_thread(entry_id: str, account: str = "", limit: int = 8, preview_chars: int = 600) -> str:
+        """The whole conversation a message belongs to, across folders (Sent Items too): the newest `limit` messages, oldest first, each with sender, to/cc, preview and `mine` (the owner wrote it). `conversation: false` when the store keeps no conversations."""
+        return json_text(
+            await _run("outlook_thread", lambda: outlook().call("thread", entry_id, account, limit, preview_chars))
+        )
+
     @tool("outlook_move", MUTATING)
     async def outlook_move(entry_id: str, folder: str, account: str = "", create: bool = False) -> str:
         """Move a message into `folder` (role, id or path) of its account. Re-resolves the id first; returns the message's new durable entry_id and the target folder path. `create=true` adds a missing subfolder at the end of an existing path (e.g. a new `Demands/DM-2300`); an unknown top-level folder is still an error."""

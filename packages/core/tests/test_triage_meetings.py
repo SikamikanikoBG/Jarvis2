@@ -37,6 +37,13 @@ class _ReadArgs(BaseModel):
     max_chars: int = 20_000
 
 
+class _ThreadArgs(BaseModel):
+    entry_id: str
+    account: str = ""
+    limit: int = 8
+    preview_chars: int = 600
+
+
 class _FolderCreateArgs(BaseModel):
     path: str
     account: str = ""
@@ -166,6 +173,9 @@ class FakeHost(BuiltinProvider):
             "e4": "Today: DM-1096 extraction moved to PROD. DM-1945 ECAT waits UAT. DM-2167 estimation due.",
         }
         self.reads: list[str] = []
+        # conversation_id -> the conversation outlook_thread returns (oldest first)
+        self.threads: dict[str, list[dict]] = {}
+        self.thread_calls: list[str] = []
         self.folders_created: list[str] = []
         self.pulled = 0
         self.warning = ""  # what meeting_start reports about the devices
@@ -242,6 +252,14 @@ class FakeHost(BuiltinProvider):
     async def _read(self, entry_id: str, account: str = "", max_chars: int = 20_000) -> ToolResult:
         self.reads.append(entry_id)
         return ToolResult.data(json.dumps({"entry_id": entry_id, "body": self.bodies.get(entry_id, "")[:max_chars]}))
+
+    @tool("laptop.outlook_thread", description="thread", args=_ThreadArgs, read_only=True)
+    async def _thread(self, entry_id: str, account: str = "", limit: int = 8, preview_chars: int = 600) -> ToolResult:
+        self.thread_calls.append(entry_id)
+        conv = next((str(i.get("conversation_id") or "") for i in self.items if i["entry_id"] == entry_id), "")
+        if conv not in self.threads:
+            return ToolResult.data(json.dumps({"conversation": False, "items": []}))
+        return ToolResult.data(json.dumps({"conversation": True, "items": self.threads[conv][-limit:]}))
 
     @tool("laptop.meeting_start", description="start", args=_MeetingArgs)
     async def _mstart(self, meeting_id: str, after_seq: int = 0) -> ToolResult:
@@ -501,6 +519,70 @@ async def test_the_audit_flags_gate_violations_and_reports_the_judges_disagreeme
     assert len(convs) == 1
     text = (await core.store.list_messages(convs[0].id))[-1].content
     assert "2 rule violation(s)" in text and "judge agrees 50% of 2 sampled" in text
+
+
+async def test_a_conversation_is_judged_as_a_whole_and_its_inbox_mails_move_together(harness: Harness):
+    """Arsen, 2026-09-30: triage a thread, not mail by mail. A reply alone says little; the
+    conversation (earlier messages from any folder, his own replies marked) decides, once, and
+    every Inbox mail of that thread follows. Structural rules still decide per mail first."""
+    from jarvis_proto import TriageRules
+
+    core = harness.core
+    host = await _with_host(harness)
+    host.items = [
+        {"entry_id": "t2", "conversation_id": "C1", "subject": "RE: Branch plan", "received": "2026-09-30T10:00:00",
+         "from": {"name": "Pm", "address": "pm@bank.bg"}, "preview": "Agreed."},
+        {"entry_id": "t1", "conversation_id": "C1", "subject": "RE: Branch plan", "received": "2026-09-30T09:00:00",
+         "from": {"name": "Ops", "address": "ops@bank.bg"}, "preview": "Fine by me."},
+        {"entry_id": "b1", "conversation_id": "C1", "subject": "RE: Branch plan", "received": "2026-09-30T08:30:00",
+         "from": {"name": "Maria", "address": "maria@bank.bg"}, "preview": "Go ahead."},
+        {"entry_id": "s1", "subject": "Lunch?", "received": "2026-09-30T07:00:00",
+         "from": {"name": "X", "address": "x@bank.bg"}, "preview": "who is in"},
+    ]  # fmt: skip
+    host.threads["C1"] = [
+        {"entry_id": "o1", "subject": "Branch plan", "received": "2026-09-29T09:00:00",
+         "from": {"name": "Pm", "address": "pm@bank.bg"}, "preview": "Arsen, can your team own the rollout?", "mine": False},
+        {"entry_id": "o2", "subject": "RE: Branch plan", "received": "2026-09-29T11:00:00",
+         "from": {"name": "Arsen", "address": "aapostolov@bank.bg"}, "preview": "We can, draft by Friday.", "mine": True},
+        *[{**i, "mine": False} for i in host.items[:3][::-1]],
+    ]  # fmt: skip
+    harness.enable(
+        triage=TriageSettings(
+            host="laptop",
+            accounts=["Work"],
+            account_rules={
+                "work": TriageRules(
+                    categories=[
+                        {"name": "bosses", "folder": "Leadership/Bosses", "rule": "boss", "senders": "maria@bank.bg"},
+                        {"name": "to_read", "folder": "Action Hub/To-Read", "rule": "a thread he takes part in"},
+                        {"name": "reference", "folder": "Action Hub/Reference", "rule": "FYI"},
+                    ],
+                    fallback_category="reference",
+                    demand_routing=False,
+                )
+            },
+        )
+    )
+    harness.chat.push(FakeTurn(text='{"category": "to_read"}'), FakeTurn(text='{"category": "none"}'))
+    report = await core.triage.run_once()
+    assert report.errors == [] and report.processed == 4
+    moves = dict(host.moves)
+    # The boss's own message is filed by the gate, per mail; the rest of the thread moves together.
+    assert moves == {
+        "b1": "Leadership/Bosses",
+        "t2": "Action Hub/To-Read",
+        "t1": "Action Hub/To-Read",
+        "s1": "Action Hub/Reference",
+    }
+    # One model call per conversation (and one for the lone mail), the thread fetched for the newest.
+    assert len(harness.chat.calls) == 2 and host.thread_calls == ["t2"]
+    prompt = harness.chat.calls[0][0][-1].content
+    assert "Judge the CONVERSATION as a whole" in prompt
+    assert "Arsen [OWNER]: RE: Branch plan | We can, draft by Friday." in prompt
+    assert "can your team own the rollout?" in prompt
+    assert "From: Pm <pm@bank.bg>" in prompt  # the email judged is the newest of the thread
+    lone = harness.chat.calls[1][0][-1].content
+    assert "conversation" not in lone  # a mail without a thread is judged alone
 
 
 async def test_vip_alerts_are_structural_and_push_once_per_pass(harness: Harness):

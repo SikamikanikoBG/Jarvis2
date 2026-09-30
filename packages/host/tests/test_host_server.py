@@ -29,6 +29,7 @@ EXPECTED_ANNOTATIONS = {
     "outlook_list": ("read", True),
     "outlook_read": ("read", True),
     "outlook_search": ("read", True),
+    "outlook_thread": ("read", True),
     "outlook_move": ("mutating", False),
     "outlook_folder_create": ("mutating", True),
     "outlook_flag": ("mutating", True),

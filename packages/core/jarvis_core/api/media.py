@@ -11,9 +11,10 @@ from pydantic import BaseModel
 
 from jarvis_core.api.deps import core_of, require_token
 from jarvis_core.features.mail import Mailbox, MailError
+from jarvis_core.features.maildesk import MailDeskError
 from jarvis_core.features.stt import SttError
 from jarvis_core.features.tts import TtsError
-from jarvis_proto import MailAccount, Meeting, MeetingDetail, TriageState
+from jarvis_proto import Conversation, MailAccount, Meeting, MeetingDetail, TriageState
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
 
@@ -219,6 +220,72 @@ async def triage_audit(
     audit = core_of(request).triage_audit
     report = await audit.run(hours=max(1, min(hours, 24 * 14)), sample=sample, post=post)
     return {**report, "text": audit.render(report)}
+
+
+# --- the mail desk ----------------------------------------------------------------------------
+
+
+class MarkReadRequest(BaseModel):
+    entry_ids: list[str]
+    read: bool = True
+    account: str | None = None
+
+
+class MailSessionRequest(BaseModel):
+    entry_id: str
+    account: str | None = None
+
+
+def _desk_error(exc: MailDeskError) -> HTTPException:
+    # 502: the core is fine, the mailbox behind it is not - the screen shows the reason as is.
+    return HTTPException(502, str(exc))
+
+
+@router.get("/mail/threads")
+async def mail_threads(request: Request, account: str | None = None, refresh: bool = False) -> dict[str, Any]:
+    """Unread mail of the inbox grouped into threads, newest first (cached for a minute;
+    ``refresh=true`` reads the mailbox again)."""
+    try:
+        return await core_of(request).maildesk.threads(account, refresh=refresh)
+    except MailDeskError as exc:
+        raise _desk_error(exc) from exc
+
+
+@router.get("/mail/thread")
+async def mail_thread(request: Request, entry_id: str, account: str | None = None) -> dict[str, Any]:
+    """Every message of the conversation ``entry_id`` belongs to, oldest first, Sent Items too."""
+    try:
+        return await core_of(request).maildesk.thread(entry_id, account)
+    except MailDeskError as exc:
+        raise _desk_error(exc) from exc
+
+
+@router.get("/mail/message")
+async def mail_message(request: Request, entry_id: str, account: str | None = None) -> dict[str, Any]:
+    """One message with its whole body (a thread shows previews of up to 4,000 characters)."""
+    try:
+        return await core_of(request).maildesk.message(entry_id, account)
+    except MailDeskError as exc:
+        raise _desk_error(exc) from exc
+
+
+@router.post("/mail/read")
+async def mail_mark_read(request: Request, body: MarkReadRequest) -> dict[str, Any]:
+    """Mark messages read (or unread); answers which changed and which did not."""
+    try:
+        return await core_of(request).maildesk.mark_read(body.entry_ids, read=body.read, account=body.account)
+    except MailDeskError as exc:
+        raise _desk_error(exc) from exc
+
+
+@router.post("/mail/session", response_model=Conversation)
+async def mail_session(request: Request, body: MailSessionRequest) -> Conversation:
+    """The chat beside a thread: the same one every time this thread is opened, its
+    instructions refreshed with the thread as it is now."""
+    try:
+        return await core_of(request).maildesk.session(body.entry_id, body.account)
+    except MailDeskError as exc:
+        raise _desk_error(exc) from exc
 
 
 # --- meeting auto-RSVP ------------------------------------------------------------------------

@@ -311,6 +311,70 @@ export interface MeetingRsvpSettings {
   decline_signature: string;
 }
 
+// ---- the mail desk (features/maildesk.py) --------------------------------------------------
+
+/** One message as the Outlook host describes it (outlook_list / outlook_thread / outlook_read). */
+export interface MailItem {
+  entry_id: string;
+  subject: string;
+  from?: { name: string; address: string };
+  sender?: string;
+  to?: string;
+  cc?: string;
+  received?: string | null;
+  preview?: string;
+  /** Only on a full read (/api/mail/message). */
+  body?: string;
+  body_truncated?: boolean;
+  unread?: boolean;
+  flagged?: boolean;
+  has_attachments?: boolean;
+  attachments?: { name: string; size: number }[];
+  /** Arsen wrote it (outlook_thread). */
+  mine?: boolean;
+  conversation_id?: string;
+}
+
+/** Unread messages of one conversation, as a row of the desk. */
+export interface MailThread {
+  key: string;
+  conversation_id: string | null;
+  subject: string;
+  senders: string[];
+  latest: { entry_id: string; sender: string; sender_address: string; received: string | null; preview: string };
+  unread_count: number;
+  entry_ids: string[];
+  flagged: boolean;
+  has_attachments: boolean;
+}
+
+export interface MailThreadList {
+  host: string;
+  account: string;
+  accounts: string[];
+  threads: MailThread[];
+  unread: number;
+  /** More unread mail than one read covers; the oldest are not listed. */
+  capped: boolean;
+  fetched_at: number;
+}
+
+export interface MailThreadDetail {
+  host: string;
+  account: string;
+  subject: string;
+  conversation_id: string | null;
+  total: number;
+  /** Oldest first, Sent Items included. */
+  items: MailItem[];
+}
+
+export interface MarkReadResult {
+  read: boolean;
+  updated: string[];
+  failed: { entry_id: string; error: string }[];
+}
+
 export type ToolExposure = 'auto' | 'flat' | 'facade';
 
 export type Formality = 'formal' | 'balanced' | 'casual';

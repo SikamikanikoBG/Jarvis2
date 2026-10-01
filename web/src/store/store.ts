@@ -109,7 +109,8 @@ export interface Actions {
   boot: () => void;
   applyEvents: (events: ServerEvent[]) => void;
   setView: (view: View) => void;
-  openConversation: (id: string | null, opts?: { replace?: boolean; silent?: boolean }) => Promise<void>;
+  /** `stay` keeps the current screen and URL: the mail desk opens a thread's chat beside it. */
+  openConversation: (id: string | null, opts?: { replace?: boolean; silent?: boolean; stay?: boolean }) => Promise<void>;
   newChat: () => void;
   refreshConversation: (id: string) => Promise<void>;
   /** True when the message was handed to the socket. False means it was refused and the
@@ -467,9 +468,9 @@ export const useStore = create<AppState>()((set, get) => ({
   openConversation: async (id, opts = {}) => {
     const prev = get().openConversationId;
     if (prev && prev !== id) ws?.send({ type: 'unsubscribe', conversation_id: prev });
-    set({ openConversationId: id, view: 'chat', sidebarOpen: false, pendingNewConversation: null });
+    set({ openConversationId: id, view: opts.stay ? get().view : 'chat', sidebarOpen: false, pendingNewConversation: null });
     rememberConversation(id);
-    if (!opts.silent) navigate('chat', id, opts.replace ?? false);
+    if (!opts.silent && !opts.stay) navigate('chat', id, opts.replace ?? false);
     if (!id) return;
     ws?.send({ type: 'subscribe', conversation_id: id });
     const conv = get().conversations[id];

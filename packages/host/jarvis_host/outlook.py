@@ -113,6 +113,8 @@ DASL_RECEIVED = '"urn:schemas:httpmail:datereceived"'
 DASL_SUBJECT = '"urn:schemas:httpmail:subject"'
 DASL_FROMNAME = '"urn:schemas:httpmail:fromname"'
 DASL_FROMEMAIL = '"urn:schemas:httpmail:fromemail"'
+# The read state as a DASL property: `= 0` keeps the unread mail only, inside the table itself.
+DASL_READ = '"urn:schemas:httpmail:read"'
 
 DASL_BODY = "urn:schemas:httpmail:textdescription"
 # Display names of the To / Cc lines. Triage needs them for the "am I addressed or only
@@ -146,6 +148,7 @@ TABLE_COLUMNS: tuple[str, ...] = (
 PREVIEW_CHARS = 400
 MAX_LIST_LIMIT = 500
 MAX_BODY_CHARS = 20_000
+MAX_MARK_READ = 200
 CALENDAR_SCAN_CAP = 2_000
 CALENDAR_SCAN_SECONDS = 20.0
 
@@ -869,6 +872,7 @@ class OutlookBackend:
         cursor: str | None = None,
         limit: int = 25,
         preview_chars: int = PREVIEW_CHARS,
+        unread_only: bool = False,
     ) -> dict[str, Any]:
         limit = max(1, min(int(limit or 25), MAX_LIST_LIMIT))
         # 400 chars is what a model needs to know what a mail is about; triage asks for more so a
@@ -878,7 +882,10 @@ class OutlookBackend:
         target = self._folder(store, folder)
         lower = parse_when(since) if since else None
         upper, skip = decode_cursor(cursor) if cursor else (None, set())
-        rows, more, total = self._table_rows(target, received_filter(lower, upper), limit, skip, preview_chars)
+        extra = f"{DASL_READ} = 0" if unread_only else None
+        rows, more, total = self._table_rows(target, received_filter(lower, upper, extra), limit, skip, preview_chars)
+        if unread_only:
+            rows = [r for r in rows if r.unread]  # the filter is the store's word; the column is the check
         store_id = _text(_prop(store, "StoreID", ""))
         result: dict[str, Any] = {
             "account": _text(_prop(store, "DisplayName", "")),
@@ -1164,6 +1171,37 @@ class OutlookBackend:
             "flag_status": flag_status,
             "is_task": is_task,
         }
+
+    def mark_read(self, entry_ids: list[str], read: bool = True, account: str = "") -> dict[str, Any]:
+        """Set the read state of each message and check it took. One id failing does not stop the
+        rest; the answer names what changed and what did not, so a thread is never reported read
+        while half of it still is not."""
+        ids = [str(e).strip() for e in (entry_ids or []) if str(e).strip()]
+        if not ids:
+            raise OutlookError("entry_ids is empty")
+        if len(ids) > MAX_MARK_READ:
+            raise OutlookError(f"at most {MAX_MARK_READ} messages per call (got {len(ids)})")
+        updated: list[str] = []
+        failed: list[dict[str, str]] = []
+        for eid in ids:
+            try:
+                item, _ = self._item(eid, account)
+                if bool(_prop(item, "UnRead", False)) == bool(read):
+                    item.UnRead = not read
+                    item.Save()
+                if bool(_prop(item, "UnRead", False)) == bool(read):
+                    raise OutlookError("read state did not change")
+                updated.append(_text(_prop(item, "EntryID", "")) or eid)
+            except Exception as exc:
+                if is_transient(exc) or is_disconnected(exc):
+                    raise  # a busy or gone Outlook is a retry for the whole call, not a per-item miss
+                failed.append(
+                    {
+                        "entry_id": eid,
+                        "error": str(exc)[:200] if isinstance(exc, OutlookError) else describe_com_error(exc),
+                    }
+                )
+        return {"read": bool(read), "updated": updated, "failed": failed}
 
     def _set_send_account(self, mail: Any, acct: Any) -> str:
         """Make Outlook send ``mail`` through ``acct`` and return the address it will use.
@@ -1805,6 +1843,7 @@ class OutlookService:
         "move": 45,
         "folder_create": 45,
         "flag": 45,
+        "mark_read": 90,
         "send": 60,
         "calendar_list": 60,
         "calendar_create": 45,

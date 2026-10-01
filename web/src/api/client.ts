@@ -3,7 +3,11 @@ import type {
   Board,
   BulkConversationAction,
   MailAccount,
+  MailItem,
   MailTestResult,
+  MailThreadDetail,
+  MailThreadList,
+  MarkReadResult,
   BulkResult,
   ChatFolder,
   CollabKey,
@@ -73,6 +77,13 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   }
   if (!res.ok) throw new ApiError(res.status, data, describeError(res.status, data));
   return data as T;
+}
+
+/** A query string from the values that are set; null and empty are left out. */
+function qs(params: Record<string, string | null | undefined>): string {
+  const out = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v) out.set(k, v);
+  return out.toString();
 }
 
 interface ValidationItem {
@@ -205,6 +216,18 @@ export const api = {
   mail: {
     /** Log in with these (unsaved) details and count the Inbox. Empty app_password = the saved one. */
     test: (account: MailAccount) => request<MailTestResult>('POST', '/api/mail/test', account),
+    /** Unread inbox mail grouped into threads (cached a minute on the core; `refresh` reads again). */
+    threads: (account: string | null, refresh = false) =>
+      request<MailThreadList>('GET', `/api/mail/threads?${qs({ account, refresh: refresh ? 'true' : null })}`),
+    thread: (entryId: string, account: string | null) =>
+      request<MailThreadDetail>('GET', `/api/mail/thread?${qs({ entry_id: entryId, account })}`),
+    message: (entryId: string, account: string | null) =>
+      request<MailItem>('GET', `/api/mail/message?${qs({ entry_id: entryId, account })}`),
+    markRead: (entryIds: string[], account: string | null, read = true) =>
+      request<MarkReadResult>('POST', '/api/mail/read', { entry_ids: entryIds, account, read }),
+    /** The chat beside a thread: the same one every time, with the thread in its instructions. */
+    session: (entryId: string, account: string | null) =>
+      request<Conversation>('POST', '/api/mail/session', { entry_id: entryId, account }),
   },
   triage: {
     state: () => request<TriageState[]>('GET', '/api/triage/state'),

@@ -5,6 +5,7 @@ import { ErrorBoundary } from '../components/ErrorBoundary';
 import { Drawer } from '../components/primitives';
 import { Toast } from '../components/Toast';
 import { KnowledgeScreen } from '../knowledge/KnowledgeScreen';
+import { MailScreen } from '../mail/MailScreen';
 import { MeetingsScreen } from '../meetings/MeetingsScreen';
 import { RunInspector } from '../runs/RunInspector';
 import { RunsScreen } from '../runs/RunsScreen';
@@ -23,6 +24,7 @@ import { DESKTOP_QUERY, useMediaQuery } from './useMediaQuery';
 
 const SCREENS = {
   chat: ChatScreen,
+  mail: MailScreen,
   runs: RunsScreen,
   settings: SettingsScreen,
   status: StatusScreen,
@@ -35,7 +37,7 @@ const SCREENS = {
 } as const;
 
 /** Screens with a search box of their own, so Ctrl/⌘+K focuses that instead of leaving. */
-const FILTERED_VIEWS = new Set<View>(['schedules', 'meetings', 'skills', 'boards', 'knowledge', 'settings']);
+const FILTERED_VIEWS = new Set<View>(['mail', 'schedules', 'meetings', 'skills', 'boards', 'knowledge', 'settings']);
 
 export function App() {
   const view = useStore((s) => s.view);

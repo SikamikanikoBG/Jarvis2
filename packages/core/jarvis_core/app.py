@@ -42,6 +42,7 @@ from jarvis_core.features.compaction import Compactor
 from jarvis_core.features.expiry import Reaper, delete_conversation
 from jarvis_core.features.knowledge import KnowledgeLearner, KnowledgeStore, KnowledgeTools
 from jarvis_core.features.mail import MailTools
+from jarvis_core.features.maildesk import MailDesk
 from jarvis_core.features.meetings import MeetingService
 from jarvis_core.features.notify import NotifyTools
 from jarvis_core.features.planner import Planner
@@ -107,6 +108,7 @@ class Core:
         self.shadow = ShadowRecorder(config.home / "shadow.db", settings)
         self.triage = TriageJob(self)
         self.triage_audit = TriageAudit(self)
+        self.maildesk = MailDesk(self)
         self.rsvp = RsvpJob(self)
         self.meetings = MeetingService(self)
 

@@ -17,6 +17,7 @@ export const NAV_PRIMARY: NavItem[] = [
 
 /** Feature screens: in the desktop header, behind "More" on mobile. */
 export const NAV_MORE: NavItem[] = [
+  { view: 'mail', label: 'Mail', icon: 'mail' },
   { view: 'boards', label: 'Boards', icon: 'boards' },
   { view: 'knowledge', label: 'Knowledge', icon: 'graph' },
   { view: 'skills', label: 'Skills', icon: 'book' },

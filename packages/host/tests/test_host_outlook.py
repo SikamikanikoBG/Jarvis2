@@ -173,6 +173,31 @@ def test_cursor_pages_through_everything_exactly_once_even_across_a_same_second_
     assert before == datetime(2026, 9, 5, 8, 20, tzinfo=UTC) and skip == {world.mails[3].short_id}
 
 
+def test_unread_only_filters_in_the_table_and_keeps_the_conversation_id(backend: OutlookBackend, world: World):
+    unread = {m.Subject for m in world.mails if m.UnRead and m.Parent is world.inbox}
+    page = backend.list_items("", "inbox", limit=50, unread_only=True)
+    assert {i["subject"] for i in page["items"]} == unread and all(i["unread"] for i in page["items"])
+    assert all(i["conversation_id"].startswith("CONV") for i in page["items"])
+    assert '"urn:schemas:httpmail:read" = 0' in world.inbox.table_calls[0], "filtered by the store, not after reading"
+
+
+def test_mark_read_verifies_each_message_and_reports_the_ones_it_could_not_find(backend: OutlookBackend, world: World):
+    world.mails[3].UnRead = True
+    target = [m for m in world.mails if m.UnRead][:2]
+    assert len(target) == 2
+    res = backend.mark_read([target[0].short_id, target[1].EntryID, "F" * 48])
+    assert res["read"] is True and res["updated"] == [target[0].EntryID, target[1].EntryID]
+    assert [f["entry_id"] for f in res["failed"]] == ["F" * 48]
+    assert all(not m.UnRead and m.saved == 1 for m in target)
+    # Already read: nothing to save, still reported as done.
+    again = backend.mark_read([target[0].EntryID])
+    assert again["updated"] == [target[0].EntryID] and target[0].saved == 1
+    # And back to unread.
+    assert backend.mark_read([target[0].EntryID], read=False)["updated"] and target[0].UnRead is True
+    with pytest.raises(OutlookError, match="empty"):
+        backend.mark_read([])
+
+
 def test_since_is_a_lower_bound_in_utc(backend: OutlookBackend, world: World):
     page = backend.list_items("", "inbox", since="2026-09-05T08:35:00+00:00")
     assert [i["subject"] for i in page["items"]] == ["Invoice 4471 due", "Re: DM-1234 clarification"]

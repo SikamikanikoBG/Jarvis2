@@ -225,12 +225,15 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
         cursor: str | None = None,
         limit: int = 25,
         preview_chars: int = 400,
+        unread_only: bool = False,
     ) -> str:
-        """List messages in a folder, newest first, read in one GetTable pass. `since` = ISO-8601 lower bound on received time (a triage cursor). `cursor` continues a previous page (never skips or repeats). Each item carries sender, to/cc and a body `preview` of `preview_chars` (max 4000). Returns {items, cursor, total}; `cursor` is null when nothing remains. Item ids are session-scoped: use outlook_read/move/flag for the durable id."""
+        """List messages in a folder, newest first, read in one GetTable pass. `since` = ISO-8601 lower bound on received time (a triage cursor). `cursor` continues a previous page (never skips or repeats). `unread_only=true` keeps unread mail only. Each item carries sender, to/cc, `conversation_id` and a body `preview` of `preview_chars` (max 4000). Returns {items, cursor, total}; `cursor` is null when nothing remains. Item ids are session-scoped: use outlook_read/move/flag for the durable id."""
         return json_text(
             await _run(
                 "outlook_list",
-                lambda: outlook().call("list_items", account, folder, since, cursor, limit, preview_chars),
+                lambda: outlook().call(
+                    "list_items", account, folder, since, cursor, limit, preview_chars, unread_only=unread_only
+                ),
             )
         )
 
@@ -277,6 +280,13 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
     async def outlook_flag(entry_id: str, flag: bool = True, account: str = "") -> str:
         """Flag (MarkAsTask) or unflag (ClearTaskFlag + FlagStatus=0) a message and verify the result via both FlagStatus and IsMarkedAsTask."""
         return json_text(await _run("outlook_flag", lambda: outlook().call("flag", entry_id, flag, account)))
+
+    @tool("outlook_mark_read", MUTATING_IDEMPOTENT)
+    async def outlook_mark_read(entry_ids: list[str], read: bool = True, account: str = "") -> str:
+        """Mark messages read (`read=true`) or unread, up to 200 per call — e.g. every message of a thread from outlook_thread. Each change is verified; returns {updated, failed} so a partial result is visible."""
+        return json_text(
+            await _run("outlook_mark_read", lambda: outlook().call("mark_read", list(entry_ids), read, account))
+        )
 
     @tool("outlook_send", DESTRUCTIVE_OPEN)
     async def outlook_send(

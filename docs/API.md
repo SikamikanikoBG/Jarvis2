@@ -350,6 +350,32 @@ Host tools behind it: `calendar_invites(account, days)`, `calendar_respond(entry
 comment, account)`, `calendar_free_slots(account, start, days, duration_min, work_start_hour,
 work_end_hour, limit)`, `calendar_remove_canceled(account, days_back, days_ahead)`.
 
+## Mail desk (core 2.0.0a67, host 2.0.0a21, web alpha.39)
+
+The Mail screen: unread inbox threads, one thread, and Jarvis beside it. It reads Outlook through
+the host in `settings.triage.host` and its `accounts` (the first is the default). The chat beside a
+thread is an ordinary `chat` conversation with `folder_key = "mail:<account>:<conversation id>"`.
+Its `instructions` carry the thread (people, messages oldest first, the newest whole, the
+`reply_to_entry_id`), so the model starts out knowing it and the text is cached as part of the
+system prompt. Opening the thread again returns the same chat and refreshes its instructions.
+
+```
+GET  /api/mail/threads?account=&refresh=   → {host, account, accounts, threads: [MailThread], unread, capped, fetched_at}
+                                             (cached 60 s per account; refresh=true reads again)
+GET  /api/mail/thread?entry_id=&account=   → {host, account, subject, conversation_id, total, items (oldest first, `mine`)}
+GET  /api/mail/message?entry_id=&account=  → the host's outlook_read (whole body, attachments)
+POST /api/mail/read {entry_ids, read, account} → {read, updated, failed: [{entry_id, error}]}
+POST /api/mail/session {entry_id, account} → Conversation (created once per thread)
+```
+A failure behind the core (no host, Outlook down) is a 502 whose detail is the reason.
+`MailThread = {key, conversation_id, subject (RE:/FW: stripped), senders, latest: {entry_id,
+sender, sender_address, received, preview}, unread_count, entry_ids, flagged, has_attachments}`.
+
+Host tools behind it: `outlook_list(..., unread_only)` (a DASL `read = 0` filter in the table
+read, checked again against the UnRead column) and `outlook_mark_read(entry_ids, read, account)`
+(each change verified, partial results reported). A host older than `unread_only` refuses the
+argument; the desk then lists without it and filters by `unread`.
+
 ## Shadow decisions (experiment, core 2.0.0a65)
 
 A second opinion recorded next to production and never obeyed (`features/shadow.py`). After a

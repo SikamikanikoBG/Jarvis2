@@ -353,6 +353,7 @@ class Items:
 _DASL_GE = re.compile(r'datereceived" >= \'([^\']+)\'')
 _DASL_LE = re.compile(r'datereceived" <= \'([^\']+)\'')
 _DASL_LIKE = re.compile(r"LIKE '%([^']*)%'")
+_DASL_UNREAD = '"urn:schemas:httpmail:read" = 0'
 
 
 class Table:
@@ -381,6 +382,8 @@ class Table:
             return False
         le = _DASL_LE.search(filt)
         if le and recv > datetime.strptime(le.group(1), "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC):
+            return False
+        if _DASL_UNREAD in filt and not m.UnRead:
             return False
         like = _DASL_LIKE.search(filt)
         if like:

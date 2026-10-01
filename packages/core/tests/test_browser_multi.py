@@ -172,3 +172,40 @@ def test_a_second_extension_is_welcome_over_the_websocket(client: TestClient):
             break
         time.sleep(0.05)
     assert not client.core.browser.connected  # type: ignore[attr-defined]
+
+
+async def test_a_chats_work_tab_is_never_what_arsen_is_looking_at():
+    """2026-10-01: the Star Hunt's selfh.st form reached the AI Newsletter chat as Arsen's page."""
+    provider = WsProvider()
+    ext = Ext(provider, "jarvisvm")
+
+    async def opened(frame: dict[str, Any]) -> None:
+        ext.sent.append(frame)
+        if frame["type"] == "browser.call":
+            text = "Opened Submit Content — https://selfh.st/submit/ in a new work tab for this chat [tab 41]."
+            asyncio.get_running_loop().call_soon(
+                provider.handle_result, {"call_id": frame["call_id"], "kind": "data", "text": text}
+            )
+
+    ext.conn.send = opened
+    token = current_conversation_id.set("star-hunt")
+    try:
+        await provider.call(
+            "browser.open",
+            {"url": "https://selfh.st/submit/"},
+            cancel=asyncio.Event(),
+            idempotency_key="k",
+            timeout_s=5,
+        )
+    finally:
+        current_conversation_id.reset(token)
+
+    # The extension reports the work tab as the active one (an older extension names no owner).
+    provider.handle_context({"url": "https://selfh.st/submit/", "title": "Submit Content", "tab_id": 41}, ext.conn)
+    assert "selfh.st" not in (provider.context_block() or "")
+    # A newer extension says whose tab it is.
+    provider.handle_context({"url": "https://x.y/", "title": "X", "tab_id": 99, "owner": "star-hunt"}, ext.conn)
+    assert "x.y" not in (provider.context_block() or "")
+    # Arsen's own tab is still his page.
+    provider.handle_context({"url": "https://example.org", "title": "Example", "tab_id": 7}, ext.conn)
+    assert "Arsen is looking at: Example — https://example.org" in (provider.context_block() or "")

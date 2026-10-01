@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -66,6 +67,16 @@ class BrowserConn:
     context: dict[str, Any] | None = None
     #: Sessions that have browsed here and have not been told their job is over.
     working: set[str] = field(default_factory=set)
+    #: Work tab id -> the session (conversation) whose browser.open made it. A tab in here is
+    #: never "what Arsen is looking at" - see ``WsProvider.context_block``.
+    work_tabs: dict[int, str] = field(default_factory=dict)
+    #: The tab ``context`` was reported for, and its owner when the extension says.
+    context_tab: int | None = None
+    context_owner: str | None = None
+
+
+# browser.open names the work tab it used: "... in a new work tab for this chat [tab 12]."
+_OPENED_TAB = re.compile(r"work tab(?: for this chat)? \[tab (\d+)\]")
 
 
 class WsProvider:
@@ -237,6 +248,10 @@ class WsProvider:
         if conn is None:
             return
         conn.context = {k: frame.get(k) for k in ("url", "title", "selection") if frame.get(k)}
+        tab = frame.get("tab_id")
+        conn.context_tab = tab if isinstance(tab, int) else None
+        owner = frame.get("owner")
+        conn.context_owner = str(owner) if owner else None
         conn.active_at = next(_touches)  # the side panel is open there: Arsen is in that browser
 
     # --- ToolProvider --------------------------------------------------------------
@@ -301,7 +316,10 @@ class WsProvider:
         try:
             done, _ = await asyncio.wait({fut, waiter}, timeout=timeout_s, return_when=asyncio.FIRST_COMPLETED)
             if fut in done:
-                return fut.result()
+                result = fut.result()
+                if name == "browser.open" and (m := _OPENED_TAB.search(result.text or "")):
+                    conn.work_tabs[int(m.group(1))] = session
+                return result
             self._pending.pop(call_id, None)
             return ToolResult.failure(
                 "cancelled" if waiter in done else f"browser tool timed out after {timeout_s:.0f}s ({conn.name})"
@@ -335,7 +353,19 @@ class WsProvider:
                 log.warning("browser.reload not sent to %s: %s", conn.name, exc)
         return sent
 
+    @staticmethod
+    def page_owner(conn: BrowserConn) -> str | None:
+        """The session whose work tab the reported page is, or None when it is Arsen's own."""
+        if conn.context_owner:
+            return conn.context_owner
+        return conn.work_tabs.get(conn.context_tab) if conn.context_tab is not None else None
+
     def context_block(self) -> str | None:
+        """The extension reports the ACTIVE tab, and a chat's work tab is active right after it is
+        opened. Until 2026-10-01 that page went into every chat as "Arsen is looking at": the AI
+        Newsletter chat, asked for a mail draft, was told he was on selfh.st/submit - the Patzer
+        Star Hunt's form - and set about submitting homelab-monitor there. A work tab is no one's
+        view, so it is left out, for its own chat as much as for the others."""
         lines: list[str] = []
         latest = self._latest()
         if len(self._conns) > 1 and latest is not None:
@@ -343,7 +373,7 @@ class WsProvider:
                 f"Connected browsers: {', '.join(self.names)}. Arsen used {latest.name} last; "
                 f"browser.* tools take `{TARGET_ARG}` to act in another."
             )
-        context = latest.context if latest else None
+        context = latest.context if latest and self.page_owner(latest) is None else None
         if context and context.get("url"):
             title = context.get("title") or ""
             where = f" (in {latest.name})" if latest and len(self._conns) > 1 else ""

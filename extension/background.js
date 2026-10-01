@@ -1323,6 +1323,10 @@ async function sendContext(force) {
   if (!tab) return;
   const selection = lastSelection.tabId === tab.id ? lastSelection.text : "";
   const payload = { type: "browser.context", url: tab.url || "", title: tab.title || "", tab_id: tab.id };
+  // A chat's work tab is in front right after it opens, but it is not the user's page: the
+  // core must not tell the other chats he is looking at it (2026-10-01).
+  const owner = await ownerOf(tab.id);
+  if (owner) payload.owner = owner;
   if (selection) payload.selection = selection;
   const key = payload.url + "|" + payload.title + "|" + selection;
   if (!force && key === lastContextKey) return;   // nothing actually changed

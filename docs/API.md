@@ -350,9 +350,10 @@ Host tools behind it: `calendar_invites(account, days)`, `calendar_respond(entry
 comment, account)`, `calendar_free_slots(account, start, days, duration_min, work_start_hour,
 work_end_hour, limit)`, `calendar_remove_canceled(account, days_back, days_ahead)`.
 
-## Mail desk (core 2.0.0a67, host 2.0.0a21, web alpha.39)
+## Mail desk (core 2.0.0a67 → a69, host 2.0.0a21 → a23, web alpha.39 → alpha.40)
 
-The Mail screen: unread inbox threads, one thread, and Jarvis beside it. It reads Outlook through
+The Mail screen: unread threads of EVERY mail folder (triage files mail into subfolders), an
+Outlook-syntax search, one thread, and Jarvis beside it. It reads Outlook through
 the host in `settings.triage.host` and its `accounts` (the first is the default). The chat beside a
 thread is an ordinary `chat` conversation with `folder_key = "mail:<account>:<conversation id>"`.
 Its `instructions` carry the thread (people, messages oldest first, the newest whole, the
@@ -362,19 +363,35 @@ system prompt. Opening the thread again returns the same chat and refreshes its 
 ```
 GET  /api/mail/threads?account=&refresh=   → {host, account, accounts, threads: [MailThread], unread, capped, fetched_at}
                                              (cached 60 s per account; refresh=true reads again)
-GET  /api/mail/thread?entry_id=&account=   → {host, account, subject, conversation_id, total, items (oldest first, `mine`)}
+GET  /api/mail/search?q=&account=          → {host, account, accounts, query, threads: [MailThread], matches, capped, days_back}
+GET  /api/mail/thread?entry_id=&account=   → {host, account, subject, conversation_id, total, items (oldest first, `mine`,
+                                             `body` per message, `attachments`)}  (cached 60 s; screen and chat share one read)
 GET  /api/mail/message?entry_id=&account=  → the host's outlook_read (whole body, attachments)
 POST /api/mail/read {entry_ids, read, account} → {read, updated, failed: [{entry_id, error}]}
 POST /api/mail/session {entry_id, account} → Conversation (created once per thread)
 ```
 A failure behind the core (no host, Outlook down) is a 502 whose detail is the reason.
 `MailThread = {key, conversation_id, subject (RE:/FW: stripped), senders, latest: {entry_id,
-sender, sender_address, received, preview}, unread_count, entry_ids, flagged, has_attachments}`.
+sender, sender_address, received, preview}, unread_count, count, folders, entry_ids (the unread
+ones), flagged, has_attachments}`.
 
-Host tools behind it: `outlook_list(..., unread_only)` (a DASL `read = 0` filter in the table
-read, checked again against the UnRead column) and `outlook_mark_read(entry_ids, read, account)`
-(each change verified, partial results reported). A host older than `unread_only` refuses the
-argument; the desk then lists without it and filters by `unread`.
+Host tools behind it (`jarvis_host/mailsearch.py`):
+- `outlook_unread(account, limit, preview_chars)`: every mail folder except Sent, Drafts, Deleted,
+  Junk and Outbox, reading only folders whose `UnReadItemCount` > 0 (one filtered table each).
+  It never reads `Items.Count`, which is what makes a full folder listing slow.
+- `outlook_query(query, account, limit, days_back)`: Outlook's search syntax turned into DASL:
+  `from: to: cc: subject: body: "phrase" words hasattachments: is:unread|read|flagged
+  received:today|yesterday|"this week"|…|>=date|a..b before: after: folder: OR NOT -term`.
+  It searches every mail folder (Sent too; not Deleted or Junk unless `folder:` names them), the
+  last `days_back` days unless the query has a date. `subject:`/`from:` hits are checked against
+  the row (the Gmail store's DASL leak).
+- `outlook_thread(..., bodies=true)`: each message's real body (up to 8,000 chars) and its
+  attachment names. The table preview is empty for much HTML mail.
+- `outlook_list(..., unread_only)` and `outlook_mark_read(entry_ids, read, account)` (each change
+  verified, partial results reported).
+
+The desk asks the registry what the host offers. An older host gets the inbox-only listing and a
+clear "too old to search" message.
 
 ## Shadow decisions (experiment, core 2.0.0a65)
 

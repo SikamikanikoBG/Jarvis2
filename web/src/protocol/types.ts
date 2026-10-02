@@ -326,6 +326,10 @@ export interface MailItem {
   /** Only on a full read (/api/mail/message). */
   body?: string;
   body_truncated?: boolean;
+  /** The body could not be read (the rest of the thread still shows). */
+  body_error?: string;
+  /** The folder the message lives in (unread and search listings). */
+  folder?: string;
   unread?: boolean;
   flagged?: boolean;
   has_attachments?: boolean;
@@ -343,9 +347,28 @@ export interface MailThread {
   senders: string[];
   latest: { entry_id: string; sender: string; sender_address: string; received: string | null; preview: string };
   unread_count: number;
+  /** Messages of the thread in this listing (all unread in the unread list; hits in a search). */
+  count: number;
+  /** Where the messages live: triage files mail into subfolders. */
+  folders: string[];
+  /** The UNREAD messages' ids - what "Mark read" marks. */
   entry_ids: string[];
   flagged: boolean;
   has_attachments: boolean;
+}
+
+/** GET /api/mail/search: the hits of an Outlook-syntax search, as threads. */
+export interface MailSearchResult {
+  host: string;
+  account: string;
+  accounts: string[];
+  query: string;
+  threads: MailThread[];
+  matches: number;
+  capped: boolean;
+  /** How far back a search without received: looked; null when the query named dates. */
+  days_back: number | null;
+  fetched_at: number;
 }
 
 export interface MailThreadList {

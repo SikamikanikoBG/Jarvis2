@@ -251,6 +251,15 @@ async def mail_threads(request: Request, account: str | None = None, refresh: bo
         raise _desk_error(exc) from exc
 
 
+@router.get("/mail/search")
+async def mail_search(request: Request, q: str, account: str | None = None) -> dict[str, Any]:
+    """Outlook-syntax search (from: subject: received: …) over every mail folder, as threads."""
+    try:
+        return await core_of(request).maildesk.search(q, account)
+    except MailDeskError as exc:
+        raise _desk_error(exc) from exc
+
+
 @router.get("/mail/thread")
 async def mail_thread(request: Request, entry_id: str, account: str | None = None) -> dict[str, Any]:
     """Every message of the conversation ``entry_id`` belongs to, oldest first, Sent Items too."""

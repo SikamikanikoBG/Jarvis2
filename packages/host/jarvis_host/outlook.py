@@ -38,6 +38,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
+from jarvis_host import mailsearch
 from jarvis_host.com import ComTimeout, ComWorker, write_off
 
 log = logging.getLogger(__name__)
@@ -1185,6 +1186,20 @@ class OutlookBackend:
             "is_task": is_task,
         }
 
+    # -- across folders (mailsearch.py) -----------------------------------------------------------
+
+    def unread(self, account: str = "", limit: int = 300, preview_chars: int = 300) -> dict[str, Any]:
+        return mailsearch.unread(self, account, limit, preview_chars)
+
+    def query(self, query: str, account: str = "", limit: int = 100, days_back: int = 365) -> dict[str, Any]:
+        try:
+            return mailsearch.query(self, query, account, limit, days_back)
+        except mailsearch.QueryError as exc:
+            raise OutlookError(f"search: {exc}") from exc
+
+    def thread_full(self, entry_id: str, account: str = "", limit: int = 20) -> dict[str, Any]:
+        return mailsearch.thread_full(self, entry_id, account, limit)
+
     def mark_read(self, entry_ids: list[str], read: bool = True, account: str = "") -> dict[str, Any]:
         """Set the read state of each message and check it took. One id failing does not stop the
         rest; the answer names what changed and what did not, so a thread is never reported read
@@ -1857,6 +1872,10 @@ class OutlookService:
         "folder_create": 45,
         "flag": 45,
         "mark_read": 90,
+        # Many folders or many bodies in one call; still under the COM worker's 180 s wedge limit.
+        "unread": 150,
+        "query": 150,
+        "thread_full": 150,
         "send": 60,
         "calendar_list": 60,
         "calendar_create": 45,
@@ -1873,6 +1892,9 @@ class OutlookService:
         "search",
         "read",
         "thread",
+        "unread",
+        "query",
+        "thread_full",
         "calendar_list",
         "calendar_invites",
         "calendar_free_slots",

@@ -261,11 +261,27 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
         )
 
     @tool("outlook_thread", READ)
-    async def outlook_thread(entry_id: str, account: str = "", limit: int = 8, preview_chars: int = 600) -> str:
-        """The whole conversation a message belongs to, across folders (Sent Items too): the newest `limit` messages, oldest first, each with sender, to/cc, preview and `mine` (the owner wrote it). `conversation: false` when the store keeps no conversations."""
+    async def outlook_thread(
+        entry_id: str, account: str = "", limit: int = 8, preview_chars: int = 600, bodies: bool = False
+    ) -> str:
+        """The whole conversation a message belongs to, across folders (Sent Items too): the newest `limit` messages, oldest first, each with sender, to/cc, preview and `mine` (the owner wrote it). `bodies=true` adds each message's real body (up to 8,000 chars) and attachment names - the preview alone is empty for much HTML mail. `conversation: false` when the store keeps no conversations."""
+        if bodies:
+            return json_text(
+                await _run("outlook_thread", lambda: outlook().call("thread_full", entry_id, account, min(limit, 30)))
+            )
         return json_text(
             await _run("outlook_thread", lambda: outlook().call("thread", entry_id, account, limit, preview_chars))
         )
+
+    @tool("outlook_unread", READ)
+    async def outlook_unread(account: str = "", limit: int = 300, preview_chars: int = 300) -> str:
+        """Unread mail of EVERY mail folder of the account (subfolders included; not Sent, Drafts, Deleted, Junk), newest first, each item with its `folder` path and `conversation_id`. Only folders whose unread count is above zero are read."""
+        return json_text(await _run("outlook_unread", lambda: outlook().call("unread", account, limit, preview_chars)))
+
+    @tool("outlook_query", READ)
+    async def outlook_query(query: str, account: str = "", limit: int = 100, days_back: int = 365) -> str:
+        """Search every mail folder (Sent Items too; not Deleted or Junk unless `folder:` names them) with Outlook's search syntax: from: to: cc: subject: body: "exact phrase", plain words (subject, people and body), hasattachments:yes, is:unread / is:read / is:flagged, received:today|yesterday|"this week"|"last week"|"this month"|"last month"|2026-09-01|>=2026-09-01|2026-09-01..2026-09-30, before:/after:, folder:<name>, OR between terms, NOT or -term. Without a received: term only the last `days_back` days are searched. Items carry their `folder`."""
+        return json_text(await _run("outlook_query", lambda: outlook().call("query", query, account, limit, days_back)))
 
     @tool("outlook_move", MUTATING)
     async def outlook_move(entry_id: str, folder: str, account: str = "", create: bool = False) -> str:

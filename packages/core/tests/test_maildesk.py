@@ -113,6 +113,59 @@ class FakeVm(BuiltinProvider):
         return ToolResult.data(json.dumps({"read": read, "updated": entry_ids, "failed": []}))
 
 
+class _ThreadBodiesArgs(_ThreadArgs):
+    bodies: bool = False
+
+
+class _UnreadArgs(BaseModel):
+    account: str = ""
+    limit: int = 300
+    preview_chars: int = 300
+
+
+class _QueryArgs(BaseModel):
+    query: str
+    account: str = ""
+    limit: int = 100
+    days_back: int = 365
+
+
+class NewVm(FakeVm):
+    """A host with unread across folders, Outlook-syntax search and thread bodies (2.0.0a23)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.items.append(
+            _mail("e1", "C5", "DM-1234 approval", "Boss", "2026-09-30T13:00:00+03:00") | {"folder": "Demands"}
+        )
+        self.queries: list[str] = []
+        self.thread_args: list[dict[str, Any]] = []
+
+    @tool("vm.outlook_unread", description="unread", args=_UnreadArgs, read_only=True)
+    async def _unread(self, **args: Any) -> ToolResult:
+        items = sorted((i for i in self.items if i["unread"]), key=lambda i: i["received"], reverse=True)
+        return ToolResult.data(json.dumps({"items": items, "total": len(items), "capped": False}))
+
+    @tool("vm.outlook_query", description="query", args=_QueryArgs, read_only=True)
+    async def _query(self, query: str, **_: Any) -> ToolResult:
+        self.queries.append(query)
+        if query.startswith("color:"):
+            return ToolResult.failure("Error executing tool outlook_query: search: unknown keyword color:")
+        word = query.rsplit(":", maxsplit=1)[-1].lower()
+        hits = [i for i in self.items if word in i["subject"].lower()]
+        return ToolResult.data(json.dumps({"items": hits, "total": len(hits), "capped": False, "days_back": 365}))
+
+    @tool("vm.outlook_thread", description="thread", args=_ThreadBodiesArgs, read_only=True)
+    async def _thread(self, entry_id: str, bodies: bool = False, **args: Any) -> ToolResult:
+        self.thread_args.append({"entry_id": entry_id, "bodies": bodies, **args})
+        res = json.loads((await super()._thread(entry_id, **args)).text)
+        if bodies:
+            for i in res["items"]:
+                i["body"] = f"full body of {i['entry_id']}"
+                i["preview"] = ""  # what an HTML mail's table preview looks like
+        return ToolResult.data(json.dumps(res))
+
+
 class OldVm(FakeVm):
     """A host from before the unread filter: its list refuses the argument."""
 
@@ -184,7 +237,7 @@ async def test_a_thread_spans_sent_items_and_a_lone_message_is_its_own_thread(ha
     assert thread["subject"] == "Budget 2027" and thread["conversation_id"] == "C1"
     assert [(i["entry_id"], i["mine"]) for i in thread["items"]] == [("a1", False), ("s1", True), ("a2", False)]
     lone = await desk.thread("c1")
-    assert [i["entry_id"] for i in lone["items"]] == ["c1"] and lone["items"][0]["preview"] == "full body of c1"
+    assert [i["entry_id"] for i in lone["items"]] == ["c1"] and lone["items"][0]["body"] == "full body of c1"
 
 
 async def test_the_chat_beside_a_thread_is_one_chat_that_knows_the_thread(harness: Harness):
@@ -218,3 +271,44 @@ def test_instructions_stay_under_the_cap_and_keep_the_newest_message_whole():
     items[-1]["preview"] = "NEWEST " + "y" * 3000
     text = thread_instructions("vm", "me@bank.bg", {"items": items})
     assert len(text) <= INSTRUCTIONS_CAP and "NEWEST " + "y" * 3000 in text and "older messages omitted" in text
+
+
+# --- host 2.0.0a23: every folder, search, bodies -------------------------------------------------
+
+
+async def test_unread_comes_from_every_folder_when_the_host_can(harness: Harness):
+    vm = NewVm()
+    desk = await _desk(harness, vm)
+    res = await desk.threads()
+    assert "DM-1234 approval" in [t["subject"] for t in res["threads"]] and res["unread"] == 5
+    assert vm.lists == [], "the inbox-only listing is not used when outlook_unread exists"
+
+
+async def test_search_groups_hits_into_threads_read_ones_included(harness: Harness):
+    vm = NewVm()
+    desk = await _desk(harness, vm)
+    res = await desk.search("subject:budget")
+    assert vm.queries == ["subject:budget"] and res["matches"] == 2
+    assert [t["subject"] for t in res["threads"]] == ["Budget 2027"] and res["threads"][0]["unread_count"] == 2
+    hits = await desk.search("subject:already")
+    assert hits["threads"][0]["subject"] == "Already read", "search is not limited to unread mail"
+    with pytest.raises(MailDeskError, match="unknown keyword"):
+        await desk.search("color:red")
+    with pytest.raises(MailDeskError, match="empty"):
+        await desk.search("  ")
+
+
+async def test_an_old_host_says_it_cannot_search(harness: Harness):
+    desk = await _desk(harness, FakeVm())
+    with pytest.raises(MailDeskError, match="too old to search"):
+        await desk.search("budget")
+
+
+async def test_a_thread_is_read_with_bodies_once_for_screen_and_chat(harness: Harness):
+    vm = NewVm()
+    desk = await _desk(harness, vm)
+    thread = await desk.thread("a2")
+    assert [i["body"] for i in thread["items"]] == ["full body of a1", "full body of s1", "full body of a2"]
+    conv = await desk.session("a2")
+    assert "full body of a2" in conv.instructions
+    assert len(vm.thread_args) == 1 and vm.thread_args[0]["bodies"] is True, "the session reused the read"

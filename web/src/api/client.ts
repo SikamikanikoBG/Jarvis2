@@ -4,6 +4,7 @@ import type {
   BulkConversationAction,
   MailAccount,
   MailItem,
+  MailSearchResult,
   MailTestResult,
   MailThreadDetail,
   MailThreadList,
@@ -219,6 +220,8 @@ export const api = {
     /** Unread inbox mail grouped into threads (cached a minute on the core; `refresh` reads again). */
     threads: (account: string | null, refresh = false) =>
       request<MailThreadList>('GET', `/api/mail/threads?${qs({ account, refresh: refresh ? 'true' : null })}`),
+    /** Outlook-syntax search over every mail folder (from: subject: received: is:unread …). */
+    search: (q: string, account: string | null) => request<MailSearchResult>('GET', `/api/mail/search?${qs({ q, account })}`),
     thread: (entryId: string, account: string | null) =>
       request<MailThreadDetail>('GET', `/api/mail/thread?${qs({ entry_id: entryId, account })}`),
     message: (entryId: string, account: string | null) =>

@@ -33,11 +33,13 @@ log = logging.getLogger(__name__)
 
 FOLDER_KEY_PREFIX = "mail:"
 FOLDER_LABEL = "Mail"
-# How much of the inbox the desk looks at: unread mail is usually tens, and 300 messages is
-# still one table read on the host.
+# How much unread mail the desk looks at: usually tens, across every folder triage files into.
 LIST_LIMIT = 300
 LIST_CACHE_S = 60.0
+SEARCH_LIMIT = 200
 THREAD_LIMIT = 30
+# A thread is asked for twice when it opens (the screen, and the chat's instructions): read once.
+THREAD_CACHE_S = 60.0
 # The thread as the model sees it: generous for the newest message, which is what an answer is
 # about, and enough of the earlier ones to follow the argument. Under the 16k instructions cap.
 NEWEST_CHARS = 6_000
@@ -110,8 +112,11 @@ def group_threads(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "received": newest.get("received"),
                     "preview": str(newest.get("preview") or "")[:300],
                 },
-                "unread_count": len(members),
-                "entry_ids": [str(m["entry_id"]) for m in members],
+                # A search hit may be read; the unread listing is all unread (no key means unread).
+                "unread_count": sum(1 for m in members if m.get("unread", True)),
+                "count": len(members),
+                "folders": list(dict.fromkeys(str(m["folder"]) for m in members if m.get("folder"))),
+                "entry_ids": [str(m["entry_id"]) for m in members if m.get("unread", True)],
                 "flagged": any(bool(m.get("flagged")) for m in members),
                 "has_attachments": any(bool(m.get("has_attachments")) for m in members),
             }
@@ -175,6 +180,8 @@ class MailDesk:
     def __init__(self, core: Core) -> None:
         self.core = core
         self._cache: dict[str, _Cached] = {}
+        self._threads: dict[str, _Cached] = {}
+        self._thread_locks: dict[str, asyncio.Lock] = {}
         self._session_lock = asyncio.Lock()
 
     # -- where the mail is ---------------------------------------------------------------------
@@ -214,50 +221,101 @@ class MailDesk:
 
     # -- the desk ------------------------------------------------------------------------------
 
+    def _has(self, op: str) -> bool:
+        """Whether the host offers ``outlook_<op>``: an older host does not, and is read the old way."""
+        name = triage_tool(self.host(), op)
+        return any(s.name == name for s in self.core.registry.specs())
+
     async def threads(self, account: str | None = None, *, refresh: bool = False) -> dict[str, Any]:
         acct = self._account(account)
         cached = self._cache.get(acct)
         if cached and not refresh and time.monotonic() - cached.at < LIST_CACHE_S:
             return cached.data
-        args: dict[str, Any] = {
-            "account": acct,
-            "folder": "inbox",
-            "limit": LIST_LIMIT,
-            "preview_chars": 300,
-            "unread_only": True,
-        }
-        try:
+        capped = False
+        if self._has("unread"):
+            # Every mail folder, not the Inbox: triage files mail into subfolders, unread or not.
+            data = await self._call(
+                "unread", {"account": acct, "limit": LIST_LIMIT, "preview_chars": 300}, timeout_s=180
+            )
+            items = [i for i in (data.get("items") or []) if isinstance(i, dict)]
+            capped = bool(data.get("capped"))
+        else:
+            args: dict[str, Any] = {"account": acct, "folder": "inbox", "limit": LIST_LIMIT, "preview_chars": 300}
+            if self._has_arg("list", "unread_only"):
+                args["unread_only"] = True
             data = await self._call("list", args, timeout_s=120)
-        except MailDeskError as exc:
-            # A host older than the unread filter refuses the argument: read the page and filter here.
-            if "unread_only" not in str(exc):
-                raise
-            args.pop("unread_only")
-            data = await self._call("list", args, timeout_s=120)
-        items = [i for i in (data.get("items") or []) if isinstance(i, dict) and i.get("unread")]
+            items = [i for i in (data.get("items") or []) if isinstance(i, dict) and i.get("unread")]
+            capped = bool(data.get("cursor"))
         result = {
             "host": self.host(),
             "account": acct,
             "accounts": self.accounts(),
             "threads": group_threads(items),
             "unread": len(items),
-            "capped": bool(data.get("cursor")),
+            "capped": capped,
             "fetched_at": time.time(),
         }
         self._cache[acct] = _Cached(time.monotonic(), result)
         return result
 
+    def _has_arg(self, op: str, arg: str) -> bool:
+        name = triage_tool(self.host(), op)
+        spec = next((s for s in self.core.registry.specs() if s.name == name), None)
+        return spec is not None and arg in ((spec.input_schema or {}).get("properties") or {})
+
+    async def search(self, query: str, account: str | None = None) -> dict[str, Any]:
+        """Outlook-syntax search over every mail folder, Sent Items included, grouped into threads."""
+        acct = self._account(account)
+        q = (query or "").strip()
+        if not q:
+            raise MailDeskError("the search is empty")
+        if not self._has("query"):
+            raise MailDeskError(f"the host {self.host()} is too old to search; deploy jarvis-host 2.0.0a23 or later")
+        data = await self._call("query", {"query": q, "account": acct, "limit": SEARCH_LIMIT}, timeout_s=180)
+        items = [i for i in (data.get("items") or []) if isinstance(i, dict)]
+        return {
+            "host": self.host(),
+            "account": acct,
+            "accounts": self.accounts(),
+            "query": q,
+            "threads": group_threads(items),
+            "matches": len(items),
+            "capped": bool(data.get("capped")),
+            "days_back": data.get("days_back"),
+            "fetched_at": time.time(),
+        }
+
     async def thread(self, entry_id: str, account: str | None = None) -> dict[str, Any]:
         acct = self._account(account)
-        data = await self._call(
-            "thread", {"entry_id": entry_id, "account": acct, "limit": THREAD_LIMIT, "preview_chars": 4000}
-        )
+        key = f"{acct}:{entry_id}"
+        hit = self._threads.get(key)
+        if hit and time.monotonic() - hit.at < THREAD_CACHE_S:
+            return hit.data
+        # One load for both callers that ask at once: the screen and the chat's instructions.
+        lock = self._thread_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            hit = self._threads.get(key)
+            if hit and time.monotonic() - hit.at < THREAD_CACHE_S:
+                return hit.data
+            result = await self._load_thread(entry_id, acct)
+            self._threads[key] = _Cached(time.monotonic(), result)
+        self._thread_locks.pop(key, None)
+        return result
+
+    async def _load_thread(self, entry_id: str, acct: str) -> dict[str, Any]:
+        args: dict[str, Any] = {"entry_id": entry_id, "account": acct, "limit": THREAD_LIMIT, "preview_chars": 4000}
+        # The table's preview is empty for much HTML mail; the body read per message is what shows.
+        if self._has_arg("thread", "bodies"):
+            args["bodies"] = True
+        data = await self._call("thread", args, timeout_s=180)
         items = [i for i in (data.get("items") or []) if isinstance(i, dict)]
-        if not data.get("conversation") or not items:
+        if not items:
             # No conversations in this store (or an empty answer): the message alone is the thread.
             one = await self._call("read", {"entry_id": entry_id, "account": acct, "max_chars": 20_000})
-            one = {**one, "preview": one.get("body", "")}
             items = [one]
+        for it in items:
+            if not it.get("body") and it.get("preview"):
+                it["body"] = it["preview"]
         newest = items[-1]
         return {
             "host": self.host(),
@@ -278,6 +336,7 @@ class MailDesk:
             raise MailDeskError("no messages given")
         result = await self._call("mark_read", {"entry_ids": ids, "read": read, "account": acct})
         self._cache.pop(acct, None)  # the list changed; the next look reads it again
+        self._threads.clear()  # and so did the unread marks of whatever thread was open
         return result
 
     async def session(self, entry_id: str, account: str | None = None) -> Conversation:

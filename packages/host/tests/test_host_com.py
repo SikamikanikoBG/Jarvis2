@@ -146,3 +146,28 @@ def test_looking_at_the_status_also_replaces_a_wedged_thread():
     finally:
         release.set()
         w.stop()
+
+
+def test_a_respawn_does_not_release_the_wedged_apartments_objects():
+    # 2026-10-01: the respawn hook dropped the Outlook proxy on the event loop; the Release went to the
+    # hung Outlook and blocked, freezing the daemon for 8 hours with its port still open.
+    import gc
+    import weakref
+
+    from jarvis_host.onenote import OneNoteBackend
+    from jarvis_host.outlook import OutlookBackend
+
+    class Proxy:
+        def GetNamespace(self, _name: str) -> Proxy:
+            return Proxy()
+
+    outlook = OutlookBackend(dispatch=Proxy)
+    outlook._session()
+    onenote = OneNoteBackend(dispatch=Proxy)
+    onenote._session()
+    held = [weakref.ref(outlook._app), weakref.ref(outlook._ns), weakref.ref(onenote._app)]
+    outlook.abandon()
+    onenote.abandon()
+    gc.collect()
+    assert outlook._ns is None and onenote._app is None  # the next call reconnects
+    assert all(ref() is not None for ref in held)  # but nothing was released

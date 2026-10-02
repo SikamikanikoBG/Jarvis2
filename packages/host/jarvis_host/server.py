@@ -88,8 +88,9 @@ def make_deps(
     outlook = OutlookService(backend, worker)
     onenote = OneNoteService(OneNoteBackend(onenote_dispatch_fn or onenote_dispatch), worker)
     # A replaced (wedged) COM thread takes its apartment with it: reconnect from the new one.
-    worker.on_respawn(backend.reset)
-    worker.on_respawn(onenote.backend.reset)
+    # abandon, not reset: releasing the old proxies would block the event loop on the hung app.
+    worker.on_respawn(backend.abandon)
+    worker.on_respawn(onenote.backend.abandon)
     roots = config.fs_roots or ()
     files = Files(roots)
     shell = Shell(allowed=config.shell_allow, default_cwd=files.roots[0])

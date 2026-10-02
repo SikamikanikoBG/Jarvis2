@@ -17,6 +17,12 @@ call after it timed out until the daemon was restarted. So a call busy longer th
 counts as wedged: the next caller gets a fresh COM thread (the queued jobs move with it, and the
 ``on_respawn`` hooks drop the Outlook/OneNote objects so they reconnect from the new apartment). The
 wedged thread is written off; if its call ever returns, it exits instead of taking more work.
+
+The hooks must not *release* those objects: they run on the event loop, and dropping the last
+reference to a proxy of a hung Outlook is a cross-apartment Release that blocks until Outlook
+answers. That froze the whole daemon for 9 minutes (2026-10-01 07:41) and for 8 hours (22:05 until
+it was killed the next morning) — the port stayed open, but core saw only connect timeouts. So the
+old objects go to ``write_off``, which keeps them alive for the life of the process.
 """
 
 from __future__ import annotations
@@ -39,6 +45,14 @@ T = TypeVar("T")
 DEFAULT_TIMEOUT_S = 30.0
 # Longer than any per-call deadline (the slowest Outlook op allows 120 s): a call past this is not slow, it is stuck.
 WEDGE_AFTER_S = 180.0
+
+
+_written_off: list[Any] = []
+
+
+def write_off(*objs: Any) -> None:
+    """Keep COM objects of a wedged apartment alive forever: releasing them can block on a hung app."""
+    _written_off.extend(o for o in objs if o is not None)
 
 
 class ComTimeout(TimeoutError):

@@ -19,7 +19,7 @@ from collections.abc import Callable
 from typing import Any
 from xml.etree import ElementTree
 
-from jarvis_host.com import ComWorker
+from jarvis_host.com import ComWorker, write_off
 
 ONE_NS = "http://schemas.microsoft.com/office/onenote/2013/onenote"
 NS = f"{{{ONE_NS}}}"
@@ -211,6 +211,11 @@ class OneNoteBackend:
 
     def reset(self) -> None:
         self._app = None
+
+    def abandon(self) -> None:
+        """``reset`` for a wedged COM thread: reconnect next time without releasing the old proxy."""
+        write_off(self._app)
+        self.reset()
 
     # -- hierarchy ---------------------------------------------------------------------------
 

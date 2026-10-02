@@ -37,7 +37,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
-from jarvis_host.com import ComTimeout, ComWorker
+from jarvis_host.com import ComTimeout, ComWorker, write_off
 
 log = logging.getLogger(__name__)
 
@@ -595,6 +595,11 @@ class OutlookBackend:
     def reset(self) -> None:
         self._app = None
         self._ns = None
+
+    def abandon(self) -> None:
+        """``reset`` for a wedged COM thread: reconnect next time without releasing the old proxies."""
+        write_off(self._app, self._ns)
+        self.reset()
 
     def ping(self) -> dict[str, Any]:
         ns = self._session()

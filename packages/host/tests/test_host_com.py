@@ -171,3 +171,22 @@ def test_a_respawn_does_not_release_the_wedged_apartments_objects():
     gc.collect()
     assert outlook._ns is None and onenote._app is None  # the next call reconnects
     assert all(ref() is not None for ref in held)  # but nothing was released
+
+
+def test_a_session_opened_by_another_thread_is_not_used():
+    # 2026-10-02: a written-off thread finished connecting after the respawn and left its apartment's
+    # namespace behind; the new thread used it and got RPC_E_WRONG_THREAD.
+    from jarvis_host.outlook import OutlookBackend
+
+    class Proxy:
+        def GetNamespace(self, _name: str) -> Proxy:
+            return Proxy()
+
+    backend = OutlookBackend(dispatch=Proxy)
+    other: list[object] = []
+    t = threading.Thread(target=lambda: other.append(backend._session()))
+    t.start()
+    t.join()
+    mine = backend._session()
+    assert mine is not other[0]
+    assert backend._session() is mine  # the own thread's session is kept

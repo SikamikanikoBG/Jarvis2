@@ -29,6 +29,7 @@ import logging
 import re
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
@@ -583,13 +584,20 @@ class OutlookBackend:
         self._allow = tuple(a.strip().lower() for a in accounts_allow if a.strip())
         self._app: Any = None
         self._ns: Any = None
+        self._owner: int | None = None  # the COM thread whose apartment _app/_ns belong to
 
     # -- session ------------------------------------------------------------------------------
 
     def _session(self) -> Any:
+        # A written-off (wedged) thread whose call finally returns may have connected after the
+        # respawn: its objects belong to its apartment, and using them here fails with
+        # RPC_E_WRONG_THREAD (2026-10-02, after an outlook_restart). Reconnect from this thread.
+        if self._ns is not None and self._owner != threading.get_ident():
+            self.abandon()
         if self._ns is None:
-            self._app = self._dispatch()
-            self._ns = self._app.GetNamespace("MAPI")
+            app = self._dispatch()
+            ns = app.GetNamespace("MAPI")
+            self._app, self._ns, self._owner = app, ns, threading.get_ident()
         return self._ns
 
     def reset(self) -> None:

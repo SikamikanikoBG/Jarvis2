@@ -15,6 +15,7 @@ from __future__ import annotations
 import html
 import re
 import sys
+import threading
 from collections.abc import Callable
 from typing import Any
 from xml.etree import ElementTree
@@ -203,10 +204,14 @@ class OneNoteBackend:
     def __init__(self, dispatch: Callable[[], Any] = onenote_dispatch) -> None:
         self._dispatch = dispatch
         self._app: Any = None
+        self._owner: int | None = None  # the COM thread whose apartment _app belongs to
 
     def _session(self) -> Any:
+        if self._app is not None and self._owner != threading.get_ident():  # see OutlookBackend._session
+            self.abandon()
         if self._app is None:
-            self._app = self._dispatch()
+            app = self._dispatch()
+            self._app, self._owner = app, threading.get_ident()
         return self._app
 
     def reset(self) -> None:

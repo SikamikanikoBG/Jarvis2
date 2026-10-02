@@ -28,6 +28,8 @@ from jarvis_core.engine.bus import Subscriber
 from jarvis_proto.events import (
     ConversationDeleted,
     ConversationUpdated,
+    ModelCall,
+    ModelDone,
     RunCancelled,
     RunDone,
     RunFailed,
@@ -59,6 +61,8 @@ PIXEL_AGENTS_VERSION = "1.4"
 READ_TOOL = "Read"
 WRITE_TOOL = "Write"
 STATUS_MAX = 60
+# The model's turn shows as one more "tool" while it runs, under this id.
+MODEL_CALL_ID = "model"
 
 Send = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -232,6 +236,13 @@ class OfficeHub:
             return
         if isinstance(event, RunQueued | RunStarted | RunResumed | RunSteered):
             self._set_active(await self._ensure(event.conversation_id))
+        elif isinstance(event, ModelCall):
+            # The model's turn is work too: without it a run between tools reads "Idle".
+            agent = await self._ensure(event.conversation_id)
+            self._tool_start(agent, MODEL_CALL_ID, f"Thinking · {event.model}", WRITE_TOOL)
+        elif isinstance(event, ModelDone):
+            if (agent := self.agents.get(event.conversation_id)) is not None:
+                self._tool_done(agent, MODEL_CALL_ID)
         elif isinstance(event, ToolCallEvent):
             agent = await self._ensure(event.conversation_id)
             tool = READ_TOOL if event.read_only else WRITE_TOOL

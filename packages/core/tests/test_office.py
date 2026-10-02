@@ -47,9 +47,14 @@ async def test_a_run_walks_in_works_and_finishes(harness: Harness):
     types = [m["type"] for m in seen]
     created = seen[0]
     assert created == {"type": "agentCreated", "id": created["id"], "folderName": "Echo test"}
-    start = next(m for m in seen if m["type"] == "agentToolStart")
+    starts = [m for m in seen if m["type"] == "agentToolStart"]
+    # The model's turn is work too (types), so a run between tools never reads "Idle".
+    assert starts[0]["toolId"] == "model" and starts[0]["status"] == "Thinking · fake"
+    assert starts[0]["toolName"] == "Write"
+    assert sum(m["type"] == "agentToolDone" and m["toolId"] == "model" for m in seen) == 2
     # A read-only tool reads at the desk; the label names the tool and its argument.
-    assert start["toolName"] == "Read" and start["toolId"] == "c1" and start["status"] == "test.echo · hello"
+    start = next(m for m in starts if m["toolId"] == "c1")
+    assert start["toolName"] == "Read" and start["status"] == "test.echo · hello"
     assert types.index("agentToolStart") < types.index("agentToolDone") < types.index("agentToolsClear")
     assert seen[-1] == {"type": "agentStatus", "id": created["id"], "status": "waiting", "awaitingInput": False}
     assert office.view() == [

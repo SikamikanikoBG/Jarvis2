@@ -25,7 +25,7 @@ else
 fi
 
 cd "$work"
-node "$here/patch-transport.mjs" webview-ui/src/transport/index.ts
+node "$here/patch-webview.mjs"
 echo "==> npm ci (webview only)"
 npm ci --ignore-scripts -w webview-ui --no-audit --no-fund
 echo "==> vite build -> $out"

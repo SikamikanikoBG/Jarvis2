@@ -9,7 +9,7 @@ RUN npm run build
 # The Office: pixel-agents' webview at a pinned commit, plus its decoded sprites (web/office/build.sh).
 FROM node:20-alpine AS office
 WORKDIR /office
-COPY web/office/build.sh web/office/patch-transport.mjs web/office/dump-assets.ts ./
+COPY web/office/build.sh web/office/patch-webview.mjs web/office/dump-assets.ts ./
 RUN sh build.sh /office/dist
 
 FROM python:3.12-slim AS runtime

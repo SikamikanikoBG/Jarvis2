@@ -112,6 +112,18 @@ libraries. `[desktop] enabled = false` in its `host.toml` drops the Outlook/OneN
 volume/screen tools, which need a Windows session and stay on the Windows hosts. Everything else no
 longer depends on the laptop or the VM being awake.
 
+### The Office
+
+**Office** in the header shows Jarvis's work as pixel-art characters: one per conversation with a
+run (chat, schedules, collab, meetings) plus one for the mail triage pass. A character sits down
+when a run starts, types while a tool runs (reads, for read-only tools), raises a flag while a tool
+waits for your approval, shows a check mark when the run ends and leaves after 10 idle minutes.
+Click a character to open its chat. The office is the webview of
+[pixel-agents](https://github.com/pixel-agents-hq/pixel-agents) (MIT, pinned in
+`web/office/build.sh`), served at `/pixel-office/`; `features/office.py` speaks its protocol from
+the run events. The Docker image builds it; locally run `sh web/office/build.sh` once (needs Node
+20 and network) and restart the core. Layout edits are saved in `$JARVIS_HOME/office/`.
+
 ## Verify against a real model
 
 ```bash

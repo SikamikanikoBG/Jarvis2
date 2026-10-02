@@ -1,0 +1,2 @@
+# Shell scripts run on Linux (the Docker build, ardi): never CRLF, whatever core.autocrlf says.
+*.sh text eol=lf

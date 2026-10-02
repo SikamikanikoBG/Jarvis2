@@ -24,6 +24,7 @@ export const NAV_MORE: NavItem[] = [
   { view: 'schedules', label: 'Schedules', icon: 'calendar' },
   { view: 'meetings', label: 'Meetings', icon: 'headphones' },
   { view: 'triage', label: 'Triage', icon: 'inbox' },
+  { view: 'office', label: 'Office', icon: 'users' },
 ];
 
 /** Desktop header order: Chat, then the feature screens, then the instrument screens. */

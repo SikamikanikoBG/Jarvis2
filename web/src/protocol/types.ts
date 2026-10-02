@@ -710,6 +710,22 @@ export interface MeetingDetail extends Meeting {
   frames: MeetingFrameModel[];
 }
 
+/** GET /api/office/agents (api/office.py): which pixel-office character is which conversation. */
+export interface OfficeAgent {
+  id: number;
+  conversation_id: string | null; // null for a background job (the mail triage pass)
+  title: string;
+  active: boolean;
+  permission: boolean;
+  awaiting_input: boolean;
+  tools: string[];
+}
+
+export interface OfficeAgents {
+  built: boolean;
+  agents: OfficeAgent[];
+}
+
 export interface TriageState {
   account: string;
   cursor: string | null;

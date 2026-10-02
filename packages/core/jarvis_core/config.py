@@ -20,6 +20,9 @@ class CoreConfig:
     web_dist: Path | None = field(
         default_factory=lambda: Path(p).resolve() if (p := os.environ.get("JARVIS_WEB_DIST")) else None
     )
+    office_dist: Path | None = field(
+        default_factory=lambda: Path(p).resolve() if (p := os.environ.get("JARVIS_OFFICE_DIST")) else None
+    )
     log_level: str = field(default_factory=lambda: _env("JARVIS_LOG_LEVEL", "INFO"))
     max_concurrent_runs: int = field(default_factory=lambda: int(_env("JARVIS_MAX_RUNS", "3")))
 
@@ -32,4 +35,11 @@ class CoreConfig:
             return self.web_dist if self.web_dist.exists() else None
         # Repo layout: packages/core/jarvis_core/config.py → ../../../web/dist
         candidate = Path(__file__).resolve().parents[3] / "web" / "dist"
+        return candidate if candidate.exists() else None
+
+    def resolve_office_dist(self) -> Path | None:
+        """The Office's webview (web/office/build.sh); None until it has been built."""
+        if self.office_dist is not None:
+            return self.office_dist if self.office_dist.exists() else None
+        candidate = Path(__file__).resolve().parents[3] / "web" / "office" / "dist"
         return candidate if candidate.exists() else None

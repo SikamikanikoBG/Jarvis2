@@ -20,6 +20,7 @@ export default defineConfig({
     proxy: {
       '/api': { target: BACKEND, changeOrigin: true },
       '/ws': { target: BACKEND, ws: true, changeOrigin: true },
+      '/pixel-office': { target: BACKEND, ws: true, changeOrigin: true },
     },
   },
   build: {

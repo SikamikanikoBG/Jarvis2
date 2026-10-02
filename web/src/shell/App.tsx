@@ -7,6 +7,7 @@ import { Toast } from '../components/Toast';
 import { KnowledgeScreen } from '../knowledge/KnowledgeScreen';
 import { MailScreen } from '../mail/MailScreen';
 import { MeetingsScreen } from '../meetings/MeetingsScreen';
+import { OfficeScreen } from '../office/OfficeScreen';
 import { RunInspector } from '../runs/RunInspector';
 import { RunsScreen } from '../runs/RunsScreen';
 import { SchedulesScreen } from '../schedules/SchedulesScreen';
@@ -34,6 +35,7 @@ const SCREENS = {
   schedules: SchedulesScreen,
   meetings: MeetingsScreen,
   triage: TriageScreen,
+  office: OfficeScreen,
 } as const;
 
 /** Screens with a search box of their own, so Ctrl/⌘+K focuses that instead of leaving. */

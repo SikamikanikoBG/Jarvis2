@@ -25,6 +25,7 @@ import type {
   Message,
   Note,
   NoteColor,
+  OfficeAgents,
   PairResponse,
   Run,
   Schedule,
@@ -231,6 +232,9 @@ export const api = {
     /** The chat beside a thread: the same one every time, with the thread in its instructions. */
     session: (entryId: string, account: string | null) =>
       request<Conversation>('POST', '/api/mail/session', { entry_id: entryId, account }),
+  },
+  office: {
+    agents: () => request<OfficeAgents>('GET', '/api/office/agents'),
   },
   triage: {
     state: () => request<TriageState[]>('GET', '/api/triage/state'),

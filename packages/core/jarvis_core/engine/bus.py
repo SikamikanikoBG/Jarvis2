@@ -16,10 +16,12 @@ QUEUE_LIMIT = 2000
 
 
 class Subscriber:
-    def __init__(self, name: str = "ws") -> None:
+    def __init__(self, name: str = "ws", *, everything: bool = False) -> None:
         self.name = name
         self.queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=QUEUE_LIMIT)
         self.conversations: set[str] = set()
+        # Every conversation's run events, not only the subscribed ones (the Office watches all).
+        self.everything = everything
         self.dead = False
 
     def deliver(self, event: Any) -> None:
@@ -64,5 +66,5 @@ class EventBus:
             if sub.dead:
                 self._subs.discard(sub)
                 continue
-            if conv is None or conv in sub.conversations:
+            if conv is None or sub.everything or conv in sub.conversations:
                 sub.deliver(event)

@@ -21,6 +21,7 @@ from jarvis_core import __version__
 from jarvis_core.api import attachments as attachments_api
 from jarvis_core.api import collab, features, media, openai_compat, rest, ws
 from jarvis_core.api.deps import require_token, token_matches
+from jarvis_core.api.office import mount_office
 from jarvis_core.config import CoreConfig
 from jarvis_core.db import Database, Store
 from jarvis_core.engine import EventBus, RunEngine
@@ -45,6 +46,7 @@ from jarvis_core.features.mail import MailTools
 from jarvis_core.features.maildesk import MailDesk
 from jarvis_core.features.meetings import MeetingService
 from jarvis_core.features.notify import NotifyTools
+from jarvis_core.features.office import OfficeHub
 from jarvis_core.features.planner import Planner
 from jarvis_core.features.reflection import PlaybookReflector
 from jarvis_core.features.results import ResultsTools
@@ -109,6 +111,7 @@ class Core:
         self.triage = TriageJob(self)
         self.triage_audit = TriageAudit(self)
         self.maildesk = MailDesk(self)
+        self.office = OfficeHub(self)
         self.rsvp = RsvpJob(self)
         self.meetings = MeetingService(self)
 
@@ -218,6 +221,8 @@ class Core:
         # not look like a machine without capabilities.
         await self.registry.load_memory()
         await self.reload_tools()
+        # On the bus before the engine resumes anything, so the office misses no run.
+        await self.office.start()
         await self.engine.start()
         await self.scheduler.start()
         await self.triage.start()
@@ -256,6 +261,7 @@ class Core:
         await self.meetings.stop_all()
         await self.scheduler.stop()
         await self.engine.stop()
+        await self.office.stop()
         await self.learner.wait()
         for provider in self.mcp:
             await provider.stop()
@@ -346,6 +352,7 @@ def create_app(config: CoreConfig | None = None, *, core: Core | None = None) ->
         return get_swagger_ui_html(openapi_url="/api/openapi.json", title="Jarvis V2 API")
 
     app.mount("/mcp", CollabAuthMiddleware(the_core.mcp_server.streamable_http_app(), the_core))
+    mount_office(app, the_core)
     _mount_spa(app, cfg.resolve_web_dist())
     return app
 

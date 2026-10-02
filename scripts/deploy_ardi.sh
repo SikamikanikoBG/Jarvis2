@@ -23,7 +23,7 @@ echo "==> packing source"
 ARCHIVE="$(mktemp -t jarvis2-src-XXXXXX.tar.gz)"
 tar -czf "$ARCHIVE" -C "$REPO_ROOT" \
     --exclude='.git' --exclude='.venv' --exclude='node_modules' --exclude='data' \
-    --exclude='web/dist' --exclude='**/__pycache__' --exclude='*.db' \
+    --exclude='web/dist' --exclude='web/office/dist' --exclude='**/__pycache__' --exclude='*.db' \
     Dockerfile pyproject.toml uv.lock packages web
 
 echo "==> uploading ($(du -h "$ARCHIVE" | cut -f1))"

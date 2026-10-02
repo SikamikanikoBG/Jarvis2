@@ -1577,3 +1577,17 @@
   outline: 2px solid var(--focus);
   outline-offset: 1px;
 }
+
+/* ---- office (pixel-agents in an iframe, edge to edge) ------------------------------------- */
+
+.office-screen {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: #1e1e2e;
+}
+.office-frame {
+  flex: 1;
+  width: 100%;
+  border: 0;
+}

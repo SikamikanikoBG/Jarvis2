@@ -219,7 +219,7 @@ class TriageJob:
     async def run_once(
         self, *, dry_run: bool = False, folder: str | None = None, limit: int | None = None, account: str | None = None
     ) -> TriageReport:
-        async with self._lock:
+        async with self._lock, self.core.office.job("triage", "Mail triage", "Sorting the inbox"):
             return await self._run(dry_run=dry_run, folder=folder, limit=limit, only_account=account)
 
     async def _run(

@@ -212,6 +212,31 @@ async def test_skills_detection_structural_then_model_and_injection(harness: Har
     assert await core.skills.body("deck") == "Use 16:9."
 
 
+async def test_a_short_follow_up_keeps_the_previous_turns_skill(harness: Harness):
+    """2026-10-02: "само прати мейла, вече имаш всичко" after the SmartLab digest was matched to
+    email_triage by "мейл" and the digest runbook was gone."""
+    core = harness.core
+    await core.skills.put(
+        "digest_runbook",
+        "---\ndescription: The SmartLab digest\ntriggers: [smartlab digest]\n---\nDraft to the three recipients.",
+    )
+    await core.skills.put("email_triage", "---\ndescription: Sorting mail\ntriggers: [мейла]\n---\nSort it.")
+    conv = await core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    harness.chat.push(FakeTurn(text="digest ready"))
+    await core.engine.create_run(text="run the smartlab digest for today", conversation_id=conv.id)
+    await harness.wait_for(sub, "run.done")
+    harness.chat.push(FakeTurn(text="sent"))
+    await core.engine.create_run(text="само прати мейла", conversation_id=conv.id)
+    seen = await harness.wait_for(sub, "run.done")
+    names = next(e for e in seen if e.type == "context.skills").names
+    assert names == ["digest_runbook", "email_triage"]
+    msgs = harness.chat.calls[-1][0]
+    assert "Draft to the three recipients." in msgs[-1].content  # this turn's context carries the runbook
+    ledger = next(m for m in msgs if m.name == "ledger")
+    assert "run the smartlab digest" in ledger.content and "answered: digest ready" in ledger.content
+
+
 # --- compaction ---------------------------------------------------------------------------
 
 

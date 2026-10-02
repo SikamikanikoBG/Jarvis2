@@ -8,7 +8,7 @@ compaction summary covered only the question. Three turns, the mail hunted for t
 
 from __future__ import annotations
 
-from jarvis_core.engine.context import earlier_turn_view
+from jarvis_core.engine.context import conversation_ledger, earlier_turn_view, last_turn_skills
 from jarvis_core.engine.views import aged
 from jarvis_core.features.compaction import _cut_index
 from jarvis_proto import Message, Role, Run, RunKind, ToolCall
@@ -44,7 +44,8 @@ def test_earlier_turns_ride_as_heads_and_stubs_and_the_current_run_is_whole():
     view = earlier_turn_view(history, "run_b")
     assert [m.role for m in view] == [m.role for m in history]
     assert view[0].content == "find the mail"
-    assert view[1].content.startswith("[Context for the request above was injected for an earlier turn")
+    assert view[1].content.startswith("[The context block for the request above is not repeated here")
+    assert "omitted" not in view[1].content  # "omitted" read as "lost" and the model started over
     assert "email_triage" in view[1].content and len(view[1].content) < 200
     assert len(view[3].content) < 1_300 and 'ref="@c1' in view[3].content
     assert view[4].content == "Found it: AI Masterclass, 6 October."  # the answer, whole
@@ -120,3 +121,93 @@ def test_compaction_cuts_at_a_message_arsen_wrote_not_at_the_injected_context():
         )
         == 2
     )
+
+
+def _digest_turn(run_id: str = "run_a") -> list[Message]:
+    """The SmartLab digest, 2026-10-02: twenty steps, a file written, Outlook down, Discord used."""
+    calls = [
+        ToolCall(id="h1", name="jarvisvm.host_status"),
+        *(ToolCall(id=f"s{i}", name="web.search", arguments={"query": f"AI news {i}"}) for i in range(6)),
+        ToolCall(
+            id="w1", name="workspace.fs_write", arguments={"path": "/workspace/smartlab_ai_digest_2026-10-02.html"}
+        ),
+        ToolCall(
+            id="d1", name="notify.discord", arguments={"files": [{"filename": "digest.html", "content": "H" * 30_000}]}
+        ),
+    ]
+    out = [
+        Message.user(
+            "Curate the SmartLab AI Digest. Create DRAFT to aiprocesstransformation@postbank.bg", run_id=run_id
+        ),
+        Message.user(
+            "[Context for the request above]\n\n## Skill: smartlab-digest-runbook\n" + "r" * 5_000,
+            name="context",
+            run_id=run_id,
+        ),
+    ]
+    for c in calls:
+        out.append(Message.assistant(tool_calls=[c], run_id=run_id))
+        text = "Error: connect timeout" if c.id == "h1" else "R" * 6_000
+        out.append(Message.tool(c.id, c.name, text, run_id=run_id))
+    out.append(Message.assistant("SmartLab AI Digest готов. Outlook недостъпен, пратих в Discord.", run_id=run_id))
+    return out
+
+
+def test_the_ledger_names_what_was_done_and_folds_repeats():
+    ledger = conversation_ledger([*_digest_turn(), Message.user("само прати мейла", run_id="run_b")], "run_b")
+    assert ledger is not None
+    assert "asked: Curate the SmartLab AI Digest" in ledger
+    assert "jarvisvm.host_status FAILED" in ledger
+    assert "web.search(query=AI news 0) @s0" in ledger and "web.search(query=AI news 5) @s5" in ledger
+    assert "path=/workspace/smartlab_ai_digest_2026-10-02.html" in ledger
+    assert "answered: SmartLab AI Digest готов" in ledger
+    assert "само прати мейла" not in ledger  # the current run is not an earlier turn
+    assert "H" * 100 not in ledger and len(ledger) < 2_000
+    # Identical calls fold into one entry with a count.
+    same = [Message.user("q", run_id="r1")]
+    for i in range(10):
+        same += [
+            Message.assistant(tool_calls=[ToolCall(id=f"x{i}", name="workspace.shell_run")], run_id="r1"),
+            Message.tool(f"x{i}", "workspace.shell_run", "ok", run_id="r1"),
+        ]
+    folded = conversation_ledger(same, "now")
+    assert folded is not None and "workspace.shell_run x10 @x9" in folded
+
+
+def test_the_ledger_stays_within_its_budget_newest_turn_in_detail():
+    history: list[Message] = []
+    for t in range(40):
+        history += [
+            Message.user(f"question {t} " + "q" * 400, run_id=f"r{t}"),
+            Message.assistant(f"answer {t} " + "a" * 900, run_id=f"r{t}"),
+        ]
+    ledger = conversation_ledger(history, "now", max_chars=3_000)
+    assert ledger is not None and len(ledger) <= 3_000
+    assert "earlier turn(s) not listed" in ledger
+    assert "T40 " in ledger and "answer 39 " + "a" * 500 in ledger  # the newest, in detail
+
+
+def test_a_follow_up_inherits_the_previous_turns_skills():
+    history = [*_digest_turn(), Message.user("само прати мейла", run_id="run_b")]
+    assert last_turn_skills(history, "run_b") == ["smartlab-digest-runbook"]
+    assert last_turn_skills(history, "run_a") == []  # its own context is not "the previous turn"
+
+
+async def test_a_follow_up_after_a_long_run_still_knows_what_it_did(harness: Harness):
+    """The turn itself is trimmed away; the ledger is not."""
+    core = harness.core
+    core.apply_settings(core.settings.model_copy(update={"history_token_budget": 4_000}))  # ~13k chars
+    conv = await core.store.create_conversation()
+    for m in (*_digest_turn(), Message.user("само прати мейла, вече имаш всичко", run_id="run_b")):
+        m.conversation_id = conv.id
+        await core.store.add_message(m)
+    run = Run(id="run_b", conversation_id=conv.id, kind=RunKind.CHAT, input_text="само прати мейла, вече имаш всичко")
+    await core.store.create_run(run)
+
+    messages = await core.context.assemble(run)
+    ledger = next(m for m in messages if m.name == "ledger")
+    assert "/workspace/smartlab_ai_digest_2026-10-02.html" in ledger.content
+    assert "aiprocesstransformation@postbank.bg" in ledger.content
+    assert "jarvisvm.host_status FAILED" in ledger.content
+    # It sits right before this run's own messages, so the cached history prefix is untouched.
+    assert messages[-2] is ledger and messages[-1].content == "само прати мейла, вече имаш всичко"

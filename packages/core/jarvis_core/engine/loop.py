@@ -19,6 +19,7 @@ from jarvis_core.engine.context import (
     ContextAssembler,
     admit,
     context_breakdown,
+    last_turn_skills,
     prompt_chars,
 )
 from jarvis_core.engine.control import RunCancelledError, RunControl
@@ -91,6 +92,8 @@ log = logging.getLogger(__name__)
 
 _UNATTENDED = {RunKind.SCHEDULED, RunKind.TRIAGE, RunKind.MEETING, RunKind.SYSTEM}
 _CONTEXT_KINDS = {RunKind.CHAT, RunKind.COLLAB, RunKind.SCHEDULED}
+# A message this short after a turn that ran on skills is taken as a follow-up to it.
+_FOLLOW_UP_CHARS = 160
 
 # The tools whose whole purpose is to remember: the notes boards and the knowledge graph. An
 # incognito chat offers neither (reading them is fine - it is what goes OUT that must stop).
@@ -256,6 +259,8 @@ class AgentLoop:
             assert self._planner is not None
             pre = await self._planner.preflight(run.input_text)
         pre_ms = (time.perf_counter() - t_pre) * 1000
+        if wants_skills:
+            skill_names = await self._follow_up_skills(run, skill_names, skill_trace)
         if skill_names:
             await emit(ContextSkills(run_id="", conversation_id="", names=skill_names))
         if pre is not None and self._planner is not None:
@@ -1089,6 +1094,28 @@ class AgentLoop:
         )
 
     # --- helpers -------------------------------------------------------------------
+
+    async def _follow_up_skills(self, run: Run, detected: list[str], trace: dict[str, object]) -> list[str]:
+        """The previous turn's skills for a follow-up, ahead of what the detector found.
+
+        "само прати мейла, вече имаш всичко" is too short to name a skill, so the detector either
+        finds none or guesses from "мейл" - email_triage, not the digest runbook the previous turn
+        ran on - and the model went at the job without its instructions (2026-10-02). A short
+        message is taken as a follow-up and keeps the previous turn's skills first; a long one
+        keeps them only when the detector found nothing. At most three ride.
+        """
+        carried = last_turn_skills(await self._store.list_messages(run.conversation_id), run.id)
+        if not carried:
+            return detected
+        if len(run.input_text.strip()) <= _FOLLOW_UP_CHARS:
+            names = [*carried, *(d for d in detected if d not in carried)][:3]
+        elif not detected:
+            names = carried[:3]
+        else:
+            return detected
+        if names != detected:
+            trace["carried"] = carried
+        return names
 
     async def _persist(self, run: Run, message: Message) -> Message:
         message.conversation_id = run.conversation_id

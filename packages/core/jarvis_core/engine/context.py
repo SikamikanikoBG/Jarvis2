@@ -15,7 +15,7 @@ from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from jarvis_core.db import Store
-from jarvis_core.engine.views import admit, aged, is_view
+from jarvis_core.engine.views import admit, aged, is_view, short_ref
 from jarvis_core.features.personality import personality_block
 from jarvis_proto import (
     Attachment,
@@ -97,12 +97,137 @@ def earlier_turn_view(history: list[Message], current_run_id: str, *, admit_char
             out.append(aged(m))
         elif m.role is Role.USER and m.name == "context":
             names = _skill_names(m.content)
-            note = "[Context for the request above was injected for an earlier turn and is omitted here"
-            note += f"; the skills it carried: {', '.join(names)}]" if names else "]"
+            # Worded as "not repeated", never "omitted": "omitted here" read as "lost", and the
+            # model announced it no longer had the previous turn and started over (2026-10-02,
+            # "само прати мейла, вече имаш всичко" after the SmartLab digest).
+            note = "[The context block for the request above is not repeated here"
+            note += f"; it carried the skills {', '.join(names)} - skills.use(name) shows one again]" if names else "]"
             out.append(m.model_copy(update={"content": note}))
         else:
             out.append(m)
     return out
+
+
+def last_turn_skills(history: list[Message], current_run_id: str) -> list[str]:
+    """The skills the most recent earlier turn ran with: a follow-up ("send it", "and the other
+    one?") is short and names no skill, yet it is the same job and needs the same runbook."""
+    for m in reversed(history):
+        if m.run_id != current_run_id and m.role is Role.USER and m.name == "context":
+            return _skill_names(m.content)
+    return []
+
+
+#: What the ledger of earlier turns may cost in the prompt, at most.
+LEDGER_CHARS = 6_000
+_LEDGER_ARG_KEYS = (
+    "path", "filename", "name", "to", "subject", "account", "folder", "query", "q", "url", "ref",
+    "entry_id", "id", "mode", "draft",
+)  # fmt: skip
+_LEDGER_HEAD = (
+    "[Conversation ledger - every earlier turn of this chat, kept by the core and always complete, "
+    "even where the turns below are shortened or summarised. It is what you already did: do not "
+    "redo it, build on it. A result can be read back by its @ref with jarvis.result_read.]"
+)
+
+
+def _one_line(text: str, limit: int) -> str:
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
+def _call_brief(call: Any) -> str:
+    """``tool(key=value, ...)`` with only the arguments that identify what was touched."""
+    args = call.arguments if isinstance(call.arguments, dict) else {}
+    shown = []
+    for key in _LEDGER_ARG_KEYS:
+        value = args.get(key)
+        if value in (None, "", [], {}):
+            continue
+        shown.append(f"{key}={_one_line(str(value), 48)}")
+        if len(shown) == 2:
+            break
+    return f"{call.name}({', '.join(shown)})" if shown else call.name
+
+
+def _ledger_turn(index: int, turn: list[Message], *, detail: bool) -> str:
+    request = next((m for m in turn if m.role is Role.USER and m.name is None), None)
+    results = {m.tool_call_id: m for m in turn if m.role is Role.TOOL}
+    actions: list[str] = []  # (what, ref) - consecutive repeats of the same call are folded: "x10"
+    refs: list[str] = []
+    counts: list[int] = []
+    for m in turn:
+        if m.role is not Role.ASSISTANT:
+            continue
+        for call in m.tool_calls:
+            res = results.get(call.id)
+            what = _call_brief(call) if detail else call.name
+            if res is None:
+                what += " (no result)"
+            elif res.content.startswith("Error"):
+                what += " FAILED"
+            ref = f" {short_ref(call.id)}" if detail and res is not None and not res.content.startswith("Error") else ""
+            if actions and actions[-1] == what:
+                counts[-1] += 1
+                refs[-1] = ref  # the newest of the run is the one worth reading back
+            else:
+                actions.append(what)
+                refs.append(ref)
+                counts.append(1)
+    answers = [m for m in turn if m.role is Role.ASSISTANT and not m.tool_calls and m.content.strip()]
+    when = (request or turn[0]).created_at.strftime("%Y-%m-%d %H:%M")
+    asked = _one_line(request.content, 300 if detail else 140) if request else "(no text)"
+    lines = [f"T{index} {when} - asked: {asked}"]
+    if actions:
+        did = "; ".join(f"{a}{r}" if n == 1 else f"{a} x{n}{r}" for a, r, n in zip(actions, refs, counts, strict=True))
+        lines.append(f"  did: {_one_line(did, 900 if detail else 200)}")
+    if answers:
+        lines.append(f"  answered: {_one_line(answers[-1].content, 700 if detail else 160)}")
+    elif any(m.partial for m in turn):
+        lines.append("  answered: (interrupted before an answer)")
+    return "\n".join(lines)
+
+
+def conversation_ledger(history: list[Message], current_run_id: str, *, max_chars: int = LEDGER_CHARS) -> str | None:
+    """A compact, deterministic record of every earlier turn: what Arsen asked, what was done
+    (the tool, the arguments that say what it touched, FAILED or the result's @ref) and what was
+    answered.
+
+    The turns themselves ride only as far as the history budget reaches, and what falls out of
+    it lives on in a 400-word model summary at best. That is how a follow-up after a 20-step run
+    ("само прати мейла, вече имаш всичко") met a model that had to rediscover its own work - the
+    file it wrote, the recipients, which host was down - and re-ran a dozen probes doing so
+    (2026-10-02). This costs a few hundred characters a turn and no model call. The newest turns
+    are written in detail; when the whole does not fit, the oldest shrink to one line each, and
+    past that they are counted, not listed.
+    """
+    turns: list[list[Message]] = []
+    for m in history:
+        if m.run_id == current_run_id or m.role is Role.SYSTEM or m.name in ("context", "summary", "plan", "ledger"):
+            continue
+        if turns and m.run_id is not None and turns[-1][0].run_id == m.run_id:
+            turns[-1].append(m)
+        else:
+            turns.append([m])
+    turns = [t for t in turns if any(m.role is Role.USER or m.tool_calls for m in t)]
+    if not turns:
+        return None
+    entries = [_ledger_turn(i + 1, t, detail=True) for i, t in enumerate(turns)]
+    room = max_chars - len(_LEDGER_HEAD)
+
+    def size() -> int:
+        return sum(len(e) + 1 for e in entries)
+
+    for i in range(len(entries) - 1):  # oldest first; the newest turn always stays detailed
+        if size() <= room:
+            break
+        entries[i] = _ledger_turn(i + 1, turns[i], detail=False)
+    dropped = 0
+    while size() > room and len(entries) > 1:
+        entries.pop(0)
+        dropped += 1
+    if dropped:
+        entries.insert(0, f"({dropped} earlier turn(s) not listed - see the summary of the earlier conversation)")
+    return _LEDGER_HEAD + "\n" + "\n".join(entries)
 
 
 class BlockProvider(Protocol):
@@ -170,13 +295,22 @@ class ContextAssembler:
             window=window, max_tokens=max_tokens, fixed_tokens=fixed_tokens
         )
         admit_chars = s.admit_chars(results_tokens, self.chars_per_token)
-        history = earlier_turn_view(
-            await self._store.list_messages(run.conversation_id), run.id, admit_chars=admit_chars
-        )
+        stored = await self._store.list_messages(run.conversation_id)
+        history = earlier_turn_view(stored, run.id, admit_chars=admit_chars)
         budget_chars = int(history_tokens * self.chars_per_token)
+        ledger = conversation_ledger(stored, run.id, max_chars=min(LEDGER_CHARS, budget_chars // 4))
+        if ledger is not None:
+            budget_chars -= len(ledger)
         if self._compactor is not None and run.kind is not RunKind.TRIAGE:
             history = await self._compactor.prepare(run.conversation_id, history, budget_chars)  # type: ignore[attr-defined]
-        messages = [system, *await self._hydrate(self.trim(history, budget_chars))]
+        kept = await self._hydrate(self.trim(history, budget_chars))
+        if ledger is not None:
+            # Right before this run's own messages, not at the top: it grows by a turn each turn,
+            # and up there it would invalidate the cached prefix of the whole history every time.
+            # Here only the new turn's tokens are new, as they are anyway.
+            at = next((i for i, m in enumerate(kept) if m.run_id == run.id), len(kept))
+            kept.insert(at, Message.user(ledger, name="ledger", conversation_id=run.conversation_id))
+        messages = [system, *kept]
         return ContextView(
             messages=messages,
             history_tokens=history_tokens,

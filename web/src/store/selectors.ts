@@ -5,11 +5,12 @@ import type { ChatState } from './state';
 
 export type FolderKind = Exclude<ConversationKind, 'chat'>;
 
-export const FOLDER_ORDER: readonly FolderKind[] = ['scheduled', 'triage', 'meeting', 'collab', 'archive'];
+export const FOLDER_ORDER: readonly FolderKind[] = ['scheduled', 'triage', 'mail', 'meeting', 'collab', 'archive'];
 
 export const FOLDER_LABELS: Record<FolderKind, string> = {
   scheduled: 'Scheduled',
   triage: 'Triage',
+  mail: 'Mail',
   meeting: 'Meetings',
   collab: 'Collab',
   archive: 'Archive',
@@ -114,7 +115,9 @@ export function selectSidebar(
     }
     const groups = buckets.get(f) ?? new Map<string, FolderGroup>();
     buckets.set(f, groups);
-    const key = c.folder_key ?? '';
+    // A mail chat's key is its thread (that is how the core finds it again); the group is the
+    // mailbox, which the label names - one head per thread would be the clutter all over again.
+    const key = (c.kind === 'mail' ? c.folder_label : c.folder_key) ?? '';
     const g = groups.get(key) ?? { key, label: c.folder_label ?? c.folder_key ?? '', conversations: [], unread: 0 };
     g.conversations.push(c);
     if (c.unread) g.unread += 1;

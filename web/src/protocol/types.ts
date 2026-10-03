@@ -124,7 +124,7 @@ export interface Run {
   finished_at: string | null;
 }
 
-export type ConversationKind = 'chat' | 'scheduled' | 'collab' | 'triage' | 'meeting' | 'archive';
+export type ConversationKind = 'chat' | 'scheduled' | 'collab' | 'triage' | 'mail' | 'meeting' | 'archive';
 
 /**
  * What the sidebar's activity dot says about a conversation. Derived by the server from the

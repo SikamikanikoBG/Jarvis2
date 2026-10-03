@@ -83,3 +83,18 @@ async def test_provider_tools_survive_a_restart(tmp_path: Path):
     await Store(db2).forget_provider_tools("workocholic")
     assert await db2.fetchall("SELECT provider FROM provider_tools") == []
     await db2.close()
+
+
+async def test_migration_11_moves_mail_desk_chats_into_their_own_kind(tmp_path: Path):
+    db = Database(tmp_path / "t.db")
+    await db.open()
+    store = Store(db)
+    mail = await store.create_conversation(title="✉ x", folder_key="mail:a@b.bg:CONV1", folder_label="Mail")
+    plain = await store.create_conversation(title="hello", folder_key="mail-ish")
+    await db.execute("DELETE FROM schema_migrations WHERE version = 11")
+    await db._migrate()
+    moved = await store.get_conversation(mail.id)
+    assert moved is not None and moved.kind.value == "mail" and moved.folder_label == "a@b.bg"
+    kept = await store.get_conversation(plain.id)
+    assert kept is not None and kept.kind.value == "chat"
+    await db.close()

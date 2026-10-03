@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from jarvis_core.features.mail import triage_tool
-from jarvis_proto import Conversation
+from jarvis_proto import Conversation, ConversationKind
 from jarvis_proto.events import ConversationUpdated
 
 if TYPE_CHECKING:
@@ -32,7 +32,6 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 FOLDER_KEY_PREFIX = "mail:"
-FOLDER_LABEL = "Mail"
 # How much unread mail the desk looks at: usually tens, across every folder triage files into.
 LIST_LIMIT = 300
 LIST_CACHE_S = 60.0
@@ -361,8 +360,12 @@ class MailDesk:
                 (c for c in await store.list_conversations(include_archived=True) if c.folder_key == key), None
             )
             if existing is None:
+                # Its own kind: the Mail folder of the sidebar, grouped by mailbox, not the chat list.
                 conv = await store.create_conversation(
-                    title=f"✉ {thread['subject']}"[:120], folder_key=key, folder_label=FOLDER_LABEL
+                    kind=ConversationKind.MAIL,
+                    title=f"✉ {thread['subject']}"[:120],
+                    folder_key=key,
+                    folder_label=acct,
                 )
                 conv = await store.update_conversation(conv.id, instructions=instructions, title_auto=False) or conv
             else:
@@ -371,6 +374,9 @@ class MailDesk:
                     fields["instructions"] = instructions
                 if existing.archived:
                     fields["archived"] = False
+                if existing.kind is not ConversationKind.MAIL:  # made before mail had its own kind
+                    fields["kind"] = ConversationKind.MAIL
+                    fields["folder_label"] = acct
                 conv = await store.update_conversation(existing.id, **fields) if fields else existing
                 conv = conv or existing
         self.core.bus.publish(ConversationUpdated(conversation=conv))

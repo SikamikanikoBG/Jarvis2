@@ -19,6 +19,7 @@ class RunKind(StrEnum):
     COLLAB = "collab"
     TRIAGE = "triage"
     MEETING = "meeting"
+    MAIL = "mail"
     SYSTEM = "system"
 
 
@@ -146,6 +147,7 @@ class ConversationKind(StrEnum):
     COLLAB = "collab"
     TRIAGE = "triage"
     MEETING = "meeting"
+    MAIL = "mail"
     ARCHIVE = "archive"
 
 

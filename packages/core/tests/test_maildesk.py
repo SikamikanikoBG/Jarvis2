@@ -243,7 +243,8 @@ async def test_a_thread_spans_sent_items_and_a_lone_message_is_its_own_thread(ha
 async def test_the_chat_beside_a_thread_is_one_chat_that_knows_the_thread(harness: Harness):
     desk = await _desk(harness, FakeVm())
     conv = await desk.session("a2")
-    assert conv.title == "✉ Budget 2027" and conv.folder_key == "mail:me@bank.bg:C1" and conv.kind.value == "chat"
+    assert conv.title == "✉ Budget 2027" and conv.folder_key == "mail:me@bank.bg:C1" and conv.kind.value == "mail"
+    assert conv.folder_label == "me@bank.bg", "the Mail folder groups by mailbox"
     assert "reply_to_entry_id=`a2`" in conv.instructions and "vm.outlook_send" in conv.instructions
     assert "★ Arsen" in conv.instructions and "body of a1" in conv.instructions
     # Opened again (from another message of the same thread): the same chat.
@@ -346,3 +347,12 @@ async def test_an_older_host_is_not_asked_for_html(harness: Harness):
     desk = await _desk(harness, vm)
     await desk.thread("a2")
     assert "html" not in vm.thread_args[0]
+
+
+async def test_a_mail_chat_made_as_a_plain_chat_moves_to_the_mail_folder(harness: Harness):
+    old = await harness.core.store.create_conversation(
+        title="✉ Budget 2027", folder_key="mail:me@bank.bg:C1", folder_label="Mail"
+    )
+    desk = await _desk(harness, FakeVm())
+    conv = await desk.session("a2")
+    assert conv.id == old.id and conv.kind.value == "mail" and conv.folder_label == "me@bank.bg"

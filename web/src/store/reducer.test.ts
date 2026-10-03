@@ -215,6 +215,20 @@ describe('applyServerEvent — conversations', () => {
     expect(folders[1]?.groups[0]?.label).toBe('2026-09-05');
   });
 
+  it('puts mail desk chats in a Mail folder, one group per mailbox rather than per thread', () => {
+    const evs: ServerEvent[] = [
+      { type: 'conversation.updated', ts: iso(0), conversation: conv('m1', 10, { kind: 'mail', folder_key: 'mail:a@bank.bg:C1', folder_label: 'a@bank.bg' }) },
+      { type: 'conversation.updated', ts: iso(0), conversation: conv('m2', 20, { kind: 'mail', folder_key: 'mail:a@bank.bg:C2', folder_label: 'a@bank.bg' }) },
+      { type: 'conversation.updated', ts: iso(0), conversation: conv('c1', 30) },
+    ];
+    const s = applyServerEvents(initialChatState(), evs, T0);
+    const { chats, folders } = selectSidebar(s.conversations);
+    expect(chats.map((c) => c.id)).toEqual(['c1']);
+    expect(folders.map((f) => f.kind)).toEqual(['mail']);
+    expect(folders[0]?.label).toBe('Mail');
+    expect(folders[0]?.groups.map((g) => [g.label, g.conversations.map((c) => c.id)])).toEqual([['a@bank.bg', ['m2', 'm1']]]);
+  });
+
   it("files chats into Arsen's own folders, and archiving still wins over filing", () => {
     let s = initialChatState();
     const folders: ChatFolder[] = [

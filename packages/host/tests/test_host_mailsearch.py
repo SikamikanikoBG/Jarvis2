@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 import pytest
-from fake_com import Mail, World
+from fake_com import Attachment, Mail, Recipient, World
 
 from jarvis_host.mailsearch import QueryError, date_range, parse_query, query, thread_full, unread
 from jarvis_host.outlook import OutlookBackend
@@ -146,3 +146,22 @@ def test_thread_full_carries_each_body_even_when_the_table_preview_is_empty(back
     world.exchange.conversations = False
     lone = thread_full(backend, first.EntryID)
     assert [i["body"] for i in lone["items"]] == ["Please pay invoice 4471.\r\nRegards"]
+
+
+def test_thread_full_html_inlines_cid_images_and_recipients_carry_smtp(backend: OutlookBackend, world: World):
+    first = world.mails[0]
+    first.HTMLBody = '<p>Hi</p><img src="cid:logo@01DA"><img src="https://x.example/a.png">'
+    first.Attachments.Add(Attachment("image001.png", 4, content_id="<logo@01DA>", data=b"\x89PNG", mime="image/png"))
+    first.Recipients.Add(Recipient("Maria Petrova", "x500:MPetrova@postbank.bg", 1))
+    first.Recipients.Add(Recipient("Ops", "ops@postbank.bg", 2))
+    plain = thread_full(backend, first.EntryID)["items"][0]
+    assert "html" not in plain, "HTML only when asked: the model reads the text"
+    item = thread_full(backend, first.EntryID, html=True)["items"][0]
+    assert 'src="data:image/png;base64,iVBORw=="' in item["html"] and "cid:" not in item["html"]
+    assert "https://x.example/a.png" in item["html"]
+    assert item["recipients"] == [
+        {"name": "Maria Petrova", "address": "mpetrova@postbank.bg", "type": "to"},
+        {"name": "Ops", "address": "ops@postbank.bg", "type": "cc"},
+    ]
+    first.BodyFormat = 1  # plain text: Outlook's HTMLBody is only a wrapper around it
+    assert "html" not in thread_full(backend, first.EntryID, html=True)["items"][0]

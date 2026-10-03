@@ -313,6 +313,12 @@ export interface MeetingRsvpSettings {
 
 // ---- the mail desk (features/maildesk.py) --------------------------------------------------
 
+export interface MailRecipient {
+  name: string;
+  address: string;
+  type: 'to' | 'cc' | 'bcc';
+}
+
 /** One message as the Outlook host describes it (outlook_list / outlook_thread / outlook_read). */
 export interface MailItem {
   entry_id: string;
@@ -334,6 +340,10 @@ export interface MailItem {
   flagged?: boolean;
   has_attachments?: boolean;
   attachments?: { name: string; size: number }[];
+  /** To / Cc / Bcc with SMTP addresses (a thread or a full read, host 2.0.0a25+). */
+  recipients?: MailRecipient[];
+  /** The HTML body as Outlook shows it, inline images included (the mail desk only). */
+  html?: string;
   /** Arsen wrote it (outlook_thread). */
   mine?: boolean;
   conversation_id?: string;

@@ -7,6 +7,8 @@ import { errorText, useLoader } from '../lib/useLoader';
 import type { MailItem, MailSearchResult, MailThread, MailThreadDetail, MailThreadList } from '../protocol/types';
 import { DESKTOP_QUERY, useMediaQuery } from '../shell/useMediaQuery';
 import { useStore } from '../store/store';
+import { MailHtml } from './MailHtml';
+import { participants } from './people';
 
 type Pane = 'list' | 'thread' | 'jarvis';
 
@@ -44,6 +46,31 @@ function lastSegment(path: string): string {
   return path.split('/').filter(Boolean).pop() ?? path;
 }
 
+const PEOPLE_SHOWN = 10;
+
+function People({ items }: { items: MailItem[] }) {
+  const [all, setAll] = useState(false);
+  const people = participants(items);
+  if (people.length === 0) return null;
+  const shown = all ? people : people.slice(0, PEOPLE_SHOWN);
+  return (
+    <div className="mail-people" aria-label="People on this thread">
+      <span className="mail-people-label small muted">{people.length} people</span>
+      {shown.map((p) => (
+        <span key={p.address || p.name} className="mail-person" title={p.address || p.name}>
+          {p.name && <span className="mail-person-name">{p.name}</span>}
+          {p.address && <span className="mail-person-addr">{p.address}</span>}
+        </span>
+      ))}
+      {people.length > PEOPLE_SHOWN && (
+        <button type="button" className="kg-link small" onClick={() => setAll((v) => !v)}>
+          {all ? 'fewer' : `+${people.length - PEOPLE_SHOWN} more`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 /**
  * The mail desk: unread threads (or a search), one thread, and Jarvis beside it.
  *
@@ -68,7 +95,7 @@ export function MailScreen() {
   const [current, setCurrent] = useState<MailThread | null>(null);
   const [pane, setPane] = useState<Pane>('list');
   const [chatFor, setChatFor] = useState<{ key: string; conversationId: string | null; error: string | null } | null>(null);
-  const [marking, setMarking] = useState(false);
+  const [marking, setMarking] = useState<ReadonlySet<string>>(() => new Set());
   const forceRefresh = useRef(false);
   const sessionSeq = useRef(0);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -152,12 +179,13 @@ export function MailScreen() {
   const unreadIds = new Set(current?.entry_ids ?? []);
   for (const item of detail.data?.items ?? []) if (item.unread) unreadIds.add(item.entry_id);
 
-  const markRead = () => {
-    if (!current || unreadIds.size === 0) return;
-    const ids = [...unreadIds];
-    const at = threads.findIndex((t) => t.key === current.key);
+  /** Mark a thread read - the open one (its unread as the thread shows them) or one from the list. */
+  const markThreadRead = (thread: MailThread, ids: string[]) => {
+    if (ids.length === 0) return;
+    const isCurrent = current?.key === thread.key;
+    const at = threads.findIndex((t) => t.key === thread.key);
     const next = threads[at + 1] ?? threads[at - 1] ?? null;
-    setMarking(true);
+    setMarking((m) => new Set(m).add(thread.key));
     api.mail
       .markRead(ids, mailbox)
       .then((res) => {
@@ -165,22 +193,34 @@ export function MailScreen() {
           notify(`${res.failed.length} of ${ids.length} could not be marked read: ${res.failed[0]?.error ?? ''}`, 'error');
           return;
         }
-        unread.setData((d) => (d ? { ...d, threads: d.threads.filter((t) => t.key !== current.key), unread: Math.max(0, d.unread - current.unread_count) } : d));
+        unread.setData((d) => (d ? { ...d, threads: d.threads.filter((t) => t.key !== thread.key), unread: Math.max(0, d.unread - thread.unread_count) } : d));
         if (searching) {
           // A search keeps the thread in its results; it is just no longer unread.
-          found.setData((d) => (d ? { ...d, threads: d.threads.map((t) => (t.key === current.key ? { ...t, unread_count: 0, entry_ids: [] } : t)) } : d));
-          setCurrent({ ...current, unread_count: 0, entry_ids: [] });
-          detail.reload();
+          found.setData((d) => (d ? { ...d, threads: d.threads.map((t) => (t.key === thread.key ? { ...t, unread_count: 0, entry_ids: [] } : t)) } : d));
+          if (isCurrent) {
+            setCurrent({ ...thread, unread_count: 0, entry_ids: [] });
+            detail.reload();
+          }
           return;
         }
-        if (next && next.key !== current.key) select(next);
+        if (!isCurrent) return;
+        if (next && next.key !== thread.key) select(next);
         else {
           setCurrent(null);
           setPane('list');
         }
       })
       .catch((e: unknown) => notify(`Mark read failed: ${errorText(e)}`, 'error'))
-      .finally(() => setMarking(false));
+      .finally(() =>
+        setMarking((m) => {
+          const s = new Set(m);
+          s.delete(thread.key);
+          return s;
+        }),
+      );
+  };
+  const markRead = () => {
+    if (current) markThreadRead(current, [...unreadIds]);
   };
 
   const chatReady = chatFor !== null && chatFor.key === current?.key && chatFor.conversationId !== null && openConversationId === chatFor.conversationId;
@@ -264,37 +304,48 @@ export function MailScreen() {
           </div>
         )}
         {threads.map((t) => (
-          <button
-            key={t.key}
-            id={`mail-row-${t.key}`}
-            type="button"
-            role="option"
-            aria-selected={current?.key === t.key}
-            className={`mail-row${current?.key === t.key ? ' active' : ''}${t.unread_count > 0 ? ' unread' : ''}`}
-            onClick={() => select(t)}
-          >
-            <div className="mail-row-top">
-              {t.unread_count > 0 && <span className="mail-dot" aria-label="unread" />}
-              <span className="mail-from truncate">{t.senders.join(', ')}</span>
-              {t.count > 1 && <span className="mail-count">{t.count}</span>}
-              <span className="mail-when">{t.latest.received ? <RelativeTime ts={t.latest.received} /> : ''}</span>
-            </div>
-            <div className="mail-subject truncate">
-              {t.flagged && <Icon name="pin" size={12} />}
-              {t.has_attachments && <Icon name="paperclip" size={12} />}
-              {t.subject}
-            </div>
-            <div className="mail-row-bottom">
-              <span className="mail-preview">{t.latest.preview}</span>
-              {t.folders.length > 0 && (
-                <span className="mail-folder" title={t.folders.join(', ')}>
-                  <Icon name="folder" size={11} />
-                  {lastSegment(t.folders[0] ?? '')}
-                  {t.folders.length > 1 ? ` +${t.folders.length - 1}` : ''}
-                </span>
-              )}
-            </div>
-          </button>
+          <div key={t.key} className="mail-row-wrap" role="presentation">
+            <button
+              id={`mail-row-${t.key}`}
+              type="button"
+              role="option"
+              aria-selected={current?.key === t.key}
+              className={`mail-row${current?.key === t.key ? ' active' : ''}${t.unread_count > 0 ? ' unread' : ''}`}
+              onClick={() => select(t)}
+            >
+              <div className="mail-row-top">
+                {t.unread_count > 0 && <span className="mail-dot" aria-label="unread" />}
+                <span className="mail-from truncate">{t.senders.join(', ')}</span>
+                {t.count > 1 && <span className="mail-count">{t.count}</span>}
+                <span className="mail-when">{t.latest.received ? <RelativeTime ts={t.latest.received} /> : ''}</span>
+              </div>
+              <div className="mail-subject truncate">
+                {t.flagged && <Icon name="pin" size={12} />}
+                {t.has_attachments && <Icon name="paperclip" size={12} />}
+                {t.subject}
+              </div>
+              <div className="mail-row-bottom">
+                <span className="mail-preview">{t.latest.preview}</span>
+                {t.folders.length > 0 && (
+                  <span className="mail-folder" title={t.folders.join(', ')}>
+                    <Icon name="folder" size={11} />
+                    {lastSegment(t.folders[0] ?? '')}
+                    {t.folders.length > 1 ? ` +${t.folders.length - 1}` : ''}
+                  </span>
+                )}
+              </div>
+            </button>
+            {t.unread_count > 0 && t.entry_ids.length > 0 && (
+              <IconButton
+                icon="check"
+                label="Mark thread read"
+                size="sm"
+                className="mail-row-read"
+                onClick={() => markThreadRead(t, t.entry_ids)}
+                disabled={marking.has(t.key)}
+              />
+            )}
+          </div>
         ))}
         {listing.data?.capped && <p className="small muted mail-capped">{searching ? 'More hits than one search returns; narrow it down.' : 'More unread mail than one read covers; the oldest are not shown.'}</p>}
       </div>
@@ -328,13 +379,14 @@ export function MailScreen() {
                 </button>
               )}
               {unreadIds.size > 0 && (
-                <button type="button" className="btn btn-primary btn-sm" onClick={markRead} disabled={marking}>
+                <button type="button" className="btn btn-primary btn-sm" onClick={markRead} disabled={marking.has(current.key)}>
                   <Icon name="check" size={14} />
-                  {marking ? 'Marking…' : 'Mark read'}
+                  {marking.has(current.key) ? 'Marking…' : 'Mark read'}
                 </button>
               )}
             </div>
           </header>
+          {detail.data && !detail.loading && <People key={current.key} items={detail.data.items} />}
           <div className="mail-messages">
             {detail.error && (
               <div className="mail-error" role="alert">
@@ -424,7 +476,7 @@ export function MailScreen() {
 /** The messages of a thread, oldest first: the newest and the unread open, the rest one line each. */
 function ThreadMessages({ thread, account }: { thread: MailThreadDetail; account: string | null }) {
   const [open, setOpen] = useState<Record<string, boolean>>({});
-  const [full, setFull] = useState<Record<string, string | { error: string }>>({});
+  const [full, setFull] = useState<Record<string, MailItem | { error: string }>>({});
   const bottom = useRef<HTMLDivElement>(null);
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: 'end' });
@@ -433,7 +485,7 @@ function ThreadMessages({ thread, account }: { thread: MailThreadDetail; account
   const loadFull = (item: MailItem) => {
     api.mail
       .message(item.entry_id, account)
-      .then((m) => setFull((f) => ({ ...f, [item.entry_id]: m.body ?? '' })))
+      .then((m) => setFull((f) => ({ ...f, [item.entry_id]: m })))
       .catch((e: unknown) => setFull((f) => ({ ...f, [item.entry_id]: { error: errorText(e) } })));
   };
 
@@ -443,10 +495,13 @@ function ThreadMessages({ thread, account }: { thread: MailThreadDetail; account
       {thread.total > thread.items.length && <p className="small muted">{thread.total - thread.items.length} older messages are not shown.</p>}
       {thread.items.map((item, i) => {
         const isOpen = open[item.entry_id] ?? (i === last || item.unread === true);
-        const loaded = full[item.entry_id];
-        const text = typeof loaded === 'string' ? loaded : textOf(item);
+        const got = full[item.entry_id];
+        const loaded = got && !('error' in got) ? got : null;
+        const html = loaded?.html ?? item.html;
+        const text = loaded ? (loaded.body ?? '') : textOf(item);
         // Offer the whole message when what is shown was cut, or there is nothing to show at all.
-        const canLoad = typeof loaded !== 'string' && (item.body_truncated === true || !text || (!item.body && text.length >= 3900));
+        // The HTML body is never cut: it is the whole message already.
+        const canLoad = !loaded && !html && (item.body_truncated === true || !text || (!item.body && text.length >= 3900));
         return (
           <article key={item.entry_id} className={`mail-msg${item.mine ? ' mine' : ''}${item.unread ? ' unread' : ''}${isOpen ? ' open' : ''}`}>
             <button type="button" className="mail-msg-head" onClick={() => setOpen((o) => ({ ...o, [item.entry_id]: !isOpen }))} aria-expanded={isOpen}>
@@ -463,7 +518,11 @@ function ThreadMessages({ thread, account }: { thread: MailThreadDetail; account
                     {item.cc && <div className="truncate">Cc: {item.cc}</div>}
                   </div>
                 ) : null}
-                <div className="mail-text">{text ? text : <span className="muted">(no text)</span>}</div>
+                {html ? (
+                  <MailHtml html={html} title={`Message from ${senderOf(item)}`} />
+                ) : (
+                  <div className="mail-text">{text ? text : <span className="muted">(no text)</span>}</div>
+                )}
                 {item.attachments && item.attachments.length > 0 && (
                   <div className="mail-attachments small muted">
                     <Icon name="paperclip" size={12} />
@@ -471,7 +530,7 @@ function ThreadMessages({ thread, account }: { thread: MailThreadDetail; account
                   </div>
                 )}
                 {item.body_error && <div className="field-error">{item.body_error}</div>}
-                {typeof loaded === 'object' && <div className="field-error">{loaded.error}</div>}
+                {got && 'error' in got && <div className="field-error">{got.error}</div>}
                 {canLoad && (
                   <button type="button" className="kg-link" onClick={() => loadFull(item)}>
                     Show the whole message

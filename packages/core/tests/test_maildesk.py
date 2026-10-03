@@ -312,3 +312,37 @@ async def test_a_thread_is_read_with_bodies_once_for_screen_and_chat(harness: Ha
     conv = await desk.session("a2")
     assert "full body of a2" in conv.instructions
     assert len(vm.thread_args) == 1 and vm.thread_args[0]["bodies"] is True, "the session reused the read"
+
+
+class _ThreadHtmlArgs(_ThreadBodiesArgs):
+    html: bool = False
+
+
+class HtmlVm(NewVm):
+    """A host that also hands over each message's HTML body for display (2.0.0a25)."""
+
+    @tool("vm.outlook_thread", description="thread", args=_ThreadHtmlArgs, read_only=True)
+    async def _thread(self, entry_id: str, bodies: bool = False, html: bool = False, **args: Any) -> ToolResult:
+        res = json.loads((await super()._thread(entry_id, bodies=bodies, **args)).text)
+        self.thread_args[-1]["html"] = html
+        if html:
+            for i in res["items"]:
+                i["html"] = f"<p style='color:red'>html of {i['entry_id']}</p>"
+        return ToolResult.data(json.dumps(res))
+
+
+async def test_the_screen_gets_html_and_the_chat_keeps_the_text(harness: Harness):
+    vm = HtmlVm()
+    desk = await _desk(harness, vm)
+    thread = await desk.thread("a2")
+    assert vm.thread_args[0]["html"] is True
+    assert thread["items"][-1]["html"] == "<p style='color:red'>html of a2</p>"
+    conv = await desk.session("a2")
+    assert "full body of a2" in conv.instructions and "html of" not in conv.instructions
+
+
+async def test_an_older_host_is_not_asked_for_html(harness: Harness):
+    vm = NewVm()
+    desk = await _desk(harness, vm)
+    await desk.thread("a2")
+    assert "html" not in vm.thread_args[0]

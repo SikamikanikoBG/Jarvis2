@@ -357,23 +357,33 @@ def query(
 
 
 def thread_full(
-    backend: OutlookBackend, entry_id: str, account: str = "", limit: int = 20, body_chars: int = 8000
+    backend: OutlookBackend,
+    entry_id: str,
+    account: str = "",
+    limit: int = 20,
+    body_chars: int = 8000,
+    *,
+    html: bool = False,
 ) -> dict[str, Any]:
-    """``thread`` with each message's real body (a table preview can be empty for HTML mail)."""
+    """``thread`` with each message's real body (a table preview can be empty for HTML mail),
+    its recipients with addresses, and with ``html`` the HTML body as Outlook shows it."""
     res = backend.thread(entry_id, account, limit, 400)
     items = res.get("items") or []
     if not items:
-        one = backend.read(entry_id, account, body_chars)
+        one = backend.read(entry_id, account, body_chars, html=html)
         one["body_truncated"] = bool(one.get("body_truncated"))
         return {**res, "items": [one]}
     for item in items:
         try:
-            full = backend.read(str(item["entry_id"]), account, body_chars)
+            full = backend.read(str(item["entry_id"]), account, body_chars, html=html)
         except Exception as exc:  # one unreadable message must not hide the thread
             item["body_error"] = str(exc)[:200]
             continue
         item["body"] = full.get("body", "")
         item["body_truncated"] = bool(full.get("body_truncated"))
         item["attachments"] = full.get("attachments", [])
+        item["recipients"] = full.get("recipients", [])
         item["entry_id"] = full.get("entry_id") or item["entry_id"]
+        if full.get("html"):
+            item["html"] = full["html"]
     return res

@@ -43,10 +43,23 @@ class Collection:
 
 
 class Attachment:
-    def __init__(self, name: str, size: int) -> None:
+    def __init__(self, name: str, size: int, *, content_id: str = "", data: bytes = b"", mime: str = "") -> None:
         self.FileName = name
         self.DisplayName = name
         self.Size = size
+        self._props: dict[str, Any] = {}
+        if content_id:
+            self._props["http://schemas.microsoft.com/mapi/proptag/0x3712001F"] = content_id
+        if mime:
+            self._props["http://schemas.microsoft.com/mapi/proptag/0x370E001F"] = mime
+        self._data = data
+
+    @property
+    def PropertyAccessor(self) -> PropertyAccessor:
+        return PropertyAccessor(self._props)  # the data property is "too big": SaveAsFile it is
+
+    def SaveAsFile(self, path: str) -> None:
+        Path(path).write_bytes(self._data)
 
 
 class Attachments(Collection):
@@ -83,10 +96,12 @@ class OleObj:
 
 
 class Recipient:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, address: str = "", rtype: int = 0) -> None:
+        # "x500:" in address: an Exchange user whose SMTP only the address entry knows.
         self.Name = name
-        self.Address = name
-        self.Type = 0
+        self.AddressEntry = AddressEntry(address or name)
+        self.Address = self.AddressEntry.Address if address else name
+        self.Type = rtype
 
 
 class Mail:

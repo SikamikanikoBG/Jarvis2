@@ -22,13 +22,16 @@ through :class:`jarvis_host.com.ComWorker` with a per-call timeout.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import ctypes
 import html
 import logging
+import mimetypes
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -111,6 +114,12 @@ OL_RESPONSE_NOT_RESPONDED = 5
 PR_HASATTACH = "http://schemas.microsoft.com/mapi/proptag/0x0E1B000B"
 PR_CONVERSATION_ID = "http://schemas.microsoft.com/mapi/proptag/0x30130102"
 PR_SENDER_SMTP = "http://schemas.microsoft.com/mapi/proptag/0x5D01001F"
+# A recipient's SMTP address (its Address is an X500 DN for Exchange users).
+PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001F"
+# Inline images: an HTML body names them as cid:<content id>; the bytes are the attachment's.
+PR_ATTACH_CONTENT_ID = "http://schemas.microsoft.com/mapi/proptag/0x3712001F"
+PR_ATTACH_MIME_TAG = "http://schemas.microsoft.com/mapi/proptag/0x370E001F"
+PR_ATTACH_DATA_BIN = "http://schemas.microsoft.com/mapi/proptag/0x37010102"
 DASL_RECEIVED = '"urn:schemas:httpmail:datereceived"'
 DASL_SUBJECT = '"urn:schemas:httpmail:subject"'
 DASL_FROMNAME = '"urn:schemas:httpmail:fromname"'
@@ -150,6 +159,11 @@ TABLE_COLUMNS: tuple[str, ...] = (
 PREVIEW_CHARS = 400
 MAX_LIST_LIMIT = 500
 MAX_BODY_CHARS = 20_000
+# The HTML body as Outlook shows it, for the mail desk: bigger ones fall back to the text.
+MAX_HTML_CHARS = 400_000
+MAX_INLINE_IMAGE_BYTES = 2_000_000  # per message, all its cid: images together
+MAX_RECIPIENTS = 100
+RECIPIENT_TYPES = {1: "to", 2: "cc", 3: "bcc"}
 MAX_MARK_READ = 200
 CALENDAR_SCAN_CAP = 2_000
 CALENDAR_SCAN_SECONDS = 20.0
@@ -1034,7 +1048,96 @@ class OutlookBackend:
             pass
         return addr
 
-    def read(self, entry_id: str, account: str = "", max_chars: int = MAX_BODY_CHARS) -> dict[str, Any]:
+    def _recipient_smtp(self, recipient: Any) -> str:
+        addr = _text(_prop(recipient, "Address", ""))
+        if "@" in addr and not addr.upper().startswith("/O="):
+            return addr.lower()
+        try:
+            smtp = recipient.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS)
+            if smtp and "@" in str(smtp):
+                return str(smtp).lower()
+        except Exception:
+            pass
+        try:
+            user = recipient.AddressEntry.GetExchangeUser()
+            smtp = _text(_prop(user, "PrimarySmtpAddress", "")) if user is not None else ""
+            if "@" in smtp:
+                return smtp.lower()
+        except Exception:
+            pass
+        return addr
+
+    def _recipients(self, item: Any) -> list[dict[str, str]]:
+        """To / Cc / Bcc with SMTP addresses: the To and CC lines carry display names only."""
+        out: list[dict[str, str]] = []
+        for r in _iter_com(_prop(item, "Recipients")):
+            if len(out) >= MAX_RECIPIENTS:
+                break
+            out.append(
+                {
+                    "name": _text(_prop(r, "Name", "")),
+                    "address": self._recipient_smtp(r),
+                    "type": RECIPIENT_TYPES.get(int(_prop(r, "Type", 1) or 1), "to"),
+                }
+            )
+        return out
+
+    @staticmethod
+    def _attachment_bytes(att: Any) -> bytes:
+        try:
+            data = att.PropertyAccessor.GetProperty(PR_ATTACH_DATA_BIN)
+            if data:
+                return bytes(data)
+        except Exception:
+            pass
+        # Big attachments do not come through the property; Outlook writes them out instead.
+        with tempfile.TemporaryDirectory(prefix="jarvis-att-") as tmp:
+            path = Path(tmp) / "inline.bin"
+            try:
+                att.SaveAsFile(str(path))
+                return path.read_bytes()
+            except Exception:
+                return b""
+
+    def _inline_images(self, item: Any, markup: str) -> str:
+        """``cid:`` images as ``data:`` URIs, so the body shows as Outlook shows it."""
+        cids = {c.lower() for c in re.findall(r"cid:([^\"'\s)>]+)", markup, flags=re.IGNORECASE)}
+        if not cids:
+            return markup
+        budget = MAX_INLINE_IMAGE_BYTES
+        for att in _iter_com(_prop(item, "Attachments")):
+            try:
+                cid = _text(att.PropertyAccessor.GetProperty(PR_ATTACH_CONTENT_ID)).strip("<>")
+            except Exception:
+                continue
+            if not cid or cid.lower() not in cids or int(_prop(att, "Size", 0) or 0) > budget:
+                continue
+            data = self._attachment_bytes(att)
+            if not data or len(data) > budget:
+                continue
+            budget -= len(data)
+            try:
+                mime = _text(att.PropertyAccessor.GetProperty(PR_ATTACH_MIME_TAG))
+            except Exception:
+                mime = ""
+            if not mime.startswith("image/"):
+                mime = mimetypes.guess_type(_text(_prop(att, "FileName", "")))[0] or "image/png"
+            uri = f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+            markup = re.sub("cid:" + re.escape(cid), lambda _m, u=uri: u, markup, flags=re.IGNORECASE)
+        return markup
+
+    def _html(self, item: Any) -> str | None:
+        """The HTML body with its inline images, or None when it is plain text or too big."""
+        if int(_prop(item, "BodyFormat", 2) or 2) == 1:  # olFormatPlain: Outlook's HTML is a wrapper
+            return None
+        markup = _text(_prop(item, "HTMLBody", ""))
+        if not markup.strip() or len(markup) > MAX_HTML_CHARS:
+            return None
+        return self._inline_images(item, markup)
+
+    def read(
+        self, entry_id: str, account: str = "", max_chars: int = MAX_BODY_CHARS, html: bool = False
+    ) -> dict[str, Any]:
         item, store = self._item(entry_id, account)
         body = _text(_prop(item, "Body", ""))
         if not body.strip():
@@ -1052,7 +1155,7 @@ class OutlookBackend:
         flag_status = int(_prop(item, "FlagStatus", 0) or 0)
         is_task = bool(_prop(item, "IsMarkedAsTask", False))
         parent = _prop(item, "Parent")
-        return {
+        result: dict[str, Any] = {
             "entry_id": _text(_prop(item, "EntryID", "")) or entry_id,
             "store_id": _text(_prop(store, "StoreID", "")),
             "account": _text(_prop(store, "DisplayName", "")),
@@ -1062,6 +1165,7 @@ class OutlookBackend:
             "from": {"name": _text(_prop(item, "SenderName", "")), "address": self._sender_smtp(item)},
             "to": _text(_prop(item, "To", "")),
             "cc": _text(_prop(item, "CC", "")),
+            "recipients": self._recipients(item),
             "received": iso_local(_to_dt(_prop(item, "ReceivedTime"))),
             "sent": iso_local(_to_dt(_prop(item, "SentOn"))),
             "unread": bool(_prop(item, "UnRead", False)),
@@ -1075,6 +1179,11 @@ class OutlookBackend:
             "body": body[:max_chars],
             "body_truncated": truncated,
         }
+        if html:
+            markup = self._html(item)
+            if markup:
+                result["html"] = markup
+        return result
 
     def move(self, entry_id: str, folder: str, account: str = "", create: bool = False) -> dict[str, Any]:
         item, store = self._item(entry_id, account)
@@ -1197,8 +1306,8 @@ class OutlookBackend:
         except mailsearch.QueryError as exc:
             raise OutlookError(f"search: {exc}") from exc
 
-    def thread_full(self, entry_id: str, account: str = "", limit: int = 20) -> dict[str, Any]:
-        return mailsearch.thread_full(self, entry_id, account, limit)
+    def thread_full(self, entry_id: str, account: str = "", limit: int = 20, html: bool = False) -> dict[str, Any]:
+        return mailsearch.thread_full(self, entry_id, account, limit, html=html)
 
     def mark_read(self, entry_ids: list[str], read: bool = True, account: str = "") -> dict[str, Any]:
         """Set the read state of each message and check it took. One id failing does not stop the

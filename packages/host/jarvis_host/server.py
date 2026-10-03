@@ -239,10 +239,12 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
         )
 
     @tool("outlook_read", READ)
-    async def outlook_read(entry_id: str, account: str = "", max_chars: int = 20_000) -> str:
-        """One message: headers, sender SMTP address, plain-text body (HTML converted), attachment names/sizes, flag and read state. `max_chars` caps the body (default 20k; use 3000-5000 for notification-style mail such as Jira, whose tail is boilerplate). Returns the durable entry_id."""
+    async def outlook_read(entry_id: str, account: str = "", max_chars: int = 20_000, html: bool = False) -> str:
+        """One message: headers, sender SMTP address, `recipients` (name, SMTP address, to/cc/bcc), plain-text body (HTML converted), attachment names/sizes, flag and read state. `max_chars` caps the body (default 20k; use 3000-5000 for notification-style mail such as Jira, whose tail is boilerplate). `html=true` adds the raw HTML body with inline images - for display only, never for reading. Returns the durable entry_id."""
         cap = max(200, min(int(max_chars), 20_000))
-        return json_text(await _run("outlook_read", lambda: outlook().call("read", entry_id, account, cap)))
+        return json_text(
+            await _run("outlook_read", lambda: outlook().call("read", entry_id, account, cap, html=bool(html)))
+        )
 
     @tool("outlook_search", READ)
     async def outlook_search(
@@ -262,12 +264,20 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
 
     @tool("outlook_thread", READ)
     async def outlook_thread(
-        entry_id: str, account: str = "", limit: int = 8, preview_chars: int = 600, bodies: bool = False
+        entry_id: str,
+        account: str = "",
+        limit: int = 8,
+        preview_chars: int = 600,
+        bodies: bool = False,
+        html: bool = False,
     ) -> str:
-        """The whole conversation a message belongs to, across folders (Sent Items too): the newest `limit` messages, oldest first, each with sender, to/cc, preview and `mine` (the owner wrote it). `bodies=true` adds each message's real body (up to 8,000 chars) and attachment names - the preview alone is empty for much HTML mail. `conversation: false` when the store keeps no conversations."""
+        """The whole conversation a message belongs to, across folders (Sent Items too): the newest `limit` messages, oldest first, each with sender, to/cc, preview and `mine` (the owner wrote it). `bodies=true` adds each message's real body (up to 8,000 chars), `recipients` with SMTP addresses and attachment names - the preview alone is empty for much HTML mail. `html=true` (with bodies) adds each raw HTML body with inline images - for display only, never for reading. `conversation: false` when the store keeps no conversations."""
         if bodies:
             return json_text(
-                await _run("outlook_thread", lambda: outlook().call("thread_full", entry_id, account, min(limit, 30)))
+                await _run(
+                    "outlook_thread",
+                    lambda: outlook().call("thread_full", entry_id, account, min(limit, 30), html=bool(html)),
+                )
             )
         return json_text(
             await _run("outlook_thread", lambda: outlook().call("thread", entry_id, account, limit, preview_chars))

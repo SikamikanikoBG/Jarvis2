@@ -176,9 +176,6 @@
   border: 1px solid transparent;
   color: var(--fg);
 }
-.mail-row + .mail-row {
-  margin-top: 2px;
-}
 .mail-row:hover {
   background: var(--bg-elevated);
 }
@@ -373,4 +370,72 @@
   .mail-desk:not(.mobile) {
     grid-template-columns: minmax(240px, 300px) minmax(0, 1fr) minmax(320px, 380px);
   }
+}
+
+/* ---- a row's quick "mark read" ------------------------------------------------------------- */
+.mail-row-wrap {
+  position: relative;
+}
+.mail-row-wrap + .mail-row-wrap {
+  margin-top: 2px;
+}
+.mail-row-wrap:has(.mail-row-read) .mail-row {
+  padding-right: 40px;
+}
+.mail-row-read {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--fg-muted);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+}
+.mail-row-read:hover:not(:disabled) {
+  color: var(--accent-ink);
+  background: var(--accent-fill);
+  border-color: var(--accent);
+}
+
+/* ---- everyone on the thread ------------------------------------------------------------------ */
+.mail-people {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  padding: var(--s-2) var(--pad-x);
+  border-bottom: 1px solid var(--border);
+  max-height: 30vh;
+  overflow-y: auto;
+}
+.mail-people-label {
+  margin-right: 2px;
+}
+.mail-person {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  max-width: 100%;
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-elevated);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+.mail-person-name {
+  font-weight: 600;
+  color: var(--fg);
+}
+.mail-person-addr {
+  color: var(--fg-muted);
+}
+
+/* ---- the HTML body, on the white page it was written for -------------------------------------- */
+.mail-html {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fff;
 }

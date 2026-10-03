@@ -307,11 +307,14 @@ class MailDesk:
         # The table's preview is empty for much HTML mail; the body read per message is what shows.
         if self._has_arg("thread", "bodies"):
             args["bodies"] = True
+            # The screen shows each message as Outlook does; the chat's instructions keep the text.
+            if self._has_arg("thread", "html"):
+                args["html"] = True
         data = await self._call("thread", args, timeout_s=180)
         items = [i for i in (data.get("items") or []) if isinstance(i, dict)]
         if not items:
             # No conversations in this store (or an empty answer): the message alone is the thread.
-            one = await self._call("read", {"entry_id": entry_id, "account": acct, "max_chars": 20_000})
+            one = await self._call("read", self._read_args(entry_id, acct))
             items = [one]
         for it in items:
             if not it.get("body") and it.get("preview"):
@@ -326,8 +329,14 @@ class MailDesk:
             "items": items,
         }
 
+    def _read_args(self, entry_id: str, acct: str) -> dict[str, Any]:
+        args: dict[str, Any] = {"entry_id": entry_id, "account": acct, "max_chars": 20_000}
+        if self._has_arg("read", "html"):
+            args["html"] = True
+        return args
+
     async def message(self, entry_id: str, account: str | None = None) -> dict[str, Any]:
-        return await self._call("read", {"entry_id": entry_id, "account": self._account(account), "max_chars": 20_000})
+        return await self._call("read", self._read_args(entry_id, self._account(account)))
 
     async def mark_read(self, entry_ids: list[str], *, read: bool = True, account: str | None = None) -> dict[str, Any]:
         acct = self._account(account)

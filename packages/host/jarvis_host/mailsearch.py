@@ -292,7 +292,7 @@ def unread(backend: OutlookBackend, account: str = "", limit: int = 300, preview
         if int(_prop(folder, "UnReadItemCount", 0) or 0) <= 0:
             continue
         with_unread += 1
-        for row in _rows(backend, folder, f"{DASL_READ} = 0", limit, preview_chars):
+        for row in _rows(backend, folder, f"@SQL={DASL_READ} = 0", limit, preview_chars):
             if row.unread:
                 items.append({**row.as_item(store_id), "folder": path})
     items.sort(key=lambda i: str(i.get("received") or ""), reverse=True)
@@ -323,7 +323,8 @@ def query(
     if not parsed.has_date and days_back:
         lower = datetime.now().astimezone() - timedelta(days=max(1, int(days_back)))
         conditions.append(f"{DASL_RECEIVED} >= '{_utc(lower)}'")
-    filt = " AND ".join(conditions) if conditions else None
+    # GetTable takes DASL only behind @SQL=; a bare condition is "Condition is not valid".
+    filt = "@SQL=" + " AND ".join(conditions) if conditions else None
     store = backend._store(account)
     store_id = _text(_prop(store, "StoreID", ""))
     folders = mail_folders(backend, store, () if parsed.folders else NOT_SEARCHED)

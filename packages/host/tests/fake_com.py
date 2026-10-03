@@ -509,6 +509,9 @@ class Folder:
 
     def GetTable(self, filt: str | None = None) -> Table:
         self.table_calls.append(f"GetTable({filt})")
+        if filt and not filt.startswith(("@SQL=", "[")):
+            # Outlook takes a DASL filter only behind the @SQL= prefix (a Jet one starts with "[").
+            raise FakeComError(-2147352567, "Condition is not valid.")
         return Table(self, filt)
 
     def walk(self) -> Iterable[Folder]:

@@ -1,5 +1,6 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
+import { IconButton } from '../components/primitives';
 import { getToken } from '../lib/token';
 import { errorText, useLoader } from '../lib/useLoader';
 import { useStore } from '../store/store';
@@ -33,6 +34,22 @@ export function OfficeScreen() {
     return () => window.removeEventListener('message', onMessage);
   }, [openConversation, notify]);
 
+  // Fullscreen: the button's target is this screen's div, so the button itself stays in it and
+  // can turn the office back off; Esc exits the same way the browser always does.
+  const screenRef = useRef<HTMLDivElement>(null);
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => {
+    const onChange = () => setFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+  const toggleFullscreen = useCallback(() => {
+    const el = screenRef.current;
+    if (!el) return;
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void el.requestFullscreen().catch(() => notify('The browser refused fullscreen', 'error'));
+  }, [notify]);
+
   if (error) {
     return (
       <div className="screen">
@@ -59,8 +76,15 @@ export function OfficeScreen() {
   const token = getToken();
   const src = `/pixel-office/${token ? `?token=${encodeURIComponent(token)}` : ''}`;
   return (
-    <div className="office-screen">
+    <div className="office-screen" ref={screenRef}>
       {data && <iframe className="office-frame" src={src} title="Office" />}
+      <IconButton
+        className="office-fs-btn"
+        icon={fullscreen ? 'minimize' : 'maximize'}
+        active={fullscreen}
+        label={fullscreen ? 'Leave fullscreen (Esc)' : 'Fullscreen'}
+        onClick={toggleFullscreen}
+      />
     </div>
   );
 }

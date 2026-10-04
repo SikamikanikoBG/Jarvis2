@@ -51,7 +51,39 @@ Answer JSON only: {{"category": "<name or none>"}}"""
 # "No structural rule decided this mail" - distinct from a decision to leave it (None, None).
 _UNDECIDED = object()
 # Earlier messages of a conversation shown to the classifier (the newest ones).
-_THREAD_MESSAGES = 6
+_THREAD_MESSAGES = 10
+_THREAD_PREVIEW = 350
+
+# Boilerplate that filled whole previews (measured on the Reference sweep, 2026-10-04): the bank's
+# external-mail banner is ~250 chars, so a 300-char preview of an external reply said nothing but
+# the warning. Cut before the classifier sees it, as the hand-run sweep's scan.py did.
+_BANNER = re.compile(
+    r"ВНИМАНИЕ: Това е ВЪНШЕН имейл.*?(?:измама\.|$)\s*|WARNING: This is an EXTERNAL email.*?(?:fraud\.|scam\.|$)\s*",
+    re.IGNORECASE | re.DOTALL,
+)
+_MEETING = re.compile(
+    r"_{8,}.*?(?:Microsoft Teams|Събрание в Microsoft Teams).*$", re.IGNORECASE | re.DOTALL
+)
+# What follows these is a signature or a quoted earlier message, never the point of this one.
+_TAIL = re.compile(
+    r"\s(?:Поздрави|С уважение|Best regards|Kind regards|Regards|BR,|От: |From: |-{3,} ?Original Message)",
+    re.IGNORECASE,
+)
+
+
+def clean_preview(text: str) -> str:
+    """A mail's own words: banners, Teams invite boilerplate, signature and quoted tail removed."""
+    s = " ".join(str(text or "").split())
+    s = _BANNER.sub("", s)
+    s = _MEETING.sub("[Teams meeting]", s).strip()
+    m = _TAIL.search(s, 15)  # a greeting that opens the mail is not a signature
+    return s[: m.start()].strip() if m else s
+
+
+def _addressed(m: dict[str, Any]) -> str:
+    to, cc = str(m.get("to") or ""), str(m.get("cc") or "")
+    parts = [f"to {to[:90]}" if to else "", f"cc {cc[:60]}" if cc else ""]
+    return " ".join(p for p in parts if p)
 
 
 def _thread_block(thread: list[dict[str, Any]], item: dict[str, Any]) -> str:
@@ -70,13 +102,23 @@ def _thread_block(thread: list[dict[str, Any]], item: dict[str, Any]) -> str:
         frm = m.get("from") if isinstance(m.get("from"), dict) else {}
         who = str(frm.get("name") or m.get("sender") or frm.get("address") or "?")
         mark = " [OWNER]" if m.get("mine") else ""
-        preview = " ".join(str(m.get("preview") or "").split())[:300]
+        preview = clean_preview(str(m.get("preview") or ""))[:_THREAD_PREVIEW]
+        to = _addressed(m)
         lines.append(
-            f"- {str(m.get('received') or '')[:16]} {who}{mark}: {str(m.get('subject') or '')[:120]} | {preview}"
+            f"- {str(m.get('received') or '')[:16]} {who}{mark}{f' ({to})' if to else ''}: "
+            f"{str(m.get('subject') or '')[:120]} | {preview}"
         )
+    # Arsen, 2026-10-04: a thread is alive. It can need nothing for days and then need him - even
+    # with him only in Cc - so every new message re-judges the conversation as it stands now.
     return (
         "\nThe email below is the latest in a conversation. Judge the CONVERSATION as a whole: who asks whom "
         "for what, and whether the mailbox owner takes part ([OWNER] marks his own messages). "
+        "Judge it as it stands NOW, after the email below: a thread that needed nothing from him can need him "
+        "now, even when he is only in Cc - he or his team is named or asked, a decision, approval, deadline, "
+        "blocker or escalation lands on his area, his boss or a senior manager joins and turns to him, or the "
+        "people in To wait for him to answer. Then it is todo (he must reply, decide or act) or to_read (he "
+        "must know before he next speaks on it), whatever earlier messages were. When his own reply is the "
+        "last word and nothing new is asked of him, it is not todo.\n"
         "Earlier messages, oldest first:\n" + "\n".join(lines) + "\n"
     )
 
@@ -613,7 +655,7 @@ class TriageJob:
                     "entry_id": str(item["entry_id"]),
                     "account": account,
                     "limit": _THREAD_MESSAGES,
-                    "preview_chars": 400,
+                    "preview_chars": 900,  # room left once the banner is cut
                 },
                 cancel=asyncio.Event(),
                 idempotency_key=f"triage:thread:{account}:{item['entry_id']}",
@@ -694,7 +736,7 @@ class TriageJob:
             to=str(item.get("to") or "")[:300],
             cc=str(item.get("cc") or "")[:300],
             subject=subject[:200],
-            preview=preview[:500],
+            preview=clean_preview(preview)[:800],
         )
         try:
             from jarvis_proto.settings import RoleName

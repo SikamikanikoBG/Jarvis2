@@ -1222,3 +1222,65 @@ def test_blind_passes_back_off_to_half_an_hour_and_recover_at_once():
     base = 5 * 60
     assert [backoff_interval(base, n) for n in range(6)] == [300, 600, 1200, 1800, 1800, 1800]
     assert backoff_interval(45 * 60, 3) == 45 * 60  # a slow base interval is never shortened
+
+
+def test_previews_lose_the_banner_the_invite_boilerplate_and_the_signature():
+    """2026-10-04 Reference sweep: the external-mail banner filled a whole 300-char preview, so
+    the classifier judged an external reply on the warning alone."""
+    from jarvis_core.features.triage import clean_preview
+
+    banner = (
+        "ВНИМАНИЕ: Това е ВЪНШЕН имейл. Работете с повишено внимание – линкове, файлове или искания за "
+        "действия може да са опит за фишинг или измама. WARNING: This is an EXTERNAL email. Proceed with "
+        "caution – links, attachments, or requests for action may be attempts at phishing or fraud. "
+    )
+    assert clean_preview(banner + "Арсен, можеш ли да потвърдиш до петък? Поздрави, Иван Петров") == (
+        "Арсен, можеш ли да потвърдиш до петък?"
+    )
+    invite = "Да прегледаме плана. ____________________ Microsoft Teams meeting Join: https://teams.x/1"
+    assert clean_preview(invite) == "Да прегледаме плана. [Teams meeting]"
+    # A greeting that opens the mail is not mistaken for the signature.
+    assert clean_preview("Поздрави, колеги, срокът е утре.") == "Поздрави, колеги, срокът е утре."
+
+
+async def test_a_thread_is_rejudged_as_it_stands_now_even_with_arsen_in_cc(harness: Harness):
+    """Arsen, 2026-10-04: a thread can need nothing for several passes and then need him, Cc or
+    not. Each new message re-judges the whole conversation, who it is addressed to included."""
+    from jarvis_proto import TriageRules
+
+    core = harness.core
+    host = await _with_host(harness)
+    host.items = [
+        {"entry_id": "n1", "conversation_id": "C9", "subject": "RE: Audit findings", "received": "2026-10-04T10:00:00",
+         "from": {"name": "Auditor", "address": "audit@bank.bg"}, "to": "Ops Team", "cc": "Arsen P. Apostolov",
+         "preview": "Арсен, екипът ти е отговорен за т. 3 - срок 10.10. Моля потвърди."},
+    ]  # fmt: skip
+    host.threads["C9"] = [
+        {"entry_id": "e1", "subject": "Audit findings", "received": "2026-09-28T09:00:00",
+         "from": {"name": "Auditor", "address": "audit@bank.bg"}, "to": "Ops Team", "cc": "Arsen P. Apostolov",
+         "preview": "ВНИМАНИЕ: Това е ВЪНШЕН имейл. Бла измама. Report attached for information.", "mine": False},
+        {**host.items[0], "mine": False},
+    ]  # fmt: skip
+    harness.enable(
+        triage=TriageSettings(
+            host="laptop",
+            accounts=["Work"],
+            account_rules={
+                "work": TriageRules(
+                    categories=[
+                        {"name": "todo", "folder": "Action Hub/To-Do", "rule": "he must act"},
+                        {"name": "reference", "folder": "Action Hub/Reference", "rule": "FYI"},
+                    ],
+                    fallback_category="reference",
+                    demand_routing=False,
+                )
+            },
+        )
+    )
+    harness.chat.push(FakeTurn(text='{"category": "todo"}'))
+    report = await core.triage.run_once()
+    assert report.errors == [] and dict(host.moves) == {"n1": "Action Hub/To-Do"}
+    prompt = harness.chat.calls[0][0][-1].content
+    assert "as it stands NOW" in prompt and "even when he is only in Cc" in prompt
+    assert "Auditor (to Ops Team cc Arsen P. Apostolov): Audit findings | Report attached for information." in prompt
+    assert "ВЪНШЕН" not in prompt

@@ -51,8 +51,17 @@ export function commentsDocument(notes: Annotation[]): string {
     return `${i + 1}. On this part:\n${quoteBlock(n.quote)}\n\n   My comment: ${comment}`;
   });
   const head = notes.length === 1 ? 'A comment on your reply:' : `${notes.length} comments on your reply:`;
-  return `${head}\n\n${items.join('\n\n')}`;
+  return `${head}\n\n${items.join('\n\n')}\n\n${ONE_PASS}`;
 }
+
+/**
+ * Written into the comments themselves, so it reaches the model whatever Arsen types with them.
+ * Without it the model took the comments one at a time — rewrite, save, rewrite again, save — and
+ * every pass showed up as one more full answer.
+ */
+export const ONE_PASS =
+  'Apply ALL of these comments together in ONE pass: one complete revised version, written out once. ' +
+  'Do not handle them one by one and do not show intermediate versions.';
 
 /** What to say with the attachment: Arsen's own words, or the default ask. */
 export function revisionAsk(text: string): string {

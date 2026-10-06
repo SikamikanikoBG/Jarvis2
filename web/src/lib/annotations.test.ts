@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_REVISE,
+  ONE_PASS,
   commentsAttachmentName,
   commentsDocument,
   composeWithAnnotations,
@@ -21,7 +22,12 @@ const note = (over: Partial<Annotation>): Annotation => ({
 
 describe('commentsDocument', () => {
   it('quotes the passage and adds the comment', () => {
-    expect(commentsDocument([note({})])).toBe('A comment on your reply:\n\n1. On this part:\n> Dear John\n\n   My comment: make it Dear Mr. Smith');
+    expect(commentsDocument([note({})])).toBe(`A comment on your reply:\n\n1. On this part:\n> Dear John\n\n   My comment: make it Dear Mr. Smith\n\n${ONE_PASS}`);
+  });
+
+  it('asks for one pass over all comments, whatever Arsen types with them', () => {
+    expect(commentsDocument([note({}), note({ id: 'b', start: 20 })])).toContain('ONE pass');
+    expect(composeWithAnnotations([note({})], 'my own words')).toContain(ONE_PASS);
   });
 
   it('orders comments down the page and quotes every line of a multi-line passage', () => {

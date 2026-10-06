@@ -59,7 +59,6 @@ function highlightsSupported(): boolean {
  */
 export function ReplyComments({ conversationId }: { conversationId: string }) {
   const notes = useStore((s) => s.annotations[conversationId] ?? EMPTY);
-  const messages = useStore((s) => s.messages[conversationId]);
   const addAnnotation = useStore((s) => s.addAnnotation);
   const [selection, setSelection] = useState<Draft | null>(null);
   const [editing, setEditing] = useState<Draft | null>(null);
@@ -112,23 +111,35 @@ export function ReplyComments({ conversationId }: { conversationId: string }) {
 
   // Mark what has been commented (and the passage being commented, once focus has moved into the
   // box and the browser's own selection is gone).
+  //
+  // Touched ONLY when the comments change, and not at all while there are none. It used to re-set
+  // the registry on every message update — many times a second while a run streams — and Chromium
+  // (Brave) then repainted the transcript wrongly: stale copies of its bottom stacked down the
+  // page, each with its own scrollbar. A finished reply's text does not change, so the ranges
+  // stay valid without re-reading it.
   useEffect(() => {
     if (!highlightsSupported()) return;
+    if (notes.length === 0 && !editing) {
+      if (CSS.highlights.has(HIGHLIGHT)) CSS.highlights.delete(HIGHLIGHT);
+      if (CSS.highlights.has(HIGHLIGHT_DRAFT)) CSS.highlights.delete(HIGHLIGHT_DRAFT);
+      return;
+    }
     const ranges: Range[] = [];
     for (const n of notes) {
       const md = document.getElementById(`msg-${n.messageId}`)?.querySelector('.md');
       const r = md ? rangeFromOffsets(md, n.start, n.end) : null;
       if (r?.toString() === n.quote && r) ranges.push(r);
     }
-    CSS.highlights.set(HIGHLIGHT, new Highlight(...ranges));
+    if (ranges.length) CSS.highlights.set(HIGHLIGHT, new Highlight(...ranges));
+    else if (CSS.highlights.has(HIGHLIGHT)) CSS.highlights.delete(HIGHLIGHT);
     if (editing) CSS.highlights.set(HIGHLIGHT_DRAFT, new Highlight(editing.range));
-    else CSS.highlights.delete(HIGHLIGHT_DRAFT);
-  }, [notes, messages, editing]);
+    else if (CSS.highlights.has(HIGHLIGHT_DRAFT)) CSS.highlights.delete(HIGHLIGHT_DRAFT);
+  }, [notes, editing]);
   useEffect(
     () => () => {
       if (!highlightsSupported()) return;
-      CSS.highlights.delete(HIGHLIGHT);
-      CSS.highlights.delete(HIGHLIGHT_DRAFT);
+      if (CSS.highlights.has(HIGHLIGHT)) CSS.highlights.delete(HIGHLIGHT);
+      if (CSS.highlights.has(HIGHLIGHT_DRAFT)) CSS.highlights.delete(HIGHLIGHT_DRAFT);
     },
     [],
   );

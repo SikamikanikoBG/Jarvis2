@@ -225,7 +225,7 @@ export function PendingComments({ conversationId }: { conversationId: string }) 
       <div className="pending-comments-head">
         <Icon name="comment" size={13} />
         <span>
-          {notes.length === 1 ? '1 comment' : `${notes.length} comments`} on the reply — sent with your next message
+          {notes.length === 1 ? '1 comment' : `${notes.length} comments`} on the reply — attached to your next message
         </span>
         <button type="button" className="btn btn-sm btn-secondary" onClick={() => clear(conversationId)}>
           Clear

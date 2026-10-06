@@ -26,6 +26,7 @@ const chatFolders = new Map(); // Arsen's own chat folders, id → folder
 const runEvents = new Map(); // run id → events
 const cancelFlags = new Map();
 const confirmWaiters = new Map(); // run id → resolve(approved)
+const attachments = new Map(); // attachment id → attachment (text only)
 
 /** A window of `text` around the first match, the way jarvis_core.db.store._snippet does it. */
 function snippetAround(text, q, width = 70) {
@@ -336,7 +337,7 @@ async function cancelled(run, turn) {
 
 /** Creates the user message + run for a conversation and starts the scripted execution. */
 function createRun(c, text, kind = 'chat', opts = {}) {
-  const user = msg(c.id, { role: 'user', content: text });
+  const user = msg(c.id, { role: 'user', content: text, attachments: (opts.attachment_ids ?? []).map((a) => attachments.get(a)).filter(Boolean) });
   const run = { id: newId('run'), conversation_id: c.id, kind, status: 'queued', input_text: text, plan: null, budget: settings.budgets[kind] ?? settings.budgets.chat, priority: 0, steps_used: 0, usage: { prompt_tokens: 0, completion_tokens: 0, calls: 0, ttft_ms: null, duration_ms: 0 }, last_seq: 0, error: null, waiting_reason: null, think: opts.think ?? null, think_level: opts.think ? (opts.think_level ?? null) : null, created_at: now(), started_at: null, finished_at: null };
   runs.set(run.id, run);
   user.run_id = run.id;
@@ -504,6 +505,19 @@ const server = createServer(async (req, res) => {
   try {
     if (await features.handle(req, res, url, parts)) return;
     if (resource === 'health') return json(res, 200, { ok: true, version: VERSION });
+    // Text attachments only (pasted text, comments on a reply); the text is served back as is.
+    if (resource === 'attachments' && id === 'text' && req.method === 'POST') {
+      const body = await readBody(req);
+      const text = String(body.text ?? '').trim();
+      if (!text) return json(res, 422, { detail: 'nothing to attach' });
+      const a = { id: newId('att'), kind: 'text', name: body.name || 'pasted text', mime: 'text/plain', bytes: Buffer.byteLength(text), meta: {}, text };
+      attachments.set(a.id, a);
+      return json(res, 201, a);
+    }
+    if (resource === 'attachments' && id && req.method === 'GET' && attachments.has(id)) {
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+      return res.end(attachments.get(id).text);
+    }
     if (resource === 'status') {
       await sleep(300);
       return json(res, 200, {
@@ -765,7 +779,7 @@ wss.on('connection', (ws) => {
           subs.add(c.id); // the creating socket is auto-subscribed
           broadcast({ type: 'conversation.updated', ts: now(), conversation: c });
         }
-        createRun(c, m.text, m.kind ?? 'chat', { think: m.think, think_level: m.think_level });
+        createRun(c, m.text, m.kind ?? 'chat', { think: m.think, think_level: m.think_level, attachment_ids: m.attachment_ids });
         break;
       }
       case 'run.cancel': {

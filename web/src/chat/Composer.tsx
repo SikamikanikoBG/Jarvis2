@@ -10,7 +10,7 @@ import { selectIncognitoNow, selectSendRefusal } from '../store/selectors';
 import { NEW_CONVERSATION_KEY } from '../store/state';
 import { useStore } from '../store/store';
 import { mentionAt, type MentionQuery } from '../lib/mentions';
-import { composeWithAnnotations, type Annotation } from '../lib/annotations';
+import { commentsAttachmentName, commentsDocument, composeWithAnnotations, revisionAsk, type Annotation } from '../lib/annotations';
 import type { SessionRef } from '../protocol/types';
 import { PendingAttachments } from './Attachments';
 import { CameraDialog } from './CameraDialog';
@@ -147,11 +147,20 @@ export function Composer({ runActive, stopping }: Props) {
   const submit = () => {
     if (!text.trim() && pending.length === 0 && notes.length === 0) return;
     const commentedIn = openConversationId;
-    const message = composeWithAnnotations(notes, text);
     const sent = () => {
       setText('');
       if (commentedIn && notes.length > 0) clearAnnotations(commentedIn);
     };
+    // Comments ride as ONE text attachment, so the message itself stays what Arsen typed (or the
+    // default ask). A run already working and a forking edit take no attachment: there they are
+    // written into the message instead.
+    if (notes.length > 0 && !editing && !runActive) {
+      void attachText(commentsDocument(notes), commentsAttachmentName(notes.length)).then((ok) => {
+        if (ok && send(revisionAsk(text))) sent();
+      });
+      return;
+    }
+    const message = composeWithAnnotations(notes, text);
     if (editing) void sendEdit(message).then((ok) => ok && sent());
     else if (send(message)) sent();
   };

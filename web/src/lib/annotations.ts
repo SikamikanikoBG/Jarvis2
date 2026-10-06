@@ -18,8 +18,18 @@ export interface Annotation {
   end: number;
 }
 
-/** The instruction used when Arsen sends comments without writing anything himself. */
-export const DEFAULT_REVISE = 'Please send a revised version with these changes applied.';
+/**
+ * The message that goes with the comments when Arsen writes nothing himself. Explicit about ONE
+ * reply: given a list of comments a model tends to answer them one by one instead of redoing the
+ * draft.
+ */
+export const DEFAULT_REVISE =
+  'Revise your previous reply using my comments in the attached file: apply all of them and send back the complete revised version in one reply.';
+
+/** The attachment's name the composer and the sent message show. */
+export function commentsAttachmentName(count: number): string {
+  return count === 1 ? 'Comment on the reply' : `${count} comments on the reply`;
+}
 
 /** Quote every line, so a multi-paragraph selection stays one quote. */
 function quoteBlock(text: string): string {
@@ -31,19 +41,32 @@ function quoteBlock(text: string): string {
 }
 
 /**
- * The message the comments become. Ordered as the passages appear in the reply, so "1." is the
- * first one down the page whatever order they were written in.
+ * The comments as one document — what the attachment holds. Ordered as the passages appear in
+ * the reply, so "1." is the first one down the page whatever order they were written in.
  */
-export function composeWithAnnotations(notes: Annotation[], text: string): string {
-  const own = text.trim();
-  if (notes.length === 0) return own;
+export function commentsDocument(notes: Annotation[]): string {
   const ordered = [...notes].sort((a, b) => (a.messageId === b.messageId ? a.start - b.start : 0));
   const items = ordered.map((n, i) => {
     const comment = n.comment.trim() || '(change this)';
     return `${i + 1}. On this part:\n${quoteBlock(n.quote)}\n\n   My comment: ${comment}`;
   });
   const head = notes.length === 1 ? 'A comment on your reply:' : `${notes.length} comments on your reply:`;
-  return `${head}\n\n${items.join('\n\n')}\n\n${own || DEFAULT_REVISE}`;
+  return `${head}\n\n${items.join('\n\n')}`;
+}
+
+/** What to say with the attachment: Arsen's own words, or the default ask. */
+export function revisionAsk(text: string): string {
+  return text.trim() || DEFAULT_REVISE;
+}
+
+/**
+ * Comments and message as ONE text — only where an attachment cannot go: a message handed to a
+ * run that is already working (it has assembled its context), or an edit that forks the chat.
+ */
+export function composeWithAnnotations(notes: Annotation[], text: string): string {
+  const own = text.trim();
+  if (notes.length === 0) return own;
+  return `${commentsDocument(notes)}\n\n${own || DEFAULT_REVISE.replace('in the attached file', 'above')}`;
 }
 
 /** The text nodes under `root`, in document order. */

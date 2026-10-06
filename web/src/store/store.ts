@@ -157,7 +157,8 @@ export interface Actions {
   setNotifyRuns: (on: boolean) => Promise<void>;
   /** Upload files (photos, documents) and hold them for the next message. */
   attachFiles: (files: File[]) => Promise<void>;
-  attachText: (text: string, name?: string) => Promise<void>;
+  /** True once the text is held for the next message. */
+  attachText: (text: string, name?: string) => Promise<boolean>;
   removeAttachment: (id: string) => void;
   /** A comment on a passage of a reply (lib/annotations.ts), held for the next message. */
   addAnnotation: (conversationId: string, note: Annotation) => void;
@@ -682,8 +683,10 @@ export const useStore = create<AppState>()((set, get) => ({
     try {
       const att = await api.attachments.uploadText(text, name, get().openConversationId, selectIncognitoNow(get()));
       set((s) => ({ pendingAttachments: [...s.pendingAttachments, att] }));
+      return true;
     } catch (e) {
       get().notify(`Could not attach the text: ${errorText(e)}`, 'error');
+      return false;
     }
   },
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { Icon } from '../components/Icon';
 import { rangeOffsets, type Annotation } from '../lib/annotations';
+import { selectActiveRun } from '../store/selectors';
 import { useStore } from '../store/store';
 
 const EMPTY: Annotation[] = [];
@@ -62,16 +63,44 @@ export function ReplyComments({ conversationId }: { conversationId: string }) {
 
   // Follow the selection: a non-empty one inside a single finished reply offers the button.
   // While a comment is being written `editing` wins over whatever the selection does meanwhile.
+  //
+  // Gated to idle: while a run streams the transcript's text mutates on every token, which
+  // fires document `selectionchange` (the user's selection is still live). Reading it on every
+  // token called setSelection on every render, re-rendering the whole transcript subtree and
+  // stranding the old DOM nodes instead of replacing them (10 .transcript divs stacked in one
+  // .chat, each with its own scrollbar). Only listen when no run is active; re-listen the
+  // moment one finishes.
+  const runActive = useStore((s) => selectActiveRun(s, s.openConversationId) !== null);
   useEffect(() => {
+    if (runActive) {
+      // A run started: drop any stale selection so the button does not float over a live reply.
+      setSelection(null);
+      return;
+    }
     let timer = 0;
     const read = () => {
       const sel = document.getSelection();
-      if (!sel || sel.isCollapsed || sel.rangeCount === 0) return setSelection(null);
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+        if (selection) setSelection(null);
+        return;
+      }
       const range = sel.getRangeAt(0);
       const reply = replyOf(range.commonAncestorContainer);
       const quote = range.toString();
       const off = reply ? rangeOffsets(reply.md, range) : null;
-      if (!reply || !off || !quote.trim()) return setSelection(null);
+      if (!reply || !off || !quote.trim()) {
+        if (selection) setSelection(null);
+        return;
+      }
+      // Equality check: a drag that lands on the same passage must not re-render.
+      if (
+        selection &&
+        selection.messageId === reply.messageId &&
+        selection.quote === quote &&
+        selection.start === off.start &&
+        selection.end === off.end
+      )
+        return;
       setSelection({ messageId: reply.messageId, quote, ...off, range: range.cloneRange() });
     };
     // Debounced: a drag fires this on every pixel, a phone's handles too.
@@ -84,7 +113,7 @@ export function ReplyComments({ conversationId }: { conversationId: string }) {
       window.clearTimeout(timer);
       document.removeEventListener('selectionchange', onChange);
     };
-  }, []);
+  }, [runActive]);
 
   const active = editing ?? selection;
   // Placed from the range at render time; a scroll or resize just renders again.

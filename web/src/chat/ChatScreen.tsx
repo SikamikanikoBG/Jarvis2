@@ -75,7 +75,7 @@ export function ChatScreen() {
       ) : (
         <Transcript key={convKey} items={items} />
       )}
-      {convKey !== NEW_CONVERSATION_KEY && <ReplyComments key={convKey} conversationId={convKey} />}
+      {convKey !== NEW_CONVERSATION_KEY && <ReplyComments key={convKey + ":comments"} conversationId={convKey} />}
       <Composer runActive={activeRun !== null} stopping={stopping} />
     </section>
   );

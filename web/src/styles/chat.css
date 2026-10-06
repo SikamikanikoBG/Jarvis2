@@ -174,9 +174,7 @@
   background: var(--code-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
-  /* Wrapped, not scrolled sideways: a reply is read in the one scrolling transcript. */
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  overflow-x: auto;
   font-size: 0.86em;
   line-height: 1.5;
 }
@@ -190,10 +188,10 @@
   border-left: 3px solid var(--border-strong);
   color: var(--fg-2);
 }
-/* A table fits the reply: cells wrap instead of the table scrolling on its own. */
 .md table {
   border-collapse: collapse;
-  max-width: 100%;
+  display: block;
+  overflow-x: auto;
   font-size: 0.92em;
 }
 .md th,
@@ -201,7 +199,6 @@
   border: 1px solid var(--border);
   padding: 4px 8px;
   text-align: left;
-  overflow-wrap: anywhere;
 }
 .md th {
   background: var(--bg-elevated);
@@ -250,9 +247,8 @@
   font-size: var(--fs-sm);
   color: var(--fg-2);
   white-space: pre-wrap;
-  /* No height cap and no scroller of its own: the transcript is the one thing that scrolls.
-     Boxes that scrolled inside it (reasoning, tool output, notes) gave a page of scrollbars
-     while a run worked. */
+  max-height: 320px;
+  overflow-y: auto;
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
@@ -349,6 +345,8 @@
   line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow: auto;
 }
 .tool-body pre.error {
   border-color: var(--danger);
@@ -401,6 +399,8 @@
   font-size: var(--fs-xs);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow: auto;
 }
 .confirm-actions {
   display: flex;
@@ -493,6 +493,8 @@
   line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow: auto;
   color: var(--fg-2);
 }
 .note-plan li.done {

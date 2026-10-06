@@ -10,16 +10,12 @@ import { selectIncognitoNow, selectSendRefusal } from '../store/selectors';
 import { NEW_CONVERSATION_KEY } from '../store/state';
 import { useStore } from '../store/store';
 import { mentionAt, type MentionQuery } from '../lib/mentions';
-import { commentsAttachmentName, commentsDocument, composeWithAnnotations, revisionAsk, type Annotation } from '../lib/annotations';
 import type { SessionRef } from '../protocol/types';
 import { PendingAttachments } from './Attachments';
 import { CameraDialog } from './CameraDialog';
 import { RecorderDialog } from './RecorderDialog';
 import { MentionMenu } from './MentionMenu';
 import { MicButton } from './MicButton';
-import { PendingComments } from './ReplyComments';
-
-const NO_NOTES: Annotation[] = [];
 
 /** Pasted text longer than this becomes an attachment instead of filling the input. */
 const PASTE_AS_FILE_CHARS = 2000;
@@ -70,13 +66,10 @@ export function Composer({ runActive, stopping }: Props) {
   const env = useMemo(() => readRecorderEnv(), []);
   const camera = useMemo(() => cameraSupport(env, { incognito }), [env, incognito]);
   const recorder = useMemo(() => recorderSupport(env, { incognito }), [env, incognito]);
-  // Comments on passages of a reply (ReplyComments) go out with the next message.
-  const notes = useStore((s) => (s.openConversationId ? (s.annotations[s.openConversationId] ?? NO_NOTES) : NO_NOTES));
-  const clearAnnotations = useStore((s) => s.clearAnnotations);
   const refusal = useStore((s) =>
     selectSendRefusal(s, {
       connection: s.connection,
-      hasText: text.trim().length > 0 || s.pendingAttachments.length > 0 || notes.length > 0,
+      hasText: text.trim().length > 0 || s.pendingAttachments.length > 0,
       hasAttachments: s.pendingAttachments.length > 0,
       conversationId: s.openConversationId,
     }),
@@ -143,26 +136,10 @@ export function Composer({ runActive, stopping }: Props) {
   // The box is cleared only once the message is actually on its way. It used to clear
   // unconditionally, so a send refused for being offline (Enter bypasses the disabled button)
   // or for a run still in flight threw away what Arsen had just typed.
-  // The comments are cleared the same way: only once they are on their way.
   const submit = () => {
-    if (!text.trim() && pending.length === 0 && notes.length === 0) return;
-    const commentedIn = openConversationId;
-    const sent = () => {
-      setText('');
-      if (commentedIn && notes.length > 0) clearAnnotations(commentedIn);
-    };
-    // Comments ride as ONE text attachment, so the message itself stays what Arsen typed (or the
-    // default ask). A run already working and a forking edit take no attachment: there they are
-    // written into the message instead.
-    if (notes.length > 0 && !editing && !runActive) {
-      void attachText(commentsDocument(notes), commentsAttachmentName(notes.length)).then((ok) => {
-        if (ok && send(revisionAsk(text))) sent();
-      });
-      return;
-    }
-    const message = composeWithAnnotations(notes, text);
-    if (editing) void sendEdit(message).then((ok) => ok && sent());
-    else if (send(message)) sent();
+    if (!text.trim() && pending.length === 0) return;
+    if (editing) void sendEdit(text).then((sent) => sent && setText(''));
+    else if (send(text)) setText('');
   };
 
   const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -310,7 +287,6 @@ export function Composer({ runActive, stopping }: Props) {
         />
       )}
       <PendingAttachments pending={pending} uploading={uploading} onRemove={removeAttachment} />
-      {openConversationId && <PendingComments conversationId={openConversationId} />}
       {editing && (
         <div className="edit-banner" role="status">
           <Icon name="edit" size={13} />
@@ -396,7 +372,7 @@ export function Composer({ runActive, stopping }: Props) {
             <Icon name="stop" size={18} />
           </button>
         )}
-        {(!runActive || text.trim().length > 0 || notes.length > 0) && (
+        {(!runActive || text.trim().length > 0) && (
           <button
             type="submit"
             className="send-btn"

@@ -7,7 +7,6 @@ import { notifyDesktop, readNotifyPref, writeNotifyPref } from '../lib/notify';
 import { navigate, parseLocation, rememberConversation, type View } from '../lib/router';
 import { applyThemePref, isPanelMode, readThemePref, type ThemePref } from '../lib/theme';
 import { DRAFT_NORMAL, ttlLabel, type DraftPrivacy } from '../lib/privacy';
-import type { Annotation } from '../lib/annotations';
 import type { ThinkChoice } from '../lib/think';
 import { MicListener } from '../voice/listener';
 import { requestMotionPermission } from '../voice/earPose';
@@ -68,8 +67,6 @@ export interface UiState {
   moreOpen: boolean;
   /** "Edit and resend": the message being edited; sending forks the conversation before it. */
   editing: { conversationId: string; messageId: string; text: string } | null;
-  /** Comments on passages of replies, per conversation, waiting to go out with the next message. */
-  annotations: Record<string, Annotation[] | undefined>;
   /** Uploaded and waiting to be sent with the next message. */
   pendingAttachments: Attachment[];
   /** Names of files currently uploading, so the composer can show them. */
@@ -157,13 +154,8 @@ export interface Actions {
   setNotifyRuns: (on: boolean) => Promise<void>;
   /** Upload files (photos, documents) and hold them for the next message. */
   attachFiles: (files: File[]) => Promise<void>;
-  /** True once the text is held for the next message. */
-  attachText: (text: string, name?: string) => Promise<boolean>;
+  attachText: (text: string, name?: string) => Promise<void>;
   removeAttachment: (id: string) => void;
-  /** A comment on a passage of a reply (lib/annotations.ts), held for the next message. */
-  addAnnotation: (conversationId: string, note: Annotation) => void;
-  removeAnnotation: (conversationId: string, id: string) => void;
-  clearAnnotations: (conversationId: string) => void;
   exportConversation: (id: string, format: 'markdown' | 'json') => Promise<void>;
   loadFolders: () => Promise<void>;
   /** The @handles, fetched when an "@" is typed (the core derives them from the titles). */
@@ -252,7 +244,6 @@ export const useStore = create<AppState>()((set, get) => ({
   summaries: {},
   moreOpen: false,
   editing: null,
-  annotations: {},
   pendingAttachments: [],
   uploadingAttachments: [],
   notifyRuns: readNotifyPref(),
@@ -683,10 +674,8 @@ export const useStore = create<AppState>()((set, get) => ({
     try {
       const att = await api.attachments.uploadText(text, name, get().openConversationId, selectIncognitoNow(get()));
       set((s) => ({ pendingAttachments: [...s.pendingAttachments, att] }));
-      return true;
     } catch (e) {
       get().notify(`Could not attach the text: ${errorText(e)}`, 'error');
-      return false;
     }
   },
 
@@ -694,12 +683,6 @@ export const useStore = create<AppState>()((set, get) => ({
     set((s) => ({ pendingAttachments: s.pendingAttachments.filter((a) => a.id !== id) }));
     api.attachments.remove(id).catch(() => undefined); // best effort: the row is orphaned anyway
   },
-
-  addAnnotation: (conversationId, note) =>
-    set((s) => ({ annotations: { ...s.annotations, [conversationId]: [...(s.annotations[conversationId] ?? []), note] } })),
-  removeAnnotation: (conversationId, id) =>
-    set((s) => ({ annotations: { ...s.annotations, [conversationId]: (s.annotations[conversationId] ?? []).filter((a) => a.id !== id) } })),
-  clearAnnotations: (conversationId) => set((s) => ({ annotations: omit(s.annotations, conversationId) })),
 
   setNotifyRuns: async (on) => {
     if (on && 'Notification' in window && Notification.permission === 'default') {

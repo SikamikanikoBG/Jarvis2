@@ -7,6 +7,7 @@ import { NEW_CONVERSATION_KEY } from '../store/state';
 import { useStore } from '../store/store';
 import { buildTranscriptFrom } from '../store/transcript';
 import { Composer } from './Composer';
+import { ReplyComments } from './ReplyComments';
 import { Transcript } from './Transcript';
 
 export function ChatScreen() {
@@ -74,6 +75,7 @@ export function ChatScreen() {
       ) : (
         <Transcript key={convKey} items={items} />
       )}
+      {convKey !== NEW_CONVERSATION_KEY && <ReplyComments key={convKey} conversationId={convKey} />}
       <Composer runActive={activeRun !== null} stopping={stopping} />
     </section>
   );

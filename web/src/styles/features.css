@@ -534,6 +534,117 @@
   flex: 1;
 }
 
+/* --- comments on passages of a reply (chat/ReplyComments.tsx) --- */
+.reply-comment-btn {
+  position: fixed;
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--bg-elevated);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--fs-sm);
+  box-shadow: var(--shadow-2);
+  cursor: pointer;
+}
+.reply-comment-btn:hover {
+  border-color: var(--accent);
+}
+.reply-comment-pop {
+  position: fixed;
+  z-index: 60;
+  width: min(340px, calc(100vw - 16px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-3);
+}
+.reply-comment-quote {
+  margin: 0;
+  padding: 2px 0 2px 8px;
+  border-left: 3px solid var(--accent);
+  color: var(--fg-2);
+  font-size: var(--fs-sm);
+  max-height: 4.5em;
+  overflow: hidden;
+  white-space: pre-wrap;
+}
+.reply-comment-pop textarea {
+  resize: vertical;
+  min-height: 60px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-inset);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--fs-md);
+}
+.reply-comment-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.reply-comment-hint {
+  flex: 1;
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+}
+.pending-comments {
+  margin: 0 0 6px;
+  padding: 6px 10px;
+  border: 1px dashed var(--warn);
+  border-radius: var(--radius-xs);
+  font-size: var(--fs-sm);
+  color: var(--fg-2);
+}
+.pending-comments-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pending-comments-head > span {
+  flex: 1;
+}
+.pending-comments ul {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  max-height: 9em;
+  overflow-y: auto;
+}
+.pending-comments li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+.pending-comment-quote {
+  flex: 0 1 auto;
+  max-width: 45%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-left: 6px;
+  border-left: 2px solid var(--warn);
+  color: var(--fg-muted);
+}
+.pending-comment-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg);
+}
+
 .mic-btn {
   display: inline-flex;
   align-items: center;

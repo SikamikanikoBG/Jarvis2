@@ -1,5 +1,5 @@
 /* Jarvis service worker — caches the app shell only. Never touches /api or /ws. */
-const SHELL = 'jarvis-shell-v1';
+const SHELL = 'jarvis-shell-v2'; // v2: forces a SW update so devices drop the stale shell cache and pull the fresh bundle
 const SHELL_URLS = ['/', '/index.html', '/manifest.webmanifest', '/icons/icon.svg'];
 
 self.addEventListener('install', (event) => {

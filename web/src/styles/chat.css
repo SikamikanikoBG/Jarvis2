@@ -13,6 +13,10 @@
   min-height: 0;
   overflow-y: auto;
   overflow-anchor: none; /* we own the scroll position; no browser anchoring surprises */
+  /* Promote to its own compositor layer: on a phone, a fast stream used to leave stacked stale
+     copies of the transcript behind, each with its own scrollbar. A dedicated layer repaints as
+     one, so the transcript stays the single scroll container the chat is meant to have. */
+  transform: translateZ(0);
   overscroll-behavior: contain;
   scrollbar-width: thin;
   padding: var(--s-4) var(--pad-x) var(--s-3);

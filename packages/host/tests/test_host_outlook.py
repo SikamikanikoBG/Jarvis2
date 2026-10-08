@@ -216,6 +216,16 @@ def test_a_store_that_rejects_a_column_still_lists(backend: OutlookBackend, worl
 
 
 def test_search_verifies_every_match_and_drops_dasl_leaks(backend: OutlookBackend, world: World):
+    # The fixture mail is anchored to a fixed date (2026-09-05), but this test searches the last
+    # 30 days, so once the clock passes 30 days after that base the mail silently leaves the
+    # window and the test fails (a time-bomb, not a regression). Re-date the mails it depends on
+    # to now to keep it deterministic; the other tests use fixed `since=` strings and are not
+    # now-sensitive, so the shared base stays put.
+    now = datetime.now(UTC)
+    by_subject = {m.Subject: m for m in world.mails}
+    by_subject["Re: DM-1234 clarification"].ReceivedTime = now - timedelta(minutes=40)
+    by_subject["Weekly report"].ReceivedTime = now - timedelta(minutes=30)
+    world.gm_inbox._items[0].ReceivedTime = now - timedelta(minutes=5)  # Gmail invoice
     res = backend.search("gmail", "invoice", days_back=30)
     assert [i["subject"] for i in res["items"]] == ["Gmail invoice"]
     assert res["unverified_dropped"] == 1 and res["matched_on"] == ["subject", "from"]

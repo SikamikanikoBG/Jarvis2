@@ -247,11 +247,11 @@ def mail_folders(backend: OutlookBackend, store: Any, skip: tuple[int, ...]) -> 
 
     Reads only Name, DefaultItemType and EntryID per folder - not Items.Count, which is what
     makes a full folder listing of a 200-folder mailbox slow."""
-    from jarvis_host.outlook import _iter_com, _prop, _text
+    from jarvis_host.outlook import _iter_com, _prop, _text  # pyright: ignore[reportPrivateUsage]
 
     skipped = set()
     for const in (*skip, *NEVER):
-        f = backend._default_folder(store, const)
+        f = backend._default_folder(store, const)  # pyright: ignore[reportPrivateUsage]
         if f is not None:
             skipped.add(_text(_prop(f, "EntryID", "")))
     out: list[tuple[Any, str]] = []
@@ -273,16 +273,16 @@ def mail_folders(backend: OutlookBackend, store: Any, skip: tuple[int, ...]) -> 
 
 
 def _rows(backend: OutlookBackend, folder: Any, filt: str | None, limit: int, preview_chars: int) -> list[Any]:
-    rows, _more, _total = backend._table_rows(folder, filt, limit, set(), preview_chars)
+    rows, _more, _total = backend._table_rows(folder, filt, limit, set(), preview_chars)  # pyright: ignore[reportPrivateUsage]
     return rows
 
 
 def unread(backend: OutlookBackend, account: str = "", limit: int = 300, preview_chars: int = 300) -> dict[str, Any]:
     """Unread mail of every mail folder (not Sent, Drafts, Deleted, Junk, Outbox), newest first."""
-    from jarvis_host.outlook import _prop, _text
+    from jarvis_host.outlook import _prop, _text  # pyright: ignore[reportPrivateUsage]
 
     limit = max(1, min(int(limit or 300), MAX_RESULTS))
-    store = backend._store(account)
+    store = backend._store(account)  # pyright: ignore[reportPrivateUsage]
     store_id = _text(_prop(store, "StoreID", ""))
     items: list[dict[str, Any]] = []
     scanned = 0
@@ -315,7 +315,7 @@ def query(
     preview_chars: int = 300,
 ) -> dict[str, Any]:
     """Search every mail folder (Sent Items too) with Outlook's search syntax, newest first."""
-    from jarvis_host.outlook import _prop, _text
+    from jarvis_host.outlook import _prop, _text  # pyright: ignore[reportPrivateUsage]
 
     parsed = parse_query(query_text)
     limit = max(1, min(int(limit or 100), MAX_RESULTS))
@@ -325,7 +325,7 @@ def query(
         conditions.append(f"{DASL_RECEIVED} >= '{_utc(lower)}'")
     # GetTable takes DASL only behind @SQL=; a bare condition is "Condition is not valid".
     filt = "@SQL=" + " AND ".join(conditions) if conditions else None
-    store = backend._store(account)
+    store = backend._store(account)  # pyright: ignore[reportPrivateUsage]
     store_id = _text(_prop(store, "StoreID", ""))
     folders = mail_folders(backend, store, () if parsed.folders else NOT_SEARCHED)
     if parsed.folders:

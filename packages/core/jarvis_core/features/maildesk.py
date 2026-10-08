@@ -85,7 +85,7 @@ def group_threads(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     thread (its preview, its sender, its id - the one a reply hangs on)."""
     groups: dict[str, list[dict[str, Any]]] = {}
     for item in items:
-        if not isinstance(item, dict) or not item.get("entry_id"):
+        if not isinstance(item, dict) or not item.get("entry_id"):  # pyright: ignore[reportUnnecessaryIsInstance]
             continue
         key = str(item.get("conversation_id") or "") or f"single:{item['entry_id']}"
         groups.setdefault(key, []).append(item)

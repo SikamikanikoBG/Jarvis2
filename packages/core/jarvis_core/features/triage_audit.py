@@ -165,7 +165,7 @@ class TriageAudit:
         async for chunk in adapter.stream([Message.user(prompt)], [], cancel=asyncio.Event()):
             if isinstance(chunk, ModelTextChunk):
                 text += chunk.text
-        from jarvis_core.features.triage import _json
+        from jarvis_core.features.triage import _json  # pyright: ignore[reportPrivateUsage]
 
         data = _json(text)
         if not isinstance(data, dict):

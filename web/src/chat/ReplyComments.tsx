@@ -71,9 +71,17 @@ export function ReplyComments({ conversationId }: { conversationId: string }) {
   // .chat, each with its own scrollbar). Only listen when no run is active; re-listen the
   // moment one finishes.
   const runActive = useStore((s) => selectActiveRun(s, s.openConversationId) !== null);
+  // Ref mirror so the selectionchange effect below does not need `selection` in its deps
+  // (re-running that effect on every selection change would tear down and re-add the listener).
+  // Updated in an effect, not during render, per react-hooks/refs.
+  const selectionRef = useRef<Draft | null>(null);
+  useEffect(() => {
+    selectionRef.current = selection;
+  });
   useEffect(() => {
     if (runActive) {
       // A run started: drop any stale selection so the button does not float over a live reply.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time reset on the run transition, not a cascading render
       setSelection(null);
       return;
     }
@@ -81,7 +89,7 @@ export function ReplyComments({ conversationId }: { conversationId: string }) {
     const read = () => {
       const sel = document.getSelection();
       if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
-        if (selection) setSelection(null);
+        if (selectionRef.current) setSelection(null);
         return;
       }
       const range = sel.getRangeAt(0);
@@ -89,16 +97,15 @@ export function ReplyComments({ conversationId }: { conversationId: string }) {
       const quote = range.toString();
       const off = reply ? rangeOffsets(reply.md, range) : null;
       if (!reply || !off || !quote.trim()) {
-        if (selection) setSelection(null);
+        if (selectionRef.current) setSelection(null);
         return;
       }
       // Equality check: a drag that lands on the same passage must not re-render.
       if (
-        selection &&
-        selection.messageId === reply.messageId &&
-        selection.quote === quote &&
-        selection.start === off.start &&
-        selection.end === off.end
+        selectionRef.current?.messageId === reply.messageId &&
+        selectionRef.current?.quote === quote &&
+        selectionRef.current?.start === off.start &&
+        selectionRef.current?.end === off.end
       )
         return;
       setSelection({ messageId: reply.messageId, quote, ...off, range: range.cloneRange() });

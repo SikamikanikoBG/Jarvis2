@@ -61,9 +61,7 @@ _BANNER = re.compile(
     r"ВНИМАНИЕ: Това е ВЪНШЕН имейл.*?(?:измама\.|$)\s*|WARNING: This is an EXTERNAL email.*?(?:fraud\.|scam\.|$)\s*",
     re.IGNORECASE | re.DOTALL,
 )
-_MEETING = re.compile(
-    r"_{8,}.*?(?:Microsoft Teams|Събрание в Microsoft Teams).*$", re.IGNORECASE | re.DOTALL
-)
+_MEETING = re.compile(r"_{8,}.*?(?:Microsoft Teams|Събрание в Microsoft Teams).*$", re.IGNORECASE | re.DOTALL)
 # What follows these is a signature or a quoted earlier message, never the point of this one.
 _TAIL = re.compile(
     r"\s(?:Поздрави|С уважение|Best regards|Kind regards|Regards|BR,|От: |From: |-{3,} ?Original Message)",
@@ -99,7 +97,8 @@ def _thread_block(thread: list[dict[str, Any]], item: dict[str, Any]) -> str:
         return ""
     lines = []
     for m in earlier[-_THREAD_MESSAGES:]:
-        frm = m.get("from") if isinstance(m.get("from"), dict) else {}
+        _from = m.get("from")
+        frm = _from if isinstance(_from, dict) else {}
         who = str(frm.get("name") or m.get("sender") or frm.get("address") or "?")
         mark = " [OWNER]" if m.get("mine") else ""
         preview = clean_preview(str(m.get("preview") or ""))[:_THREAD_PREVIEW]

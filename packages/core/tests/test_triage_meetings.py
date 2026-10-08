@@ -184,6 +184,7 @@ class FakeHost(BuiltinProvider):
         self.invites = [dict(i) for i in _INVITES]
         self.responses: list[tuple[str, str, str]] = []
         self.canceled_calls = 0
+        self.slots_override: list[dict] | None = None
         # Entry ids the host refuses to act on, as a real Outlook does when COM hiccups. Clear
         # the set to let the next attempt through.
         self.move_fails: set[str] = set()
@@ -207,6 +208,8 @@ class FakeHost(BuiltinProvider):
     @tool("laptop.calendar_free_slots", description="slots", args=_SlotsArgs, read_only=True)
     async def _slots(self, **_: Any) -> ToolResult:
         # 09:30 is consecutive to 09:00: a spread proposal skips it in favour of 14:00.
+        if self.slots_override is not None:
+            return ToolResult.data(json.dumps({"slots": self.slots_override}))
         slots = [
             {"start": "2026-09-08T09:00:00+03:00", "end": "2026-09-08T09:30:00+03:00"},
             {"start": "2026-09-08T09:30:00+03:00", "end": "2026-09-08T10:00:00+03:00"},
@@ -1284,3 +1287,60 @@ async def test_a_thread_is_rejudged_as_it_stands_now_even_with_arsen_in_cc(harne
     assert "as it stands NOW" in prompt and "even when he is only in Cc" in prompt
     assert "Auditor (to Ops Team cc Arsen P. Apostolov): Audit findings | Report attached for information." in prompt
     assert "ВЪНШЕН" not in prompt
+
+
+async def test_a_decline_never_proposes_a_slot_a_later_accept_in_the_same_pass_takes(harness: Harness):
+    """A decline for an EARLIER invite must not offer a slot a LATER invite in the same pass
+    gets accepted into.
+
+    Invites are decided in start order, and an accept writes the appointment into the
+    calendar immediately - but the earlier decline already asked the host for free slots,
+    which did not know about the accept. On 2026-10-08 that is how an organizer was
+    offered 09.10 14:00-15:00, the very hour 'Centralize administration of ad-hoc
+    requests' was accepted into by the same pass. The pass now pre-seeds every slot it
+    will commit, so a decline's proposal skips them.
+    """
+    core = harness.core
+    host = await _with_host(harness)
+    host.invites = [
+        {
+            "entry_id": "i2",
+            "subject": "Clash",
+            "organizer": "Pete",
+            "organizer_address": "pete@bank.bg",
+            "start": "2026-09-07T11:00:00+03:00",
+            "end": "2026-09-07T11:30:00+03:00",
+            "conflicts": [_CLASH],
+        },
+        {
+            "entry_id": "i1",
+            "subject": "Free sync",
+            "organizer": "Maria",
+            "organizer_address": "maria@bank.bg",
+            "start": "2026-09-08T14:00:00+03:00",
+            "end": "2026-09-08T14:30:00+03:00",
+            "conflicts": [],
+        },
+    ]
+    # What the host's free-slot walker returns for the decline: 14:00-14:30 on 08.09 is
+    # free in the calendar AS OF NOW - the invite accepted below is what fills it.
+    host.slots_override = [
+        {"start": "2026-09-08T14:00:00+03:00", "end": "2026-09-08T14:30:00+03:00"},
+        {"start": "2026-09-09T09:00:00+03:00", "end": "2026-09-09T09:30:00+03:00"},
+    ]
+    harness.enable(
+        rsvp=MeetingRsvpSettings(host="laptop", account="Work", allowed_domains=["bank.bg"], propose_slots=2)
+    )
+
+    dry = await core.rsvp.run_once(dry_run=True)
+    assert [(d.subject, d.decision) for d in dry.decisions] == [("Clash", "decline"), ("Free sync", "accept")]
+    assert dry.decisions[0].proposals == ["ср 09.09 09:00-09:30"], "the slot the later accept fills must not be offered"
+
+    live = await core.rsvp.run_once()
+    assert live.errors == []
+    assert [(r[0], r[1]) for r in host.responses] == [("i2", "decline"), ("i1", "accept")]
+    comment = host.responses[0][2]
+    assert "14:00-14:30" not in comment
+    assert "09.09 09:00-09:30" in comment
+    state = await core.rsvp.state()
+    assert state is not None and state.answered_total == 2 and state.last_error is None

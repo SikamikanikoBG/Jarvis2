@@ -186,7 +186,30 @@ class RsvpJob:
         invites = [i for i in (data or {}).get("invites", []) if isinstance(i, dict) and i.get("entry_id")]
         report.pending = len(invites)
 
-        reserved: list[tuple[datetime, datetime]] = []  # slots already offered this pass
+        # Slots that will be (or are) busy this pass. Every invite this pass will ACCEPT
+        # (allowed and free, or a VIP accepted despite a clash) is pre-seeded here, and every
+        # slot an earlier decline already offered to another organizer is appended as it goes.
+        # Invites are handled in start order, so a decline for an EARLIER meeting is decided
+        # before a LATER invite is accepted; without the pre-seed that decline offers a slot
+        # the later accept then fills, and the organizer is pointed at a time that is no longer
+        # free. The accept test mirrors _decide exactly: allowed and (no clash or VIP).
+        reserved: list[tuple[datetime, datetime]] = []
+        for inv in invites:
+            address = str(inv.get("organizer_address") or "")
+            if not cfg.is_allowed(address):
+                continue  # left for Arsen: commits nothing
+            conflicts = [c for c in inv.get("conflicts", []) if isinstance(c, dict)]
+            if conflicts and not cfg.is_vip(address):
+                continue  # will be declined: commits nothing
+            try:
+                rs, re_ = (
+                    datetime.fromisoformat(str(inv["start"])),
+                    datetime.fromisoformat(str(inv["end"])),
+                )
+            except (KeyError, ValueError, TypeError):
+                continue
+            if rs < re_:
+                reserved.append((rs, re_))
         lines: list[str] = []
         for inv in invites:
             key = ledger_key(

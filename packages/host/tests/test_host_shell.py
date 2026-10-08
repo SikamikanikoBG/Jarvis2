@@ -88,7 +88,11 @@ def _alive(pid: int) -> bool:
         with open(f"/proc/{pid}/stat") as fh:
             return fh.read().split(")")[-1].split()[0] != "Z"
     except OSError:
-        return True
+        # kill(0) said the process existed a moment ago, but its /proc entry is already
+        # gone: init reaped the (zombie) process in the gap between the two calls. That is
+        # dead, not alive - the previous `return True` here was a race that flaked ~1 in 10
+        # full-suite runs (the process was killed, the probe just lost the reap race).
+        return False
 
 
 def test_disabled_and_bad_input(tmp_path: Path):

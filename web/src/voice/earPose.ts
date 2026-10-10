@@ -14,6 +14,14 @@ import { useEffect, useState } from 'react';
  * Signs are ignored on purpose: Android and iOS disagree on them, and a phone held upside down
  * at the ear is still at the ear. Hysteresis keeps a pose from flickering at the boundary: the
  * ear is entered only well inside its region and left as soon as the tilt says "looking".
+ *
+ * Gravity alone is not enough (2026-10-10, "quite often the screen goes black and I have to
+ * tilt the phone to see the screen"): a phone read standing up, or lying on one's side, is held
+ * just as upright with its glass just as vertical as one at an ear. What only the ear has is a
+ * cheek on the glass. So the pose is a candidate, and the screen goes dark only once the glass
+ * has also been touched — by something that is not a finger on a control — while the pose
+ * held. A cheek the screen never registers leaves the locked screen up, which is the safe side:
+ * its controls answer only to a held fingertip.
  */
 export interface Gravity {
   x: number;
@@ -36,22 +44,35 @@ export function classifyPose(g: Gravity, atEar: boolean): boolean {
   return upright >= EAR_UPRIGHT_MIN && facing <= EAR_FACING_MAX;
 }
 
+/** A contact wider than this (CSS px) is a cheek or an ear, not a fingertip (as CallScreen's holds). */
+export const FINGER_MAX_PX = 60;
+
 /** A pose must hold this long before the screen goes dark; a cheek brushing past is not an ear. */
 export const ENTER_MS = 450;
 /** …and this long before it comes back: pulling the phone away should feel immediate. */
 export const LEAVE_MS = 120;
 /** With no reading for this long the sensor is gone; a dark screen must never be stuck dark. */
 export const STALE_MS = 2000;
+/** A contact counts toward the ear for this long: the cheek lands as the phone comes up, a
+ *  moment before the pose has held long enough. */
+export const CONTACT_MS = 1500;
 
 /**
  * Debounced pose tracking over a stream of readings. `feed` returns the current pose; `tick`
- * lets time pass with no reading (the sensor has stopped) and clears the ear.
+ * lets time pass with no reading (the sensor has stopped) and clears the ear; `contact` says
+ * the glass was touched, without which the ear is never entered.
  */
 export class EarTracker {
   private atEar = false;
   private candidate: boolean | null = null;
   private since = 0;
   private lastReading = 0;
+  private lastContact = Number.NEGATIVE_INFINITY;
+
+  /** Something touched the glass (a cheek, an ear) — not a fingertip on a control. */
+  contact(now: number): void {
+    this.lastContact = now;
+  }
 
   feed(g: Gravity, now: number): boolean {
     this.lastReading = now;
@@ -65,11 +86,21 @@ export class EarTracker {
       this.since = now;
       return this.atEar;
     }
-    if (now - this.since >= (next ? ENTER_MS : LEAVE_MS)) {
-      this.atEar = next;
+    if (!next && now - this.since >= LEAVE_MS) {
+      this.atEar = false;
+      this.candidate = null;
+      // Away from the ear: the next time needs a cheek of its own.
+      this.lastContact = Number.NEGATIVE_INFINITY;
+    } else if (next && now - this.since >= ENTER_MS && this.touchedSince(this.since, now)) {
+      this.atEar = true;
       this.candidate = null;
     }
     return this.atEar;
+  }
+
+  /** A contact inside the pose, or just before it began. */
+  private touchedSince(poseSince: number, now: number): boolean {
+    return this.lastContact >= poseSince - CONTACT_MS && this.lastContact <= now;
   }
 
   tick(now: number): boolean {
@@ -106,9 +137,17 @@ export function useAtEar(on: boolean): boolean {
       if (a?.x == null || a.y == null || a.z == null) return;
       setAtEar(tracker.feed({ x: a.x, y: a.y, z: a.z }, performance.now()));
     };
+    // A cheek is a contact anywhere but a control, or a contact too wide to be a fingertip.
+    // Capture phase, so the guard swallowing the touch does not hide it from us.
+    const onContact = (e: PointerEvent) => {
+      const onControl = e.target instanceof Element && e.target.closest('button') !== null;
+      if (!onControl || e.width > FINGER_MAX_PX || e.height > FINGER_MAX_PX) tracker.contact(performance.now());
+    };
     const stale = window.setInterval(() => setAtEar(tracker.tick(performance.now())), 500);
     window.addEventListener('devicemotion', onMotion);
+    window.addEventListener('pointerdown', onContact, true);
     return () => {
+      window.removeEventListener('pointerdown', onContact, true);
       window.removeEventListener('devicemotion', onMotion);
       window.clearInterval(stale);
       setAtEar(false);

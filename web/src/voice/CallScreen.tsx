@@ -3,14 +3,12 @@ import { Icon } from '../components/Icon';
 import { useTicker } from '../components/useTicker';
 import { formatSeconds } from '../lib/format';
 import { useStore } from '../store/store';
-import { useAtEar } from './earPose';
+import { FINGER_MAX_PX, useAtEar } from './earPose';
 import type { CallPhase, CallState } from './session';
 import { useWakeLock } from './useWakeLock';
 
 /** How long a hold must last to act. Long enough that a cheek never does it, short enough not to feel stuck. */
 const HOLD_MS = 1200;
-/** A contact wider than this (CSS px) is a cheek or an ear, not a fingertip; it holds nothing. */
-const FINGER_MAX_PX = 60;
 
 const PHASE_LABEL: Record<CallPhase, string> = {
   idle: '',

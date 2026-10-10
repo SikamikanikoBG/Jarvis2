@@ -1595,3 +1595,13 @@ flight and the guardrail both check, the registry cannot - it does not know the 
 why the guardrail hook lives in the loop and not in `ToolRegistry.call`), and a burst past
 `max_pending` is dropped and counted, never queued behind the real work. Nine tests; the triage
 and RSVP ones assert the same moves and answers with the shadow on, off, and with Laya down.
+
+## 2026-10-10 — the screen that went black in the hand (web alpha.52)
+
+Arsen: "quite often the screen goes black and I have to tilt the phone to see the screen." The
+ear pose (2026-09-19) was gravity only — upright, glass within ~12° of vertical — and that is
+also how a phone is held to be read standing up or lying on one's side. Now the pose is only a
+candidate: the screen goes dark when it holds *and* something that is not a fingertip on a
+control has touched the glass (a cheek), within 1.5 s of the pose starting. Pulled away, the next
+ear needs a cheek of its own. A cheek the screen never registers leaves the locked screen up,
+whose controls answer only to a held fingertip. Four new tests in `earPose.test.ts`; 148 pass.

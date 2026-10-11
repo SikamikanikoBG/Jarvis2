@@ -27,6 +27,7 @@ import type {
   NoteColor,
   OfficeAgents,
   PairResponse,
+  PushState,
   Run,
   Schedule,
   ScheduleFire,
@@ -307,6 +308,14 @@ export const api = {
   /** The chats as addressable sessions, with the @handle the core derives from each title. */
   sessions: {
     list: () => request<SessionRef[]>('GET', '/api/sessions'),
+  },
+  /** The devices Jarvis can ring (docs/stories/11_call_me.md). */
+  push: {
+    state: () => request<PushState>('GET', '/api/push'),
+    add: (body: { endpoint: string; keys: { p256dh: string; auth: string }; name: string }) =>
+      request<null>('POST', '/api/push/devices', body),
+    forget: (endpoint: string) => request<null>('POST', '/api/push/devices/forget', { endpoint }),
+    test: () => request<{ carrier: 'push' | 'discord' | null }>('POST', '/api/push/test'),
   },
   tools: {
     list: () => request<ToolSpec[]>('GET', '/api/tools'),

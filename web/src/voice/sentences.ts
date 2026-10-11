@@ -74,6 +74,15 @@ export class SentenceSplitter {
   }
 }
 
+/** The first `n` sentences of a reply, as words a voice can say (a ring reads only its start). */
+export function firstSentences(text: string, n: number): string {
+  const splitter = new SentenceSplitter();
+  const out = splitter.push(speakable(text));
+  const rest = splitter.flush();
+  if (rest) out.push(rest);
+  return out.slice(0, n).join(' ').trim();
+}
+
 /** Markdown that survived the style block, stripped for the synthesiser: it must never say "asterisk". */
 export function speakable(text: string): string {
   return text

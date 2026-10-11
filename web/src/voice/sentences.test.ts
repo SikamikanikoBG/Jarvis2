@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SentenceSplitter, scriptLanguage, speakable } from './sentences';
+import { SentenceSplitter, firstSentences, scriptLanguage, speakable } from './sentences';
 
 describe('SentenceSplitter', () => {
   it('hands over a sentence as soon as the next one has visibly begun', () => {
@@ -49,5 +49,14 @@ describe('scriptLanguage', () => {
     expect(scriptLanguage('Hello there.', 'bg')).toBe('en');
     expect(scriptLanguage('123', 'bg')).toBe('bg');
     expect(scriptLanguage('vLLM на vader е ок.', 'en')).toBe('bg');
+  });
+});
+
+describe('firstSentences', () => {
+  it('reads only the start of a reply, as words', () => {
+    expect(firstSentences('**Готово.** Отчетът е в [Drive](https://x.y). Има 12 страници. Още нещо.', 3)).toBe(
+      'Готово. Отчетът е в Drive. Има 12 страници.',
+    );
+    expect(firstSentences('', 3)).toBe('');
   });
 });

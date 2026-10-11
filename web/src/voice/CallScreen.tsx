@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type PointerEvent } from 'react';
 import { Icon } from '../components/Icon';
 import { useTicker } from '../components/useTicker';
 import { formatSeconds } from '../lib/format';
+import { NEW_CONVERSATION_KEY } from '../store/state';
+import { selectActiveRun } from '../store/selectors';
 import { useStore } from '../store/store';
 import { FINGER_MAX_PX, useAtEar } from './earPose';
 import type { CallPhase, CallState } from './session';
@@ -37,6 +39,12 @@ export function CallScreen() {
   const endCall = useStore((s) => s.endCall);
   const setMuted = useStore((s) => s.setCallMuted);
   const setRoute = useStore((s) => s.setCallRoute);
+  // The bell: hang up and be called back when the task he just gave is done.
+  const callMe = useStore((s) => {
+    const run = selectActiveRun(s, s.openConversationId);
+    return run ? run.call_me : Boolean(s.callMeNext[s.openConversationId ?? NEW_CONVERSATION_KEY]);
+  });
+  const toggleCallMe = useStore((s) => s.toggleCallMe);
   const conv = useStore((s) => (s.openConversationId ? s.conversations[s.openConversationId] : undefined));
   const touch = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
   const [locked, setLocked] = useState(touch);
@@ -110,6 +118,15 @@ export function CallScreen() {
             aria-label={call.route === 'speaker' ? 'Speaker on — switch to earpiece' : 'Switch to speaker'}
           >
             <Icon name="speaker" size={22} />
+          </button>
+          <button
+            type="button"
+            className={`call-btn${callMe ? ' on-accent' : ''}`}
+            onClick={toggleCallMe}
+            aria-pressed={callMe}
+            aria-label={callMe ? 'Jarvis will call you back when this is done — tap to cancel' : 'Call me back when this is done'}
+          >
+            <Icon name="bell" size={22} />
           </button>
           {touch ? (
             <HoldButton label="Hold to hang up" icon="phoneOff" danger onHeld={endCall} />

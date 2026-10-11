@@ -578,4 +578,20 @@ describe('CallSession', () => {
     expect(t.session.state.phase).toBe('listening');
     expect(t.speaker.spoken).toHaveLength(2);
   });
+
+  it('an answered ring says the result first, sentence by sentence, then listens', async () => {
+    const t = build();
+    await t.session.start();
+    t.session.say('Готово. Отчетът е в Drive.');
+    await tick();
+    expect(t.session.state.phase).toBe('speaking');
+    expect(t.session.state.saying).toEqual(['Готово.', 'Отчетът е в Drive.']);
+    t.speaker.finishAll();
+    await tick();
+    t.speaker.finishAll();
+    await tick();
+    expect(t.speaker.spoken.map((s) => s.text)).toEqual(['Готово.', 'Отчетът е в Drive.']);
+    expect(t.session.state.phase).toBe('listening');
+    expect(t.transport.created).toEqual([]); // saying the result is not a new turn
+  });
 });

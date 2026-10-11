@@ -432,6 +432,15 @@ export class CallSession {
     }
   }
 
+  /** Say something that is not a run's reply - an answered ring's result - then listen. */
+  say(text: string): void {
+    if (this.state.phase === 'ended') return;
+    const splitter = new SentenceSplitter();
+    for (const sentence of splitter.push(text)) this.enqueue(sentence);
+    const rest = splitter.flush();
+    if (rest) this.enqueue(rest);
+  }
+
   onStepDone(runId: string, endedInToolCalls: boolean): void {
     if (runId !== this.state.runId || this.state.phase === 'ended') return;
     const text = this.stepText;

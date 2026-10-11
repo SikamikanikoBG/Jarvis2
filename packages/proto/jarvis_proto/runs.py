@@ -136,6 +136,9 @@ class Run(BaseModel):
     # A voice run: the reply is spoken, so it is short and plain, and the tools on offer are the
     # ones a call may use (settings.voice.namespaces). Stored so a resumed run stays a call.
     channel: Channel = Channel.TEXT
+    # Ring Arsen when this run ends or stops to ask him something (docs/stories/11_call_me.md):
+    # set with the message, by the bell while it works, or by the run itself (jarvis.call_me).
+    call_me: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     started_at: datetime | None = None
     finished_at: datetime | None = None

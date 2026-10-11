@@ -19,6 +19,7 @@ from jarvis_core.tools.ws_provider import BrowserConn
 from jarvis_proto import (
     INCOGNITO_TITLE,
     Pong,
+    RunCallMeRequest,
     RunCancelRequest,
     RunCreateRequest,
     RunSteerRequest,
@@ -103,6 +104,7 @@ async def _ui_leg(ws: WebSocket) -> None:
                     budget_kind=msg.budget_kind,
                     attachment_ids=msg.attachment_ids,
                     channel=msg.channel,
+                    call_me=msg.call_me,
                 )
             elif isinstance(msg, RunSteerRequest):
                 # Too late is not an error: if the run finished between Arsen pressing enter and
@@ -117,6 +119,8 @@ async def _ui_leg(ws: WebSocket) -> None:
                         )
             elif isinstance(msg, RunCancelRequest):
                 await core.engine.cancel(msg.run_id)
+            elif isinstance(msg, RunCallMeRequest):
+                await core.engine.set_call_me(msg.run_id, msg.on)
             elif isinstance(msg, ToolConfirmRequest):
                 await core.engine.confirm(msg.run_id, msg.call_id, msg.approved, msg.note)
             if sub.dead:

@@ -55,6 +55,11 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     keywords: ['call', 'headset', 'speak', 'spoken', 'tools on a call', 'think', 'microphone', 'tts', 'style', 'namespaces', 'neural', 'borislav', 'kalina', 'rate', 'his voice', 'earpiece', 'speaker'],
   },
   {
+    id: 'settings-calls',
+    label: 'Calls from Jarvis',
+    keywords: ['call me', 'ring', 'bell', 'when done', 'notification', 'push', 'devices', 'phone', 'test ring'],
+  },
+  {
     id: 'settings-confirmations',
     label: 'Confirmations',
     keywords: ['destructive', 'unattended', 'confirm before', 'ask before', 'scheduled', 'triage', 'meeting'],

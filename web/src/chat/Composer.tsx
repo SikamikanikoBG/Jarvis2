@@ -6,7 +6,7 @@ import { callSupported } from '../voice/support';
 import { cameraSupport, readRecorderEnv, recorderSupport } from '../lib/camera';
 import { nextTtl, timeLeft, ttlLabel } from '../lib/privacy';
 import { THINK_CHOICES, THINK_DEFAULT, thinkChoiceKey } from '../lib/think';
-import { selectIncognitoNow, selectSendRefusal } from '../store/selectors';
+import { selectActiveRun, selectIncognitoNow, selectSendRefusal } from '../store/selectors';
 import { NEW_CONVERSATION_KEY } from '../store/state';
 import { useStore } from '../store/store';
 import { mentionAt, type MentionQuery } from '../lib/mentions';
@@ -412,6 +412,7 @@ export function Composer({ runActive, stopping }: Props) {
         <span className="row">
           <ThinkChip />
           <PrivacyToggles />
+          <CallMeToggle />
           <span>{connection === 'open' ? '' : connection === 'connecting' ? 'Connecting…' : 'Reconnecting…'}</span>
         </span>
         <span className="desktop-only">
@@ -487,6 +488,28 @@ function PrivacyToggles() {
         onClick={toggleTimer}
       />
       {ttl !== null && <span className="privacy-state">{left ? `gone in ${left}` : `after ${ttlLabel(ttl)}`}</span>}
+    </span>
+  );
+}
+
+/**
+ * The bell: "call me when this is done" (docs/stories/11_call_me.md). One tap, like the privacy
+ * toggles. While a run works it is that run's; otherwise it goes with the next message.
+ */
+function CallMeToggle() {
+  const on = useStore((s) => {
+    const run = selectActiveRun(s, s.openConversationId);
+    return run ? run.call_me : Boolean(s.callMeNext[s.openConversationId ?? NEW_CONVERSATION_KEY]);
+  });
+  const working = useStore((s) => selectActiveRun(s, s.openConversationId) !== null);
+  const toggle = useStore((s) => s.toggleCallMe);
+  const label = on
+    ? `Jarvis will call you when ${working ? 'this is' : 'the next task is'} done. Tap to cancel.`
+    : `Call me when ${working ? 'this is' : 'the next task is'} done`;
+  return (
+    <span className="privacy-toggles">
+      <IconButton icon="bell" label={label} size="sm" className={`privacy-toggle${on ? ' on-timer' : ''}`} aria-pressed={on} onClick={toggle} />
+      {on && <span className="privacy-state">calls when done</span>}
     </span>
   );
 }

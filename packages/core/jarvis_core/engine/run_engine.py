@@ -154,6 +154,7 @@ class RunEngine:
         budget_kind: RunKind | None = None,
         attachment_ids: list[str] | None = None,
         channel: Channel = Channel.TEXT,
+        call_me: bool = False,
     ) -> tuple[Run, Conversation]:
         conv: Conversation | None = None
         if conversation_id:
@@ -192,6 +193,7 @@ class RunEngine:
             think=think,
             think_level=think_level,
             channel=channel,
+            call_me=call_me,
         )
         await self._store.create_run(run)
         # run_id must be set on the user message so resume can find the run's messages.
@@ -245,6 +247,23 @@ class RunEngine:
         if entry is None or entry[1].emitter.run.status.terminal or not text.strip():
             return False
         entry[1].steers.append(text.strip())
+        return True
+
+    async def set_call_me(self, run_id: str, on: bool) -> bool:
+        """Ring (or no longer ring) Arsen when this run ends: the bell pressed while it works, or
+        the run asking for it itself (jarvis.call_me). False when the run has already ended.
+
+        The live object is changed, not a copy from the DB: the loop saves that object at every
+        step, and a copy would be overwritten by the next save."""
+        entry = self._active.get(run_id)
+        run = entry[1].emitter.run if entry is not None else self._queued.get(run_id)
+        if run is None:
+            run = await self._store.get_run(run_id)  # parked on a question across a restart
+        if run is None or run.status.terminal:
+            return False
+        run.call_me = on
+        await self._store.save_run(run)
+        self._bus.publish(RunUpdated(run=run.model_copy()))
         return True
 
     async def confirm(self, run_id: str, call_id: str, approved: bool, note: str | None = None) -> bool:

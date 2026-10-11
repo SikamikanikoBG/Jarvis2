@@ -399,6 +399,15 @@ wheels = [
 ]
 
 [[package]]
+name = "http-ece"
+version = "1.2.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7c/af/249d1576653b69c20b9ac30e284b63bd94af6a175d72d87813235caf2482/http_ece-1.2.1.tar.gz", hash = "sha256:8c6ab23116bbf6affda894acfd5f2ca0fb8facbcbb72121c11c75c33e7ce8cff", size = 8830, upload-time = "2024-08-08T00:10:47.301Z" }
+
+[[package]]
 name = "httpcore"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
@@ -470,7 +479,7 @@ wheels = [
 
 [[package]]
 name = "jarvis-core"
-version = "2.0.0a77"
+version = "2.0.0a78"
 source = { editable = "packages/core" }
 dependencies = [
     { name = "aiosqlite" },
@@ -478,6 +487,7 @@ dependencies = [
     { name = "croniter" },
     { name = "edge-tts" },
     { name = "fastapi" },
+    { name = "http-ece" },
     { name = "httpx" },
     { name = "jarvis-proto" },
     { name = "jsonschema" },
@@ -500,6 +510,7 @@ requires-dist = [
     { name = "croniter", specifier = ">=3.0" },
     { name = "edge-tts", specifier = ">=7.0" },
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "http-ece", specifier = ">=1.2" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "jarvis-proto", editable = "packages/proto" },
     { name = "jsonschema", specifier = ">=4.23" },

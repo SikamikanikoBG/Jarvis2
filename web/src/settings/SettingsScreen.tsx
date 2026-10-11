@@ -4,6 +4,7 @@ import { Switch } from '../components/primitives';
 import type { ThemePref } from '../lib/theme';
 import { LANES, ROLE_NAMES, RUN_KINDS, THINK_LEVELS, type Lane, type ModelSpec, type Provider, type RoleName, type RunKind, type Settings, type SttKind, type ThinkLevel, type ToolExposure } from '../protocol/types';
 import { useStore } from '../store/store';
+import { CallsSection } from './CallsSection';
 import { CollabSection } from './CollabSection';
 import { MailAccountsSection } from './MailAccountsSection';
 import { McpServersSection } from './McpServersSection';
@@ -191,7 +192,7 @@ export function SettingsScreen() {
             <Field label="SearXNG URL" error={errors.searxng_url} hint="web.search goes here; empty = no search tool.">
               <input className="input" value={draft.searxng_url ?? ''} onChange={(e) => patch('searxng_url', e.target.value || null)} placeholder="http://…:8085" />
             </Field>
-            <Field label="Discord webhook" error={errors.discord_webhook_url} hint="Push channel for reminders and scheduled-run summaries (notify.discord). Secret.">
+            <Field label="Discord webhook" error={errors.discord_webhook_url} hint="Push channel for reminders and scheduled-run summaries (notify.discord), and for Jarvis's calls when no device rings. Secret.">
               <input className="input" type="password" autoComplete="off" value={draft.discord_webhook_url ?? ''} onChange={(e) => patch('discord_webhook_url', e.target.value || null)} placeholder="https://discord.com/api/webhooks/…" />
             </Field>
             <Field label="Concurrent runs per endpoint" error={errors.max_concurrent_runs_per_endpoint}>
@@ -212,6 +213,10 @@ export function SettingsScreen() {
 
         <div id="settings-voice" className="settings-anchor">
           <VoiceSection value={draft.voice} namespaces={namespaces} onChange={(v) => patch('voice', v)} error={errors.voice} />
+        </div>
+
+        <div id="settings-calls" className="settings-anchor">
+          <CallsSection />
         </div>
 
         <div id="settings-sessions" className="settings-anchor">

@@ -4,6 +4,11 @@ A scheduled reminder that lands only in the Scheduled folder is invisible until 
 the app - V1 solved this with a Discord webhook and V2 keeps exactly that. The tool is
 mutating (a message goes out) but not destructive (nothing is lost if it is sent twice), so
 unattended runs use it freely and interactive runs are not interrupted for it.
+
+The channel has two carriers. Web push (features/webpush.py) goes to the devices where the app
+itself was allowed to notify, and a tap opens the app where the notification points. Discord is
+the carrier for everything else, and the fallback when no device takes a push: ``reach`` tries
+the devices first and says it through Discord, with the same link, when none of them answers.
 """
 
 from __future__ import annotations
@@ -11,12 +16,16 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
+from typing import Any
 
 import httpx
 from pydantic import BaseModel, Field
 
+from jarvis_core.db import Database
+from jarvis_core.features import webpush
+from jarvis_core.features.webpush import PushDevices, PushIdentity
 from jarvis_core.tools.builtin import BuiltinProvider, tool
-from jarvis_proto import Settings, ToolResult
+from jarvis_proto import Settings, ToolResult, ToolResultKind
 
 log = logging.getLogger(__name__)
 
@@ -44,13 +53,70 @@ _MAX_FILE_BYTES = 8 * 1024 * 1024
 class NotifyTools(BuiltinProvider):
     name = "notify"
 
-    def __init__(self, settings: Callable[[], Settings], client: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        settings: Callable[[], Settings],
+        client: httpx.AsyncClient | None = None,
+        *,
+        db: Database | None = None,
+    ) -> None:
         self._settings = settings
         self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(15.0))
+        self._db = db
+        self._identity: PushIdentity | None = None
+        self.devices = PushDevices(db) if db is not None else None
         super().__init__()
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    # --- the channel ------------------------------------------------------------------------
+
+    async def identity(self) -> PushIdentity:
+        """The core's VAPID key, made on first use (a browser needs its public half to subscribe)."""
+        if self._identity is None:
+            if self._db is None:
+                raise RuntimeError("web push needs the database")
+            self._identity = await PushIdentity.load(self._db)
+        return self._identity
+
+    def _subject(self) -> str:
+        # Who the push services should contact about this sender. The app's own https address is
+        # the natural answer; the standard also takes a mailto:.
+        url = (self._settings().public_url or "").strip()
+        return url if url.startswith("https://") else "mailto:jarvis@localhost"
+
+    async def push(self, payload: dict[str, Any], *, topic: str | None = None) -> int:
+        """Web push to every device; how many took it. A device whose push service says it is
+        gone (404/410: the app was uninstalled, the permission withdrawn) is forgotten."""
+        if self.devices is None:
+            return 0
+        identity = await self.identity()
+        delivered = 0
+        for device in await self.devices.list():
+            status = await webpush.send(self._client, identity, device, payload, subject=self._subject(), topic=topic)
+            if status in (404, 410):
+                await self.devices.remove(device.endpoint)
+            elif 200 <= status < 300:
+                delivered += 1
+                await self.devices.mark_ok(device.endpoint)
+        return delivered
+
+    async def reach(self, *, title: str, body: str, link: str, payload: dict[str, Any]) -> str | None:
+        """Get one thing to Arsen's phone: a push to his devices, Discord when none takes it.
+
+        ``payload`` is what the app's service worker reads; ``link`` is the same place as a URL,
+        for Discord. Which carrier did it, or None when nothing could."""
+        if await self.push({**payload, "title": title, "body": body, "link": link}, topic=payload.get("type")):
+            return "push"
+        text = "\n".join(part for part in (f"**{title}**", body, link) if part)
+        result = await self._discord(text=text)
+        return "discord" if result.kind is not ToolResultKind.ERROR else None
+
+    def link(self, path: str) -> str:
+        """An absolute URL into the app (Discord needs one); just the path without a public_url."""
+        base = (self._settings().public_url or "").strip().rstrip("/")
+        return f"{base}{path}" if base else path
 
     @tool(
         "notify.discord",

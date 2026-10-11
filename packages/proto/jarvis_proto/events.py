@@ -363,11 +363,21 @@ class RunCreateRequest(BaseModel):
     # "voice": the text came from the microphone on a call and the reply will be spoken — the
     # run answers briefly and plainly and is offered only the tools a call may use.
     channel: Channel = Channel.TEXT
+    # Ring when this run ends (docs/stories/11_call_me.md): the bell was on when it was sent.
+    call_me: bool = False
 
 
 class RunCancelRequest(BaseModel):
     type: Literal["run.cancel"] = "run.cancel"
     run_id: str
+
+
+class RunCallMeRequest(BaseModel):
+    """The bell, pressed while a run is ALREADY working: ring (or no longer ring) when it ends."""
+
+    type: Literal["run.call_me"] = "run.call_me"
+    run_id: str
+    on: bool = True
 
 
 class RunSteerRequest(BaseModel):
@@ -410,7 +420,14 @@ class Ping(BaseModel):
 
 
 ClientMessage = Annotated[
-    RunCreateRequest | RunCancelRequest | RunSteerRequest | ToolConfirmRequest | Subscribe | Unsubscribe | Ping,
+    RunCreateRequest
+    | RunCancelRequest
+    | RunCallMeRequest
+    | RunSteerRequest
+    | ToolConfirmRequest
+    | Subscribe
+    | Unsubscribe
+    | Ping,
     Field(discriminator="type"),
 ]
 

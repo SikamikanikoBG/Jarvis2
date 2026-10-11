@@ -115,6 +115,10 @@ WAIT_UNTIL_MAX_S = 900
 IS_WAIT_TOOL = frozenset({"jarvis.wait", "jarvis.wait_until"})
 
 
+class _CallMeArgs(BaseModel):
+    on: bool = Field(default=True, description="true = ring when this run ends; false = take the ring back.")
+
+
 class _WaitArgs(BaseModel):
     seconds: float = Field(description=f"How long to wait, 1-{WAIT_MAX_S}s. Chain calls for longer.", gt=0)
     reason: str = Field(
@@ -168,11 +172,13 @@ class CoreTools(BuiltinProvider):
         self,
         registry: Callable[[], ToolRegistry] | None = None,
         settings: Callable[[], Any] | None = None,
+        engine: Callable[[], Any] | None = None,
     ) -> None:
         # Getters, not the objects: the registry is built after this provider and holds it, and
         # settings are replaced wholesale on every PATCH.
         self._registry = registry
         self._settings = settings
+        self._engine = engine
         super().__init__()
 
     @tool(
@@ -188,6 +194,27 @@ class CoreTools(BuiltinProvider):
         except Exception:
             return ToolResult.failure(f"unknown timezone {timezone!r}")
         return ToolResult.data(now.strftime("%A, %Y-%m-%d %H:%M:%S %Z"))
+
+    @tool(
+        "jarvis.call_me",
+        description=(
+            "Ring Arsen's phone when the task you are working on now ends — done, failed, or stopped to ask "
+            "him something. Use it when he asks to be called or told when you are done, or when he says he "
+            "is leaving while you work. The ring is his phone's notification; tapping it opens a call in "
+            "this chat where your last reply is read to him. on=false takes a ring back. It affects only "
+            "this run; do not mention the mechanics, just confirm in a few words."
+        ),
+        args=_CallMeArgs,
+    )
+    async def _call_me(self, on: bool = True) -> ToolResult:
+        from jarvis_core.engine.current import current_run_id  # the engine imports this module
+
+        run_id = current_run_id.get()
+        if run_id is None or self._engine is None:
+            return ToolResult.failure("no run to ring for")
+        if not await self._engine().set_call_me(run_id, on):
+            return ToolResult.failure("this run has already ended")
+        return ToolResult.data("He will be rung when this run ends." if on else "No ring when this run ends.")
 
     @tool(
         "jarvis.wait",

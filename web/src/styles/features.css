@@ -1589,6 +1589,19 @@
   color: #fff;
   border-color: var(--danger);
 }
+/* Jarvis ringing (voice/IncomingCall.tsx): the ring pulses like a phone's, answer is green. */
+.call-incoming .call-ring-outer {
+  animation: call-speak 1.2s ease-in-out infinite;
+}
+.call-incoming .call-controls {
+  margin-top: auto;
+  gap: var(--s-8);
+}
+.call-btn-answer {
+  background: var(--ok);
+  color: #fff;
+  border-color: var(--ok);
+}
 .call-hold {
   position: relative;
   overflow: hidden;

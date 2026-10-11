@@ -119,9 +119,24 @@ export interface Run {
   /** Per-run thinking override; null = the role's setting. */
   think: boolean | null;
   think_level: ThinkLevel | null;
+  /** Ring Arsen when this run ends or stops to ask him (docs/stories/11_call_me.md). */
+  call_me: boolean;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+}
+
+/** A device Jarvis can ring: one browser's web push subscription (api/push.py). */
+export interface PushDevice {
+  endpoint: string;
+  name: string;
+  created_at: string;
+  last_ok_at: string | null;
+}
+export interface PushState {
+  /** The core's VAPID key, base64url: what a browser subscribes with. */
+  public_key: string;
+  devices: PushDevice[];
 }
 
 export type ConversationKind = 'chat' | 'scheduled' | 'collab' | 'triage' | 'mail' | 'meeting' | 'archive';
@@ -1031,10 +1046,18 @@ export interface RunCreateRequest {
   ttl_seconds?: number | null;
   /** "voice": from the microphone on a call; the reply is spoken, brief, and tool-limited. */
   channel?: Channel;
+  /** The bell was on: ring when this run ends. */
+  call_me?: boolean;
 }
 export interface RunCancelRequest {
   type: 'run.cancel';
   run_id: string;
+}
+/** The bell, pressed while a run is ALREADY working: ring (or no longer ring) when it ends. */
+export interface RunCallMeRequest {
+  type: 'run.call_me';
+  run_id: string;
+  on: boolean;
 }
 /** Something said to a run that is ALREADY working; it reads it at its next step. */
 export interface RunSteerRequest {
@@ -1067,6 +1090,7 @@ export interface Ping {
 export type ClientMessage =
   | RunCreateRequest
   | RunCancelRequest
+  | RunCallMeRequest
   | RunSteerRequest
   | ToolConfirmRequest
   | Subscribe

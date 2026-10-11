@@ -32,6 +32,7 @@ function run(u: ModelUsage): Run {
     waiting_reason: null,
     think: null,
     think_level: null,
+    call_me: false,
     created_at: '2026-09-05T10:00:00.000Z',
     started_at: '2026-09-05T10:00:00.000Z',
     finished_at: '2026-09-05T10:00:05.000Z',

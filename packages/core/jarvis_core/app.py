@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from jarvis_core import __version__
 from jarvis_core.api import attachments as attachments_api
 from jarvis_core.api import collab, features, media, openai_compat, rest, ws
+from jarvis_core.api import push as push_api
 from jarvis_core.api.deps import require_token, token_matches
 from jarvis_core.api.office import mount_office
 from jarvis_core.config import CoreConfig
@@ -38,6 +39,7 @@ from jarvis_core.engine.loop import AgentLoop
 from jarvis_core.engine.supervision import Supervisor
 from jarvis_core.features.attachments import AttachmentStore
 from jarvis_core.features.boards import BoardStore, NotesTools
+from jarvis_core.features.callme import CallMe
 from jarvis_core.features.collab import CollabAuthMiddleware, CollabKeys, build_mcp_server
 from jarvis_core.features.compaction import Compactor
 from jarvis_core.features.expiry import Reaper, delete_conversation
@@ -99,7 +101,7 @@ class Core:
         self.schedules = ScheduleStore(self.db, self.bus)
         # An extension is named after the MCP host at its address: the laptop's is "workocholic".
         self.browser = WsProvider(namer=self._host_named)
-        self.notify = NotifyTools(settings)
+        self.notify = NotifyTools(settings, db=self.db)
         self.web = WebTools(settings)
         self.mail = MailTools(settings)
         self.collab_keys = CollabKeys(self.db)
@@ -112,13 +114,16 @@ class Core:
         self.triage_audit = TriageAudit(self)
         self.maildesk = MailDesk(self)
         self.office = OfficeHub(self)
+        self.callme = CallMe(self)
         self.rsvp = RsvpJob(self)
         self.meetings = MeetingService(self)
 
         # Tools.
         # The getter is resolved at call time: jarvis.wait_until polls other tools through the
         # very registry that holds this provider, which does not exist yet on this line.
-        self.builtin = CoreTools(registry=lambda: self.registry, settings=lambda: self.settings)
+        self.builtin = CoreTools(
+            registry=lambda: self.registry, settings=lambda: self.settings, engine=lambda: self.engine
+        )
         self.sessions = SessionsTools(self)
         self.mcp: list[McpProvider] = []
         self.policy = ExposurePolicy(self.settings.tool_exposure, self.settings.facade_threshold)
@@ -223,6 +228,7 @@ class Core:
         await self.reload_tools()
         # On the bus before the engine resumes anything, so the office misses no run.
         await self.office.start()
+        await self.callme.start()
         await self.engine.start()
         await self.scheduler.start()
         await self.triage.start()
@@ -261,6 +267,7 @@ class Core:
         await self.meetings.stop_all()
         await self.scheduler.stop()
         await self.engine.stop()
+        await self.callme.stop()
         await self.office.stop()
         await self.learner.wait()
         for provider in self.mcp:
@@ -339,6 +346,7 @@ def create_app(config: CoreConfig | None = None, *, core: Core | None = None) ->
     app.include_router(collab.router)
     app.include_router(media.router)
     app.include_router(attachments_api.router)
+    app.include_router(push_api.router)
     app.include_router(openai_compat.router)
     app.include_router(ws.router)
 

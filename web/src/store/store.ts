@@ -4,14 +4,16 @@ import { WsClient, type ConnectionState } from '../api/ws';
 import { conversationToMarkdown, downloadText, safeFilename } from '../lib/export';
 import { readCollapsedFolders, writeCollapsedFolders } from '../lib/folders';
 import { notifyDesktop, readNotifyPref, writeNotifyPref } from '../lib/notify';
-import { navigate, parseLocation, rememberConversation, type View } from '../lib/router';
+import { navigate, parseLocation, rememberConversation, takeRing, type IncomingRing, type View } from '../lib/router';
 import { applyThemePref, isPanelMode, readThemePref, type ThemePref } from '../lib/theme';
 import { DRAFT_NORMAL, ttlLabel, type DraftPrivacy } from '../lib/privacy';
 import type { Annotation } from '../lib/annotations';
 import type { ThinkChoice } from '../lib/think';
+import { enablePush, pushSupported, refreshPush } from '../push/push';
 import { MicListener } from '../voice/listener';
 import { requestMotionPermission } from '../voice/earPose';
 import { holdScreen, releaseScreen } from '../voice/screenHold';
+import { firstSentences } from '../voice/sentences';
 import { CallSession, type CallRoute, type CallState } from '../voice/session';
 import { ToneCues } from '../voice/tones';
 import { DeviceSpeaker, ServerSpeaker } from '../voice/speaker';
@@ -82,6 +84,13 @@ export interface UiState {
   sessions: SessionRef[];
   /** The call in progress (docs/stories/10_voice.md), or null. A pure function of the session. */
   call: CallState | null;
+  /** Jarvis ringing: a ring opened from its notification, waiting to be answered or declined. */
+  incoming: IncomingRing | null;
+  /**
+   * The bell for the NEXT message, per chat (docs/stories/11_call_me.md): ring when the run it
+   * starts ends. A run already working carries its own flag (Run.call_me) instead.
+   */
+  callMeNext: Record<string, boolean | undefined>;
   /** Sidebar multi-select: the chosen conversation ids. Empty means not selecting anything. */
   selection: string[];
   /** The row a shift-click measures its range from. */
@@ -137,8 +146,19 @@ export interface Actions {
   setMoreOpen: (open: boolean) => void;
   /** Start a call in the open conversation (or a new chat). Must be called from a user gesture:
    *  the microphone and the first spoken word both need one. */
-  startCall: () => Promise<void>;
+  startCall: (opts?: { say?: string }) => Promise<void>;
   endCall: () => void;
+  /** A ring arrived (its notification was tapped): open its chat and show the incoming call. */
+  receiveRing: (ring: IncomingRing) => void;
+  /** Answer the incoming call - from a tap, like any call: it opens and says the result first. */
+  answerRing: () => Promise<void>;
+  declineRing: () => void;
+  /**
+   * The bell: ring when this is done. With a run working in the open chat it is that run's;
+   * otherwise it goes with the next message. Called from a tap, so the first one can also ask
+   * this device for permission to ring.
+   */
+  toggleCallMe: () => void;
   setCallMuted: (muted: boolean) => void;
   /** Earpiece or speaker; remembered on this device for the next call. */
   setCallRoute: (route: CallRoute) => void;
@@ -247,6 +267,8 @@ export const useStore = create<AppState>()((set, get) => ({
   panelMode: isPanelMode(),
   version: null,
   call: null,
+  incoming: null,
+  callMeNext: {},
   thinkChoice: {},
   draftPrivacy: DRAFT_NORMAL,
   summaries: {},
@@ -306,7 +328,19 @@ export const useStore = create<AppState>()((set, get) => ({
       .then((h) => set({ version: h.version }))
       .catch(() => undefined);
 
+    const ring = takeRing();
     if (route.conversationId) void get().openConversation(route.conversationId, { replace: true });
+    // Jarvis rang and the notification was tapped: the app opened on it (an address) or, when it
+    // was already open, the service worker says so.
+    if (ring) get().receiveRing(ring);
+    navigator.serviceWorker?.addEventListener('message', (e: MessageEvent<{ type?: string; path?: string; say?: string }>) => {
+      if (e.data?.type !== 'jarvis.ring' || !e.data.path) return;
+      const url = new URL(e.data.path, window.location.origin);
+      if (e.data.say) url.searchParams.set('say', e.data.say);
+      const r = takeRing(url.href);
+      if (r) get().receiveRing(r);
+    });
+    void refreshPush().catch(() => undefined);
 
     window.addEventListener('popstate', () => {
       const r = parseLocation();
@@ -371,7 +405,7 @@ export const useStore = create<AppState>()((set, get) => ({
 
   setMoreOpen: (open) => set({ moreOpen: open }),
 
-  startCall: async () => {
+  startCall: async (opts) => {
     if (session) return;
     const s = get();
     const open = s.openConversationId;
@@ -429,6 +463,7 @@ export const useStore = create<AppState>()((set, get) => ({
             think: null,
             think_level: null,
             channel: 'voice',
+            ...(takeCallMe(set, get, conversationId) ? { call_me: true } : {}),
             // Same as a typed first message: the draft's privacy opens the chat (a call started
             // with the eye on was opening an ordinary, remembered chat - 2026-09-13).
             ...(conversationId ? {} : { incognito: s.draftPrivacy.incognito, ttl_seconds: s.draftPrivacy.ttlSeconds }),
@@ -448,6 +483,7 @@ export const useStore = create<AppState>()((set, get) => ({
     });
     if (open) socket.send({ type: 'subscribe', conversation_id: open });
     await session.start();
+    if (opts?.say && session.state.phase !== 'ended') session.say(opts.say);
     if (session.state.phase === 'ended') {
       // The microphone was refused or is missing: the reason is on the screen, the call is over.
       const problem = session.state.problem;
@@ -465,6 +501,53 @@ export const useStore = create<AppState>()((set, get) => ({
     speaker = null;
     releaseScreen();
     set({ call: null });
+  },
+
+  receiveRing: (ring) => {
+    if (session) return; // already on a call with him
+    if (ring.conversationId !== get().openConversationId) void get().openConversation(ring.conversationId, { replace: true });
+    set({ incoming: ring });
+  },
+
+  answerRing: async () => {
+    const ring = get().incoming;
+    if (!ring) return;
+    set({ incoming: null });
+    // A ring that came by a link without the words (Discord's): the run's own reply, from the chat.
+    let say = ring.say;
+    if (!say && ring.conversationId) {
+      const reply = (get().messages[ring.conversationId] ?? []).filter((m) => m.run_id === ring.runId && m.role === 'assistant' && m.content.trim()).at(-1);
+      say = reply ? firstSentences(reply.content, 3) : '';
+    }
+    await get().startCall({ say });
+  },
+
+  declineRing: () => set({ incoming: null }),
+
+  toggleCallMe: () => {
+    const s = get();
+    const key = s.openConversationId ?? NEW_CONVERSATION_KEY;
+    const run = selectActiveRun(s, s.openConversationId);
+    const on = run ? !run.call_me : !s.callMeNext[key];
+    if (run) {
+      if (!ws?.send({ type: 'run.call_me', run_id: run.id, on })) {
+        s.notify('Not connected to Jarvis.', 'error');
+        return;
+      }
+    } else {
+      set((st) => ({ callMeNext: on ? { ...st.callMeNext, [key]: true } : omit(st.callMeNext, key) }));
+    }
+    if (!on || !pushSupported()) return;
+    // The first ring on this device needs its permission, asked inside this tap.
+    if (Notification.permission === 'denied') {
+      s.notify('Notifications are blocked for Jarvis here, so this device will not ring - your other devices or Discord will.');
+    } else if (Notification.permission === 'default') {
+      void enablePush()
+        .then((status) => {
+          if (status !== 'on') s.notify('This device will not ring - your other devices or Discord will.');
+        })
+        .catch((e: unknown) => s.notify(`This device cannot ring: ${errorText(e)}`, 'error'));
+    }
   },
 
   setCallMuted: (muted) => session?.setMuted(muted),
@@ -582,6 +665,7 @@ export const useStore = create<AppState>()((set, get) => ({
       think: choice?.think ?? null,
       think_level: choice?.think ? (choice.think_level ?? null) : null,
       attachment_ids: attachments.map((a) => a.id),
+      ...(takeCallMe(set, get, open) ? { call_me: true } : {}),
       // Only a first message opens a chat, so only then does the draft's privacy travel.
       ...(open ? {} : { incognito: s.draftPrivacy.incognito, ttl_seconds: s.draftPrivacy.ttlSeconds }),
     });
@@ -957,6 +1041,14 @@ function indexBy(list: Conversation[], into: Record<string, Conversation>): Reco
   const out = { ...into };
   for (const c of list) out[c.id] = c;
   return out;
+}
+
+/** The bell for the next message in this chat, used up by the message that carries it. */
+function takeCallMe(set: Set, get: Get, conversationId: string | null): boolean {
+  const key = conversationId ?? NEW_CONVERSATION_KEY;
+  if (!get().callMeNext[key]) return false;
+  set((s) => ({ callMeNext: omit(s.callMeNext, key) }));
+  return true;
 }
 
 function upsertConversation(set: Set, conv: Conversation): void {

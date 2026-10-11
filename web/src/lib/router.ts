@@ -21,6 +21,30 @@ export function parseLocation(pathname = window.location.pathname): Route {
   return { view: 'chat', conversationId: null };
 }
 
+/** A ring from Jarvis that was answered from its notification (docs/stories/11_call_me.md). */
+export interface IncomingRing {
+  conversationId: string | null;
+  /** The run that rang ("test" for a test ring). */
+  runId: string;
+  /** What the call says first; empty when the ring came by a link that does not carry it. */
+  say: string;
+}
+
+/**
+ * The ring in an address: `/c/<chat>?ring=<run>&say=...` (the notification's, or Discord's link).
+ * Taken out of the address as it is read, so a reload does not ring again.
+ */
+export function takeRing(href = window.location.href): IncomingRing | null {
+  const url = new URL(href, window.location.origin);
+  const runId = url.searchParams.get('ring');
+  if (!runId) return null;
+  const say = url.searchParams.get('say') ?? '';
+  url.searchParams.delete('ring');
+  url.searchParams.delete('say');
+  if (href === window.location.href) window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+  return { conversationId: parseLocation(url.pathname).conversationId, runId, say };
+}
+
 export function buildPath(view: View, conversationId: string | null): string {
   if (view === 'chat') return conversationId ? `/c/${encodeURIComponent(conversationId)}` : '/';
   return `/${view}`;

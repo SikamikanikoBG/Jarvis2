@@ -23,6 +23,9 @@ class Subscriber:
         # Every conversation's run events, not only the subscribed ones (the Office watches all).
         self.everything = everything
         self.dead = False
+        # The page behind this connection is in front of him. A background tab or a locked phone
+        # keeps its socket open for a while; the app says so (Presence) when it is hidden.
+        self.visible = True
 
     def deliver(self, event: Any) -> None:
         if self.dead:
@@ -48,6 +51,10 @@ class EventBus:
 
     def has_subscribers(self, conversation_id: str) -> bool:
         return any(conversation_id in s.conversations and not s.dead for s in self._subs)
+
+    def has_viewers(self, conversation_id: str) -> bool:
+        """Someone is looking at this conversation right now, not just connected to it."""
+        return any(conversation_id in s.conversations and not s.dead and s.visible for s in self._subs)
 
     def publish(self, event: Any) -> None:
         self.published += 1

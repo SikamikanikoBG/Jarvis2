@@ -420,6 +420,14 @@ class Ping(BaseModel):
     type: Literal["ping"] = "ping"
 
 
+class Presence(BaseModel):
+    """Whether Arsen can see this app right now (the page is visible, not a background tab or a
+    locked phone). A ring by default waits for him to look away (features/callme.py)."""
+
+    type: Literal["presence"] = "presence"
+    visible: bool
+
+
 ClientMessage = Annotated[
     RunCreateRequest
     | RunCancelRequest
@@ -428,7 +436,8 @@ ClientMessage = Annotated[
     | ToolConfirmRequest
     | Subscribe
     | Unsubscribe
-    | Ping,
+    | Ping
+    | Presence,
     Field(discriminator="type"),
 ]
 

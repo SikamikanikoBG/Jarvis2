@@ -28,7 +28,7 @@ from jarvis_proto import (
     Unsubscribe,
     parse_client_message,
 )
-from jarvis_proto.events import ConversationUpdated, Ping, RunUpdated, ToolsChanged
+from jarvis_proto.events import ConversationUpdated, Ping, Presence, RunUpdated, ToolsChanged
 from jarvis_proto.runs import RunStatus
 
 log = logging.getLogger(__name__)
@@ -68,6 +68,8 @@ async def _ui_leg(ws: WebSocket) -> None:
                 continue
             if isinstance(msg, Ping):
                 sub.deliver(Pong())
+            elif isinstance(msg, Presence):
+                sub.visible = msg.visible
             elif isinstance(msg, Subscribe):
                 sub.conversations.add(msg.conversation_id)
                 for run in await core.store.list_runs(msg.conversation_id, limit=10):

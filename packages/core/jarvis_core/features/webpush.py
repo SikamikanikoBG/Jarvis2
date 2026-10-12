@@ -13,6 +13,7 @@ This module is only that transport: the identity, the devices and one send. *Wha
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import logging
 import time
@@ -34,6 +35,8 @@ log = logging.getLogger(__name__)
 # How long a push service keeps a ring for a phone that is off or out of coverage. A ring that
 # arrives an hour late is still worth having ("it finished"), a day late it is noise.
 TTL_S = 3600
+# send()'s answer for a device that can never be pushed to (its keys do not work): forget it.
+UNUSABLE = -1
 # The VAPID token's lifetime; the standard allows up to 24 h.
 _JWT_LIFETIME_S = 12 * 3600
 
@@ -98,6 +101,18 @@ class PushDevice:
     name: str = ""
     created_at: str = ""
     last_ok_at: str | None = None
+
+    def check(self) -> None:
+        """ValueError unless this is a subscription a push can be sealed for and sent to."""
+        if urlsplit(self.endpoint).scheme != "https" or not urlsplit(self.endpoint).netloc:
+            raise ValueError("a push endpoint is an https:// URL")
+        try:
+            ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), b64url_decode(self.p256dh))
+            auth = b64url_decode(self.auth)
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError("keys.p256dh is not a P-256 public key") from exc
+        if len(auth) != 16:
+            raise ValueError("keys.auth is not a 16-byte secret")
 
 
 class PushDevices:
@@ -171,7 +186,12 @@ async def send(
     if topic:
         headers["Topic"] = topic
     try:
-        resp = await client.post(device.endpoint, content=seal(payload, device), headers=headers)
+        body = seal(payload, device)
+    except (ValueError, binascii.Error) as exc:
+        log.warning("push to %s: its keys do not work (%s)", urlsplit(device.endpoint).netloc, exc)
+        return UNUSABLE
+    try:
+        resp = await client.post(device.endpoint, content=body, headers=headers)
     except httpx.HTTPError as exc:
         log.warning("push to %s failed: %s", urlsplit(device.endpoint).netloc, type(exc).__name__)
         return 0

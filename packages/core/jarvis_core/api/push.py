@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request, Response
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from pydantic import BaseModel, Field
 
 from jarvis_core.api.deps import core_of, require_token
 from jarvis_core.features.callme import Ring
@@ -20,9 +20,9 @@ class DeviceKeys(BaseModel):
 class DeviceIn(BaseModel):
     """What ``PushSubscription.toJSON()`` gives, plus a name to tell the devices apart."""
 
-    endpoint: str
+    endpoint: str = Field(max_length=2048)
     keys: DeviceKeys
-    name: str = ""
+    name: str = Field(default="", max_length=80)
 
 
 class DeviceOut(BaseModel):
@@ -63,10 +63,13 @@ async def state(request: Request) -> PushState:
 @router.post("/devices", status_code=204)
 async def add_device(request: Request, body: DeviceIn) -> Response:
     notify = core_of(request).notify
+    device = PushDevice(endpoint=body.endpoint, p256dh=body.keys.p256dh, auth=body.keys.auth, name=body.name.strip())
+    try:
+        device.check()
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     if notify.devices is not None:
-        await notify.devices.add(
-            PushDevice(endpoint=body.endpoint, p256dh=body.keys.p256dh, auth=body.keys.auth, name=body.name.strip())
-        )
+        await notify.devices.add(device)
     return Response(status_code=204)
 
 

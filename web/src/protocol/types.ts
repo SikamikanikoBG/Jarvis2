@@ -1090,6 +1090,11 @@ export interface Unsubscribe {
 export interface Ping {
   type: 'ping';
 }
+/** Whether he can see the app right now: a ring by default waits until he looks away. */
+export interface Presence {
+  type: 'presence';
+  visible: boolean;
+}
 
 export type ClientMessage =
   | RunCreateRequest
@@ -1099,7 +1104,8 @@ export type ClientMessage =
   | ToolConfirmRequest
   | Subscribe
   | Unsubscribe
-  | Ping;
+  | Ping
+  | Presence;
 
 // ---- REST-only shapes (server.py contract, not in jarvis_proto) -----------------------
 

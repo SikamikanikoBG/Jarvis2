@@ -217,7 +217,7 @@ export function SettingsScreen() {
         </div>
 
         <div id="settings-calls" className="settings-anchor">
-          <CallsSection value={draft.call_me_default} onChange={(v) => patch('call_me_default', v)} />
+          <CallsSection value={draft.call_me_default} onChange={(v) => patch('call_me_default', v)} discord={Boolean(original?.discord_webhook_url)} />
         </div>
 
         <div id="settings-sessions" className="settings-anchor">

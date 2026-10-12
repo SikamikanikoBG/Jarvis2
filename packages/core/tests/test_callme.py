@@ -302,3 +302,59 @@ def test_run_create_and_run_call_me_over_the_socket(client: TestClient):
                 break
     run = client.get(f"/api/runs/{run_id}", headers={"Authorization": "Bearer secret"}).json()
     assert run["call_me"] is True
+
+
+async def test_one_broken_device_does_not_stop_the_ring_and_is_forgotten(harness: Harness):
+    """Alpha F-001: undecodable keys made the whole ring a 500."""
+    sent: list[httpx.Request] = []
+    await _wired(harness, sent)
+    good = Browser()
+    await harness.core.notify.devices.add(PushDevice(endpoint="https://fcm.googleapis.com/x", p256dh="!!!", auth="x"))
+    await harness.core.notify.devices.add(good.device)
+    assert await harness.core.callme.ring([Ring("run_1", "conv_1", "done", "Q3", "Done.")]) == "push"
+    assert [str(r.url) for r in sent] == [ENDPOINT]
+    assert [d.endpoint for d in await harness.core.notify.devices.list()] == [ENDPOINT]
+
+
+async def test_a_default_ring_waits_for_him_to_look_away(harness: Harness):
+    """Alpha F-005: a background tab or a locked phone keeps its socket; only a visible page
+    counts as watching the chat."""
+    sent: list[httpx.Request] = []
+    await _wired(harness, sent)
+    await harness.core.notify.devices.add(Browser().device)
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    sub.visible = False  # the app said: hidden
+    harness.chat.push(FakeTurn(text="Done."))
+    await harness.core.engine.create_run(text="go", conversation_id=conv.id)
+    await harness.wait_for(sub, "run.done")
+    await _until(lambda: len(sent) == 1)
+
+
+def test_devices_api_refuses_what_cannot_be_pushed_to(client: TestClient):
+    """Alpha F-002: http and broken keys were stored; a huge name too."""
+    h = {"Authorization": "Bearer secret"}
+    key = Browser().device.p256dh
+    ok = {"endpoint": ENDPOINT, "keys": {"p256dh": key, "auth": "c2VjcmV0c2VjcmV0MTIzNA"}}
+    for bad in (
+        {**ok, "endpoint": "http://evil.local/x"},
+        {**ok, "keys": {"p256dh": "!!!", "auth": "x"}},
+        {**ok, "keys": {"p256dh": key, "auth": "c2hvcnQ"}},
+        {**ok, "name": "x" * 1000},
+    ):
+        assert client.post("/api/push/devices", json=bad, headers=h).status_code == 422, bad
+    assert client.get("/api/push", headers=h).json()["devices"] == []
+    assert client.post("/api/push/devices", json=ok, headers=h).status_code == 204
+
+
+def test_presence_over_the_socket(client: TestClient):
+    core: Core = client.core  # type: ignore[attr-defined]
+    with client.websocket_connect("/ws?token=secret") as ws:
+        ws.send_json({"type": "subscribe", "conversation_id": "conv_x"})
+        ws.send_json({"type": "ping"})
+        ws.receive_json()
+        assert core.bus.has_viewers("conv_x")
+        ws.send_json({"type": "presence", "visible": False})
+        ws.send_json({"type": "ping"})
+        ws.receive_json()
+        assert core.bus.has_subscribers("conv_x") and not core.bus.has_viewers("conv_x")

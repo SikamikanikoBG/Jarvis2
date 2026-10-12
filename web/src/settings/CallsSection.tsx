@@ -27,7 +27,7 @@ const KINDS: { kind: RunKind; label: string; hint?: string }[] = [
  * Calls from Jarvis (docs/stories/11_call_me.md): the devices a finished task rings, this one
  * among them, and a test ring. Discord carries the ring when no device takes it.
  */
-export function CallsSection({ value, onChange }: { value: RunKind[]; onChange: (v: RunKind[]) => void }) {
+export function CallsSection({ value, onChange, discord }: { value: RunKind[]; onChange: (v: RunKind[]) => void; discord: boolean }) {
   const notify = useStore((s) => s.notify);
   const load = useCallback(() => api.push.state(), []);
   const { data, error, reload } = useLoader(load, 'devices');
@@ -88,7 +88,7 @@ export function CallsSection({ value, onChange }: { value: RunKind[]; onChange: 
       {error && <div className="field-error">{error}</div>}
       {status && <div className="small">{STATUS[status]}</div>}
       <div className="mcp-list">
-        {data?.devices.length === 0 && <div className="empty small">No device rings yet{' - '}the ring goes to Discord.</div>}
+        {data?.devices.length === 0 && <div className="empty small">{discord ? 'No device rings yet - the ring goes to Discord.' : 'No device rings yet, and no Discord webhook is set: a ring has nowhere to go.'}</div>}
         {(data?.devices ?? []).map((d) => (
           <div key={d.endpoint} className="mcp-row">
             <Icon name="bell" size={16} className="muted" />

@@ -19,16 +19,23 @@ export function pushSupported(): boolean {
 export async function pushStatus(): Promise<PushStatus> {
   if (!pushSupported()) return 'unsupported';
   if (Notification.permission === 'denied') return 'blocked';
-  const reg = await navigator.serviceWorker.getRegistration();
-  const sub = await reg?.pushManager.getSubscription();
-  return sub && Notification.permission === 'granted' ? 'on' : 'off';
+  return (await currentSubscription()) && Notification.permission === 'granted' ? 'on' : 'off';
 }
 
 /** The endpoint this browser rings at, to tell it apart in the device list. */
 export async function thisEndpoint(): Promise<string | null> {
   if (!pushSupported()) return null;
-  const reg = await navigator.serviceWorker.getRegistration();
-  return (await reg?.pushManager.getSubscription())?.endpoint ?? null;
+  return (await currentSubscription())?.endpoint ?? null;
+}
+
+/** The browser's subscription, or null - also when it cannot say (Firefox throws without its push service). */
+async function currentSubscription(): Promise<PushSubscription | null> {
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    return (await reg?.pushManager.getSubscription()) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** Turn ringing on for this device. Call it from a tap. Resolves to how it ended. */
@@ -53,8 +60,7 @@ export async function enablePush(): Promise<PushStatus> {
 /** At boot: tell the core again about a subscription this browser already has (no prompt). */
 export async function refreshPush(): Promise<void> {
   if (!pushSupported() || Notification.permission !== 'granted') return;
-  const reg = await navigator.serviceWorker.getRegistration();
-  const sub = await reg?.pushManager.getSubscription();
+  const sub = await currentSubscription();
   if (sub) await register(sub);
 }
 

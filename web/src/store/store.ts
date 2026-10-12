@@ -302,6 +302,7 @@ export const useStore = create<AppState>()((set, get) => ({
         session?.setOnline(connection === 'open');
       },
       onOpen: (isReconnect) => {
+        sendPresence();
         const open = get().openConversationId;
         if (open) {
           ws?.send({ type: 'subscribe', conversation_id: open });
@@ -322,6 +323,7 @@ export const useStore = create<AppState>()((set, get) => ({
       void loadConversations(set, get);
     };
     document.addEventListener('visibilitychange', () => {
+      sendPresence();
       if (document.visibilityState === 'visible') wake();
     });
     window.addEventListener('online', wake);
@@ -513,8 +515,15 @@ export const useStore = create<AppState>()((set, get) => ({
 
   receiveRing: (ring) => {
     if (session) return; // already on a call with him
-    if (ring.conversationId !== get().openConversationId) void get().openConversation(ring.conversationId, { replace: true });
     set({ incoming: ring });
+    const id = ring.conversationId;
+    if (id === null || id === get().openConversationId) return;
+    // A ring for a chat that is gone (deleted, expired) has nothing to answer into.
+    void get()
+      .openConversation(id, { replace: true })
+      .then(() => {
+        if (!get().conversations[id] && get().incoming === ring) set({ incoming: null });
+      });
   },
 
   answerRing: async () => {
@@ -1051,6 +1060,11 @@ function indexBy(list: Conversation[], into: Record<string, Conversation>): Reco
   const out = { ...into };
   for (const c of list) out[c.id] = c;
   return out;
+}
+
+/** Tell the core whether he can see the app (a ring by default waits until he cannot). */
+function sendPresence(): void {
+  ws?.send({ type: 'presence', visible: document.visibilityState === 'visible' });
 }
 
 /** The bell for the next message in this chat if he touched it, used up by that message. */

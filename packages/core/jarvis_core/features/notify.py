@@ -95,7 +95,7 @@ class NotifyTools(BuiltinProvider):
         delivered = 0
         for device in await self.devices.list():
             status = await webpush.send(self._client, identity, device, payload, subject=self._subject(), topic=topic)
-            if status in (404, 410):
+            if status in (404, 410, webpush.UNUSABLE):
                 await self.devices.remove(device.endpoint)
             elif 200 <= status < 300:
                 delivered += 1

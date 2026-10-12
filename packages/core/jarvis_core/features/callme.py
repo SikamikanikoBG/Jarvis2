@@ -98,7 +98,7 @@ class CallMe:
         if run is None or not run.call_me or (run.id, once) in self._rung:
             return
         # A ring nobody asked for is for when he has walked away: not while the chat is open.
-        if run.call_me_default and self.core.bus.has_subscribers(run.conversation_id):
+        if run.call_me_default and self.core.bus.has_viewers(run.conversation_id):
             return
         self._rung.add((run.id, once))
         if len(self._rung) > 1000:

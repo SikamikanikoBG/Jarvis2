@@ -1,8 +1,30 @@
-/* Jarvis service worker — caches the app shell only. Never touches /api or /ws.
+/* Jarvis service worker — caches the app shell only; never caches /api or /ws.
    It also takes Jarvis's rings (docs/stories/11_call_me.md): a web push from the core becomes a
-   notification, and tapping it opens the app on the incoming call. */
-const SHELL = 'jarvis-shell-v5'; // v5: answering on the notification opens the call itself
+   notification, and tapping it opens the app on the incoming call. Declining marks the chat read
+   (its one /api call). */
+const SHELL = 'jarvis-shell-v6'; // v6: Decline marks the ringing chat read
 const SHELL_URLS = ['/', '/index.html', '/manifest.webmanifest', '/icons/icon.svg'];
+// The access token the app hands over (main.tsx), kept apart from the shell so a new shell keeps it.
+const AUTH = 'jarvis-auth';
+
+self.addEventListener('message', (event) => {
+  if (event.data?.type !== 'jarvis.token' || !event.data.token) return;
+  event.waitUntil(caches.open(AUTH).then((c) => c.put('/token', new Response(event.data.token))));
+});
+
+/* Declined: he has seen what it was about, so the chat is not left unread / waiting for him. */
+async function markRead(conversationId) {
+  const hit = await caches.match('/token', { cacheName: AUTH });
+  const token = hit ? await hit.text() : '';
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  await fetch(`/api/conversations/${encodeURIComponent(conversationId)}`, {
+    method: 'PATCH',
+    headers,
+    credentials: 'same-origin', // the jarvis_token cookie, when there is no handed-over token
+    body: JSON.stringify({ unread: false }),
+  }).catch(() => undefined);
+}
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -17,7 +39,7 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== SHELL).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k !== SHELL && k !== AUTH).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   );
 });
@@ -45,19 +67,22 @@ self.addEventListener('push', (event) => {
         { action: 'answer', title: 'Answer' },
         { action: 'decline', title: 'Decline' },
       ],
-      data: { path: ring.path || '/', say: ring.say || '' },
+      data: { path: ring.path || '/', say: ring.say || '', conversation_id: ring.conversation_id || '' },
     }),
   );
 });
 
 /* Answering (the Answer button or the notification itself): the app, straight into the call - the
    tap on the notification was the answer (answer=1). An open window is told (no reload);
-   otherwise the app opens at the ring's address. Declining only dismisses it - the result is in
-   the chat either way. */
+   otherwise the app opens at the ring's address. Declining dismisses it and marks the chat read -
+   the result is still in the chat. */
 self.addEventListener('notificationclick', (event) => {
   const ring = event.notification.data || {};
   event.notification.close();
-  if (event.action === 'decline') return;
+  if (event.action === 'decline') {
+    if (ring.conversation_id) event.waitUntil(markRead(ring.conversation_id));
+    return;
+  }
   const url = new URL(ring.path || '/', self.location.origin);
   if (ring.say) url.searchParams.set('say', ring.say);
   url.searchParams.set('answer', '1');

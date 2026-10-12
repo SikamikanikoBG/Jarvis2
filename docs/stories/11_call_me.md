@@ -31,7 +31,8 @@ notification that opens the call the app already knows how to hold.
    Each scheduled task can say for itself whether it rings: "Call me when done" in its editor -
    as in Settings › Calls, always, or never. Never holds even if the run asks to ring.
 4. **I can decline.** Decline on the notification, or on the incoming screen, and nothing
-   happens; the answer is in the chat.
+   rings again; the answer is in the chat. Declining on the notification marks that chat read, so
+   it does not sit in the list as unread or waiting for me.
 5. **One ring, not a pile.** Two tasks ending together ring once, for the later one, and the
    call says both. A phone that was off gets the latest ring, not every one.
 6. **It reaches me even without push.** No device rings (the app was never allowed to notify,

@@ -166,6 +166,7 @@ function stubRun(ev: RunScopedEvent, kind: RunKind, inputText: string): Run {
     think: null,
     think_level: null,
     call_me: false,
+    call_me_default: false,
     created_at: ev.ts,
     started_at: null,
     finished_at: null,

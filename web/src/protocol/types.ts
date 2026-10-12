@@ -121,6 +121,8 @@ export interface Run {
   think_level: ThinkLevel | null;
   /** Ring Arsen when this run ends or stops to ask him (docs/stories/11_call_me.md). */
   call_me: boolean;
+  /** The ring came from settings.call_me_default, not from him: quiet while he watches the chat. */
+  call_me_default: boolean;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -572,6 +574,8 @@ export interface Settings {
   stt_languages: string[];
   /** Push channel for notify.discord and scheduled-run summaries. Secret. */
   discord_webhook_url: string | null;
+  /** The kinds of run that ring when they end without being asked to (docs/stories/11_call_me.md). */
+  call_me_default: RunKind[];
   /** SearXNG base URL for web.search; null = no search tool. */
   searxng_url: string | null;
   shadow: ShadowSettings;
@@ -1046,7 +1050,7 @@ export interface RunCreateRequest {
   ttl_seconds?: number | null;
   /** "voice": from the microphone on a call; the reply is spoken, brief, and tool-limited. */
   channel?: Channel;
-  /** The bell was on: ring when this run ends. */
+  /** The bell, if he touched it: ring (or not) when this run ends. Absent = the settings decide. */
   call_me?: boolean;
 }
 export interface RunCancelRequest {

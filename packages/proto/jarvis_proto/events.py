@@ -363,8 +363,9 @@ class RunCreateRequest(BaseModel):
     # "voice": the text came from the microphone on a call and the reply will be spoken — the
     # run answers briefly and plainly and is offered only the tools a call may use.
     channel: Channel = Channel.TEXT
-    # Ring when this run ends (docs/stories/11_call_me.md): the bell was on when it was sent.
-    call_me: bool = False
+    # Ring when this run ends (docs/stories/11_call_me.md): the bell's state when it was sent.
+    # None = he did not touch it, and settings.call_me_default decides.
+    call_me: bool | None = None
 
 
 class RunCancelRequest(BaseModel):

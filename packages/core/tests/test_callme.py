@@ -110,7 +110,44 @@ async def test_a_run_with_the_bell_on_rings_every_device_with_its_reply(harness:
     assert all(d.last_ok_at for d in await harness.core.notify.devices.list())
 
 
-async def test_without_the_bell_nothing_rings(harness: Harness):
+async def _done(harness: Harness, run_id: str) -> None:
+    async def finished() -> bool:
+        run = await harness.core.store.get_run(run_id)
+        return run is not None and run.status.terminal
+
+    async with asyncio.timeout(5):
+        while not await finished():
+            await asyncio.sleep(0.02)
+
+
+async def test_by_default_a_chat_rings_when_nobody_is_watching_it(harness: Harness):
+    sent: list[httpx.Request] = []
+    await _wired(harness, sent)
+    await harness.core.notify.devices.add(Browser().device)
+    conv = await harness.core.store.create_conversation()
+    harness.chat.push(FakeTurn(text="Done."))
+    run, _ = await harness.core.engine.create_run(text="go", conversation_id=conv.id)
+    assert run.call_me and run.call_me_default
+    await _done(harness, run.id)
+    await _until(lambda: len(sent) == 1)
+
+
+async def test_the_default_follows_the_settings_and_the_bell_turned_off_wins(harness: Harness):
+    from jarvis_proto import Channel, RunKind
+
+    assert harness.core.settings.call_me_default == [RunKind.CHAT, RunKind.SCHEDULED]
+    sched, _ = await harness.core.engine.create_run(text="digest", kind=RunKind.SCHEDULED)
+    triage, _ = await harness.core.engine.create_run(text="mail", kind=RunKind.TRIAGE)
+    voice, _ = await harness.core.engine.create_run(text="hi", channel=Channel.VOICE)
+    off, _ = await harness.core.engine.create_run(text="quiet", call_me=False)
+    assert (sched.call_me, triage.call_me, voice.call_me, off.call_me) == (True, False, False, False)
+    harness.enable(call_me_default=[RunKind.TRIAGE])
+    chat, _ = await harness.core.engine.create_run(text="x")
+    triage2, _ = await harness.core.engine.create_run(text="mail", kind=RunKind.TRIAGE)
+    assert (chat.call_me, triage2.call_me) == (False, True)
+
+
+async def test_a_default_ring_stays_quiet_while_he_watches_the_chat(harness: Harness):
     sent: list[httpx.Request] = []
     await _wired(harness, sent)
     await harness.core.notify.devices.add(Browser().device)

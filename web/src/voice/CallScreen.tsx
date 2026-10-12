@@ -42,7 +42,8 @@ export function CallScreen() {
   // The bell: hang up and be called back when the task he just gave is done.
   const callMe = useStore((s) => {
     const run = selectActiveRun(s, s.openConversationId);
-    return run ? run.call_me : Boolean(s.callMeNext[s.openConversationId ?? NEW_CONVERSATION_KEY]);
+    // A call's own turns do not ring by default: he is on the line.
+    return run ? run.call_me : (s.callMeNext[s.openConversationId ?? NEW_CONVERSATION_KEY] ?? false);
   });
   const toggleCallMe = useStore((s) => s.toggleCallMe);
   const conv = useStore((s) => (s.openConversationId ? s.conversations[s.openConversationId] : undefined));
@@ -122,7 +123,7 @@ export function CallScreen() {
           <button
             type="button"
             className={`call-btn${callMe ? ' on-accent' : ''}`}
-            onClick={toggleCallMe}
+            onClick={() => toggleCallMe({ voice: true })}
             aria-pressed={callMe}
             aria-label={callMe ? 'Jarvis will call you back when this is done — tap to cancel' : 'Call me back when this is done'}
           >

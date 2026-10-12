@@ -499,17 +499,20 @@ function PrivacyToggles() {
 function CallMeToggle() {
   const on = useStore((s) => {
     const run = selectActiveRun(s, s.openConversationId);
-    return run ? run.call_me : Boolean(s.callMeNext[s.openConversationId ?? NEW_CONVERSATION_KEY]);
+    return run ? run.call_me : (s.callMeNext[s.openConversationId ?? NEW_CONVERSATION_KEY] ?? s.callMeDefault);
   });
+  // The words only when it differs from the default: an always-there label is noise.
+  const byDefault = useStore((s) => s.callMeDefault);
+  const differs = on !== byDefault;
   const working = useStore((s) => selectActiveRun(s, s.openConversationId) !== null);
-  const toggle = useStore((s) => s.toggleCallMe);
+  const toggleCallMe = useStore((s) => s.toggleCallMe);
   const label = on
     ? `Jarvis will call you when ${working ? 'this is' : 'the next task is'} done. Tap to cancel.`
     : `Call me when ${working ? 'this is' : 'the next task is'} done`;
   return (
     <span className="privacy-toggles">
-      <IconButton icon="bell" label={label} size="sm" className={`privacy-toggle${on ? ' on-timer' : ''}`} aria-pressed={on} onClick={toggle} />
-      {on && <span className="privacy-state">calls when done</span>}
+      <IconButton icon="bell" label={label} size="sm" className={`privacy-toggle${on ? ' on-timer' : ''}`} aria-pressed={on} onClick={() => toggleCallMe()} />
+      {differs && <span className="privacy-state">{on ? 'calls when done' : 'no call'}</span>}
     </span>
   );
 }

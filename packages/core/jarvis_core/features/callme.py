@@ -97,6 +97,9 @@ class CallMe:
         run = await self.core.store.get_run(event.run_id)
         if run is None or not run.call_me or (run.id, once) in self._rung:
             return
+        # A ring nobody asked for is for when he has walked away: not while the chat is open.
+        if run.call_me_default and self.core.bus.has_subscribers(run.conversation_id):
+            return
         self._rung.add((run.id, once))
         if len(self._rung) > 1000:
             self._rung.clear()  # a memory of the last thousand rings is plenty against a double ring

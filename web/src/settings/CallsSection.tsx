@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { Icon } from '../components/Icon';
-import { IconButton, RelativeTime } from '../components/primitives';
+import { IconButton, RelativeTime, Switch } from '../components/primitives';
 import { errorText, useLoader } from '../lib/useLoader';
 import { disablePush, enablePush, pushStatus, thisEndpoint, type PushStatus } from '../push/push';
+import type { RunKind } from '../protocol/types';
 import { useStore } from '../store/store';
 
 const STATUS: Record<PushStatus, string> = {
@@ -13,11 +14,20 @@ const STATUS: Record<PushStatus, string> = {
   unsupported: 'This browser cannot ring (no web push). On an iPhone, add Jarvis to the home screen first.',
 };
 
+/** What rings when it ends without being asked to; the order is the order on the screen. */
+const KINDS: { kind: RunKind; label: string; hint?: string }[] = [
+  { kind: 'chat', label: 'Chats', hint: 'Not while the chat is open in front of you, and not during a call.' },
+  { kind: 'scheduled', label: 'Scheduled prompts' },
+  { kind: 'collab', label: 'Messages from collaborators' },
+  { kind: 'meeting', label: 'Meeting summaries' },
+  { kind: 'triage', label: 'Mail triage' },
+];
+
 /**
  * Calls from Jarvis (docs/stories/11_call_me.md): the devices a finished task rings, this one
  * among them, and a test ring. Discord carries the ring when no device takes it.
  */
-export function CallsSection() {
+export function CallsSection({ value, onChange }: { value: RunKind[]; onChange: (v: RunKind[]) => void }) {
   const notify = useStore((s) => s.notify);
   const load = useCallback(() => api.push.state(), []);
   const { data, error, reload } = useLoader(load, 'devices');
@@ -61,6 +71,20 @@ export function CallsSection() {
         <h2>Calls from Jarvis</h2>
         <p>Turn on the bell when you send a task (or say "call me when you're done") and Jarvis rings when it ends. Answering opens a call that tells you the result.</p>
       </div>
+      <div className="small" style={{ fontWeight: 600 }}>
+        Call me when these are done, unless I turn the bell off:
+      </div>
+      {KINDS.map(({ kind, label, hint }) => (
+        <div key={kind} className="think-row">
+          <Switch
+            label={label}
+            checked={value.includes(kind)}
+            onChange={(on) => onChange(on ? [...value.filter((k) => k !== kind), kind] : value.filter((k) => k !== kind))}
+          />
+          <span className="small">{label}</span>
+          {hint && <span className="field-hint">{hint}</span>}
+        </div>
+      ))}
       {error && <div className="field-error">{error}</div>}
       {status && <div className="small">{STATUS[status]}</div>}
       <div className="mcp-list">

@@ -87,10 +87,12 @@ export interface UiState {
   /** Jarvis ringing: a ring opened from its notification, waiting to be answered or declined. */
   incoming: IncomingRing | null;
   /**
-   * The bell for the NEXT message, per chat (docs/stories/11_call_me.md): ring when the run it
-   * starts ends. A run already working carries its own flag (Run.call_me) instead.
+   * The bell for the NEXT message, per chat, when he has touched it (docs/stories/11_call_me.md).
+   * Untouched, `callMeDefault` decides. A run already working carries its own flag (Run.call_me).
    */
   callMeNext: Record<string, boolean | undefined>;
+  /** Whether a chat rings by default when its task is done (settings.call_me_default). */
+  callMeDefault: boolean;
   /** Sidebar multi-select: the chosen conversation ids. Empty means not selecting anything. */
   selection: string[];
   /** The row a shift-click measures its range from. */
@@ -158,7 +160,8 @@ export interface Actions {
    * otherwise it goes with the next message. Called from a tap, so the first one can also ask
    * this device for permission to ring.
    */
-  toggleCallMe: () => void;
+  toggleCallMe: (opts?: { voice?: boolean }) => void;
+  setCallMeDefault: (on: boolean) => void;
   setCallMuted: (muted: boolean) => void;
   /** Earpiece or speaker; remembered on this device for the next call. */
   setCallRoute: (route: CallRoute) => void;
@@ -269,6 +272,7 @@ export const useStore = create<AppState>()((set, get) => ({
   call: null,
   incoming: null,
   callMeNext: {},
+  callMeDefault: true,
   thinkChoice: {},
   draftPrivacy: DRAFT_NORMAL,
   summaries: {},
@@ -341,6 +345,10 @@ export const useStore = create<AppState>()((set, get) => ({
       if (r) get().receiveRing(r);
     });
     void refreshPush().catch(() => undefined);
+    api.settings
+      .get()
+      .then((st) => set({ callMeDefault: st.call_me_default.includes('chat') }))
+      .catch(() => undefined);
 
     window.addEventListener('popstate', () => {
       const r = parseLocation();
@@ -463,7 +471,7 @@ export const useStore = create<AppState>()((set, get) => ({
             think: null,
             think_level: null,
             channel: 'voice',
-            ...(takeCallMe(set, get, conversationId) ? { call_me: true } : {}),
+            ...callMeField(takeCallMe(set, get, conversationId)),
             // Same as a typed first message: the draft's privacy opens the chat (a call started
             // with the eye on was opening an ordinary, remembered chat - 2026-09-13).
             ...(conversationId ? {} : { incognito: s.draftPrivacy.incognito, ttl_seconds: s.draftPrivacy.ttlSeconds }),
@@ -524,18 +532,18 @@ export const useStore = create<AppState>()((set, get) => ({
 
   declineRing: () => set({ incoming: null }),
 
-  toggleCallMe: () => {
+  toggleCallMe: (opts) => {
     const s = get();
     const key = s.openConversationId ?? NEW_CONVERSATION_KEY;
     const run = selectActiveRun(s, s.openConversationId);
-    const on = run ? !run.call_me : !s.callMeNext[key];
+    const on = run ? !run.call_me : !(s.callMeNext[key] ?? (opts?.voice ? false : s.callMeDefault));
     if (run) {
       if (!ws?.send({ type: 'run.call_me', run_id: run.id, on })) {
         s.notify('Not connected to Jarvis.', 'error');
         return;
       }
     } else {
-      set((st) => ({ callMeNext: on ? { ...st.callMeNext, [key]: true } : omit(st.callMeNext, key) }));
+      set((st) => ({ callMeNext: { ...st.callMeNext, [key]: on } }));
     }
     if (!on || !pushSupported()) return;
     // The first ring on this device needs its permission, asked inside this tap.
@@ -549,6 +557,8 @@ export const useStore = create<AppState>()((set, get) => ({
         .catch((e: unknown) => s.notify(`This device cannot ring: ${errorText(e)}`, 'error'));
     }
   },
+
+  setCallMeDefault: (on) => set({ callMeDefault: on }),
 
   setCallMuted: (muted) => session?.setMuted(muted),
 
@@ -665,7 +675,7 @@ export const useStore = create<AppState>()((set, get) => ({
       think: choice?.think ?? null,
       think_level: choice?.think ? (choice.think_level ?? null) : null,
       attachment_ids: attachments.map((a) => a.id),
-      ...(takeCallMe(set, get, open) ? { call_me: true } : {}),
+      ...callMeField(takeCallMe(set, get, open)),
       // Only a first message opens a chat, so only then does the draft's privacy travel.
       ...(open ? {} : { incognito: s.draftPrivacy.incognito, ttl_seconds: s.draftPrivacy.ttlSeconds }),
     });
@@ -1043,12 +1053,17 @@ function indexBy(list: Conversation[], into: Record<string, Conversation>): Reco
   return out;
 }
 
-/** The bell for the next message in this chat, used up by the message that carries it. */
-function takeCallMe(set: Set, get: Get, conversationId: string | null): boolean {
+/** The bell for the next message in this chat if he touched it, used up by that message. */
+function takeCallMe(set: Set, get: Get, conversationId: string | null): boolean | undefined {
   const key = conversationId ?? NEW_CONVERSATION_KEY;
-  if (!get().callMeNext[key]) return false;
-  set((s) => ({ callMeNext: omit(s.callMeNext, key) }));
-  return true;
+  const on = get().callMeNext[key];
+  if (on !== undefined) set((s) => ({ callMeNext: omit(s.callMeNext, key) }));
+  return on;
+}
+
+/** Untouched, the field is left out and the core's settings decide. */
+function callMeField(on: boolean | undefined): { call_me?: boolean } {
+  return on === undefined ? {} : { call_me: on };
 }
 
 function upsertConversation(set: Set, conv: Conversation): void {

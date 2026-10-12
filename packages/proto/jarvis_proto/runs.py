@@ -139,6 +139,9 @@ class Run(BaseModel):
     # Ring Arsen when this run ends or stops to ask him something (docs/stories/11_call_me.md):
     # set with the message, by the bell while it works, or by the run itself (jarvis.call_me).
     call_me: bool = False
+    # The ring came from settings.call_me_default, not from him: it is skipped while he is
+    # watching the chat. Asked for (the bell, jarvis.call_me) it rings whatever he is doing.
+    call_me_default: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     started_at: datetime | None = None
     finished_at: datetime | None = None

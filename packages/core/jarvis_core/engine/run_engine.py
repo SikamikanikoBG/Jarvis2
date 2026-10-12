@@ -154,7 +154,7 @@ class RunEngine:
         budget_kind: RunKind | None = None,
         attachment_ids: list[str] | None = None,
         channel: Channel = Channel.TEXT,
-        call_me: bool = False,
+        call_me: bool | None = None,
     ) -> tuple[Run, Conversation]:
         conv: Conversation | None = None
         if conversation_id:
@@ -183,6 +183,11 @@ class RunEngine:
         settings = self._settings()
         if channel is Channel.VOICE and think is None and not settings.voice.think:
             think = False  # every second of reasoning is a second of silence on the line
+        # Not asked either way: the settings say whether this kind of run rings. A call's own
+        # turns do not - he is on the line and hears the answer.
+        by_default = call_me is None
+        if call_me is None:
+            call_me = channel is Channel.TEXT and kind in settings.call_me_default
         run = Run(
             id=new_id("run"),
             conversation_id=conv.id,
@@ -194,6 +199,7 @@ class RunEngine:
             think_level=think_level,
             channel=channel,
             call_me=call_me,
+            call_me_default=by_default and call_me,
         )
         await self._store.create_run(run)
         # run_id must be set on the user message so resume can find the run's messages.
@@ -262,6 +268,7 @@ class RunEngine:
         if run is None or run.status.terminal:
             return False
         run.call_me = on
+        run.call_me_default = False  # asked for now
         await self._store.save_run(run)
         self._bus.publish(RunUpdated(run=run.model_copy()))
         return True

@@ -376,6 +376,7 @@ describe('applyServerEvent — run.updated', () => {
       think: null,
       think_level: null,
       call_me: false,
+      call_me_default: false,
       created_at: iso(0),
       started_at: iso(1),
       finished_at: null,

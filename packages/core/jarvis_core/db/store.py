@@ -483,6 +483,7 @@ class Store:
             waiting_reason=row["waiting_reason"],
             channel=Channel(row["channel"]) if row["channel"] else Channel.TEXT,
             call_me=bool(row["call_me"]),
+            call_me_default=bool(row["call_me_default"]),
             created_at=_dt(row["created_at"]) or datetime.now(UTC),
             started_at=_dt(row["started_at"]),
             finished_at=_dt(row["finished_at"]),
@@ -491,8 +492,8 @@ class Store:
     async def create_run(self, run: Run) -> Run:
         await self.db.execute(
             "INSERT INTO runs(id, conversation_id, kind, status, input_text, plan, budget, priority,"
-            " steps_used, usage, last_seq, error, waiting_reason, channel, call_me, created_at, started_at, finished_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " steps_used, usage, last_seq, error, waiting_reason, channel, call_me, call_me_default,"
+            " created_at, started_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 run.id,
                 run.conversation_id,
@@ -509,6 +510,7 @@ class Store:
                 run.waiting_reason,
                 run.channel.value,
                 int(run.call_me),
+                int(run.call_me_default),
                 run.created_at.isoformat(),
                 run.started_at.isoformat() if run.started_at else None,
                 run.finished_at.isoformat() if run.finished_at else None,
@@ -519,7 +521,7 @@ class Store:
     async def save_run(self, run: Run) -> None:
         await self.db.execute(
             "UPDATE runs SET status=?, plan=?, steps_used=?, usage=?, last_seq=?, error=?,"
-            " waiting_reason=?, call_me=?, started_at=?, finished_at=? WHERE id=?",
+            " waiting_reason=?, call_me=?, call_me_default=?, started_at=?, finished_at=? WHERE id=?",
             (
                 run.status.value,
                 run.plan.model_dump_json() if run.plan else None,
@@ -529,6 +531,7 @@ class Store:
                 run.error,
                 run.waiting_reason,
                 int(run.call_me),
+                int(run.call_me_default),
                 run.started_at.isoformat() if run.started_at else None,
                 run.finished_at.isoformat() if run.finished_at else None,
                 run.id,

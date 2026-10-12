@@ -705,6 +705,10 @@ class Settings(BaseModel):
     # The push channel for reminders and scheduled-run summaries (notify.discord). Secret:
     # never echoed in logs or the UI beyond "configured".
     discord_webhook_url: str | None = None
+    # The kinds of run that ring Arsen when they end without being asked to
+    # (docs/stories/11_call_me.md). A ring by default stays quiet while he is watching the chat,
+    # and a call's own turns never ring (he is on the line); the bell turns it off per message.
+    call_me_default: list[RunKind] = Field(default_factory=lambda: [RunKind.CHAT, RunKind.SCHEDULED])
     # Mailboxes served by the core itself over IMAP/SMTP (features/mail.py): Gmail with an app
     # password, so personal mail does not depend on Outlook on a Windows host.
     mail_accounts: list[MailAccount] = Field(default_factory=list)

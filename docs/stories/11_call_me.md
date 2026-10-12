@@ -10,6 +10,11 @@ notification that opens the call the app already knows how to hold.
 
 ## Stories
 
+0. **It is on by default.** Settings → Calls from Jarvis says which kinds of task ring when
+   they end without being asked (chats and scheduled prompts unless changed;
+   `settings.call_me_default`). A default ring stays quiet while the chat is open in front of
+   me, and a call's own turns never ring, since I am on the line. Asked for (the bell, or
+   "call me"), it rings whatever I am doing.
 1. **I ask for it with the task.** In the composer, next to the incognito and disappearing-chat
    toggles, is a bell: on, the next message's run rings when it ends. While a run works, the
    bell is that run's. On a call it is on the call screen too, so I can say the task, tap the
@@ -32,7 +37,8 @@ notification that opens the call the app already knows how to hold.
 
 ## How it works
 
-- **The run carries it.** `Run.call_me` is set with the message (`run.create {call_me}`), by the
+- **The run carries it.** Untouched, `settings.call_me_default` decides by the run's kind and
+  `Run.call_me_default` marks it. `Run.call_me` is set with the message (`run.create {call_me}`), by the
   bell while the run works (`run.call_me`), or by the run itself (`jarvis.call_me`). It is
   stored, so a restart keeps it.
 - **`features/callme.py` decides when and what.** It watches the bus (like the Office) for a run

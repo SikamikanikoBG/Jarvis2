@@ -81,6 +81,7 @@ export function SettingsScreen() {
       const saved = await api.settings.patch(body);
       setOriginal(saved);
       setDraft(saved);
+      useStore.getState().setCallMeDefault(saved.call_me_default.includes('chat'));
       setSavedAt(Date.now());
     } catch (e) {
       if (e instanceof ApiError && e.status === 422) {
@@ -216,7 +217,7 @@ export function SettingsScreen() {
         </div>
 
         <div id="settings-calls" className="settings-anchor">
-          <CallsSection />
+          <CallsSection value={draft.call_me_default} onChange={(v) => patch('call_me_default', v)} />
         </div>
 
         <div id="settings-sessions" className="settings-anchor">

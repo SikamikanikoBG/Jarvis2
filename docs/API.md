@@ -277,7 +277,8 @@ Replaces V1 reminders/scheduler. Each fire = a new conversation (`kind=scheduled
 
 ```
 GET    /api/schedules                → Schedule[]
-POST   /api/schedules {name, prompt, cron?, at?, tz?, enabled?, catch_up?, think?, think_level?} → Schedule 201
+POST   /api/schedules {name, prompt, cron?, at?, tz?, enabled?, catch_up?, think?, think_level?, call_me?} → Schedule 201
+       call_me: "default" (Settings › Calls decides) | "always" | "never" (jarvis.call_me cannot override it)
 PATCH  /api/schedules/{id} {…same…}  → Schedule
 DELETE /api/schedules/{id}
 POST   /api/schedules/{id}/run       → {run_id, conversation_id}   (fires now)

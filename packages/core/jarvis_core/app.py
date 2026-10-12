@@ -70,6 +70,7 @@ from jarvis_core.tools.mcp_provider import McpProvider
 from jarvis_core.tools.ws_provider import WsProvider
 from jarvis_proto import ConversationKind, RunKind, Settings, ThinkLevel
 from jarvis_proto.events import ToolsChanged
+from jarvis_proto.features import ScheduleCallMe
 from jarvis_proto.settings import RoleName
 
 log = logging.getLogger(__name__)
@@ -122,7 +123,10 @@ class Core:
         # The getter is resolved at call time: jarvis.wait_until polls other tools through the
         # very registry that holds this provider, which does not exist yet on this line.
         self.builtin = CoreTools(
-            registry=lambda: self.registry, settings=lambda: self.settings, engine=lambda: self.engine
+            registry=lambda: self.registry,
+            settings=lambda: self.settings,
+            engine=lambda: self.engine,
+            never_rings=self._never_rings,
         )
         self.sessions = SessionsTools(self)
         self.mcp: list[McpProvider] = []
@@ -206,14 +210,29 @@ class Core:
         kind: RunKind,
         think: bool | None,
         think_level: ThinkLevel | None,
+        call_me: ScheduleCallMe = "default",
     ) -> tuple[str, str]:
         conv = await self.store.create_conversation(
             kind=conversation_kind, title=title, folder_key=folder_key, folder_label=folder_label
         )
         run, conv = await self.engine.create_run(
-            text=text, conversation_id=conv.id, kind=kind, think=think, think_level=think_level
+            text=text,
+            conversation_id=conv.id,
+            kind=kind,
+            think=think,
+            think_level=think_level,
+            call_me={"default": None, "always": True, "never": False}[call_me],
         )
         return run.id, conv.id
+
+    async def _never_rings(self, run_id: str) -> bool:
+        """The run belongs to a scheduled task set never to ring: jarvis.call_me may not turn it on."""
+        run = await self.store.get_run(run_id)
+        if run is None or run.kind is not RunKind.SCHEDULED:
+            return False
+        conv = await self.store.get_conversation(run.conversation_id)
+        schedule = await self.schedules.get(conv.folder_key) if conv is not None and conv.folder_key else None
+        return schedule is not None and schedule.call_me == "never"
 
     async def start(self) -> None:
         await self.db.open()

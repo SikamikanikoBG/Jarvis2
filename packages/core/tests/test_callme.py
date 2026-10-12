@@ -358,3 +358,36 @@ def test_presence_over_the_socket(client: TestClient):
         ws.send_json({"type": "ping"})
         ws.receive_json()
         assert core.bus.has_subscribers("conv_x") and not core.bus.has_viewers("conv_x")
+
+
+async def test_a_scheduled_task_says_whether_it_rings(harness: Harness):
+    """Per task: "default" follows settings.call_me_default, "always" and "never" do not."""
+    core = harness.core
+    harness.chat.push(FakeTurn(text="a"), FakeTurn(text="b"), FakeTurn(text="c"))
+    rings = {}
+    for mode in ("default", "always", "never"):
+        sched = await core.schedules.create(name=mode, prompt="go", cron="0 9 * * 1", tz="UTC", call_me=mode)
+        assert sched.call_me == mode
+        run_id, _ = await core.scheduler.run_now(sched)
+        run = await core.store.get_run(run_id)
+        rings[mode] = (run.call_me, run.call_me_default)
+    assert rings == {"default": (True, True), "always": (True, False), "never": (False, False)}
+    # Changed later, and back to default.
+    patched = await core.schedules.update(sched.id, call_me="default")
+    assert patched is not None and patched.call_me == "default"
+
+
+async def test_a_task_set_never_to_ring_cannot_ring_itself(harness: Harness):
+    from jarvis_proto import ToolCall
+
+    core = harness.core
+    sched = await core.schedules.create(
+        name="Quiet", prompt="call me when done", cron="0 9 * * 1", tz="UTC", call_me="never"
+    )
+    harness.chat.push(FakeTurn(tool_calls=[ToolCall(id="c1", name="jarvis.call_me", arguments={})]))
+    harness.chat.push(FakeTurn(text="Done."))
+    run_id, conv_id = await core.scheduler.run_now(sched)
+    await _done(harness, run_id)
+    assert (await core.store.get_run(run_id)).call_me is False
+    tool_msgs = [m for m in await core.store.list_messages(conv_id) if m.role == "tool"]
+    assert tool_msgs and "never to ring" in tool_msgs[0].content

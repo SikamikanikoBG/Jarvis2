@@ -28,6 +28,8 @@ notification that opens the call the app already knows how to hold.
    call: Jarvis reads the start of his reply, then listens like any call. Only where the page
    may not start sound without a tap of its own (a browser that blocks autoplay for the site)
    does the incoming screen ask for one more tap, and a ring by link (Discord) always does.
+   Each scheduled task can say for itself whether it rings: "Call me when done" in its editor -
+   as in Settings › Calls, always, or never. Never holds even if the run asks to ring.
 4. **I can decline.** Decline on the notification, or on the incoming screen, and nothing
    happens; the answer is in the chat.
 5. **One ring, not a pile.** Two tasks ending together ring once, for the later one, and the

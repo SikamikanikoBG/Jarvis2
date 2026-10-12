@@ -173,12 +173,14 @@ class CoreTools(BuiltinProvider):
         registry: Callable[[], ToolRegistry] | None = None,
         settings: Callable[[], Any] | None = None,
         engine: Callable[[], Any] | None = None,
+        never_rings: Callable[[str], Awaitable[bool]] | None = None,
     ) -> None:
         # Getters, not the objects: the registry is built after this provider and holds it, and
         # settings are replaced wholesale on every PATCH.
         self._registry = registry
         self._settings = settings
         self._engine = engine
+        self._never_rings = never_rings
         super().__init__()
 
     @tool(
@@ -214,6 +216,8 @@ class CoreTools(BuiltinProvider):
         run_id = current_run_id.get()
         if run_id is None or self._engine is None:
             return ToolResult.failure("no run to ring for")
+        if on and self._never_rings is not None and await self._never_rings(run_id):
+            return ToolResult.failure("this scheduled task is set never to ring - Arsen chose that; do not ring")
         if not await self._engine().set_call_me(run_id, on):
             return ToolResult.failure("this run has already ended")
         return ToolResult.data("He will be rung when this run ends." if on else "No ring when this run ends.")

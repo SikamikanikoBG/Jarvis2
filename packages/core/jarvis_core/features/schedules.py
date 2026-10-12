@@ -23,13 +23,14 @@ from jarvis_core.engine.bus import EventBus
 from jarvis_core.tools.builtin import BuiltinProvider, tool
 from jarvis_proto import ConversationKind, RunKind, Schedule, ScheduleFire, ToolResult, new_id
 from jarvis_proto.events import ScheduleChanged
+from jarvis_proto.features import ScheduleCallMe
 from jarvis_proto.runs import ThinkLevel
 
 log = logging.getLogger(__name__)
 
 TICK_S = 15.0
 
-# fire(text, conversation_kind, folder_key, folder_label, title, kind, think, think_level) -> (run_id, conversation_id)
+# fire(text, conversation_kind, folder_key, folder_label, title, kind, think, think_level, call_me) -> (run_id, conversation_id)
 FireFn = Callable[..., Awaitable[tuple[str, str]]]
 
 
@@ -79,6 +80,7 @@ class ScheduleStore:
             catch_up=row["catch_up"],
             think=None if row["think"] is None else bool(row["think"]),
             think_level=row["think_level"],
+            call_me=row["call_me"],
             next_fire=_dt(row["next_fire"]),
             last_fired_for=_dt(row["last_fired_for"]),
             last_run_id=fire["run_id"] if fire else None,
@@ -107,6 +109,7 @@ class ScheduleStore:
         catch_up: str = "skip",
         think: bool | None = None,
         think_level: ThinkLevel | None = None,
+        call_me: ScheduleCallMe = "default",
     ) -> Schedule:
         if bool(cron) == bool(at):
             raise ValueError("exactly one of cron or at is required")
@@ -119,8 +122,8 @@ class ScheduleStore:
         next_fire = compute_next(cron, at, tz, now)
         sid = new_id("sch")
         await self.db.execute(
-            "INSERT INTO schedules(id, name, prompt, cron, at, tz, enabled, catch_up, think, think_level, next_fire,"
-            " last_fired_for, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,?,?)",
+            "INSERT INTO schedules(id, name, prompt, cron, at, tz, enabled, catch_up, think, think_level, call_me,"
+            " next_fire, last_fired_for, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?)",
             (
                 sid,
                 name.strip(),
@@ -132,6 +135,7 @@ class ScheduleStore:
                 catch_up,
                 None if think is None else int(think),
                 think_level,
+                call_me,
                 next_fire.isoformat() if next_fire else None,
                 now.isoformat(),
                 now.isoformat(),
@@ -149,7 +153,7 @@ class ScheduleStore:
         data = current.model_dump()
         for key, value in fields.items():
             if (
-                key in {"name", "prompt", "cron", "at", "tz", "enabled", "catch_up", "think", "think_level"}
+                key in {"name", "prompt", "cron", "at", "tz", "enabled", "catch_up", "think", "think_level", "call_me"}
                 and value is not None
             ):
                 data[key] = value
@@ -167,7 +171,7 @@ class ScheduleStore:
         next_fire = compute_next(data["cron"], at, data["tz"], _now()) if data["enabled"] else None
         await self.db.execute(
             "UPDATE schedules SET name=?, prompt=?, cron=?, at=?, tz=?, enabled=?, catch_up=?, think=?, think_level=?,"
-            " next_fire=?, updated_at=? WHERE id=?",
+            " call_me=?, next_fire=?, updated_at=? WHERE id=?",
             (
                 data["name"].strip(),
                 data["prompt"].strip(),
@@ -178,6 +182,7 @@ class ScheduleStore:
                 data["catch_up"],
                 None if data["think"] is None else int(data["think"]),
                 data["think_level"],
+                data["call_me"],
                 next_fire.isoformat() if next_fire else None,
                 _now().isoformat(),
                 schedule_id,
@@ -328,6 +333,7 @@ class Scheduler:
             kind=RunKind.SCHEDULED,
             think=schedule.think,
             think_level=schedule.think_level,
+            call_me=schedule.call_me,
         )
 
 

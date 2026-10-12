@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from jarvis_core.api.deps import core_of, require_token
 from jarvis_proto import Board, Entity, EntityDetail, Graph, Note, Schedule, ScheduleFire, Skill
-from jarvis_proto.features import CatchUp, EntityType, NoteColor
+from jarvis_proto.features import CatchUp, EntityType, NoteColor, ScheduleCallMe
 from jarvis_proto.runs import ThinkLevel
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
@@ -232,6 +232,7 @@ class ScheduleBody(BaseModel):
     catch_up: CatchUp | None = None
     think: bool | None = None
     think_level: ThinkLevel | None = None
+    call_me: ScheduleCallMe | None = None
 
 
 @router.get("/schedules", response_model=list[Schedule])
@@ -255,6 +256,7 @@ async def create_schedule(request: Request, body: ScheduleBody) -> Schedule:
             catch_up=body.catch_up or "skip",
             think=body.think,
             think_level=body.think_level,
+            call_me=body.call_me or "default",
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc

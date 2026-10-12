@@ -10,7 +10,7 @@ import { matchesQuery } from '../lib/filter';
 import { formatDuration } from '../lib/format';
 import { THINK_CHOICES, thinkChoiceKey } from '../lib/think';
 import { errorText, useLoader } from '../lib/useLoader';
-import type { CatchUp, Schedule, ScheduleFire } from '../protocol/types';
+import type { CatchUp, Schedule, ScheduleCallMe, ScheduleFire } from '../protocol/types';
 import { useStore } from '../store/store';
 
 function formatUntil(ts: string, now: number): string {
@@ -127,6 +127,7 @@ export function SchedulesScreen() {
                         <Highlight text={s.name} query={q} />
                       </span>
                       {s.last_status && <span className={`chip ${statusChip(s.last_status)}`}>{s.last_status}</span>}
+                      {s.call_me === 'never' && <span className="chip chip-outline">no call</span>}
                     </div>
                     {/* Only when the prompt is what matched — otherwise the row stays as it was. */}
                     {q && !matchesQuery(q, s.name) && matchesQuery(q, s.prompt) && (
@@ -195,6 +196,7 @@ function ScheduleForm({ schedule, onClose, onSaved }: { schedule?: Schedule; onC
   const [tz, setTz] = useState(schedule?.tz ?? 'Europe/Sofia');
   const [catchUp, setCatchUp] = useState<CatchUp>(schedule?.catch_up ?? 'skip');
   const [enabled, setEnabled] = useState(schedule?.enabled ?? true);
+  const [callMe, setCallMe] = useState<ScheduleCallMe>(schedule?.call_me ?? 'default');
   const [thinkKey, setThinkKey] = useState(thinkChoiceKey({ think: schedule?.think ?? null, think_level: schedule?.think_level ?? null }));
   const [err, setErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -214,6 +216,7 @@ function ScheduleForm({ schedule, onClose, onSaved }: { schedule?: Schedule; onC
       tz: tz.trim() || 'Europe/Sofia',
       enabled,
       catch_up: catchUp,
+      call_me: callMe,
       think: think.think,
       think_level: think.think ? think.think_level : null,
     };
@@ -273,6 +276,14 @@ function ScheduleForm({ schedule, onClose, onSaved }: { schedule?: Schedule; onC
           <select className="select" value={catchUp} onChange={(e) => setCatchUp(e.target.value as CatchUp)}>
             <option value="skip">Skip it</option>
             <option value="run_once">Run once on start-up</option>
+          </select>
+        </div>
+        <div className="field">
+          <label>Call me when done</label>
+          <select className="select" value={callMe} onChange={(e) => setCallMe(e.target.value as ScheduleCallMe)}>
+            <option value="default">As in Settings › Calls</option>
+            <option value="always">Always</option>
+            <option value="never">Never</option>
           </select>
         </div>
         <div className="field">

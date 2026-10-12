@@ -94,6 +94,9 @@ class Skill(BaseModel):
 # --- schedules --------------------------------------------------------------------------
 
 CatchUp = Literal["skip", "run_once"]
+# Whether a scheduled task rings Arsen when it ends (docs/stories/11_call_me.md): "default" leaves
+# it to settings.call_me_default; "never" holds even when the run itself asks (jarvis.call_me).
+ScheduleCallMe = Literal["default", "always", "never"]
 
 
 class Schedule(BaseModel):
@@ -107,6 +110,7 @@ class Schedule(BaseModel):
     catch_up: CatchUp = "skip"
     think: bool | None = None
     think_level: ThinkLevel | None = None
+    call_me: ScheduleCallMe = "default"
     next_fire: datetime | None = None
     last_fired_for: datetime | None = None
     last_run_id: str | None = None

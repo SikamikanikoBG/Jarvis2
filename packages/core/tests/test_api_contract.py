@@ -192,6 +192,11 @@ def test_schedules_crud_validation_and_history(client: TestClient):
     assert paused["enabled"] is False and paused["next_fire"] is None
     resumed = ok(client.patch(f"/api/schedules/{made['id']}", json={"enabled": True}, headers=h()), 200).json()
     assert resumed["enabled"] is True and resumed["next_fire"]
+    # Whether it rings: "default" until told, then the task's own choice; nonsense is refused.
+    assert made["call_me"] == "default"
+    never = ok(client.patch(f"/api/schedules/{made['id']}", json={"call_me": "never"}, headers=h()), 200).json()
+    assert never["call_me"] == "never" and never["enabled"] is True
+    ok(client.patch(f"/api/schedules/{made['id']}", json={"call_me": "sometimes"}, headers=h()), 422)
     # Switching to a one-shot clears the cron rather than keeping both.
     one_shot = ok(
         client.patch(f"/api/schedules/{made['id']}", json={"at": "2099-01-01T09:00:00"}, headers=h()), 200

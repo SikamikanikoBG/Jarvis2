@@ -672,6 +672,8 @@ export interface Skill {
 }
 
 export type CatchUp = 'skip' | 'run_once';
+/** Whether a scheduled task rings when it ends: 'default' follows Settings > Calls. */
+export type ScheduleCallMe = 'default' | 'always' | 'never';
 
 export interface Schedule {
   id: string;
@@ -684,6 +686,7 @@ export interface Schedule {
   catch_up: CatchUp;
   think: boolean | null;
   think_level: ThinkLevel | null;
+  call_me: ScheduleCallMe;
   next_fire: string | null;
   last_fired_for: string | null;
   last_run_id: string | null;

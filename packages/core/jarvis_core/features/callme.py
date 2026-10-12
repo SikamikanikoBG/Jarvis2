@@ -150,7 +150,10 @@ class CallMe:
             },
         )
         if carrier is None:
-            log.warning("call-me: no device took the ring for %s and Discord is not set up", last.run_id)
+            log.warning(
+                "call-me: nothing carried the ring for %s (no device took it, Discord did not either)",
+                last.run_id or "a test ring",
+            )
         return carrier
 
 

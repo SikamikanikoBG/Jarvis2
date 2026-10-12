@@ -335,7 +335,8 @@ export const useStore = create<AppState>()((set, get) => ({
       .catch(() => undefined);
 
     const ring = takeRing();
-    if (route.conversationId) void get().openConversation(route.conversationId, { replace: true });
+    // A reload on another view (Settings, Runs) keeps that view: the remembered chat opens behind it.
+    if (route.conversationId) void get().openConversation(route.conversationId, { replace: true, stay: route.view !== 'chat' });
     // Jarvis rang and the notification was tapped: the app opened on it (an address) or, when it
     // was already open, the service worker says so.
     if (ring) get().receiveRing(ring);

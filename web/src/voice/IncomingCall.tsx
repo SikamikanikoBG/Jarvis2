@@ -2,10 +2,11 @@ import { Icon } from '../components/Icon';
 import { useStore } from '../store/store';
 
 /**
- * Jarvis ringing (docs/stories/11_call_me.md): the screen a tapped ring opens on. It is a
- * phone's incoming call, not an auto-answer - a page may not start the microphone or speak
- * without a tap of its own, and answering is that tap. Answer opens the call (CallScreen) and
- * it says what the task came to; Decline leaves the result in the chat.
+ * Jarvis ringing (docs/stories/11_call_me.md): the screen a ring opens on when it cannot go
+ * straight into the call - a ring by link (Discord), or a phone where the page may not start the
+ * microphone or speak without a tap of its own, so answering here is that tap. Answer on the
+ * notification skips it wherever the page may sound by itself. Answer opens the call
+ * (CallScreen) and it says what the task came to; Decline leaves the result in the chat.
  */
 export function IncomingCall() {
   const ring = useStore((s) => s.incoming);

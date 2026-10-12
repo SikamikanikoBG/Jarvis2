@@ -28,6 +28,8 @@ export interface IncomingRing {
   runId: string;
   /** What the call says first; empty when the ring came by a link that does not carry it. */
   say: string;
+  /** Answer was already tapped on the notification, so the call opens without asking again. */
+  answered?: boolean;
 }
 
 /**
@@ -39,10 +41,12 @@ export function takeRing(href = window.location.href): IncomingRing | null {
   const runId = url.searchParams.get('ring');
   if (!runId) return null;
   const say = url.searchParams.get('say') ?? '';
+  const answered = url.searchParams.get('answer') === '1';
   url.searchParams.delete('ring');
   url.searchParams.delete('say');
+  url.searchParams.delete('answer');
   if (href === window.location.href) window.history.replaceState(null, '', url.pathname + url.search + url.hash);
-  return { conversationId: parseLocation(url.pathname).conversationId, runId, say };
+  return { conversationId: parseLocation(url.pathname).conversationId, runId, say, ...(answered ? { answered } : {}) };
 }
 
 export function buildPath(view: View, conversationId: string | null): string {

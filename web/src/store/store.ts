@@ -150,7 +150,8 @@ export interface Actions {
    *  the microphone and the first spoken word both need one. */
   startCall: (opts?: { say?: string }) => Promise<void>;
   endCall: () => void;
-  /** A ring arrived (its notification was tapped): open its chat and show the incoming call. */
+  /** A ring arrived (its notification was tapped): open its chat and show the incoming call -
+   *  or, when Answer was tapped on the notification, go straight into the call if the page may. */
   receiveRing: (ring: IncomingRing) => void;
   /** Answer the incoming call - from a tap, like any call: it opens and says the result first. */
   answerRing: () => Promise<void>;
@@ -340,10 +341,11 @@ export const useStore = create<AppState>()((set, get) => ({
     // Jarvis rang and the notification was tapped: the app opened on it (an address) or, when it
     // was already open, the service worker says so.
     if (ring) get().receiveRing(ring);
-    navigator.serviceWorker?.addEventListener('message', (e: MessageEvent<{ type?: string; path?: string; say?: string }>) => {
+    navigator.serviceWorker?.addEventListener('message', (e: MessageEvent<{ type?: string; path?: string; say?: string; answered?: boolean }>) => {
       if (e.data?.type !== 'jarvis.ring' || !e.data.path) return;
       const url = new URL(e.data.path, window.location.origin);
       if (e.data.say) url.searchParams.set('say', e.data.say);
+      if (e.data.answered) url.searchParams.set('answer', '1');
       const r = takeRing(url.href);
       if (r) get().receiveRing(r);
     });
@@ -524,6 +526,7 @@ export const useStore = create<AppState>()((set, get) => ({
     api.conversations.get(id).catch((e: unknown) => {
       if (e instanceof ApiError && e.status === 404 && get().incoming === ring) set({ incoming: null });
     });
+    if (ring.answered) void answerFromNotification(get, ring);
   },
 
   answerRing: async () => {
@@ -1042,6 +1045,35 @@ export const useStore = create<AppState>()((set, get) => ({
 
 type Set = (partial: Partial<AppState> | ((s: AppState) => Partial<AppState>)) => void;
 type Get = () => AppState;
+
+/**
+ * Answer was tapped on the notification: that was the answer, so the call opens without the
+ * incoming screen asking a second time. Only when this page may start sound without a tap of its
+ * own (an installed app, or a site allowed to autoplay) - otherwise the incoming screen stays,
+ * and its button is the tap the microphone and the voice need.
+ */
+async function answerFromNotification(get: Get, ring: IncomingRing): Promise<void> {
+  if (!maySoundWithoutTap()) return;
+  // Opened cold by the notification: the socket is still connecting.
+  for (let waited = 0; !ws?.isOpen && waited < 8000; waited += 100) await new Promise((r) => setTimeout(r, 100));
+  if (!ws?.isOpen || get().incoming !== ring) return; // still offline, or declined / gone meanwhile
+  await get().answerRing();
+}
+
+function maySoundWithoutTap(): boolean {
+  const policy = (navigator as Navigator & { getAutoplayPolicy?: (kind: 'audiocontext') => string }).getAutoplayPolicy;
+  if (policy) return policy.call(navigator, 'audiocontext') === 'allowed';
+  if (typeof AudioContext === 'undefined') return false;
+  try {
+    // A context is born running only where sound may start without a gesture.
+    const probe = new AudioContext();
+    const running = probe.state === 'running';
+    void probe.close();
+    return running;
+  } catch {
+    return false;
+  }
+}
 
 async function loadConversations(set: Set, get: Get): Promise<void> {
   try {

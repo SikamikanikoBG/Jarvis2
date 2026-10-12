@@ -1,7 +1,7 @@
 /* Jarvis service worker — caches the app shell only. Never touches /api or /ws.
    It also takes Jarvis's rings (docs/stories/11_call_me.md): a web push from the core becomes a
    notification, and tapping it opens the app on the incoming call. */
-const SHELL = 'jarvis-shell-v4'; // v4: the ring (push + notificationclick)
+const SHELL = 'jarvis-shell-v5'; // v5: answering on the notification opens the call itself
 const SHELL_URLS = ['/', '/index.html', '/manifest.webmanifest', '/icons/icon.svg'];
 
 self.addEventListener('install', (event) => {
@@ -50,20 +50,22 @@ self.addEventListener('push', (event) => {
   );
 });
 
-/* Answering: the app, on the incoming call. An open window is told (no reload, the call screen
-   just appears); otherwise the app opens at the ring's address. Declining only dismisses it -
-   the result is in the chat either way. */
+/* Answering (the Answer button or the notification itself): the app, straight into the call - the
+   tap on the notification was the answer (answer=1). An open window is told (no reload);
+   otherwise the app opens at the ring's address. Declining only dismisses it - the result is in
+   the chat either way. */
 self.addEventListener('notificationclick', (event) => {
   const ring = event.notification.data || {};
   event.notification.close();
   if (event.action === 'decline') return;
   const url = new URL(ring.path || '/', self.location.origin);
   if (ring.say) url.searchParams.set('say', ring.say);
+  url.searchParams.set('answer', '1');
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windows) => {
       const open = windows.find((w) => new URL(w.url).origin === self.location.origin);
       if (open) {
-        open.postMessage({ type: 'jarvis.ring', path: ring.path || '/', say: ring.say || '' });
+        open.postMessage({ type: 'jarvis.ring', path: ring.path || '/', say: ring.say || '', answered: true });
         return open.focus();
       }
       return self.clients.openWindow(url.href);

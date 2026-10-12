@@ -27,4 +27,10 @@ describe('takeRing', () => {
     expect(takeRing('https://j.ts.net/?ring=test')).toEqual({ conversationId: null, runId: 'test', say: '' });
     expect(takeRing('https://j.ts.net/c/conv_1')).toBeNull();
   });
+
+  it('a ring answered on the notification says so, and the flag leaves the address too', () => {
+    const replaced = at('https://j.ts.net/c/conv_1?ring=run_9&say=Done.&answer=1');
+    expect(takeRing()).toEqual({ conversationId: 'conv_1', runId: 'run_9', say: 'Done.', answered: true });
+    expect(replaced).toEqual(['/c/conv_1']);
+  });
 });

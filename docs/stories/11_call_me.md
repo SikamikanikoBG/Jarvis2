@@ -24,9 +24,10 @@ notification that opens the call the app already knows how to hold.
    notification, "Jarvis is done · <chat>", with the start of the answer, sounding and
    vibrating, with Answer and Decline. A run that fails rings too ("it failed"), and so does
    one that stops to ask me something ("Jarvis needs you"), because I am the one it waits for.
-3. **I answer.** Tapping it opens the app in that chat on an incoming call. One more tap
-   answers, and Jarvis reads the start of his reply, then listens like any call. The extra
-   tap is honest: a page may not open the microphone or speak without a tap of its own.
+3. **I answer.** Answer on the notification opens the app in that chat, straight into the
+   call: Jarvis reads the start of his reply, then listens like any call. Only where the page
+   may not start sound without a tap of its own (a browser that blocks autoplay for the site)
+   does the incoming screen ask for one more tap, and a ring by link (Discord) always does.
 4. **I can decline.** Decline on the notification, or on the incoming screen, and nothing
    happens; the answer is in the chat.
 5. **One ring, not a pile.** Two tasks ending together ring once, for the later one, and the
@@ -60,5 +61,4 @@ notification that opens the call the app already knows how to hold.
 
 - Ring full-screen like a phone call, or play its own ringtone. The ring is the phone's
   notification sound and a vibration, as loud as the phone allows notifications to be.
-- Answer without a tap. The notification's tap opens the app; answering is the second tap.
 - On an iPhone, push works only for the app added to the home screen (iOS 16.4+).

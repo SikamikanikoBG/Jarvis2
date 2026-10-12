@@ -518,13 +518,12 @@ export const useStore = create<AppState>()((set, get) => ({
     if (session) return; // already on a call with him
     set({ incoming: ring });
     const id = ring.conversationId;
-    if (id === null || id === get().openConversationId) return;
+    if (id === null) return;
+    if (id !== get().openConversationId) void get().openConversation(id, { replace: true });
     // A ring for a chat that is gone (deleted, expired) has nothing to answer into.
-    void get()
-      .openConversation(id, { replace: true })
-      .then(() => {
-        if (!get().conversations[id] && get().incoming === ring) set({ incoming: null });
-      });
+    api.conversations.get(id).catch((e: unknown) => {
+      if (e instanceof ApiError && e.status === 404 && get().incoming === ring) set({ incoming: null });
+    });
   },
 
   answerRing: async () => {

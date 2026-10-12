@@ -121,10 +121,11 @@ class NotifyTools(BuiltinProvider):
     @tool(
         "notify.discord",
         description=(
-            "Send a push notification to Arsen's Discord (his phone buzzes). Use it for time-sensitive "
-            "reminders and for the summary of a scheduled run he should see without opening the app. "
-            "Keep the text short and well formatted (Discord markdown: **bold**, bullet lists, links); put a "
-            "long report or an HTML/Markdown document in `files` so he gets it as an attachment."
+            "Send a message to Arsen's Discord. Rarely needed: the end of every chat and scheduled run already "
+            "rings his phone with the start of your reply, so a result, a reminder or a warning goes at the "
+            "top of the reply, not here - a Discord message on top of that is a second ping for the same thing. "
+            "Use it only when he asks for Discord, or to deliver a FILE nothing else can carry (an HTML/Markdown "
+            "document in `files` when e-mail is down). Keep the text short (Discord markdown: **bold**, bullets, links)."
         ),
         args=_DiscordArgs,
     )

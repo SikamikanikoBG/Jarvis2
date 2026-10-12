@@ -201,8 +201,10 @@ class CoreTools(BuiltinProvider):
             "Ring Arsen's phone when the task you are working on now ends — done, failed, or stopped to ask "
             "him something. Use it when he asks to be called or told when you are done, or when he says he "
             "is leaving while you work. The ring is his phone's notification; tapping it opens a call in "
-            "this chat where your last reply is read to him. on=false takes a ring back. It affects only "
-            "this run; do not mention the mechanics, just confirm in a few words."
+            "this chat where your last reply is read to him. Chats and scheduled runs ring by default "
+            "(Settings > Calls from Jarvis); on=false takes a ring back - call it with on=false when a run "
+            "has nothing worth his attention (a routine automation, a quiet day, nothing new), so his phone "
+            "stays silent. It affects only this run; do not mention the mechanics, just confirm in a few words."
         ),
         args=_CallMeArgs,
     )

@@ -471,6 +471,19 @@ def test_calendar_free_slots_ignores_pending_invites_and_keeps_work_hours(backen
     assert res["busy_considered"] == 2 and res["duration_min"] == 60
 
 
+def test_com_dates_keep_outlooks_local_wall_clock_whatever_pywin32_labels_them(backend: OutlookBackend, world: World):
+    from jarvis_host.outlook import _to_dt
+
+    # pywin32 labels Outlook's local wall clock UTC; trusting it put every meeting 3 h late in Sofia
+    # and auto-RSVP offered "free" slots that sat on real meetings.
+    labelled = datetime(2026, 10, 15, 11, 0, tzinfo=UTC)
+    assert _to_dt(labelled) == datetime(2026, 10, 15, 11, 0).astimezone()
+    invite = _appt("Interview 11:00", 11, 60, status=3, response=5, organizer="hr@postbank.bg")
+    world.calendar.add(invite)
+    (got,) = backend.calendar_invites("", 14)["invites"]
+    assert got["start"] == invite.start.isoformat(timespec="seconds")
+
+
 def test_calendar_remove_canceled_deletes_only_cancelled_meetings(backend: OutlookBackend, world: World):
     keep = _appt("Keep", 9, 30, status=3, response=3)
     gone1 = _appt("Cancelled by organizer", 10, 30, status=7)

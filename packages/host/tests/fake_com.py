@@ -20,6 +20,28 @@ class FakeComError(Exception):
         super().__init__(hresult, description, (0, "Microsoft Outlook", description, None, 0, hresult), None)
 
 
+def com_date(value: Any) -> Any:
+    """A datetime the way pywin32 hands an Outlook date over: the LOCAL wall clock, labelled UTC.
+
+    VT_DATE carries no zone and pywin32 attaches ``TimeZoneInfo('GMT Standard Time')`` anyway
+    (seen on jarvisvm 2026-10-12). Fixtures keep the true instant; every date the backend reads
+    comes through here, so code that trusts the label is off by the UTC offset, as it was live.
+    """
+    if not isinstance(value, datetime):
+        return value  # e.g. the "2026-09-08 10:00" string calendar_create writes
+    return value.astimezone().replace(tzinfo=UTC)
+
+
+def _com_date_property(attr: str) -> property:
+    def get(self: Any) -> Any:
+        return com_date(getattr(self, attr))
+
+    def put(self: Any, value: Any) -> None:
+        setattr(self, attr, value)
+
+    return property(get, put)
+
+
 NOT_FOUND = -2147221233  # MAPI_E_NOT_FOUND
 CALL_REJECTED = -2147418111  # RPC_E_CALL_REJECTED
 SERVER_UNAVAILABLE = -2147023174  # RPC_S_SERVER_UNAVAILABLE
@@ -106,6 +128,8 @@ class Recipient:
 
 class Mail:
     _counter = 0
+    ReceivedTime = _com_date_property("received")  # the true instant lives in .received
+    SentOn = _com_date_property("sent_on")
 
     def __init__(
         self,
@@ -232,6 +256,8 @@ class Conversation:
 
 class Appointment:
     Class = 26
+    Start = _com_date_property("start")  # the true instants live in .start / .end
+    End = _com_date_property("end")
 
     def __init__(self, subject: str, start: datetime, end: datetime, *, cls: int = 26) -> None:
         self.Subject = subject
@@ -391,7 +417,7 @@ class Table:
 
     @staticmethod
     def _matches(m: Mail, filt: str) -> bool:
-        recv = m.ReceivedTime.astimezone(UTC).replace(microsecond=0)
+        recv = m.received.astimezone(UTC).replace(microsecond=0)
         ge = _DASL_GE.search(filt)
         if ge and recv < datetime.strptime(ge.group(1), "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC):
             return False
@@ -416,7 +442,7 @@ class Table:
         self.columns.append(name)
 
     def Sort(self, prop: str, descending: bool = False) -> None:
-        self._rows.sort(key=lambda m: m.ReceivedTime, reverse=descending)
+        self._rows.sort(key=lambda m: m.received, reverse=descending)
         self.folder.table_calls.append(f"Sort({prop},{descending})")
 
     def GetRowCount(self) -> int:
@@ -437,7 +463,7 @@ class Table:
             case "SenderEmailAddress":
                 return m.SenderEmailAddress or "None"
             case "ReceivedTime":
-                return m.ReceivedTime.astimezone(UTC)
+                return com_date(m.received)
             case "UnRead":
                 return m.UnRead
             case "FlagStatus":

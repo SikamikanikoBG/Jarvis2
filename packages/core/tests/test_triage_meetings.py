@@ -206,10 +206,10 @@ class FakeHost(BuiltinProvider):
         return ToolResult.data(json.dumps({"sent": True, "decision": decision}))
 
     @tool("laptop.calendar_free_slots", description="slots", args=_SlotsArgs, read_only=True)
-    async def _slots(self, **_: Any) -> ToolResult:
+    async def _slots(self, limit: int = 3, **_: Any) -> ToolResult:
         # 09:30 is consecutive to 09:00: a spread proposal skips it in favour of 14:00.
-        if self.slots_override is not None:
-            return ToolResult.data(json.dumps({"slots": self.slots_override}))
+        if self.slots_override is not None:  # the first `limit` free slots, as the real walker
+            return ToolResult.data(json.dumps({"slots": self.slots_override[:limit]}))
         slots = [
             {"start": "2026-09-08T09:00:00+03:00", "end": "2026-09-08T09:30:00+03:00"},
             {"start": "2026-09-08T09:30:00+03:00", "end": "2026-09-08T10:00:00+03:00"},
@@ -1287,6 +1287,36 @@ async def test_a_thread_is_rejudged_as_it_stands_now_even_with_arsen_in_cc(harne
     assert "as it stands NOW" in prompt and "even when he is only in Cc" in prompt
     assert "Auditor (to Ops Team cc Arsen P. Apostolov): Audit findings | Report attached for information." in prompt
     assert "ВЪНШЕН" not in prompt
+
+
+async def test_a_decline_offers_spread_slots_not_back_to_back_half_hours(harness: Harness):
+    """Live 2026-10-12: "вт 13.10 09:00-09:30, 09:30-10:00, 11:00-11:30". The host walks a free
+    morning in consecutive half-hours, and the core asked for only want+2 of them, so the spread
+    rule had nothing to choose from and fell back to back-to-back slots."""
+    core = harness.core
+    host = await _with_host(harness)
+    host.invites = [
+        {
+            "entry_id": "i1",
+            "subject": "Clash",
+            "organizer": "Pete",
+            "organizer_address": "pete@bank.bg",
+            "start": "2026-09-07T11:00:00+03:00",
+            "end": "2026-09-07T11:30:00+03:00",
+            "conflicts": [_CLASH],
+        }
+    ]
+    host.slots_override = [
+        {
+            "start": f"2026-09-08T{h:02d}:{m:02d}:00+03:00",
+            "end": f"2026-09-08T{h + (m + 30) // 60:02d}:{(m + 30) % 60:02d}:00+03:00",
+        }
+        for h in range(9, 18)
+        for m in (0, 30)
+    ]
+    harness.enable(rsvp=MeetingRsvpSettings(host="laptop", account="Work", allowed_domains=["bank.bg"]))
+    dry = await core.rsvp.run_once(dry_run=True)
+    assert dry.decisions[0].proposals == ["вт 08.09 09:00-09:30", "вт 08.09 11:00-11:30", "вт 08.09 13:00-13:30"]
 
 
 async def test_a_decline_never_proposes_a_slot_a_later_accept_in_the_same_pass_takes(harness: Harness):

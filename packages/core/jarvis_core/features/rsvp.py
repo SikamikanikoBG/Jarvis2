@@ -359,7 +359,9 @@ class RsvpJob:
                     "duration_min": duration,
                     "work_start_hour": cfg.work_start_hour,
                     "work_end_hour": cfg.work_end_hour,
-                    "limit": want + len(reserved) + 2,
+                    # The walker returns a free stretch as back-to-back slots; the spread below
+                    # needs a few hours of them per offer, or it falls back to adjacent ones.
+                    "limit": want * 8 + len(reserved),
                 },
                 key=f"rsvp:slots:{inv.get('entry_id')}",
                 timeout_s=90,

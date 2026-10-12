@@ -479,7 +479,7 @@ wheels = [
 
 [[package]]
 name = "jarvis-core"
-version = "2.0.0a83"
+version = "2.0.0a84"
 source = { editable = "packages/core" }
 dependencies = [
     { name = "aiosqlite" },
@@ -528,7 +528,7 @@ requires-dist = [
 
 [[package]]
 name = "jarvis-host"
-version = "2.0.0a25"
+version = "2.0.0a26"
 source = { editable = "packages/host" }
 dependencies = [
     { name = "comtypes", marker = "sys_platform == 'win32'" },

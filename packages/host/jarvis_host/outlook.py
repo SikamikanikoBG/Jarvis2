@@ -306,26 +306,24 @@ def _text(value: Any) -> str:
 
 
 def _to_dt(value: Any) -> datetime | None:
-    """Normalise a COM date (pywintypes datetime, aware UTC from tables, naive local from items)."""
+    """Normalise a COM date to an aware local datetime.
+
+    Outlook gives dates (item properties and Table columns by built-in name alike) as the LOCAL
+    wall clock in a zone-less VT_DATE, but pywin32 labels the value UTC. Trusting that label put
+    every Start / End / ReceivedTime one UTC offset late (3 h in Sofia), so auto-RSVP checked
+    clashes and proposed "free" slots against a shifted calendar. The label is ignored.
+    """
     if value is None:
         return None
     try:
-        dt = datetime(
-            value.year,
-            value.month,
-            value.day,
-            value.hour,
-            value.minute,
-            value.second,
-            tzinfo=getattr(value, "tzinfo", None),
-        )
+        dt = datetime(value.year, value.month, value.day, value.hour, value.minute, value.second)
     except Exception:
         return None
     if dt.year < 1900:  # Outlook's "no date" is 4501-01-01; anything odd is treated as absent
         return None
     if dt.year > 4000:
         return None
-    return dt.astimezone()  # naive → assumed local, aware → converted to local
+    return dt.astimezone()  # the wall clock is local
 
 
 def iso_local(dt: datetime | None) -> str | None:

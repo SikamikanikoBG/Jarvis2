@@ -8,10 +8,20 @@
  * pair every few seconds while Jarvis thinks, two notes down when the line drops and two up
  * when it comes back. Nothing else, and never loud.
  *
+ * While he thinks, the pulse can instead be hold music (voice.waiting_sound, hold.ts), or nothing.
+ * The music is not shut out of the microphone the way a beep is — it plays for seconds, and he
+ * must be able to cut in over it — so the listener is told it is playing and treats it as it treats
+ * Jarvis's own voice: subtracted by the echo canceller, and a cut-in has to be clearly over it.
+ *
  * The notes play through the microphone's own AudioContext, so they are on the call's route and
  * inside the browser's echo canceller; and each one tells the listener to ignore the microphone
  * while it sounds, so a beep is never heard as a word.
  */
+
+import { HoldMusic } from './hold';
+
+/** What he hears while Jarvis thinks (voice.waiting_sound). */
+export type WaitingSound = 'music' | 'beeps' | 'silence';
 
 export interface Cues {
   /** His words have been handed to Jarvis. */
@@ -49,22 +59,46 @@ export class ToneCues implements Cues {
   private thinkStart: ReturnType<typeof setTimeout> | null = null;
   private offlineTimer: ReturnType<typeof setInterval> | null = null;
   private down = false;
+  private music: HoldMusic | null = null;
 
-  constructor(private readonly o: { contextOf: () => AudioContext | null; suppress?: (ms: number) => void }) {}
+  constructor(
+    private readonly o: {
+      contextOf: () => AudioContext | null;
+      suppress?: (ms: number) => void;
+      /** What plays while he thinks; beeps unless said otherwise. */
+      waiting?: WaitingSound;
+      /** Hold music volume, 0..1. */
+      volume?: number;
+      /** Hold music started or stopped: the listener treats it like Jarvis's voice. */
+      onHold?: (on: boolean) => void;
+    },
+  ) {}
 
   accepted(): void {
     this.play(ACCEPTED);
   }
 
   thinking(on: boolean): void {
-    if (on === (this.thinkTimer !== null || this.thinkStart !== null)) return;
+    if (on === (this.thinkTimer !== null || this.thinkStart !== null || this.music !== null)) return;
     this.stopThinking();
-    if (!on) return;
+    const waiting = this.o.waiting ?? 'beeps';
+    if (!on || waiting === 'silence') return;
     this.thinkStart = setTimeout(() => {
       this.thinkStart = null;
+      if (waiting === 'music' && this.startMusic()) return;
       this.play(THINKING);
       this.thinkTimer = setInterval(() => this.play(THINKING), THINKING_EVERY_MS);
     }, THINKING_FIRST_MS);
+  }
+
+  /** False when there is no running context to play it on (then the pulse stands in). */
+  private startMusic(): boolean {
+    const ctx = this.o.contextOf();
+    if (ctx?.state !== 'running') return false;
+    this.music = new HoldMusic(ctx, { volume: this.o.volume ?? 0.4 });
+    this.music.start();
+    this.o.onHold?.(true);
+    return true;
   }
 
   offline(on: boolean): void {
@@ -88,6 +122,11 @@ export class ToneCues implements Cues {
   }
 
   private stopThinking(): void {
+    if (this.music) {
+      this.music.stop();
+      this.music = null;
+      this.o.onHold?.(false);
+    }
     if (this.thinkStart) clearTimeout(this.thinkStart);
     if (this.thinkTimer) clearInterval(this.thinkTimer);
     this.thinkStart = null;

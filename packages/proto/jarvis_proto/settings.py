@@ -548,6 +548,10 @@ class VoiceSettings(BaseModel):
     # Words said after an early send still join the run as a steer.
     turn_detection: bool = True
     turn_threshold: float = Field(default=0.8, ge=0.5, le=1.0)
+    # What he hears while Jarvis thinks (web voice/tones.ts): soft hold music made in the browser,
+    # the quiet pulse it replaced, or nothing - and how loud the music is (0..1).
+    waiting_sound: Literal["music", "beeps", "silence"] = "music"
+    hold_volume: float = Field(default=0.4, ge=0.0, le=1.0)
 
     def allows(self, namespace: str) -> bool:
         return namespace in self.namespaces

@@ -15,7 +15,7 @@ import { requestMotionPermission } from '../voice/earPose';
 import { holdScreen, releaseScreen } from '../voice/screenHold';
 import { firstSentences } from '../voice/sentences';
 import { CallSession, type CallRoute, type CallState } from '../voice/session';
-import { ToneCues } from '../voice/tones';
+import { ToneCues, type WaitingSound } from '../voice/tones';
 import { DeviceSpeaker, ServerSpeaker } from '../voice/speaker';
 import type {
   Attachment,
@@ -436,11 +436,15 @@ export const useStore = create<AppState>()((set, get) => ({
     let tts: 'server' | 'device' = 'server';
     let languages = ['bg', 'en'];
     let turnThreshold: number | null = null;
+    let waiting: WaitingSound = 'music';
+    let holdVolume = 0.4;
     try {
       const settings = await api.settings.get();
       tts = settings.voice.tts;
       if (settings.stt_languages.length) languages = settings.stt_languages;
       if (settings.voice.turn_detection) turnThreshold = settings.voice.turn_threshold;
+      waiting = settings.voice.waiting_sound;
+      holdVolume = settings.voice.hold_volume;
     } catch {
       /* the defaults stand; the server voice falls back to the device on its own */
     }
@@ -505,7 +509,13 @@ export const useStore = create<AppState>()((set, get) => ({
       route: readRoute(),
       // The call's quiet signals, on the microphone's own context so they are on its route and
       // inside the echo canceller, and hushing the microphone for as long as they sound.
-      cues: new ToneCues({ contextOf: () => listener.audioContext, suppress: (ms) => listener.suppress(ms) }),
+      cues: new ToneCues({
+        contextOf: () => listener.audioContext,
+        suppress: (ms) => listener.suppress(ms),
+        waiting,
+        volume: holdVolume,
+        onHold: (on) => listener.setHold(on),
+      }),
       onChange: (call) => set({ call: { ...call } }),
     });
     if (open) socket.send({ type: 'subscribe', conversation_id: open });

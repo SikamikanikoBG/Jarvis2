@@ -153,6 +153,17 @@ export class MicListener implements Listener {
     this.seg.setAttack(on ? CUT_IN_ATTACK_MS : null);
   }
 
+  /** Hold music is playing (tones.ts): judged like his voice — the page's own audio, which the
+   *  echo canceller subtracts, with a cut-in needing to be clearly over it. Unlike his voice the
+   *  microphone is never let go for it, on either route: it is background, he may talk over it. */
+  setHold(on: boolean): void {
+    if (this.speaking) return; // his voice already decides the gate
+    const now = performance.now() - this.t0;
+    if (on) this.gate.setProfile(true);
+    this.gate.setSpeaking(on, now, this.seg.noiseFloor);
+    this.seg.setAttack(on ? CUT_IN_ATTACK_MS : null);
+  }
+
   setRoute(route: CallRoute): void {
     if (route === this.route) return;
     this.route = route;

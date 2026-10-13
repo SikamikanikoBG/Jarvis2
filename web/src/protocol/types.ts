@@ -489,6 +489,10 @@ export interface VoiceSettings {
   /** End-of-turn detection: a sentence the turn model is this sure is complete is sent at once. */
   turn_detection: boolean;
   turn_threshold: number;
+  /** What he hears while Jarvis thinks: soft hold music, a quiet pulse, or nothing. */
+  waiting_sound: 'music' | 'beeps' | 'silence';
+  /** Hold music volume, 0..1. */
+  hold_volume: number;
 }
 
 /** Jarvis as one assistant across his chats (docs/stories/12_assistant.md). */

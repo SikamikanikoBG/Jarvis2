@@ -146,6 +146,32 @@ export function VoiceSection({ value, namespaces, onChange, error }: Props) {
           </select>
         </div>
       </div>
+      <div className="form-grid">
+        <div className="field">
+          <label htmlFor="voice-waiting">While he thinks</label>
+          <select
+            id="voice-waiting"
+            className="select"
+            value={value.waiting_sound}
+            onChange={(e) => patch({ waiting_sound: e.target.value === 'beeps' ? 'beeps' : e.target.value === 'silence' ? 'silence' : 'music' })}
+          >
+            <option value="music">Hold music</option>
+            <option value="beeps">A soft pulse</option>
+            <option value="silence">Silence</option>
+          </select>
+          <div className="field-hint">Starts only when an answer takes longer than a moment, and stops the instant he speaks. You can talk over it.</div>
+        </div>
+        {value.waiting_sound === 'music' && (
+          <div className="field">
+            <label htmlFor="voice-hold-volume">Music volume</label>
+            <select id="voice-hold-volume" className="select" value={String(value.hold_volume)} onChange={(e) => patch({ hold_volume: Number(e.target.value) })}>
+              <option value="0.2">Very quiet</option>
+              <option value="0.4">Quiet</option>
+              <option value="0.7">Clear</option>
+            </select>
+          </div>
+        )}
+      </div>
       <div className="think-row">
         <Switch checked={value.turn_detection} onChange={(v) => patch({ turn_detection: v })} label="Answer as soon as you have finished" />
         <span className="small">End of turn</span>

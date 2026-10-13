@@ -45,9 +45,11 @@ class Synthesizer:
         # point; more than that and a long answer floods the endpoint for audio nobody hears yet.
         self._sem = asyncio.Semaphore(2)
 
-    async def synthesize(self, text: str, lang: str, *, cache: bool = True) -> tuple[bytes, str]:
+    async def synthesize(self, text: str, lang: str, *, cache: bool = True, first: bool = False) -> tuple[bytes, str]:
         """``cache=False`` is an incognito call: a sentence already in the cache is still served
-        from it (nothing new is learned by reading), but nothing said in that call is written."""
+        from it (nothing new is learned by reading), but nothing said in that call is written.
+        ``first``: the reply's first sentence, the one waited for in silence - the local voice
+        makes it with ``omnivoice_first_steps`` when that is set."""
         text = " ".join(text.split())
         if not text:
             raise TtsError("nothing to say")
@@ -58,7 +60,8 @@ class Synthesizer:
         voice = local or s.voice_for(lang)
         if not voice:
             raise TtsError(f"no voice configured for {lang!r}")
-        ident = f"omnivoice|{voice}|{s.omnivoice_steps}" if local else voice
+        steps = s.omnivoice_first_steps if first and s.omnivoice_first_steps else s.omnivoice_steps
+        ident = f"omnivoice|{voice}|{steps}" if local else voice
         key = hashlib.sha256(f"{ident}|{s.rate}|{text}".encode()).hexdigest()
         path = self._dir / f"{key}.mp3"
         if path.exists():
@@ -68,7 +71,7 @@ class Synthesizer:
                 return path.read_bytes(), "audio/mpeg"
             if local:
                 try:
-                    audio = await _omnivoice(s.omnivoice_url, text, lang, voice, s.omnivoice_steps)
+                    audio = await _omnivoice(s.omnivoice_url, text, lang, voice, steps)
                 except TtsError as exc:
                     # The house voice is down: say it with the cloud one rather than fall silent.
                     log.warning("omnivoice failed, falling back to edge: %s", exc)

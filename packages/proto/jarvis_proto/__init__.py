@@ -95,6 +95,7 @@ from jarvis_proto.runs import (
 )
 from jarvis_proto.settings import (
     LANES,
+    AssistantSettings,
     Confirmations,
     EmailPolicy,
     MailAccount,
@@ -119,6 +120,7 @@ __all__ = [
     "INCOGNITO_TITLE",
     "LANES",
     "TTL_CHOICES",
+    "AssistantSettings",
     "Attachment",
     "AttachmentKind",
     "Board",

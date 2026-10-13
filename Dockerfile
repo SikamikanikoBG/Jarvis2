@@ -17,7 +17,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy PYTHONUNBUFFERED=1 \
     JARVIS_HOME=/data JARVIS_HOST=0.0.0.0 JARVIS_PORT=9020 JARVIS_WEB_DIST=/app/web/dist \
-    JARVIS_OFFICE_DIST=/app/web/office/dist TZ=Europe/Sofia
+    JARVIS_OFFICE_DIST=/app/web/office/dist TZ=Europe/Sofia JARVIS_FETCH_MODELS=1
 COPY pyproject.toml uv.lock ./
 COPY packages ./packages
 RUN uv sync --all-packages --no-dev --frozen

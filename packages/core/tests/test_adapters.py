@@ -58,10 +58,10 @@ async def test_endpoint_semaphore_is_shared_and_follows_the_configured_limit():
 
     # Lowering the setting tightens the endpoint...
     tighter = endpoint_semaphore(chat, 1)
-    assert tighter is not sem and tighter._value == 1
+    assert tighter is not sem and tighter.limit == 1
     # ...and raising it again takes effect. It used to be ignored for the life of the process.
     wider = endpoint_semaphore(chat, 4)
-    assert wider is not tighter and wider._value == 4
+    assert wider is not tighter and wider.limit == 4
     reset_endpoint_semaphores()
 
 

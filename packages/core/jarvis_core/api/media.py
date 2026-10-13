@@ -14,6 +14,7 @@ from jarvis_core.features.mail import Mailbox, MailError
 from jarvis_core.features.maildesk import MailDeskError
 from jarvis_core.features.stt import SttError
 from jarvis_core.features.tts import TtsError
+from jarvis_core.features.turn import wav_from
 from jarvis_proto import Conversation, MailAccount, Meeting, MeetingDetail, TriageState
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
@@ -21,20 +22,35 @@ router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
 
 @router.post("/stt")
 async def stt(
-    request: Request, audio: UploadFile = File(...), language: str | None = Form(default=None)
+    request: Request,
+    audio: UploadFile = File(...),
+    language: str | None = Form(default=None),
+    prompt: str | None = Form(default=None),
+    turn: bool = Form(default=False),
+    stt_offset_ms: int = Form(default=0, ge=0),
 ) -> dict[str, Any]:
+    """Speech to text. ``prompt``: what was said just before, for Whisper's context. ``turn``: also
+    score whether the speech is a finished turn (features/turn.py) - in parallel, so it costs no
+    time; ``turn_complete`` is null when the detector cannot say. ``stt_offset_ms`` (a WAV only):
+    the audio before it was already recognised and is there for the turn model's sake - Whisper
+    hears from the offset on."""
     core = core_of(request)
     data = await audio.read()
     if not data:
         raise HTTPException(422, "empty audio")
+    scoring = asyncio.create_task(core.turns.score(data)) if turn and core.settings.voice.turn_detection else None
+    speech = wav_from(data, stt_offset_ms) if stt_offset_ms else data
     try:
         result = await core.transcriber.transcribe(
-            data,
+            speech,
             filename=audio.filename or "audio.webm",
             mime=audio.content_type or "audio/webm",
             language=language or None,
+            prompt=prompt or None,
         )
     except SttError as exc:
+        if scoring is not None:
+            scoring.cancel()
         raise HTTPException(502, str(exc)) from exc
     return {
         "text": result.text,
@@ -42,12 +58,15 @@ async def stt(
         "backend": result.backend,
         "duration_ms": result.duration_ms,
         "warning": result.warning,
+        "turn_complete": await scoring if scoring is not None else None,
     }
 
 
 class TtsRequest(BaseModel):
     text: str
     lang: str = "bg"
+    #: The first sentence of a reply: synthesised with voice.omnivoice_first_steps when set.
+    first: bool = False
     #: False for an incognito call: the sentence is synthesised but never written to the disk cache.
     cache: bool = True
 
@@ -58,7 +77,7 @@ async def tts(request: Request, body: TtsRequest) -> Response:
     service cannot be reached - the browser then says the sentence with the device's own voice."""
     core = core_of(request)
     try:
-        audio, mime = await core.synthesizer.synthesize(body.text, body.lang, cache=body.cache)
+        audio, mime = await core.synthesizer.synthesize(body.text, body.lang, cache=body.cache, first=body.first)
     except TtsError as exc:
         raise HTTPException(502, str(exc)) from exc
     except TimeoutError as exc:

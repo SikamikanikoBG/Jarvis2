@@ -1,6 +1,6 @@
 [project]
 name = "jarvis-core"
-version = "2.0.0a84"
+version = "2.0.0a85"
 description = "Jarvis V2 core: run engine, agent loop, model adapters, web server"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -28,6 +28,9 @@ dependencies = [
     # Web push (features/webpush.py): RFC 8291 payload encryption. The VAPID signature is a plain
     # ES256 JWT and is made with cryptography directly.
     "http-ece>=1.2",
+    # End-of-turn detection on a call (features/turn.py): Smart Turn v3, 8 MB of ONNX on the CPU.
+    "numpy>=2.0",
+    "onnxruntime>=1.20",
 ]
 
 [project.scripts]

@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from jarvis_core.db import Database
 from jarvis_core.engine.bus import EventBus
-from jarvis_core.models.base import ModelAdapter, ModelTextChunk
+from jarvis_core.models.base import BACKGROUND, ModelAdapter, ModelTextChunk, call_urgency
 from jarvis_core.tools.builtin import BuiltinProvider, tool
 from jarvis_proto import Edge, Entity, EntityDetail, Graph, Message, ToolResult, new_id
 from jarvis_proto.events import KgChanged
@@ -345,6 +345,7 @@ class KnowledgeLearner:
             await asyncio.gather(*self._tasks, return_exceptions=True)
 
     async def _learn(self, conversation_id: str, user_text: str, assistant_text: str, message_id: str | None) -> None:
+        call_urgency.set(BACKGROUND)  # learning after a call's reply does not jump the queue
         try:
             adapter: ModelAdapter = self._classifier()
             prompt = _EXTRACT_PROMPT.format(
@@ -354,7 +355,7 @@ class KnowledgeLearner:
             async for chunk in adapter.stream([Message.user(prompt)], [], cancel=asyncio.Event()):
                 if isinstance(chunk, ModelTextChunk):
                     text += chunk.text
-            data = _parse_json(text)
+            data = parse_json(text)
             if not data:
                 return
             names: dict[str, str] = {}
@@ -392,7 +393,7 @@ class KnowledgeLearner:
         return existing.id if existing else None
 
 
-def _parse_json(text: str) -> dict[str, Any] | None:
+def parse_json(text: str) -> dict[str, Any] | None:
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end <= start:
         return None

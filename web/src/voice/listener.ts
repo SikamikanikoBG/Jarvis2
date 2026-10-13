@@ -9,6 +9,12 @@
  * first syllable arrives before the segmenter is sure — is written out as 16 kHz mono WAV, the
  * one format every Whisper takes without a transcode.
  *
+ * A long utterance is recognised in pieces while he is still talking (docs/stories/12_assistant.md):
+ * when he goes on after a pause, what came before it — once it is long enough to recognise well on
+ * its own — is a piece, whose words are already on their way (the recognition started at that
+ * pause). What is sent at the end is only the rest, with up to 8 s before it for the turn model,
+ * which judges an ending by how the voice falls, not by the words.
+ *
  * While Jarvis speaks, his own voice reaches the microphone — and echo cancellation does NOT
  * catch it, because `speechSynthesis` plays outside the browser's audio path (on the laptop
  * the answer came back as the next question). Two routes, two answers (see CallRoute):
@@ -31,6 +37,11 @@ const RING_SECONDS = 60;
 const PRE_ROLL_MS = 300;
 /** A cut-in has to hold for longer than an ordinary utterance's onset: a cough over him is not a cut-in. */
 const CUT_IN_ATTACK_MS = 450;
+/** A pause closes a piece of a long utterance only once this much speech is behind it: Whisper
+ *  recognises a few seconds with the words before it as its prompt as well as the whole. */
+const PIECE_MIN_MS = 4000;
+/** What the turn model is given: the last 8 s, the window it was trained on. */
+const TURN_CONTEXT_MS = 8000;
 /** The worklet that taps the samples; served with the SPA (web/public/pcm-worklet.js). */
 const WORKLET_URL = '/pcm-worklet.js';
 
@@ -55,6 +66,10 @@ export class MicListener implements Listener {
   /** Absolute index (in 16 kHz samples) of the next sample to be written. */
   private written = 0;
   private utteranceStartSample = 0;
+  /** Where the part of this utterance that is not yet a recognised piece begins. */
+  private pieceStartSample = 0;
+  /** The last pause of this utterance: a breath, if he goes on after it. */
+  private lastPause: { at: number; sample: number } | null = null;
   private speaking = false;
   /** Until this moment on the call's clock the microphone is ignored (a cue is sounding). */
   private suppressUntil = 0;
@@ -151,6 +166,15 @@ export class MicListener implements Listener {
     if (muted) this.seg = new Segmenter(this.seg.opts);
   }
 
+  /** The turn model is sure he finished at the pause `at`: close the utterance now instead of
+   *  waiting out the release. False when he has spoken since — then it was a breath. */
+  finish(at: number): boolean {
+    const t = performance.now() - this.t0;
+    const events = this.seg.endAt(at);
+    for (const ev of events) this.onSegment(ev, t);
+    return events.length > 0;
+  }
+
   /** Ignore the microphone for a moment: a cue is sounding, and a beep is not a word. */
   suppress(ms: number): void {
     this.suppressUntil = Math.max(this.suppressUntil, performance.now() - this.t0 + ms);
@@ -181,6 +205,8 @@ export class MicListener implements Listener {
       const preRoll = Math.round((PRE_ROLL_MS / 1000) * TARGET_RATE);
       const startedAgoMs = t - ev.at;
       this.utteranceStartSample = Math.max(0, this.written - Math.round((startedAgoMs / 1000) * TARGET_RATE) - preRoll);
+      this.pieceStartSample = this.utteranceStartSample;
+      this.lastPause = null;
       // 450 ms of voice over his own is a decision, not a guess: the rest of it comes through
       // whole, or his sentence arrives as fragments too short to be an utterance.
       if (this.speaking) this.gate.latch();
@@ -190,16 +216,38 @@ export class MicListener implements Listener {
       this.gate.unlatch();
       this.handlers.onSpeechDropped();
     } else if (ev.type === 'pause') {
+      this.closePiece(ev.at);
+      this.lastPause = { at: ev.at, sample: this.written };
       // Maybe the end: the words so far go to be recognised now, while the release runs.
-      const audio = this.slice(this.utteranceStartSample, this.written);
-      if (audio) this.handlers.onPause(audio, ev.at);
+      const tail = this.tail(this.written);
+      if (tail) this.handlers.onPause(tail.audio, ev.at, tail.offsetMs);
     } else if (ev.type === 'speech-end') {
       this.gate.unlatch();
-      const endSample = this.written;
-      const audio = this.slice(this.utteranceStartSample, endSample);
-      if (audio) this.handlers.onUtterance(audio, ev.at);
+      this.closePiece(ev.at);
+      const tail = this.tail(this.written);
+      if (tail) this.handlers.onUtterance(tail.audio, ev.at, tail.offsetMs);
       else this.handlers.onSpeechDropped();
     }
+  }
+
+  /** He went on after the last pause: if enough came before it, that much is a piece now — if
+   *  the session has its words on the way (it started recognising them at that pause). */
+  private closePiece(at: number): void {
+    const last = this.lastPause;
+    if (!last || last.at === at || !this.handlers) return;
+    const minSamples = (PIECE_MIN_MS / 1000) * TARGET_RATE;
+    if (last.sample - this.pieceStartSample >= minSamples && this.handlers.onPiece?.(last.at)) {
+      this.pieceStartSample = last.sample;
+    }
+  }
+
+  /** The part of the utterance not yet recognised, with up to 8 s before it for the turn model;
+   *  `offsetMs` is where the unrecognised part begins within the audio. */
+  private tail(end: number): { audio: Blob; offsetMs: number } | null {
+    const context = Math.round((TURN_CONTEXT_MS / 1000) * TARGET_RATE);
+    const from = Math.max(this.utteranceStartSample, Math.min(this.pieceStartSample, end - context));
+    const audio = this.slice(from, end);
+    return audio ? { audio, offsetMs: ((this.pieceStartSample - from) / TARGET_RATE) * 1000 } : null;
   }
 
   private slice(from: number, to: number): Blob | null {

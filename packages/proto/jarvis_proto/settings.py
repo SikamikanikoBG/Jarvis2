@@ -493,8 +493,9 @@ VOICE_STYLE_DEFAULT = (
     "to be long or needs a list, say so in a sentence and offer to write it in the chat. On a "
     "call you think and remember; you do not act: if asked to send, run, open or change "
     "something, say you will do it once the call is over and ask for the word in the chat. "
-    "Say only what you would say aloud: never narrate your reasoning, never describe what the "
-    "user wants or what you are about to do - just say it."
+    "Your first words are the answer itself. Never talk about the call or about how you are "
+    "going to answer, never narrate your reasoning, never describe what the user wants or what "
+    "you are about to do - just say it."
 )
 
 
@@ -508,7 +509,9 @@ class VoiceSettings(BaseModel):
     carries so the reply is speakable; editable, like the persona.
     """
 
-    namespaces: list[str] = Field(default_factory=lambda: ["notes", "kg", "jarvis"])
+    # ``sessions`` is there so a call can see the rest of the day (docs/stories/12_assistant.md):
+    # "anything else today?" is answered from the other chats, not from this one alone.
+    namespaces: list[str] = Field(default_factory=lambda: ["notes", "kg", "jarvis", "sessions"])
     think: bool = False
     style: str = VOICE_STYLE_DEFAULT
     # Whose voice. "server": the core synthesises each sentence (Microsoft's neural voices
@@ -532,6 +535,16 @@ class VoiceSettings(BaseModel):
     omnivoice_url: str = "http://100.97.120.53:9120"
     omnivoice_voices: dict[str, str] = Field(default_factory=lambda: {"bg": "borislav", "en": "ryan"})
     omnivoice_steps: int = 16
+    # The FIRST sentence of a reply with fewer steps: it is the one he waits for in silence, the
+    # rest are synthesised while it plays. 8 steps is 0.54 s against 0.92 s at 16 (ardi's 3090,
+    # 2026-10-13) and Whisper hears both the same. None = every sentence at omnivoice_steps.
+    omnivoice_first_steps: int | None = None
+    # End-of-turn detection (features/turn.py, Smart Turn v3 on the core's CPU): at the first
+    # pause the audio is scored, and a sentence the model is at least this sure is complete is
+    # sent at once instead of after the release and the join window. Below it nothing changes.
+    # Words said after an early send still join the run as a steer.
+    turn_detection: bool = True
+    turn_threshold: float = Field(default=0.8, ge=0.5, le=1.0)
 
     def allows(self, namespace: str) -> bool:
         return namespace in self.namespaces
@@ -543,6 +556,29 @@ class VoiceSettings(BaseModel):
     def omnivoice_voice_for(self, lang: str) -> str | None:
         short = (lang or "").split("-")[0].lower()
         return self.omnivoice_voices.get(short) or self.omnivoice_voices.get("en")
+
+
+class AssistantSettings(BaseModel):
+    """Jarvis as one assistant across all his chats (docs/stories/12_assistant.md).
+
+    ``journal``: after a run ends, its conversation's one-line digest for the day is rewritten
+    in the background. ``overview_chars`` caps the day's overview (every digest, waiting-on-Arsen
+    first) that a call and the Jarvis conversation carry, and that ``sessions.today`` returns.
+    ``home_conversation_id`` is the Jarvis conversation, made on first use. ``housekeeping_lane``
+    is where the journal's and compaction's own model calls go - never in front of a reply.
+    """
+
+    journal: bool = True
+    overview_chars: int = Field(default=2_400, ge=400, le=12_000)
+    overview_on_calls: bool = True
+    home_conversation_id: str | None = None
+    housekeeping_lane: RoleName = RoleName.BACKGROUND
+
+    @model_validator(mode="after")
+    def _lane(self) -> AssistantSettings:
+        if self.housekeeping_lane not in LANES:
+            raise ValueError(f"housekeeping_lane must be one of {[r.value for r in LANES]}")
+        return self
 
 
 class SessionsSettings(BaseModel):
@@ -697,6 +733,7 @@ class Settings(BaseModel):
     rsvp: MeetingRsvpSettings = Field(default_factory=MeetingRsvpSettings)
     voice: VoiceSettings = Field(default_factory=VoiceSettings)
     sessions: SessionsSettings = Field(default_factory=SessionsSettings)
+    assistant: AssistantSettings = Field(default_factory=AssistantSettings)
     shadow: ShadowSettings = Field(default_factory=ShadowSettings)
     # The address people actually reach this core on (e.g. the Tailscale Serve HTTPS URL).
     # Used for pairing/QR; without it the URL is derived from the request. The phone's mic and

@@ -421,7 +421,7 @@ export const useStore = create<AppState>()((set, get) => ({
   startCall: async (opts) => {
     if (session) return;
     const s = get();
-    const open = s.openConversationId;
+    let open = s.openConversationId;
     const socket = ws;
     if (!socket?.isOpen) {
       s.notify('Not connected to Jarvis.', 'error');
@@ -435,16 +435,29 @@ export const useStore = create<AppState>()((set, get) => ({
     // the tap, so a change in Settings takes effect on the next call without a reload.
     let tts: 'server' | 'device' = 'server';
     let languages = ['bg', 'en'];
+    let turnThreshold: number | null = null;
     try {
       const settings = await api.settings.get();
       tts = settings.voice.tts;
       if (settings.stt_languages.length) languages = settings.stt_languages;
+      if (settings.voice.turn_detection) turnThreshold = settings.voice.turn_threshold;
     } catch {
       /* the defaults stand; the server voice falls back to the device on its own */
     }
     // An incognito call is one from the first word: the chat it opens is incognito, and the
     // sentences Jarvis says are not written to the core's voice cache.
     const incognito = selectIncognitoNow(s);
+    // No chat open: the call is to Jarvis himself, in the one conversation that is about the day
+    // rather than a task (docs/stories/12_assistant.md). If it cannot be had, a new chat as before.
+    if (!open && !incognito) {
+      try {
+        const home = await api.assistant.home();
+        await get().openConversation(home.id);
+        open = home.id;
+      } catch {
+        /* a new chat opens behind the call, the way it always did */
+      }
+    }
     const listener = new MicListener();
     // The voice plays through the microphone's own context (opened in this tap, proven
     // running), never a second one opened later while the phone is in call mode.
@@ -455,9 +468,9 @@ export const useStore = create<AppState>()((set, get) => ({
       transcriber: {
         // The call's language goes along as a hint: a few words are too few for Whisper to
         // guess from, and a wrong guess came back as Greek letters (2026-09-16).
-        transcribe: async (audio, language) => {
-          const res = await api.stt(audio, language);
-          return { text: res.text, language: res.language };
+        transcribe: async (audio, language, o) => {
+          const res = await api.stt(audio, language, o);
+          return { text: res.text, language: res.language, turnComplete: res.turn_complete ?? null };
         },
       },
       transport: {
@@ -487,6 +500,7 @@ export const useStore = create<AppState>()((set, get) => ({
       },
       language: languages[0] ?? 'bg',
       languages,
+      turnThreshold,
       conversationId: open,
       route: readRoute(),
       // The call's quiet signals, on the microphone's own context so they are on its route and

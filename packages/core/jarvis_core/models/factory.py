@@ -113,6 +113,21 @@ class AdapterFactory:
             self._cache[key] = adapter
         return adapter
 
+    def on_lane(self, role: RoleName, lane: RoleName) -> ModelAdapter:
+        """A role's behaviour on a named lane's endpoint, whatever run is in progress.
+
+        For the core's own housekeeping (the day journal, compaction): it goes to the lane that is
+        not answering Arsen, so a summary never queues in front of a call's reply."""
+        where = self._settings.roles[lane].model_dump(include=set(_ENDPOINT_FIELDS))
+        spec = self._settings.roles[role].model_copy(update=where)
+        if role in self.fakes:
+            self.fakes[role].spec = spec
+            return self.fakes[role]
+        key = spec.model_dump_json()
+        if key not in self._cache:
+            self._cache[key] = self._build(spec)
+        return self._cache[key]
+
     def _build(self, spec: ModelSpec) -> ModelAdapter:
         limit = self._settings.max_concurrent_runs_per_endpoint
         if spec.provider is Provider.OLLAMA:

@@ -2,13 +2,14 @@
 the (compacted, trimmed) history.
 
 Order: static rules → boards (change rarely) → skills (per message) → knowledge (per message)
-→ browser page (per message) → plan (per step) → date. Nothing here calls a model except
-the compactor, and only when the history has outgrown its budget.
+→ browser page (per message) → plan (per step) → date. Nothing here calls a model: the
+compactor summarises in the background, after a run (``compact_if_due``), never in a reply's way.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import hashlib
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
@@ -74,7 +75,13 @@ def _skill_names(context_text: str) -> list[str]:
     return [ln[len("## Skill: ") :].strip() for ln in context_text.splitlines() if ln.startswith("## Skill: ")]
 
 
-def earlier_turn_view(history: list[Message], current_run_id: str, *, admit_chars: int | None = None) -> list[Message]:
+def earlier_turn_view(
+    history: list[Message],
+    current_run_id: str,
+    *,
+    admit_chars: int | None = None,
+    structured: Collection[str] = (),
+) -> list[Message]:
     """The history as the model should see it: earlier turns kept, but at the size they are worth.
 
     A finished turn's tool results were acted on when they arrived; what matters now is the
@@ -88,6 +95,9 @@ def earlier_turn_view(history: list[Message], current_run_id: str, *, admit_char
     been shown 700 characters of it - made the trim throw the whole previous turn away, answer
     included, and the next question was answered from scratch (2026-09-11, the AI Masterclass
     chat: three turns, the mail hunted for three times).
+
+    A context message stored as blocks (its id in ``structured``) is left as it is here:
+    :func:`render_context` decides block by block what of it is still worth its tokens.
     """
     out: list[Message] = []
     for m in history:
@@ -97,16 +107,118 @@ def earlier_turn_view(history: list[Message], current_run_id: str, *, admit_char
             out.append(admit(m, admit_chars) if admit_chars and m.role is Role.TOOL else m)
         elif m.role is Role.TOOL:
             out.append(aged(m))
+        elif m.role is Role.USER and m.name == "context" and m.id in structured:
+            out.append(m)
         elif m.role is Role.USER and m.name == "context":
             names = _skill_names(m.content)
-            # Worded as "not repeated", never "omitted": "omitted here" read as "lost", and the
-            # model announced it no longer had the previous turn and started over (2026-10-02,
-            # "само прати мейла, вече имаш всичко" after the SmartLab digest).
-            note = "[The context block for the request above is not repeated here"
-            note += f"; it carried the skills {', '.join(names)} - skills.use(name) shows one again]" if names else "]"
-            out.append(m.model_copy(update={"content": note}))
+            out.append(m.model_copy(update={"content": _not_repeated(names)}))
         else:
             out.append(m)
+    return out
+
+
+def _not_repeated(skills: list[str]) -> str:
+    # Worded as "not repeated", never "omitted": "omitted here" read as "lost", and the model
+    # announced it no longer had the previous turn and started over (2026-10-02, "само прати
+    # мейла, вече имаш всичко" after the SmartLab digest).
+    note = "[The context block for the request above is not repeated here"
+    return note + (
+        f"; it carried the skills {', '.join(skills)} - skills.use(name) shows one again]" if skills else "]"
+    )
+
+
+# --- context blocks: a block given once is not given again -------------------------------
+#
+# A turn's context (skills, known context, the voice style, the day's overview) is stored as
+# blocks. A block identical to one already given in the conversation is written as a reference,
+# and the earlier copy stays whole for as long as any later turn refers to it. Before this the
+# previous turn's copy was cut to a stub and the new turn sent the whole thing again: in a skill
+# chat ~3k tokens re-read on every turn, which on a call was most of the 5 s before the first
+# word (2026-10-13). The rendering only ever keeps more of an earlier turn than the old stub did,
+# and never changes it later than the old stub would have: the cached prefix is never worse off.
+
+CONTEXT_HEAD = "[Context for the request above]"
+CARRIED_NOTE = "[Unchanged - given in full in an earlier context block of this chat.]"
+
+
+@dataclass(frozen=True, slots=True)
+class ContextBlock:
+    key: str  # which provider made it
+    digest: str  # of key and body: "the same block"
+    body: str  # always the full text
+    carried: bool  # written as a reference when its turn was made
+
+
+def block_digest(key: str, body: str) -> str:
+    return hashlib.sha256(f"{key}\0{body}".encode()).hexdigest()[:20]
+
+
+def _carried_text(body: str) -> str:
+    """A reference: the block's headings (so "## Skill: x" still names its skill) and a note."""
+    heads = [ln for ln in body.splitlines() if ln.startswith("## ")][:12]
+    if not heads:
+        first = body.strip().splitlines()[0] if body.strip() else ""
+        heads = [first[:120]] if first else []
+    return "\n".join([*heads, CARRIED_NOTE])
+
+
+def compose_context(blocks: list[ContextBlock], full: list[bool]) -> str:
+    parts = [b.body if f else _carried_text(b.body) for b, f in zip(blocks, full, strict=True)]
+    return CONTEXT_HEAD + "\n\n" + "\n\n".join(parts)
+
+
+def render_context(history: list[Message], blocks: dict[str, list[ContextBlock]], current_run_id: str) -> list[Message]:
+    """The context messages of ``history`` as the model should see them now.
+
+    In order: a carried block refers to the newest full copy of it before it, which then stays
+    whole; a carried block whose copy is no longer in ``history`` (trimmed, summarised) is written
+    out in full where it stands. A full copy no later turn refers to is cut to the usual stub once
+    its turn is over. The current run's own blocks are always shown.
+    """
+    latest: dict[str, tuple[str, int]] = {}
+    full: dict[tuple[str, int], bool] = {}
+    needed: set[tuple[str, int]] = set()
+    for m in history:
+        own = blocks.get(m.id or "") if m.name == "context" else None
+        if not own or m.id is None:
+            continue
+        for i, b in enumerate(own):
+            pos = (m.id, i)
+            anchor = latest.get(b.digest)
+            if b.carried and anchor is not None:
+                full[pos] = False
+                needed.add(anchor)
+            else:
+                full[pos] = True
+                latest[b.digest] = pos
+    out: list[Message] = []
+    for m in history:
+        own = blocks.get(m.id or "") if m.name == "context" else None
+        if not own or m.id is None:
+            out.append(m)
+            continue
+        current = m.run_id == current_run_id
+        shown: list[ContextBlock] = []
+        flags: list[bool] = []
+        dropped: list[ContextBlock] = []
+        for i, b in enumerate(own):
+            pos = (m.id, i)
+            if not full[pos]:
+                shown.append(b)
+                flags.append(False)
+            elif current or pos in needed:
+                shown.append(b)
+                flags.append(True)
+            else:
+                dropped.append(b)
+        skills = [n for b in dropped for n in _skill_names(b.body)]
+        if not shown:
+            content = _not_repeated(skills)
+        else:
+            content = compose_context(shown, flags)
+            if dropped:
+                content += "\n\n" + _not_repeated(skills)
+        out.append(m if content == m.content else m.model_copy(update={"content": content}))
     return out
 
 
@@ -298,14 +410,22 @@ class ContextAssembler:
         )
         admit_chars = s.admit_chars(results_tokens, self.chars_per_token)
         stored = await self._store.list_messages(run.conversation_id)
-        history = earlier_turn_view(stored, run.id, admit_chars=admit_chars)
+        blocks = await self._blocks(run.conversation_id)
+        history = earlier_turn_view(stored, run.id, admit_chars=admit_chars, structured=blocks.keys())
+        # Rendered as if everything were kept, so the budget counts what will be sent ...
+        history = render_context(history, blocks, run.id)
         budget_chars = int(history_tokens * self.chars_per_token)
         ledger = conversation_ledger(stored, run.id, max_chars=min(LEDGER_CHARS, budget_chars // 4))
         if ledger is not None:
             budget_chars -= len(ledger)
         if self._compactor is not None and run.kind is not RunKind.TRIAGE:
+            # The stored summary only. A new one is made in the background (compact_if_due):
+            # made here it cost a call 8-11 s before its first word (2026-10-13).
             history = await self._compactor.prepare(run.conversation_id, history, budget_chars)  # type: ignore[attr-defined]
-        kept = await self._hydrate(self.trim(history, budget_chars))
+            if self._compactor.cost(history) > budget_chars:  # type: ignore[attr-defined]
+                self._compactor.schedule(run.conversation_id, self.compaction_view)  # type: ignore[attr-defined]
+        # ... and again once trimmed: a reference whose full copy fell off is written out in place.
+        kept = await self._hydrate(render_context(self.trim(history, budget_chars), blocks, run.id))
         if ledger is not None:
             # Right before this run's own messages, not at the top: it grows by a turn each turn,
             # and up there it would invalidate the cached prefix of the whole history every time.
@@ -356,6 +476,16 @@ class ContextAssembler:
                 "These come from Arsen and apply to this chat only. They add to the rules above "
                 "and never override rule 1 or 2.\n" + conversation.instructions.strip()
             )
+        if conversation is not None and conversation.id == s.assistant.home_conversation_id:
+            # The Jarvis conversation (docs/stories/12_assistant.md): the one chat that is about
+            # his day rather than one task. Constant for this conversation, so it caches.
+            parts.append(
+                f"## The {s.assistant_name} conversation\n"
+                f"This is {s.user_name}'s main line to you, not a chat about one task: how his day is going, "
+                "what is waiting on him, what to remember or remind him of, and anything he thinks of. Every "
+                "turn carries where his other conversations stand today; when he asks about one of them, "
+                "read it (sessions.read) before you answer in detail."
+            )
         if conversation is not None and conversation.incognito:
             # The code already keeps the learner, the titler and the memory tools away from this
             # chat; this block is so the model neither promises to remember something it cannot,
@@ -386,13 +516,14 @@ class ContextAssembler:
         parts.append(self._date_line(s))
         return Message.system("\n\n".join(parts))
 
-    async def turn_context(self, run: Run, *, skill_names: list[str]) -> str | None:
-        """Per-turn context (skills, knowledge, browser page) - constant within a run.
+    async def turn_blocks(self, run: Run, *, skill_names: list[str]) -> list[tuple[str, str]]:
+        """Per-turn context (skills, knowledge, browser page, the call's style, the day) as
+        (key, text) blocks - constant within a run.
 
-        It is persisted as a user message named "context" right after the run's input, so every
-        later turn replays the exact same tokens at the same position and the prefix cache holds.
+        Persisted as a user message named "context" right after the run's input, so every later
+        turn replays the same tokens at the same position and the prefix cache holds.
         """
-        parts: list[str] = []
+        out: list[tuple[str, str]] = []
         for provider in self._providers:
             if getattr(provider, "stable", False):
                 continue
@@ -401,8 +532,33 @@ class ContextAssembler:
             except Exception:
                 block = None
             if block:
-                parts.append(block)
-        return "[Context for the request above]\n\n" + "\n\n".join(parts) if parts else None
+                out.append((type(provider).__name__, block))
+        return out
+
+    async def turn_context(self, run: Run, *, skill_names: list[str]) -> str | None:
+        """The per-turn context as one text, every block in full."""
+        blocks = await self.turn_blocks(run, skill_names=skill_names)
+        return CONTEXT_HEAD + "\n\n" + "\n\n".join(text for _k, text in blocks) if blocks else None
+
+    async def _blocks(self, conversation_id: str) -> dict[str, list[ContextBlock]]:
+        rows = await self._store.context_blocks(conversation_id)
+        return {mid: [ContextBlock(k, d, b, c) for k, d, b, c in blocks] for mid, blocks in rows.items()}
+
+    async def compaction_view(self, conversation_id: str) -> tuple[list[Message], int]:
+        """The conversation as its next turn will see it before trimming, and that turn's history
+        budget in chars: what the background compactor folds (features/compaction.py)."""
+        stored = await self._store.list_messages(conversation_id)
+        blocks = await self._blocks(conversation_id)
+        history = render_context(earlier_turn_view(stored, "", structured=blocks.keys()), blocks, "")
+        budget = int(self._settings().history_token_budget * self.chars_per_token)
+        ledger = conversation_ledger(stored, "", max_chars=min(LEDGER_CHARS, budget // 4))
+        return history, budget - (len(ledger) if ledger else 0)
+
+    async def compact_if_due(self, conversation_id: str) -> None:
+        """After a run: fold the older history into the summary in the background once it nears
+        its budget, so the next turns find it done instead of waiting for it."""
+        if self._compactor is not None:
+            self._compactor.schedule(conversation_id, self.compaction_view, early=True)  # type: ignore[attr-defined]
 
     @staticmethod
     def plan_message(plan: Plan) -> Message:
@@ -417,11 +573,21 @@ class ContextAssembler:
         existing = [m for m in await self._store.list_run_messages(run.id) if m.name == "context"]
         if existing:
             return existing[0]
-        text = await self.turn_context(run, skill_names=skill_names)
-        if text is None:
+        made = await self.turn_blocks(run, skill_names=skill_names)
+        if not made:
             return None
+        # A block this conversation has been given before is written as a reference to it.
+        known = {b.digest for blocks in (await self._blocks(run.conversation_id)).values() for b in blocks}
+        blocks: list[ContextBlock] = []
+        for key, body in made:
+            digest = block_digest(key, body)
+            blocks.append(ContextBlock(key, digest, body, carried=digest in known))
+            known.add(digest)
+        text = compose_context(blocks, [not b.carried for b in blocks])
         msg = Message.user(text, name="context", conversation_id=run.conversation_id, run_id=run.id)
         await self._store.add_message(msg)
+        assert msg.id is not None
+        await self._store.add_context_blocks(msg.id, [(b.key, b.digest, b.body, b.carried) for b in blocks])
         return msg
 
     def system_prompt(self) -> Message:

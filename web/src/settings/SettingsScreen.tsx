@@ -13,6 +13,7 @@ import { ConfirmationsSection, EmailSection } from './SafetySections';
 import { RsvpSection } from './RsvpSection';
 import { SettingsNav } from './SettingsNav';
 import { TriageSection } from './TriageSection';
+import { AssistantSection } from './AssistantSection';
 import { SessionsSection } from './SessionsSection';
 import { ShadowSection } from './ShadowSection';
 import { VoiceSection } from './VoiceSection';
@@ -223,6 +224,12 @@ export function SettingsScreen() {
         <div id="settings-sessions" className="settings-anchor">
           <SessionsSection value={draft.sessions} onChange={(v) => patch('sessions', v)} error={errors.sessions} />
         </div>
+
+        {draft.assistant && (
+          <div id="settings-assistant" className="settings-anchor">
+            <AssistantSection value={draft.assistant} onChange={(v) => patch('assistant', v)} error={errors.assistant} />
+          </div>
+        )}
 
         {draft.shadow && (
           <div id="settings-shadow" className="settings-anchor">

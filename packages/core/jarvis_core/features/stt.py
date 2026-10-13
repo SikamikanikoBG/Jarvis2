@@ -23,6 +23,10 @@ _MODEL_MAP = {
 }
 
 
+#: Whisper reads at most 224 tokens of prompt; the tail of what was said is the part that matters.
+PROMPT_CHARS = 400
+
+
 class SttError(RuntimeError):
     pass
 
@@ -53,8 +57,14 @@ class Transcriber:
             return url
         return (url if url.endswith("/v1") else url + "/v1") + "/audio/transcriptions"
 
-    async def transcribe(self, audio: bytes, *, filename: str, mime: str, language: str | None = None) -> SttResult:
+    async def transcribe(
+        self, audio: bytes, *, filename: str, mime: str, language: str | None = None, prompt: str | None = None
+    ) -> SttResult:
+        """``prompt`` is Whisper's initial prompt: what was said just before (on a call, Jarvis's
+        last sentence; for a long utterance recognised in pieces, the pieces so far). A short
+        answer is then heard as an answer to it, and names already said are spelled the same."""
         s = self._settings()
+        prompt = " ".join((prompt or "").split())[-PROMPT_CHARS:] or None
         if not s.stt_url:
             raise SttError("no STT backend configured (settings.stt_url)")
         kind = s.stt_kind
@@ -65,6 +75,8 @@ class Transcriber:
                 params: dict[str, str] = {"output": "json", "task": "transcribe"}
                 if language:
                     params["language"] = language
+                if prompt:
+                    params["initial_prompt"] = prompt
                 resp = await self._client.post(endpoint, params=params, files={"audio_file": (filename, audio, mime)})
             else:
                 model = str(s.stt_model)
@@ -74,6 +86,8 @@ class Transcriber:
                 }
                 if language:
                     data["language"] = language
+                if prompt:
+                    data["prompt"] = prompt
                 resp = await self._client.post(endpoint, data=data, files={"file": (filename, audio, mime)})
         except httpx.HTTPError as exc:
             raise SttError(f"STT backend unreachable: {type(exc).__name__}: {exc}") from exc

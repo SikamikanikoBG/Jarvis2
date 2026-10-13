@@ -145,6 +145,18 @@ export class Segmenter {
     return out;
   }
 
+  /**
+   * Close the utterance at the pause `at` now, before the release has run out: the turn model is
+   * sure he has finished. Only while that same pause is still going on — if he has spoken since,
+   * the pause was a breath and nothing closes. Answers the events, like `push`.
+   */
+  endAt(at: number): SegmentEvent[] {
+    if (this.phase !== 'release' || this.phaseSince !== at) return [];
+    const out = this.close(at);
+    this.phase = 'silence';
+    return out;
+  }
+
   /** The stream stopped (the call ended, the mic was lost): close whatever is open. */
   end(t: number): SegmentEvent[] {
     if (!this.speaking) {

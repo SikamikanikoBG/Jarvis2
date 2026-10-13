@@ -124,11 +124,12 @@ export class ServerSpeaker implements Speaker {
     return p;
   }
 
-  /** Start fetching a sentence now; `speak` will find it ready. */
-  prepare(text: string, lang: string): void {
+  /** Start fetching a sentence now; `speak` will find it ready. `first`: the reply's first
+   *  sentence, which the core may make with fewer steps (voice.omnivoice_first_steps). */
+  prepare(text: string, lang: string, first = false): void {
     const key = `${lang}|${text}`;
     if (this.prepared.has(key)) return;
-    this.prepared.set(key, this.fetch(text, lang));
+    this.prepared.set(key, this.fetch(text, lang, first));
   }
 
   private context(): AudioContext {
@@ -147,9 +148,9 @@ export class ServerSpeaker implements Speaker {
     return (await Promise.race([resumed, late])) && (ctx.state as AudioContextState) === 'running';
   }
 
-  private async fetch(text: string, lang: string): Promise<AudioBuffer | null> {
+  private async fetch(text: string, lang: string, first = false): Promise<AudioBuffer | null> {
     try {
-      const bytes = await api.tts(text, lang, { cache: this.o.cache ?? true });
+      const bytes = await api.tts(text, lang, { cache: this.o.cache ?? true, first });
       return await this.context().decodeAudioData(bytes);
     } catch (e) {
       this.problem = `The server voice failed (${e instanceof Error ? e.message : 'error'}); using the device voice.`;

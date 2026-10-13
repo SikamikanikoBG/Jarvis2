@@ -202,6 +202,18 @@ trim used to count a 41k-character folder dump at full size, throw the whole tur
 next question was answered from scratch (2026-09-11). Compaction cuts only at a message Arsen
 wrote, never at an injected context block, so a summary covers a turn whole.
 
+**Never in a reply's way (core 2.0.0a85, docs/stories/12_assistant.md).** A turn applies the
+stored summary and nothing else; a new summary is made in the background on
+`settings.assistant.housekeeping_lane` - after a run once the history passes 80% of its budget,
+and when a turn finds it over - cutting so that at most half the budget remains. Until it exists
+the turn is trimmed (the ledger keeps the record).
+
+**A context block is given once.** A turn's context is stored as blocks
+(`context_blocks(message_id, ord, key, digest, body, carried)`); a block identical to one already
+in the conversation is written as its headings plus "[Unchanged - given in full in an earlier
+context block of this chat.]", and the earlier copy stays whole while any later turn refers to it.
+A reference whose copy has been trimmed or summarised away is written out in full in its place.
+
 ## Hosts = MCP servers (Phase 3)
 
 There is no separate hosts table. A machine that offers capabilities runs `jarvis-host`,
@@ -418,10 +430,34 @@ a triage folder sample (`/api/triage/run?dry_run=true&folder=`) is recorded with
 ## STT (Phase 6)
 
 ```
-POST /api/stt  multipart: audio (webm/ogg/wav), language? → {text, language, backend, duration_ms}
+POST /api/stt  multipart: audio (webm/ogg/wav), language?, prompt?, turn?, stt_offset_ms?
+               → {text, language, backend, duration_ms, warning, turn_complete}
 ```
 Core forwards to `settings.stt_url` (the Whisper service). No fallback: a failing backend is a
 `502 {detail}` and a red badge, never a different model.
+
+- `prompt`: what was said just before; Whisper's `initial_prompt` (its last 400 characters).
+- `turn=true`: also score whether the speech is a finished turn - Smart Turn v3 on the core's CPU
+  (features/turn.py), in parallel with the recognition. `turn_complete` is 0..1, or null when the
+  model is not there or `settings.voice.turn_detection` is off.
+- `stt_offset_ms` (WAV only): the audio before it is context for the turn model and was already
+  recognised; Whisper hears from the offset on.
+
+## The assistant across chats (core 2.0.0a85, docs/stories/12_assistant.md)
+
+```
+POST /api/assistant/home            → Conversation   (the Jarvis conversation; made and pinned on first use)
+GET  /api/assistant/today?exclude=  → {day, overview} (the day's overview a call carries; null when empty)
+POST /api/tts  {text, lang, cache?, first?}           (first: the reply's first sentence, voice.omnivoice_first_steps)
+```
+
+The day journal (`conversation_digests(conversation_id, day, summary, waiting, quiet, run_id,
+updated_at)`) is rewritten in the background a few seconds after a run ends, never for triage or
+an incognito chat. Tools: `sessions.today` (the overview), `sessions.list(today=true)` (every
+conversation active today, scheduled ones included). Settings: `assistant.{journal,
+overview_chars, overview_on_calls, home_conversation_id, housekeeping_lane}`,
+`voice.{turn_detection, turn_threshold, omnivoice_first_steps}`; `sessions` is in the default
+`voice.namespaces`.
 
 ## Meetings (Phase 6)
 

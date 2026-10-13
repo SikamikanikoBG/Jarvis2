@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from jarvis_core.engine.context import conversation_ledger, earlier_turn_view, last_turn_skills
 from jarvis_core.engine.views import aged
-from jarvis_core.features.compaction import _cut_index
+from jarvis_core.features.compaction import fold_point
 from jarvis_proto import Message, Role, Run, RunKind, ToolCall
 from tests.conftest import Harness
 
@@ -100,27 +100,35 @@ def test_compaction_cuts_at_a_message_arsen_wrote_not_at_the_injected_context():
         u("q2"), u("ctx2", name="context"), Message.assistant("a2"), t, t, Message.assistant("a2 final"),
         u("q3"), u("ctx3", name="context"),
     ]  # fmt: skip
-    # 14 messages; the middle (7) is ctx2, which must not be the cut: q2 at 6 is.
-    assert _cut_index(history) == 6
-    # One long turn: nothing older to fold. Heads and the trim deal with it, not a summary of
-    # the question alone.
-    one = [
-        u("q1"),
-        u("ctx1", name="context"),
-        Message.assistant("a"),
-        t,
-        Message.assistant("final"),
-        u("q2"),
-        u("ctx2", name="context"),
-    ]
-    assert _cut_index(one) == 0
+    # Room for everything but the first turn: the cut is q2 (6) - never ctx2 (7), the context
+    # the core injected after it.
+    assert fold_point(history, 10_000) == 6
+    # Room for less than the newest turn: everything before the newest turn is folded.
+    assert fold_point(history, 10) == 12
+    # One turn: nothing older to fold. Heads and the trim deal with it, not a summary of the
+    # question alone.
+    assert fold_point([u("q1"), u("ctx1", name="context"), Message.assistant("a"), t], 10) == 0
     # A supervisor note is not a boundary either.
     assert (
-        _cut_index(
-            [u("q1"), Message.assistant("a"), u("q2"), u("n", name="supervisor"), Message.assistant("b"), u("q3")]
+        fold_point(
+            [u("q1"), Message.assistant("a"), u("q2"), u("n", name="supervisor"), Message.assistant("b"), u("q3")],
+            10_000,
         )
         == 2
     )
+
+
+def test_compaction_leaves_room_to_grow():
+    """The cut keeps at most what it is given room for, so the next turns do not summarise again."""
+    turns: list[Message] = []
+    for i in range(10):
+        turns += [Message.user(f"question {i} " + "q" * 80), Message.assistant(f"answer {i} " + "a" * 300)]
+    cut = fold_point(turns, 1_000)
+    kept = turns[cut:]
+    assert sum(len(m.content) + 8 for m in kept) <= 1_000
+    assert kept[0].role is Role.USER and kept[0].name is None
+    # ...and not less than it could: one more turn would not have fitted.
+    assert sum(len(m.content) + 8 for m in turns[cut - 2 :]) > 1_000
 
 
 def _digest_turn(run_id: str = "run_a") -> list[Message]:

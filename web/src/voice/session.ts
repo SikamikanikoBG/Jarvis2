@@ -9,6 +9,11 @@
  * Cut-in: while `speaking`, speech from the listener stops the speaker on the spot. The words
  * then reach the run that is still working as a steer, or start a new run — "too late" is what
  * the core turns into a new voice turn, so the session never has to guess.
+ *
+ * The end of a turn (docs/stories/12_assistant.md): every pause is recognised at once and scored
+ * by the turn model. When it is sure he has finished, the utterance closes there and is sent with
+ * no join window — about half a second sooner than the clock alone. When it is not sure, the clock
+ * decides as before; words said after an early send join the run as a steer.
  */
 
 import { SentenceSplitter, scriptLanguage, speakable } from './sentences';
@@ -59,6 +64,9 @@ export interface CallState {
 
 export interface Listener {
   start(handlers: ListenerHandlers): Promise<void>;
+  /** Close the utterance at the pause `at` now (the turn model is sure he finished); false when
+   *  he has spoken since. Absent: the release closes it, as always. */
+  finish?(at: number): boolean;
   stop(): void;
   /** Jarvis started or stopped speaking: the listener gates itself (earpiece) or lets the
    *  microphone go and takes it back (speaker). `echoCancelled` says his voice is the page's
@@ -72,10 +80,15 @@ export interface ListenerHandlers {
   onLevel(level: number): void;
   onSpeechStart(): void;
   /** Silence that may be the end: the audio so far, to be recognised now rather than after the
-   *  release. `at` names the pause; an utterance that ends there carries the same `at`. */
-  onPause(audio: Blob, at: number): void;
+   *  release. `at` names the pause; an utterance that ends there carries the same `at`.
+   *  `offsetMs`: the audio before it is context for the turn model, already recognised. */
+  onPause(audio: Blob, at: number, offsetMs?: number): void;
+  /** He went on after the pause `at`, and what came before it is a piece of a long utterance:
+   *  true when its words are on their way (recognised from that pause), so the rest is sent
+   *  without it; false and it stays part of the rest. */
+  onPiece?(at: number): boolean;
   /** An utterance has ended and its audio is on its way to be recognised. */
-  onUtterance(audio: Blob, at?: number): void;
+  onUtterance(audio: Blob, at?: number, offsetMs?: number): void;
   /** Something stopped him and came to nothing: a cough, a chair, a word too short to hear. */
   onSpeechDropped(): void;
   onError(message: string): void;
@@ -88,8 +101,9 @@ export interface Speaker {
   cancel(): void;
   /** Whether this device can speak at all (and in what). */
   available(): boolean;
-  /** Start getting a sentence ready before its turn (a server voice fetches it now). */
-  prepare?(text: string, lang: string): void;
+  /** Start getting a sentence ready before its turn (a server voice fetches it now). `first`:
+   *  the reply's first sentence, the one he waits for in silence — made faster if it can be. */
+  prepare?(text: string, lang: string, first?: boolean): void;
   /** What went wrong with the last sentence, in a sentence for the screen — and cleared by
    *  the read. A voice that falls back silently is a call that "does not work". */
   takeProblem?(): string | null;
@@ -99,12 +113,21 @@ export interface Speaker {
   cancellable?(): boolean;
 }
 
-type Recognised = { text: string; language: string | null };
+export type Recognised = { text: string; language: string | null; turnComplete?: number | null };
+
+export interface TranscribeOptions {
+  /** What was said just before: Whisper's context. */
+  prompt?: string;
+  /** Also score whether this is a finished turn. */
+  turn?: boolean;
+  /** Where in the audio the part to recognise begins (before it: context for the turn model). */
+  offsetMs?: number;
+}
 
 export interface Transcriber {
   /** `language` is the call's current language, a hint for the recogniser — an utterance is
    *  too short to guess a language from, and a wrong guess comes back as Greek. */
-  transcribe(audio: Blob, language: string): Promise<{ text: string; language: string | null }>;
+  transcribe(audio: Blob, language: string, opts?: TranscribeOptions): Promise<Recognised>;
 }
 
 export interface Transport {
@@ -133,6 +156,9 @@ export interface SessionOptions {
   /** The languages the recogniser may hear (the settings' `stt_languages`); the first is the
    *  call's language until he is heard speaking another of them. */
   languages?: string[];
+  /** How sure the turn model must be that he has finished for the utterance to be sent at
+   *  once (`voice.turn_threshold`); null or absent = the clock alone decides. */
+  turnThreshold?: number | null;
   onChange(state: CallState): void;
   /** The call's quiet signals (tones.ts); absent on a device that cannot make them. */
   cues?: Cues;
@@ -181,6 +207,12 @@ export class CallSession {
   private quietSince = 0;
   /** A recognition started at a pause, before the utterance was known to have ended. */
   private speculative: { at: number; result: Promise<Recognised | Error> } | null = null;
+  /** The pieces of a long utterance recognised while he was still talking, in order, and the
+   *  words of those already back (Whisper's prompt for the next one). */
+  private pieces: Promise<Recognised | Error>[] = [];
+  private piecesSaid: string[] = [];
+  /** The last sentences he heard Jarvis say: what his next words are most likely an answer to. */
+  private lastSaid: string[] = [];
   /** Words that arrived while the run was being created, steered once its id is known. */
   private steerWhenKnown = '';
   /** The language he is speaking, for the recogniser; the reply's, for the voice. Decided once
@@ -214,8 +246,9 @@ export class CallSession {
       await this.o.listener.start({
         onLevel: (level) => this.set({ level }),
         onSpeechStart: () => this.onSpeechStart(),
-        onPause: (audio, at) => this.onPause(audio, at),
-        onUtterance: (audio, at) => void this.onUtterance(audio, at),
+        onPause: (audio, at, offsetMs) => this.onPause(audio, at, offsetMs),
+        onPiece: (at) => this.onPiece(at),
+        onUtterance: (audio, at, offsetMs) => void this.onUtterance(audio, at, offsetMs),
         onSpeechDropped: () => this.onSpeechDropped(),
         onError: (message) => this.fail(message),
       });
@@ -235,13 +268,22 @@ export class CallSession {
     // aloud stops. Cancelling it would throw away an answer that was already being written.
     this.queue = [];
     this.suspended = [];
+    this.dropPieces();
     this.set({ phase: 'ended', level: 0 });
     this.o.cues?.close();
   }
 
   setMuted(muted: boolean): void {
     this.o.listener.setMuted(muted);
+    if (muted) this.dropPieces();
     this.set({ muted });
+  }
+
+  /** What was being recognised of an utterance that will not be finished. */
+  private dropPieces(): void {
+    this.pieces = [];
+    this.piecesSaid = [];
+    this.speculative = null;
   }
 
   setRoute(route: CallRoute): void {
@@ -289,27 +331,73 @@ export class CallSession {
     })();
   }
 
-  private onPause(audio: Blob, at: number): void {
+  private onPause(audio: Blob, at: number, offsetMs?: number): void {
     if (this.state.phase === 'ended' || this.state.muted) return;
-    const result = this.o.transcriber.transcribe(audio, this.heardLang).then(
+    const result = this.recognise(audio, offsetMs);
+    this.speculative = { at, result };
+    // Sure he has finished: close the utterance at this pause rather than wait out the release.
+    void result.then((r) => {
+      if (r instanceof Error || !this.confident(r)) return;
+      if (this.speculative?.at !== at || this.state.phase === 'ended' || this.state.muted) return;
+      this.o.listener.finish?.(at);
+    });
+  }
+
+  /** A pause he went on after: what was recognised from it is a piece of this utterance. */
+  private onPiece(at: number): boolean {
+    if (this.speculative?.at !== at || this.state.phase === 'ended') return false;
+    const piece = this.speculative.result;
+    this.speculative = null;
+    this.pieces.push(piece);
+    void piece.then((r) => {
+      if (!(r instanceof Error) && r.text.trim()) this.piecesSaid.push(r.text.trim());
+    });
+    return true;
+  }
+
+  private recognise(audio: Blob, offsetMs?: number): Promise<Recognised | Error> {
+    // His words so far, else what Jarvis last said: a short answer is recognised as an answer.
+    const prompt = (this.piecesSaid.length ? this.piecesSaid : this.lastSaid).join(' ');
+    const opts: TranscribeOptions = { turn: this.o.turnThreshold != null };
+    if (prompt) opts.prompt = prompt;
+    if (offsetMs) opts.offsetMs = offsetMs;
+    return this.o.transcriber.transcribe(audio, this.heardLang, opts).then(
       (r): Recognised | Error => r,
       (e: unknown): Recognised | Error => (e instanceof Error ? e : new Error(String(e))),
     );
-    this.speculative = { at, result };
   }
 
-  private async onUtterance(audio: Blob, at?: number): Promise<void> {
+  private confident(r: Recognised): boolean {
+    const bar = this.o.turnThreshold;
+    return bar != null && r.turnComplete != null && r.turnComplete >= bar && r.text.trim() !== '';
+  }
+
+  private async onUtterance(audio: Blob, at?: number, offsetMs?: number): Promise<void> {
     if (this.state.phase === 'ended' || this.state.muted) return;
     this.quietSince = this.now();
     this.set({ phase: 'transcribing', problem: null });
     // The utterance ended at the pause already being recognised: that answer is this answer.
+    // Otherwise the rest is recognised now - asked before the pieces are let go, since their
+    // words are its prompt.
     const early = at !== undefined && this.speculative?.at === at ? this.speculative.result : null;
     this.speculative = null;
+    const rest = early ?? this.recognise(audio, offsetMs);
+    // The pieces recognised while he talked belong to this utterance and to no later one.
+    const pieces = this.pieces;
+    this.pieces = [];
+    this.piecesSaid = [];
     let text = '';
+    let finished = false;
     try {
-      const res = early ? await early : await this.o.transcriber.transcribe(audio, this.heardLang);
+      const res = await rest;
       if (res instanceof Error) throw res;
-      text = res.text.trim();
+      const said: string[] = [];
+      for (const piece of await Promise.all(pieces)) {
+        if (piece instanceof Error) throw piece;
+        if (piece.text.trim()) said.push(piece.text.trim());
+      }
+      text = [...said, res.text.trim()].filter(Boolean).join(' ');
+      finished = this.confident(res);
       // He may switch to another of the call's languages — believed only when the words are
       // written in that language's script too. Whisper labels a noise "en" as readily as
       // anything, and a hint of "en" on Bulgarian speech comes back as an English translation.
@@ -336,8 +424,10 @@ export class CallSession {
     if (this.joinTimer) clearTimeout(this.joinTimer);
     const join = this.o.joinMs ?? 600;
     // The window is measured from the end of speech: the silence already spent while the
-    // recogniser worked counts toward it.
-    const wait = Math.max(0, Math.min(join - (this.now() - this.quietSince), this.heldSince + JOIN_DEADLINE_MS - this.now()));
+    // recogniser worked counts toward it. None at all when the turn model is sure he is done.
+    const wait = finished
+      ? 0
+      : Math.max(0, Math.min(join - (this.now() - this.quietSince), this.heldSince + JOIN_DEADLINE_MS - this.now()));
     this.joinTimer = setTimeout(() => {
       this.joinTimer = null;
       this.send();
@@ -426,8 +516,10 @@ export class CallSession {
     for (const sentence of this.preview.push(text)) {
       const clean = speakable(sentence);
       if (!clean) continue;
+      // Nothing of this reply queued yet: this sentence is the one he will wait for.
+      const first = this.prefetched === 0 && this.state.saying.length === 0;
       this.prefetched += 1;
-      this.o.speaker.prepare?.(clean, scriptLanguage(clean, this.o.language));
+      this.o.speaker.prepare?.(clean, scriptLanguage(clean, this.o.language), first);
       if (this.prefetched >= PREFETCH_SENTENCES) break;
     }
   }
@@ -481,8 +573,9 @@ export class CallSession {
   private enqueue(sentence: string): void {
     const clean = speakable(sentence);
     if (!clean) return;
+    const first = this.state.saying.length === 0;
     this.queue.push(clean);
-    this.o.speaker.prepare?.(clean, this.langFor(clean));
+    this.o.speaker.prepare?.(clean, this.langFor(clean), first);
     this.set({ saying: [...this.state.saying, clean] });
     this.speaking ??= this.drain();
   }
@@ -506,7 +599,10 @@ export class CallSession {
         this.current = null;
         const problem = this.o.speaker.takeProblem?.();
         if (problem) this.fail(problem);
-        if (!this.cutIn) this.set({ spokenUpTo: this.state.spokenUpTo + 1 });
+        if (!this.cutIn) {
+          this.set({ spokenUpTo: this.state.spokenUpTo + 1 });
+          this.lastSaid = [...this.lastSaid, sentence].slice(-2);
+        }
       }
     } finally {
       this.speaking = null;

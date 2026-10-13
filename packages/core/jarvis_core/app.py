@@ -43,6 +43,7 @@ from jarvis_core.features.callme import CallMe
 from jarvis_core.features.collab import CollabAuthMiddleware, CollabKeys, build_mcp_server
 from jarvis_core.features.compaction import Compactor
 from jarvis_core.features.expiry import Reaper, delete_conversation
+from jarvis_core.features.journal import DayJournal, TodayBlock
 from jarvis_core.features.knowledge import KnowledgeLearner, KnowledgeStore, KnowledgeTools
 from jarvis_core.features.mail import MailTools
 from jarvis_core.features.maildesk import MailDesk
@@ -62,14 +63,15 @@ from jarvis_core.features.titles import Titler
 from jarvis_core.features.triage import TriageJob
 from jarvis_core.features.triage_audit import TriageAudit
 from jarvis_core.features.tts import Synthesizer
+from jarvis_core.features.turn import TurnDetector
 from jarvis_core.features.web import WebTools
 from jarvis_core.models import AdapterFactory
 from jarvis_core.tools import CoreTools, ToolRegistry
 from jarvis_core.tools.facades import ExposurePolicy
 from jarvis_core.tools.mcp_provider import McpProvider
 from jarvis_core.tools.ws_provider import WsProvider
-from jarvis_proto import ConversationKind, RunKind, Settings, ThinkLevel
-from jarvis_proto.events import ToolsChanged
+from jarvis_proto import Conversation, ConversationKind, Run, RunKind, Settings, ThinkLevel
+from jarvis_proto.events import ConversationUpdated, ToolsChanged
 from jarvis_proto.features import ScheduleCallMe
 from jarvis_proto.settings import RoleName
 
@@ -93,7 +95,9 @@ class Core:
         self.knowledge = KnowledgeStore(self.db, self.bus)
         self.skills = SkillStore(config.home / "skills", self.db, self.bus)
         self.skill_detector = SkillDetector(self.skills, lambda: self.adapters.for_role(RoleName.CLASSIFIER))
-        self.compactor = Compactor(self.db, lambda: self.adapters.for_role(RoleName.CLASSIFIER))
+        # The core's own housekeeping goes to the lane that is not answering Arsen.
+        self.compactor = Compactor(self.db, self._housekeeping_model)
+        self.journal = DayJournal(self, self._housekeeping_model)
         self.planner = Planner(
             lambda: self.adapters.for_role(RoleName.CLASSIFIER), lambda: self.adapters.for_role(RoleName.PLANNER)
         )
@@ -108,6 +112,8 @@ class Core:
         self.collab_keys = CollabKeys(self.db)
         self.transcriber = Transcriber(settings)
         self.synthesizer = Synthesizer(settings, self.config.home)
+        self.turns = TurnDetector(self.config.home, fetch=self.config.fetch_models)
+        self._home_lock = asyncio.Lock()
         self.mcp_server = build_mcp_server(self)
         self.attachments = AttachmentStore(self)
         self.shadow = ShadowRecorder(config.home / "shadow.db", settings)
@@ -146,6 +152,7 @@ class Core:
                 BrowserBlock(self.browser),
                 VoiceBlock(settings),
                 SessionsBlock(self.sessions),
+                TodayBlock(self.journal, settings),
             ],
             compactor=self.compactor,
             attachments=self.attachments,
@@ -180,11 +187,43 @@ class Core:
             titler=self.titler.title,
             attachments=self.attachments,
         )
-        # A run that browsed is a job; when it ends, that chat's work tab has nothing left
-        # to do and the extension may let it go (tools/ws_provider.py).
-        self.engine.on_finished(lambda run: self.browser.job_done(run.conversation_id))
+        self.engine.on_finished(self._run_finished)
         self.scheduler = Scheduler(self.schedules, self._fire_schedule)
         self.reaper = Reaper(self)
+
+    def _housekeeping_model(self) -> Any:
+        return self.adapters.on_lane(RoleName.CLASSIFIER, self.settings.assistant.housekeeping_lane)
+
+    async def _run_finished(self, run: Run) -> None:
+        # A run that browsed is a job; when it ends, that chat's work tab has nothing left to do
+        # and the extension may let it go (tools/ws_provider.py).
+        await self.browser.job_done(run.conversation_id)
+        # Then the background work the next turn should find done (docs/stories/12_assistant.md):
+        # this conversation's line in the day's journal, and its summary if the history is close
+        # to its budget.
+        self.journal.note(run)
+        if run.kind is not RunKind.TRIAGE:
+            await self.context.compact_if_due(run.conversation_id)
+
+    async def home_conversation(self) -> Conversation:
+        """The Jarvis conversation: one long line to him that is not about any one task
+        (docs/stories/12_assistant.md). Made, pinned and remembered on first use; made again if it
+        has been deleted."""
+        async with self._home_lock:
+            known = self.settings.assistant.home_conversation_id
+            conv = await self.store.get_conversation(known) if known else None
+            if conv is not None and not conv.incognito:
+                if conv.archived:
+                    conv = await self.store.update_conversation(conv.id, archived=0) or conv
+                return conv
+            conv = await self.store.create_conversation(kind=ConversationKind.CHAT, title=self.settings.assistant_name)
+            conv = await self.store.update_conversation(conv.id, pinned=1, title_auto=0) or conv
+            settings = self.settings.model_copy(deep=True)
+            settings.assistant.home_conversation_id = conv.id
+            await self.store.save_settings(settings, only_keys={"assistant"})
+            self.apply_settings(settings)
+            self.bus.publish(ConversationUpdated(conversation=conv))
+            return conv
 
     def _host_named(self, address: str | None) -> str | None:
         """The MCP server that lives at ``address`` — the machine a browser extension runs on."""
@@ -254,6 +293,8 @@ class Core:
         await self.triage_audit.start()
         await self.rsvp.start()
         await self.reaper.start()
+        # The end-of-turn model, fetched and loaded now rather than on a call's first pause.
+        self.turns.warm()
         self._mcp_watch = asyncio.create_task(self._watch_mcp(), name="mcp-watch")
         log.info("jarvis-core %s ready (db=%s, tools=%d)", __version__, self.db.path, len(self.registry.specs()))
 
@@ -289,6 +330,8 @@ class Core:
         await self.callme.stop()
         await self.office.stop()
         await self.learner.wait()
+        await self.journal.stop()
+        await self.compactor.stop()
         for provider in self.mcp:
             await provider.stop()
         await self.transcriber.aclose()

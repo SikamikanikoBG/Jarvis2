@@ -10,7 +10,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from contextvars import ContextVar
 from dataclasses import dataclass, field
+from types import TracebackType
 from typing import Protocol
 
 from jarvis_proto import Message, ModelSpec, ModelUsage, ToolCall, ToolSpec
@@ -77,10 +79,67 @@ class ModelAdapter(Protocol):
     async def probe(self) -> ProbeResult: ...
 
 
-_endpoint_semaphores: dict[str, tuple[int, asyncio.Semaphore]] = {}
+#: How urgent the model calls of the task in progress are: VOICE (Arsen is on the line, waiting
+#: in silence), TYPED (he is looking at the chat) or BACKGROUND (everything else). The engine sets
+#: it per run; a call made outside any run is background.
+VOICE, TYPED, BACKGROUND = 0, 1, 2
+call_urgency: ContextVar[int] = ContextVar("call_urgency", default=BACKGROUND)
 
 
-def endpoint_semaphore(spec: ModelSpec, limit: int) -> asyncio.Semaphore:
+class EndpointGate:
+    """How many model calls may be in flight on one endpoint (GPU box) at once, most urgent first.
+
+    Scheduled runs share the chat lane with the chat, two calls at a time, and a call's turn used
+    to queue behind whatever they had in flight - a long scheduled step is tens of seconds of
+    silence on the line. Now a waiting call goes ahead of every less urgent one, and a VOICE call
+    may take one slot more than the limit: the engine batches one more request far better than
+    Arsen waits for a scheduled step to finish.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self._busy = 0
+        self._waiting = [0, 0, 0]  # per urgency
+        self._cond = asyncio.Condition()
+
+    @property
+    def busy(self) -> int:
+        return self._busy
+
+    def _may_go(self, urgency: int) -> bool:
+        room = self.limit + (1 if urgency == VOICE else 0)
+        return self._busy < room and not any(self._waiting[:urgency])
+
+    async def acquire(self, urgency: int | None = None) -> None:
+        level = call_urgency.get() if urgency is None else urgency
+        async with self._cond:
+            self._waiting[level] += 1
+            try:
+                await self._cond.wait_for(lambda: self._may_go(level))
+            finally:
+                self._waiting[level] -= 1
+                # A waiter that gave up may have been what held the less urgent ones back.
+                self._cond.notify_all()
+            self._busy += 1
+
+    async def release(self) -> None:
+        async with self._cond:
+            self._busy -= 1
+            self._cond.notify_all()
+
+    async def __aenter__(self) -> None:
+        await self.acquire()
+
+    async def __aexit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
+    ) -> None:
+        await self.release()
+
+
+_endpoint_semaphores: dict[str, tuple[int, EndpointGate]] = {}
+
+
+def endpoint_semaphore(spec: ModelSpec, limit: int) -> EndpointGate:
     """One semaphore per endpoint (GPU box), shared by every role that points at it.
 
     Keyed by the limit that was CONFIGURED, not by how many permits are free. The check used to
@@ -92,7 +151,7 @@ def endpoint_semaphore(spec: ModelSpec, limit: int) -> asyncio.Semaphore:
     key = spec.endpoint_key
     current = _endpoint_semaphores.get(key)
     if current is None or current[0] != limit:
-        current = (limit, asyncio.Semaphore(limit))
+        current = (limit, EndpointGate(limit))
         _endpoint_semaphores[key] = current
     return current[1]
 

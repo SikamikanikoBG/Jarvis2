@@ -243,20 +243,29 @@ export const api = {
   },
   /** One sentence as audio bytes in the server's neural voice; throws (502) when it cannot.
    * `cache: false` (an incognito call) keeps the core from writing the sentence to its disk cache. */
-  tts: async (text: string, lang: string, opts: { cache?: boolean } = {}): Promise<ArrayBuffer> => {
+  tts: async (text: string, lang: string, opts: { cache?: boolean; first?: boolean } = {}): Promise<ArrayBuffer> => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     const token = getToken();
     if (token) headers.Authorization = `Bearer ${token}`;
-    const body = JSON.stringify({ text, lang, cache: opts.cache ?? true });
+    const body = JSON.stringify({ text, lang, cache: opts.cache ?? true, first: opts.first ?? false });
     const res = await fetch('/api/tts', { method: 'POST', headers, body, credentials: 'same-origin' });
     if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => ''));
     return res.arrayBuffer();
   },
-  stt: (audio: Blob, language?: string) => {
+  /** `prompt`: what was said just before (Whisper's context). `turn`: also score whether this is
+   *  a finished turn. `offsetMs`: the audio before it is there for the turn model only. */
+  stt: (audio: Blob, language?: string, opts: { prompt?: string; turn?: boolean; offsetMs?: number } = {}) => {
     const form = new FormData();
-    form.append('audio', audio, 'speech.webm');
+    form.append('audio', audio, audio.type === 'audio/wav' ? 'speech.wav' : 'speech.webm');
     if (language) form.append('language', language);
+    if (opts.prompt) form.append('prompt', opts.prompt);
+    if (opts.turn) form.append('turn', 'true');
+    if (opts.offsetMs) form.append('stt_offset_ms', String(Math.round(opts.offsetMs)));
     return request<SttResponse>('POST', '/api/stt', form);
+  },
+  assistant: {
+    /** The Jarvis conversation, made on first use (docs/stories/12_assistant.md). */
+    home: () => request<Conversation>('POST', '/api/assistant/home'),
   },
   meetings: {
     list: () => request<Meeting[]>('GET', '/api/meetings'),

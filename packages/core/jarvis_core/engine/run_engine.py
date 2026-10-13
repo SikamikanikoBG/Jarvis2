@@ -21,7 +21,7 @@ from jarvis_core.engine.control import RunCancelledError, RunControl
 from jarvis_core.engine.current import current_conversation_id, current_run_id
 from jarvis_core.engine.emit import RunEmitter
 from jarvis_core.engine.loop import AgentLoop
-from jarvis_core.models.base import ModelError
+from jarvis_core.models.base import BACKGROUND, TYPED, VOICE, ModelError, call_urgency
 from jarvis_core.models.factory import current_run_kind
 from jarvis_proto import (
     Channel,
@@ -352,6 +352,8 @@ class RunEngine:
         emitter = ctl.emitter
         # Every model call made by this task — and by tasks it spawns — is routed to the run's lane.
         current_run_kind.set(run.kind)
+        # ...and waits for a free slot on it by how much Arsen is waiting for it (models/base.py).
+        call_urgency.set(VOICE if run.channel is Channel.VOICE else TYPED if run.kind is RunKind.CHAT else BACKGROUND)
         # ...and every tool it calls can tell where it is standing (engine/current.py).
         current_run_id.set(run.id)
         current_conversation_id.set(run.conversation_id)

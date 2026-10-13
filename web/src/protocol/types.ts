@@ -484,6 +484,25 @@ export interface VoiceSettings {
   omnivoice_url: string;
   omnivoice_voices: Record<string, string>;
   omnivoice_steps: number;
+  /** The first sentence of a reply with fewer steps (it is the one waited for); null = the same. */
+  omnivoice_first_steps: number | null;
+  /** End-of-turn detection: a sentence the turn model is this sure is complete is sent at once. */
+  turn_detection: boolean;
+  turn_threshold: number;
+}
+
+/** Jarvis as one assistant across his chats (docs/stories/12_assistant.md). */
+export interface AssistantSettings {
+  /** Write each conversation's line of the day after its runs. */
+  journal: boolean;
+  /** The cap on the day's overview a call carries. */
+  overview_chars: number;
+  /** Calls carry the day's overview in every turn. */
+  overview_on_calls: boolean;
+  /** The Jarvis conversation, made on first use. */
+  home_conversation_id: string | null;
+  /** The lane the journal's and compaction's own model calls go to. */
+  housekeeping_lane: 'chat' | 'background';
 }
 
 /** One chat writing to another: the guards, since Jarvis only does it when Arsen asks. */
@@ -566,6 +585,7 @@ export interface Settings {
   rsvp: MeetingRsvpSettings;
   voice: VoiceSettings;
   sessions: SessionsSettings;
+  assistant: AssistantSettings;
   /** The address people reach this core on; used for pairing/QR. Normally https. */
   public_url: string | null;
   stt_url: string | null;
@@ -1173,6 +1193,9 @@ export interface SttResponse {
   language: string;
   backend: string;
   duration_ms: number;
+  /** How sure the turn model is that the speech is a finished turn, 0..1 (asked with `turn`);
+   *  null when it cannot say (no model, switched off). */
+  turn_complete?: number | null;
 }
 
 /** `POST /api/schedules/{id}/run` */

@@ -25,6 +25,9 @@ class CoreConfig:
     )
     log_level: str = field(default_factory=lambda: _env("JARVIS_LOG_LEVEL", "INFO"))
     max_concurrent_runs: int = field(default_factory=lambda: int(_env("JARVIS_MAX_RUNS", "3")))
+    # Models the core fetches for itself on first use (features/turn.py). Off unless the
+    # deployment says so: a test run or a dev checkout never reaches out to Hugging Face.
+    fetch_models: bool = field(default_factory=lambda: _env("JARVIS_FETCH_MODELS", "0") == "1")
 
     @property
     def db_path(self) -> Path:

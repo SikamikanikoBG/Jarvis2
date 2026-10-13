@@ -354,6 +354,24 @@ async def list_sessions(request: Request) -> list[dict[str, Any]]:
     return [describe(c, handles[c.id]) for c in convs]
 
 
+# --- the assistant across chats (docs/stories/12_assistant.md) ----------------------
+
+
+@router.post("/assistant/home", response_model=Conversation)
+async def assistant_home(request: Request) -> Conversation:
+    """The Jarvis conversation - made, pinned and remembered on first use. A call started with no
+    chat open goes here."""
+    return await core_of(request).home_conversation()
+
+
+@router.get("/assistant/today")
+async def assistant_today(request: Request, exclude: str | None = None) -> dict[str, Any]:
+    """The day's overview as a call carries it: where each conversation with activity today
+    stands (features/journal.py)."""
+    core = core_of(request)
+    return {"day": core.journal.today().isoformat(), "overview": await core.journal.overview(exclude=exclude)}
+
+
 # --- settings / tools --------------------------------------------------------------
 
 
@@ -372,6 +390,9 @@ async def patch_settings(request: Request, body: dict[str, Any]) -> Settings:
         raise HTTPException(
             422, detail=exc.errors(include_url=False, include_context=False, include_input=False)
         ) from exc
+    # Which conversation is the Jarvis one is the core's to know, not the form's: a Settings screen
+    # opened before it was made would save its stale null and the next call would make a second one.
+    new.assistant.home_conversation_id = core.settings.assistant.home_conversation_id
     await core.store.save_settings(new, only_keys=set(body))
     core.apply_settings(new)
     if "mcp_servers" in body:

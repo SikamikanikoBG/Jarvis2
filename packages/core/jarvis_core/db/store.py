@@ -451,6 +451,26 @@ class Store:
         rows = await self.db.fetchall("SELECT * FROM messages WHERE run_id = ? ORDER BY rowid", (run_id,))
         return [self._message(r) for r in rows]
 
+    async def add_context_blocks(self, message_id: str, blocks: Sequence[tuple[str, str, str, bool]]) -> None:
+        """The blocks of a context message: (key, digest, body, carried), in order."""
+        await self.db.executemany(
+            "INSERT INTO context_blocks(message_id, ord, key, digest, body, carried) VALUES (?,?,?,?,?,?)",
+            [(message_id, i, key, digest, body, int(carried)) for i, (key, digest, body, carried) in enumerate(blocks)],
+        )
+
+    async def context_blocks(self, conversation_id: str) -> dict[str, list[tuple[str, str, str, bool]]]:
+        """Every context message of a conversation that was stored as blocks: message id → its
+        blocks (key, digest, body, carried), in order."""
+        rows = await self.db.fetchall(
+            "SELECT b.message_id, b.key, b.digest, b.body, b.carried FROM context_blocks b"
+            " JOIN messages m ON m.id = b.message_id WHERE m.conversation_id = ? ORDER BY m.rowid, b.ord",
+            (conversation_id,),
+        )
+        out: dict[str, list[tuple[str, str, str, bool]]] = {}
+        for r in rows:
+            out.setdefault(r["message_id"], []).append((r["key"], r["digest"], r["body"], bool(r["carried"])))
+        return out
+
     async def tool_result(self, tool_call_id: str) -> tuple[str, str] | None:
         """The FULL text of an earlier tool result, by the id of the call that produced it.
 

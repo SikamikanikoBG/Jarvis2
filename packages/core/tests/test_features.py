@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from jarvis_core.models.base import ModelDoneChunk, ModelTextChunk
 from jarvis_core.models.fake import FakeAdapter, FakeTurn
 from jarvis_core.tools.facades import ExposurePolicy, build_facades
-from jarvis_proto import ModelUsage, RoleName, RunKind, RunStatus, ToolCall, ToolSpec
+from jarvis_proto import Message, ModelUsage, RoleName, RunKind, RunStatus, ToolCall, ToolSpec
 from tests.conftest import Harness
 
 
@@ -240,29 +240,38 @@ async def test_a_short_follow_up_keeps_the_previous_turns_skill(harness: Harness
 # --- compaction ---------------------------------------------------------------------------
 
 
-async def test_compaction_summarises_older_turns_once(harness: Harness):
+async def test_compaction_happens_after_the_turn_not_in_its_way(harness: Harness):
+    """A turn over its budget is answered at once (trimmed); the summary is made in the
+    background on the housekeeping lane, and the next turn has it (docs/stories/12_assistant.md:
+    a call waited 8-11 s for a summary before each of two answers, 2026-10-13)."""
     core = harness.core
     s = core.settings.model_copy(deep=True)
     s.history_token_budget = 120  # ~380 chars
     core.apply_settings(s)
+    summariser = FakeAdapter()
+    core.adapters.fakes[RoleName.CLASSIFIER] = summariser
     conv = await core.store.create_conversation()
     for i in range(6):
-        await core.store.add_message(
-            __import__("jarvis_proto").Message.user(f"user message number {i} " + "x" * 60, conversation_id=conv.id)
-        )
-        await core.store.add_message(
-            __import__("jarvis_proto").Message.assistant(f"reply {i} " + "y" * 60, conversation_id=conv.id)
-        )
-    harness.chat.push(FakeTurn(text="- decisions so far: none\n- open: reply to 5"), FakeTurn(text="final"))
+        await core.store.add_message(Message.user(f"user message number {i} " + "x" * 60, conversation_id=conv.id))
+        await core.store.add_message(Message.assistant(f"reply {i} " + "y" * 60, conversation_id=conv.id))
+    summariser.push(FakeTurn(text="- decisions so far: none\n- open: reply to 5"))
+    harness.chat.push(FakeTurn(text="final"), FakeTurn(text="final again"))
     sub = harness.subscribe(conv.id)
     await core.engine.create_run(text="continue", conversation_id=conv.id)
     await harness.wait_for(sub, "run.done")
+    # The turn itself made no summary and waited for none.
+    first = harness.chat.calls[0][0]
+    assert not any(m.name == "summary" for m in first)
+    await core.compactor.wait()
     latest = await core.compactor.latest(conv.id)
     assert latest is not None and "open: reply to 5" in latest[1]
-    # The chat call saw the summary message and not the oldest turns.
+    # The next turn has the summary and not the oldest turns.
+    await core.engine.create_run(text="and now?", conversation_id=conv.id)
+    await harness.wait_for(sub, "run.done")
     msgs = harness.chat.calls[-1][0]
-    assert any(m.name == "summary" for m in msgs)
+    assert any(m.name == "summary" and "open: reply to 5" in m.content for m in msgs)
     assert not any("user message number 0" in m.content for m in msgs)
+    assert len(summariser.calls) == 1  # one summary, not one per turn
 
 
 # --- planner ------------------------------------------------------------------------------

@@ -31,6 +31,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
 
@@ -45,7 +46,13 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 MAX_TEXT = 4_000
+#: sessions.today, asked for, may be longer than the overview a call carries on every turn.
+TODAY_MAX_CHARS = 8_000
 READ_MAX = 50
+#: How far back sessions.read looks for the last things said.
+READ_SCAN = 400
+#: User-role messages the core writes for the model itself; never "what was said".
+_CORE_NOTES = frozenset({"context", "ledger", "summary", "plan"})
 #: The kinds a session list offers by name. The rest — a schedule's own chat, a triage batch, a
 #: meeting — are the machine talking to itself; they can still be addressed by id or handle.
 ADDRESSABLE_KINDS = frozenset({ConversationKind.CHAT, ConversationKind.COLLAB})
@@ -96,7 +103,15 @@ class SessionNotFound(LookupError):
 class _ListArgs(BaseModel):
     only_active: bool = Field(default=False, description="Only the chats with a run working or waiting right now")
     include_archived: bool = Field(default=False, description="Include archived chats")
+    today: bool = Field(
+        default=False,
+        description="Every conversation with activity today, scheduled runs' chats included (they are left out otherwise)",
+    )
     limit: int = Field(default=25, ge=1, le=100)
+
+
+class _TodayArgs(BaseModel):
+    pass
 
 
 class _SayArgs(BaseModel):
@@ -187,12 +202,22 @@ class SessionsTools(BuiltinProvider):
         read_only=True,
         idempotent=True,
     )
-    async def _list(self, only_active: bool = False, include_archived: bool = False, limit: int = 25) -> ToolResult:
-        convs = await self._sessions(include_archived=include_archived, all_kinds=only_active)
-        handles = handles_for(convs)
+    async def _list(
+        self, only_active: bool = False, include_archived: bool = False, today: bool = False, limit: int = 25
+    ) -> ToolResult:
+        convs = await self._sessions(include_archived=include_archived or today, all_kinds=only_active or today)
+        # Handles as resolve() makes them: over every kind, archived included - so a handle listed
+        # here is a handle sessions.read and sessions.say find.
+        handles = handles_for(await self._sessions(include_archived=True, all_kinds=True))
         here = current_conversation_id.get()
         rows = [c for c in convs if not only_active or c.activity is not ConversationActivity.IDLE]
+        if today:
+            day = self._core.journal.today()
+            tz = ZoneInfo(self._core.settings.timezone)
+            rows = [c for c in rows if c.updated_at.astimezone(tz).date() == day and c.message_count > 0]
         if not rows:
+            if today:
+                return ToolResult.data("No conversation has had anything happen in it today.")
             return ToolResult.data("No other sessions." if not only_active else "No session is working right now.")
         lines = []
         for conv in rows[:limit]:
@@ -223,8 +248,19 @@ class SessionsTools(BuiltinProvider):
             return ToolResult.failure(str(exc))
         if conv.id == current_conversation_id.get():
             return ToolResult.failure("that is this session; its messages are already in front of you")
-        messages = await self._core.store.list_messages(conv.id, limit=limit)
-        useful = [m for m in messages if m.role.value in {"user", "assistant"} and m.content.strip()]
+        # The last things SAID: a scheduled run's chat ends in dozens of tool calls and the core's
+        # own notes (context, ledger, summary), and counting those among the last ten left a chat
+        # with nothing in it (2026-10-13).
+        messages = await self._core.store.list_messages(conv.id, limit=READ_SCAN)
+        useful = [
+            m
+            for m in messages
+            if m.content.strip()
+            and (
+                (m.role.value == "assistant" and not m.tool_calls)
+                or (m.role.value == "user" and m.name not in _CORE_NOTES)
+            )
+        ][-limit:]
         if not useful:
             return ToolResult.data(f"@{handle_of(conv.title)} ({conv.title}) has nothing said in it yet.")
         lines = [f"@{handle_of(conv.title)} — {conv.title}, last {len(useful)} messages:"]
@@ -232,6 +268,23 @@ class SessionsTools(BuiltinProvider):
             who = "Arsen" if m.role.value == "user" and not m.name else (m.name or "Jarvis")
             lines.append(f"[{m.created_at.strftime('%m-%d %H:%M')}] {who}: {m.content.strip()[:600]}")
         return ToolResult.data("\n".join(lines))
+
+    @tool(
+        "sessions.today",
+        description=(
+            "The day across all of Arsen's other conversations - chats and scheduled tasks alike: where each "
+            "one with activity today stands, those waiting on him first, each with its @handle for "
+            "sessions.read. Use it when he asks what happened today, what else is going on, or what is "
+            "waiting on him."
+        ),
+        args=_TodayArgs,
+        read_only=True,
+        idempotent=True,
+    )
+    async def _today(self) -> ToolResult:
+        here = current_conversation_id.get()
+        text = await self._core.journal.overview(exclude=here, max_chars=TODAY_MAX_CHARS)
+        return ToolResult.data(text or "Nothing has happened in any other conversation today.")
 
     @tool(
         "sessions.say",

@@ -66,6 +66,28 @@ describe('Segmenter', () => {
     expect(types.filter((t) => t === 'speech-end').length).toBeGreaterThanOrEqual(2);
   });
 
+  it('endAt closes at a pause that is still going on, and not at one he has talked past', () => {
+    const seg = new Segmenter();
+    let r = feed(seg, 0.002, 1000, 0);
+    r = feed(seg, 0.2, 1200, r.t);
+    r = feed(seg, 0.002, 320, r.t); // a pause, the release still running
+    const pause = r.events.find((e) => e.type === 'pause');
+    expect(pause).toBeDefined();
+    const at = pause?.at ?? -1;
+    const closed = seg.endAt(at);
+    expect(closed.map((e) => e.type)).toEqual(['speech-end']);
+    expect(closed[0]?.at).toBe(at);
+    // Closed: the rest of the silence reports nothing more.
+    expect(feed(seg, 0.002, 800, r.t).events).toEqual([]);
+
+    // A pause he went on after cannot be closed any more.
+    r = feed(seg, 0.2, 1200, r.t + 800);
+    r = feed(seg, 0.002, 320, r.t);
+    const breath = r.events.find((e) => e.type === 'pause')?.at ?? -1;
+    r = feed(seg, 0.2, 400, r.t);
+    expect(seg.endAt(breath)).toEqual([]);
+  });
+
   it('end() closes what is open', () => {
     const seg = new Segmenter();
     let r = feed(seg, 0.002, 1000, 0);

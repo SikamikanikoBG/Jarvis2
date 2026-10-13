@@ -34,7 +34,7 @@ export function VoiceSection({ value, namespaces, onChange, error }: Props) {
           ))}
         </div>
         <div className="field-hint">
-          On a call he thinks and remembers; he does not act. Notes and knowledge are on by default. Tick mail or the shell only if you want
+          On a call he thinks and remembers; he does not act. Notes, knowledge and your other chats (sessions) are on by default. Tick mail or the shell only if you want
           a misheard word to be able to send something.
         </div>
       </div>
@@ -98,6 +98,20 @@ export function VoiceSection({ value, namespaces, onChange, error }: Props) {
             </select>
           </div>
           <div className="field">
+            <label htmlFor="ov-first">First sentence</label>
+            <select
+              id="ov-first"
+              className="select"
+              value={String(value.omnivoice_first_steps ?? 0)}
+              onChange={(e) => patch({ omnivoice_first_steps: Number(e.target.value) || null })}
+            >
+              <option value="0">Same as the rest</option>
+              <option value="8">Fast (8 steps, ~0.5 s)</option>
+              <option value="12">Quicker (12 steps, ~0.7 s)</option>
+            </select>
+            <div className="field-hint">The first sentence is the one you wait for in silence; the rest are made while it plays.</div>
+          </div>
+          <div className="field">
             <label htmlFor="ov-url">Server</label>
             <input id="ov-url" className="input mono" value={value.omnivoice_url} onChange={(e) => patch({ omnivoice_url: e.target.value })} />
             <div className="field-hint">A voice is a name in its voices/ folder (a clip + its words), or "design:male, low pitch".</div>
@@ -132,6 +146,26 @@ export function VoiceSection({ value, namespaces, onChange, error }: Props) {
           </select>
         </div>
       </div>
+      <div className="think-row">
+        <Switch checked={value.turn_detection} onChange={(v) => patch({ turn_detection: v })} label="Answer as soon as you have finished" />
+        <span className="small">End of turn</span>
+        <span className="field-hint">
+          A small model hears from your voice whether a sentence is finished, and sends it without waiting out the pause. Words you add
+          after it still reach him.
+        </span>
+      </div>
+      {value.turn_detection && (
+        <div className="form-grid">
+          <div className="field">
+            <label htmlFor="voice-turn">How sure it must be</label>
+            <select id="voice-turn" className="select" value={String(value.turn_threshold)} onChange={(e) => patch({ turn_threshold: Number(e.target.value) })}>
+              <option value="0.7">Less sure — answers sooner, cuts in more</option>
+              <option value="0.8">Balanced</option>
+              <option value="0.9">Very sure — waits more often</option>
+            </select>
+          </div>
+        </div>
+      )}
       <div className="think-row">
         <Switch checked={value.think} onChange={(v) => patch({ think: v })} label="Think before answering on a call" />
         <span className="small">Thinking</span>

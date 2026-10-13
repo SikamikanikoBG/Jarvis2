@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { CallSession, type CallState, type Listener, type ListenerHandlers, type Speaker, type Transcriber, type Transport } from './session';
+import {
+  CallSession,
+  type CallState,
+  type Listener,
+  type ListenerHandlers,
+  type Recognised,
+  type Speaker,
+  type Transcriber,
+  type TranscribeOptions,
+  type Transport,
+} from './session';
 import type { Cues } from './tones';
 
 /** A listener the test drives by hand. */
@@ -27,6 +37,13 @@ class FakeListener implements Listener {
   setMuted(m: boolean): void {
     this.muted = m;
   }
+  finished: number[] = [];
+  /** finish() closes the utterance the way the real listener does: onUtterance at that pause. */
+  finish(at: number): boolean {
+    this.finished.push(at);
+    this.h?.onUtterance(new Blob(['tail']), at);
+    return true;
+  }
   say(): void {
     this.h?.onSpeechStart();
     this.h?.onUtterance(new Blob(['x']));
@@ -42,10 +59,12 @@ class FakeListener implements Listener {
 class FakeSpeaker implements Speaker {
   spoken: { text: string; lang: string }[] = [];
   prepared: string[] = [];
+  firsts: string[] = [];
   cancelled = 0;
   private pending: (() => void)[] = [];
-  prepare(text: string): void {
+  prepare(text: string, _lang: string, first?: boolean): void {
     this.prepared.push(text);
+    if (first) this.firsts.push(text);
   }
   available(): boolean {
     return true;
@@ -76,11 +95,18 @@ class FakeTranscriber implements Transcriber {
   /** How long a recognition takes; 0 is the next turn of the loop. */
   delayMs = 0;
   calls = 0;
-  transcribe(_audio: Blob, language: string): Promise<{ text: string; language: string | null }> {
+  /** What the turn model says; null = it cannot say. */
+  turn: number | null = null;
+  opts: (TranscribeOptions | undefined)[] = [];
+  /** Answers by the audio's text, for tests that send pieces. */
+  byAudio: Record<string, string> = {};
+  async transcribe(audio: Blob, language: string, opts?: TranscribeOptions): Promise<Recognised> {
     this.hints.push(language);
+    this.opts.push(opts);
     this.calls += 1;
     if (this.fail) return Promise.reject(new Error('502'));
-    const res = { text: this.next, language: this.language };
+    const key = Object.keys(this.byAudio).length ? await audio.text() : "";
+    const res = { text: this.byAudio[key] ?? this.next, language: this.language, turnComplete: this.turn };
     return this.delayMs ? new Promise((r) => setTimeout(() => r(res), this.delayMs)) : Promise.resolve(res);
   }
 }
@@ -122,7 +148,14 @@ class FakeTransport implements Transport {
 }
 
 function build(
-  over: Partial<{ listener: FakeListener; speaker: FakeSpeaker; transcriber: FakeTranscriber; transport: FakeTransport; joinMs: number }> = {},
+  over: Partial<{
+    listener: FakeListener;
+    speaker: FakeSpeaker;
+    transcriber: FakeTranscriber;
+    transport: FakeTransport;
+    joinMs: number;
+    turnThreshold: number | null;
+  }> = {},
 ) {
   const listener = over.listener ?? new FakeListener();
   const speaker = over.speaker ?? new FakeSpeaker();
@@ -138,6 +171,7 @@ function build(
     language: 'bg',
     languages: ['bg', 'en'],
     joinMs: over.joinMs ?? 0,
+    turnThreshold: over.turnThreshold ?? null,
     conversationId: 'c1',
     cues,
     onChange: (s) => states.push(s),
@@ -593,5 +627,105 @@ describe('CallSession', () => {
     expect(t.speaker.spoken.map((s) => s.text)).toEqual(['Готово.', 'Отчетът е в Drive.']);
     expect(t.session.state.phase).toBe('listening');
     expect(t.transport.created).toEqual([]); // saying the result is not a new turn
+  });
+  it('a pause the turn model is sure about is the end: closed there and sent with no join window', async () => {
+    const t = build({ joinMs: 5000, turnThreshold: 0.8 });
+    await t.session.start();
+    t.transcriber.turn = 0.93;
+    t.transcriber.next = 'благодаря, това е всичко';
+    t.listener.h?.onSpeechStart();
+    t.listener.h?.onPause(new Blob(['x']), 100);
+    await settle();
+    // The listener was told to close at that pause, and the words went at once — not after 5 s.
+    expect(t.listener.finished).toEqual([100]);
+    expect(t.transport.created).toEqual(['благодаря, това е всичко']);
+    expect(t.transcriber.calls).toBe(1); // the pause's recognition was the answer
+    expect(t.transcriber.opts[0]?.turn).toBe(true);
+  });
+
+  it('a pause it is not sure about changes nothing: the release and the join window decide', async () => {
+    const t = build({ joinMs: 30, turnThreshold: 0.8 });
+    await t.session.start();
+    t.transcriber.turn = 0.2;
+    t.listener.h?.onSpeechStart();
+    t.listener.h?.onPause(new Blob(['x']), 100);
+    await settle();
+    expect(t.listener.finished).toEqual([]);
+    expect(t.transport.created).toEqual([]);
+    t.listener.h?.onUtterance(new Blob(['x']), 100);
+    await settle();
+    expect(t.transport.created).toEqual([]); // the join window still runs
+    await new Promise((r) => setTimeout(r, 40));
+    expect(t.transport.created).toHaveLength(1);
+  });
+
+  it('without the turn model (switched off) nothing is asked of it', async () => {
+    const t = build({ turnThreshold: null });
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    expect(t.transcriber.opts[0]?.turn).toBe(false);
+    expect(t.transport.created).toHaveLength(1);
+  });
+
+  it('a long utterance arrives in pieces: each piece is recognised once, the rest after it, all in order', async () => {
+    const t = build();
+    await t.session.start();
+    t.transcriber.byAudio = { p1: 'Добре, и накрая,', p2: 'като свършиш всичко,', tail: 'обади ми се.' };
+    t.listener.h?.onSpeechStart();
+    const seconds = () => new Promise((r) => setTimeout(r, 10)); // pieces are seconds apart
+    t.listener.h?.onPause(new Blob(['p1']), 100);
+    await seconds();
+    // He goes on: the first part is a piece now.
+    expect(t.listener.h?.onPiece?.(100)).toBe(true);
+    await seconds();
+    t.listener.h?.onPause(new Blob(['p2']), 200);
+    await seconds();
+    expect(t.listener.h?.onPiece?.(200)).toBe(true);
+    await seconds();
+    // A pause no recognition was started for cannot become a piece.
+    expect(t.listener.h?.onPiece?.(250)).toBe(false);
+    t.listener.h?.onUtterance(new Blob(['tail']), 300, 4000);
+    await settle();
+    expect(t.transport.created).toEqual(['Добре, и накрая, като свършиш всичко, обади ми се.']);
+    expect(t.transcriber.calls).toBe(3);
+    // Each piece was given the words before it as Whisper's prompt.
+    expect(t.transcriber.opts[1]?.prompt).toBe('Добре, и накрая,');
+    expect(t.transcriber.opts[2]?.prompt).toBe('Добре, и накрая, като свършиш всичко,');
+    expect(t.transcriber.opts[2]?.offsetMs).toBe(4000);
+  });
+
+  it('what Jarvis last said goes to Whisper with what Arsen says next', async () => {
+    const t = build();
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    t.session.onRunQueued('r1', 'c1');
+    t.session.onDelta('r1', 'One thing. Are you waiting on me?');
+    t.session.onStepDone('r1', false);
+    t.session.onRunDone('r1');
+    await tick();
+    t.speaker.finishAll();
+    await tick();
+    t.speaker.finishAll();
+    await tick();
+    t.transcriber.next = 'не съм';
+    t.listener.say();
+    await settle();
+    expect(t.transcriber.opts.at(-1)?.prompt).toBe('One thing. Are you waiting on me?');
+  });
+
+  it('only the first sentence of a reply is asked for as the first', async () => {
+    const t = build();
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    t.session.onRunQueued('r1', 'c1');
+    t.session.onDelta('r1', 'Първо. Второ. Трето. ');
+    t.session.onStepDone('r1', false);
+    t.session.onRunDone('r1');
+    await tick();
+    // Asked for twice (fetched while written, then queued) - the same sentence both times.
+    expect([...new Set(t.speaker.firsts)]).toEqual(['Първо.']);
   });
 });

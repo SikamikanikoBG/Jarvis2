@@ -205,6 +205,10 @@ class Core:
         if run.kind is not RunKind.TRIAGE:
             await self.context.compact_if_due(run.conversation_id)
 
+    async def _catch_up_journal(self) -> None:
+        with contextlib.suppress(Exception):
+            await self.journal.overview()  # looking at the day asks for whatever line is missing
+
     async def home_conversation(self) -> Conversation:
         """The Jarvis conversation: one long line to him that is not about any one task
         (docs/stories/12_assistant.md). Made, pinned and remembered on first use; made again if it
@@ -295,6 +299,8 @@ class Core:
         await self.reaper.start()
         # The end-of-turn model, fetched and loaded now rather than on a call's first pause.
         self.turns.warm()
+        # Today's lines the journal does not have yet (runs before a restart), written in the background.
+        self._journal_catch_up = asyncio.create_task(self._catch_up_journal(), name="journal-catch-up")
         self._mcp_watch = asyncio.create_task(self._watch_mcp(), name="mcp-watch")
         log.info("jarvis-core %s ready (db=%s, tools=%d)", __version__, self.db.path, len(self.registry.specs()))
 

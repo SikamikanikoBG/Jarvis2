@@ -38,6 +38,8 @@ log = logging.getLogger(__name__)
 
 #: Runs that end within this of each other are written up once.
 DEBOUNCE_S = 6.0
+#: At most this many missing digests are caught up per look at the day.
+CATCH_UP_MAX = 40
 #: How long one digest may take before the plain fallback is written instead.
 MODEL_TIMEOUT_S = 90.0
 #: The kinds that are the machine's own plumbing, not something Arsen would call "today".
@@ -86,6 +88,22 @@ class DayJournal:
         self._tasks: set[asyncio.Task[None]] = set()
         # One digest at a time: they are background work on a shared GPU.
         self._sem = asyncio.Semaphore(1)
+        #: (day, conversation id) already asked to catch up, so a missing digest is asked for once.
+        self._caught_up: set[tuple[str, str]] = set()
+
+    def catch_up(self, conversation_ids: list[str]) -> None:
+        """Write the digests today's conversations do not have yet - runs that ended before the
+        journal existed, or before a restart. Asked for once per conversation per day; written
+        one at a time in the background like any other (2026-10-13: the first call after the
+        deploy found the day as titles and half-sentences, and made nothing of it)."""
+        if not self._core.settings.assistant.journal:
+            return
+        day = self.today().isoformat()
+        for cid in conversation_ids[:CATCH_UP_MAX]:
+            if (day, cid) in self._caught_up or cid in self._pending:
+                continue
+            self._caught_up.add((day, cid))
+            self._start(cid)
 
     # --- when a run ends ---------------------------------------------------------------------
 
@@ -253,6 +271,9 @@ class DayJournal:
         ]
         if not today:
             return None
+        # Conversations active today with no line yet: written now, in the background, for the
+        # next look. Until then they are shown by title.
+        self.catch_up([c.id for c in today if c.id not in digests and c.activity.value != "running"])
 
         def line(c: Conversation) -> str:
             d = digests.get(c.id)
@@ -275,7 +296,9 @@ class DayJournal:
         head = (
             f"## Today in {s.user_name}'s other conversations\n"
             "Where each conversation with activity today stands, written by you after its runs - "
-            f"those waiting on {s.user_name} first. These are other chats, not this one: read one with "
+            f"those waiting on {s.user_name} first. When he asks how his day is going, what is new or what "
+            "waits on him, this is what he means: answer from these lines, now. These are other chats, not "
+            "this one: read one with "
             'sessions.read(of="@handle") before going into detail, and refresh the list with sessions.today.'
         )
         lines: list[str] = []

@@ -517,3 +517,20 @@ def test_a_settings_form_saved_with_a_stale_assistant_section_keeps_the_jarvis_c
     assert saved["assistant"]["journal"] is False
     assert saved["assistant"]["home_conversation_id"] == home["id"]
     assert client.post("/api/assistant/home", headers=_h()).json()["id"] == home["id"]
+
+
+async def test_a_look_at_the_day_catches_up_the_lines_it_does_not_have(harness: Harness):
+    """2026-10-13, the first call after the deploy: every chat of the day had run before the
+    journal existed, so the day was titles and half-sentences. Looking at it now asks for them."""
+    core = harness.core
+    olx = await core.store.create_conversation(title="Олх обяви")
+    await _turn(harness, olx.id, "какво стана", "Petar bought the card.")  # journal still off: no line
+    writer = _journal_on(harness)
+    writer.push(FakeTurn(text='{"summary": "Card sold to Petar.", "waiting": "", "quiet": false}'))
+    first = await core.journal.overview()
+    assert first is not None and "Олх обяви" in first  # shown by title meanwhile
+    await core.journal.flush()
+    assert "Card sold to Petar." in (await core.journal.overview() or "")
+    await core.journal.overview()
+    await core.journal.flush()
+    assert len(writer.calls) == 1  # asked once, not on every look

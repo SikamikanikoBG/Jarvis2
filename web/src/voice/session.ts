@@ -211,8 +211,6 @@ export class CallSession {
    *  words of those already back (Whisper's prompt for the next one). */
   private pieces: Promise<Recognised | Error>[] = [];
   private piecesSaid: string[] = [];
-  /** The last sentences he heard Jarvis say: what his next words are most likely an answer to. */
-  private lastSaid: string[] = [];
   /** Words that arrived while the run was being created, steered once its id is known. */
   private steerWhenKnown = '';
   /** The language he is speaking, for the recogniser; the reply's, for the voice. Decided once
@@ -356,8 +354,11 @@ export class CallSession {
   }
 
   private recognise(audio: Blob, offsetMs?: number): Promise<Recognised | Error> {
-    // His words so far, else what Jarvis last said: a short answer is recognised as an answer.
-    const prompt = (this.piecesSaid.length ? this.piecesSaid : this.lastSaid).join(' ');
+    // His own words so far in this utterance, and nothing else. What Jarvis last said was tried
+    // (2026-10-13) and dropped: it is English while he speaks Bulgarian, it fixed nothing measurable,
+    // and recognition was worse that evening - a prompt in another language is a known way to
+    // make Whisper invent words.
+    const prompt = this.piecesSaid.join(' ');
     const opts: TranscribeOptions = { turn: this.o.turnThreshold != null };
     if (prompt) opts.prompt = prompt;
     if (offsetMs) opts.offsetMs = offsetMs;
@@ -599,10 +600,7 @@ export class CallSession {
         this.current = null;
         const problem = this.o.speaker.takeProblem?.();
         if (problem) this.fail(problem);
-        if (!this.cutIn) {
-          this.set({ spokenUpTo: this.state.spokenUpTo + 1 });
-          this.lastSaid = [...this.lastSaid, sentence].slice(-2);
-        }
+        if (!this.cutIn) this.set({ spokenUpTo: this.state.spokenUpTo + 1 });
       }
     } finally {
       this.speaking = null;

@@ -695,7 +695,7 @@ describe('CallSession', () => {
     expect(t.transcriber.opts[2]?.offsetMs).toBe(4000);
   });
 
-  it('what Jarvis last said goes to Whisper with what Arsen says next', async () => {
+  it('what Jarvis last said is not Whisper\'s prompt: a prompt in another language makes it invent words', async () => {
     const t = build();
     await t.session.start();
     t.listener.say();
@@ -712,7 +712,7 @@ describe('CallSession', () => {
     t.transcriber.next = 'не съм';
     t.listener.say();
     await settle();
-    expect(t.transcriber.opts.at(-1)?.prompt).toBe('One thing. Are you waiting on me?');
+    expect(t.transcriber.opts.at(-1)?.prompt).toBeUndefined();
   });
 
   it('only the first sentence of a reply is asked for as the first', async () => {

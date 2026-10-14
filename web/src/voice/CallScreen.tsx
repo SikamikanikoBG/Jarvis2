@@ -7,10 +7,27 @@ import { selectActiveRun } from '../store/selectors';
 import { useStore } from '../store/store';
 import { FINGER_MAX_PX, useAtEar } from './earPose';
 import type { CallPhase, CallState } from './session';
+import { SLIDE_DONE, slide } from './slide';
 import { useWakeLock } from './useWakeLock';
 
 /** How long a hold must last to act. Long enough that a cheek never does it, short enough not to feel stuck. */
 const HOLD_MS = 1200;
+/** Unlocked and left alone this long, the call screen locks itself again: it is about to meet a cheek. */
+const RELOCK_MS = 8000;
+
+/** The screen's rotation (0, 90, 180, 270) while `active`. */
+function useScreenAngle(active: boolean): number {
+  const read = () => (typeof screen !== 'undefined' && screen.orientation ? screen.orientation.angle : 0);
+  const [angle, setAngle] = useState(read);
+  useEffect(() => {
+    if (!active || typeof screen === 'undefined' || !screen.orientation) return;
+    const on = () => setAngle(read());
+    on();
+    screen.orientation.addEventListener('change', on);
+    return () => screen.orientation.removeEventListener('change', on);
+  }, [active]);
+  return angle;
+}
 
 const PHASE_LABEL: Record<CallPhase, string> = {
   idle: '',
@@ -52,6 +69,23 @@ export function CallScreen() {
   const atEar = useAtEar(Boolean(call) && touch);
   const now = useTicker(1000, Boolean(call) && !atEar);
   useWakeLock(Boolean(call));
+  // A phone that turned anyway (the browser would not lock the orientation outside fullscreen):
+  // the call screen turns back, so it never goes sideways against a face.
+  const angle = useScreenAngle(Boolean(call) && touch);
+  const upright: React.CSSProperties | undefined =
+    touch && angle % 180 !== 0
+      ? { width: '100vh', height: '100vw', left: '50%', top: '50%', right: 'auto', bottom: 'auto', transform: `translate(-50%, -50%) rotate(${-angle}deg)` }
+      : undefined;
+
+  // Unlocked on a phone and then left alone: lock again before it meets a cheek.
+  // (Keyed on whether there is a call, not on the call state: that changes with every level reading.)
+  const [touchedAt, setTouchedAt] = useState(0);
+  const inCall = Boolean(call);
+  useEffect(() => {
+    if (!inCall || !touch || locked) return;
+    const t = window.setTimeout(() => setLocked(true), RELOCK_MS);
+    return () => window.clearTimeout(t);
+  }, [inCall, touch, locked, touchedAt]);
 
   // Escape hangs up on a keyboard; on a phone there is no Escape, and that is the point.
   useEffect(() => {
@@ -69,14 +103,21 @@ export function CallScreen() {
   // At the ear: black, and a guard over everything. No controls exist to be pressed.
   if (atEar) {
     return (
-      <div className={`call call-locked call-dark call-${call.phase}`} role="dialog" aria-label="Call with Jarvis" aria-modal="true">
+      <div className={`call call-locked call-dark call-${call.phase}`} style={upright} role="dialog" aria-label="Call with Jarvis" aria-modal="true">
         <div className="call-guard" aria-hidden="true" />
       </div>
     );
   }
 
   return (
-    <div className={`call${locked ? ' call-locked' : ''} call-${call.phase}`} role="dialog" aria-label="Call with Jarvis" aria-modal="true">
+    <div
+      className={`call${locked ? ' call-locked' : ''} call-${call.phase}`}
+      style={upright}
+      role="dialog"
+      aria-label="Call with Jarvis"
+      aria-modal="true"
+      onPointerDown={() => setTouchedAt(Date.now())}
+    >
       <div className="call-head">
         <span className="call-title">{conv?.title ?? 'Jarvis'}</span>
         <span className="call-elapsed mono">{elapsed}</span>
@@ -97,14 +138,10 @@ export function CallScreen() {
       )}
 
       {locked ? (
-        <div className="call-controls">
-          <HoldButton label="Hold to unlock" icon="chevronDown" onHeld={() => setLocked(false)} />
-          <HoldButton
-            label={call.route === 'speaker' ? 'Hold for earpiece' : 'Hold for speaker'}
-            icon={call.route === 'speaker' ? 'headphones' : 'speaker'}
-            onHeld={() => setRoute(call.route === 'speaker' ? 'earpiece' : 'speaker')}
-          />
-          <HoldButton label="Hold to hang up" icon="phoneOff" danger onHeld={endCall} />
+        // Locked: two slides and nothing else - a face can press, it cannot slide a thumb across.
+        <div className="call-slides">
+          <SlideControl label="Slide to unlock" icon="chevronDown" onDone={() => setLocked(false)} />
+          <SlideControl label="Slide to hang up" icon="phoneOff" danger onDone={endCall} />
         </div>
       ) : (
         <div className="call-controls">
@@ -154,6 +191,66 @@ export function CallScreen() {
       )}
       {/* The guard: under the controls, over everything else. Every touch on it goes nowhere. */}
       {locked && <div className="call-guard" aria-hidden="true" onTouchMove={(e) => e.preventDefault()} />}
+    </div>
+  );
+}
+
+/**
+ * A track with a thumb: dragged sideways across most of it, it acts; anything else - a press,
+ * a resting cheek, a contact that drifts, a second contact - does nothing (slide.ts).
+ */
+function SlideControl({ label, icon, danger, onDone }: { label: string; icon: 'chevronDown' | 'phoneOff'; danger?: boolean; onDone: () => void }) {
+  const track = useRef<HTMLDivElement | null>(null);
+  const start = useRef<{ x: number; y: number; id: number } | null>(null);
+  const [progress, setProgress] = useState(0);
+  const reset = () => {
+    start.current = null;
+    setProgress(0);
+  };
+  const travel = () => {
+    const el = track.current;
+    return el ? el.clientWidth - 56 : 0; // the thumb's own width does not travel
+  };
+  // A second contact anywhere while sliding is a face, not a thumb.
+  useEffect(() => {
+    const onAnother = (e: globalThis.PointerEvent) => {
+      const id = start.current?.id;
+      if (id !== undefined && e.pointerId !== id) reset();
+    };
+    window.addEventListener('pointerdown', onAnother, true);
+    return () => window.removeEventListener('pointerdown', onAnother, true);
+  }, []);
+  return (
+    <div ref={track} className={`call-slide${danger ? ' call-slide-danger' : ''}`} style={{ '--slide': progress } as React.CSSProperties}>
+      <span className="call-slide-label" aria-hidden="true">
+        {label}
+      </span>
+      <button
+        type="button"
+        className="call-slide-thumb"
+        aria-label={label}
+        onPointerDown={(e) => {
+          if (!e.isPrimary) return;
+          e.currentTarget.setPointerCapture(e.pointerId);
+          start.current = { x: e.clientX, y: e.clientY, id: e.pointerId };
+        }}
+        onPointerMove={(e) => {
+          const s = start.current;
+          if (s?.id !== e.pointerId) return;
+          const state = slide(s, { x: e.clientX, y: e.clientY }, travel());
+          if (state.aborted) reset();
+          else setProgress(state.progress);
+        }}
+        onPointerUp={() => {
+          const done = progress >= SLIDE_DONE;
+          reset();
+          if (done) onDone();
+        }}
+        onPointerCancel={reset}
+        onContextMenu={(e) => e.preventDefault()}
+      >
+        <Icon name={icon} size={20} />
+      </button>
     </div>
   );
 }

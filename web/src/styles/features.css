@@ -1768,3 +1768,55 @@
 .att-download:hover {
   background: var(--bg-elevated);
 }
+
+/* The locked call screen: slides, not presses (voice/slide.ts). */
+.call-slides {
+  margin-top: auto;
+  position: relative;
+  z-index: 2; /* over the guard, like the controls */
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(320px, 86vw);
+  margin: 0 auto;
+}
+.call-slide {
+  position: relative;
+  height: 56px;
+  border-radius: 28px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  touch-action: none;
+  user-select: none;
+}
+.call-slide-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-left: 40px;
+  color: var(--fg-dim);
+  font-size: var(--fs-sm);
+  opacity: calc(1 - var(--slide, 0));
+  pointer-events: none;
+}
+.call-slide-thumb {
+  position: absolute;
+  top: 3px;
+  left: calc(3px + var(--slide, 0) * (100% - 56px));
+  width: 48px;
+  height: 48px;
+  border: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--fg);
+  color: var(--bg);
+  touch-action: none;
+}
+.call-slide-danger .call-slide-thumb {
+  background: var(--danger, #e5484d);
+  color: #fff;
+}

@@ -31,6 +31,18 @@ export function MessageAttachments({ attachments }: { attachments: Attachment[] 
             <img src={api.attachments.url(a.id, { thumb: true })} alt={a.name} loading="lazy" />
             {a.kind === 'video' && <Icon name="play" size={18} className="att-play" />}
           </button>
+        ) : a.meta.outgoing ? (
+          // A file from Jarvis: what he came for, so both ways to get it are right there.
+          <span key={a.id} className="att-chip att-file" title={a.name}>
+            <Icon name={ICON[a.kind]} size={13} />
+            <a className="truncate" href={api.attachments.url(a.id)} target="_blank" rel="noopener noreferrer">
+              {a.name}
+            </a>
+            <span className="xs muted">{sizeLabel(a.bytes)}</span>
+            <a className="att-download" href={api.attachments.url(a.id, { download: true })} download={a.name} aria-label={`Download ${a.name}`} title="Download">
+              <Icon name="download" size={14} />
+            </a>
+          </span>
         ) : (
           <a key={a.id} className="att-chip" href={api.attachments.url(a.id)} target="_blank" rel="noopener noreferrer" title={a.name}>
             <Icon name={ICON[a.kind]} size={13} />

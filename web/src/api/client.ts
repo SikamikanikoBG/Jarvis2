@@ -298,10 +298,11 @@ export const api = {
       request<Attachment>('POST', '/api/attachments/text', { text, name, conversation_id: conversationId, incognito }),
     remove: (id: string) => request<null>('DELETE', `/api/attachments/${encodeURIComponent(id)}`),
     /** Direct URL for an <img> or a download; the token rides in the query like the SPA's own. */
-    url: (id: string, opts: { thumb?: boolean } = {}) => {
+    url: (id: string, opts: { thumb?: boolean; download?: boolean } = {}) => {
       const token = getToken();
       const params = new URLSearchParams();
       if (opts.thumb) params.set('thumb', '1');
+      if (opts.download) params.set('download', '1');
       if (token) params.set('token', token);
       const query = params.toString();
       return `/api/attachments/${encodeURIComponent(id)}${query ? `?${query}` : ''}`;

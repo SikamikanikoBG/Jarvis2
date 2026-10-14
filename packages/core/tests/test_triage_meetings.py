@@ -588,25 +588,23 @@ async def test_a_conversation_is_judged_as_a_whole_and_its_inbox_mails_move_toge
     assert "conversation" not in lone  # a mail without a thread is judged alone
 
 
-async def test_vip_alerts_are_structural_and_push_once_per_pass(harness: Harness):
+async def test_vip_alerts_are_structural_and_push_once_per_pass(harness: Harness, monkeypatch: Any):
     """Ported from V1's alerts_config.json: a named sender (or a subject keyword) buzzes Arsen's
-    phone the moment it arrives, whatever the classifier thinks of the mail."""
+    phone the moment it arrives, whatever the classifier thinks of the mail. Since 2026-10-14 by
+    web push (Discord only when no device takes it): a tap opens the Mail desk."""
     from jarvis_proto import TriageAlert
 
     core = harness.core
     host = await _with_host(harness)
     pushed: list[str] = []
+    payloads: list[dict[str, Any]] = []
 
-    class FakeNotify(BuiltinProvider):
-        name = "notify"
+    async def reach(*, title: str, body: str, link: str, payload: dict[str, Any]) -> str | None:
+        pushed.append(f"{title}\n{body}")
+        payloads.append(payload)
+        return "push"
 
-        @tool("notify.discord", description="push", args=_NotifyArgs)
-        async def _discord(self, text: str) -> ToolResult:
-            pushed.append(text)
-            return ToolResult.data("sent")
-
-    core.registry.add(FakeNotify())
-    await core.registry.refresh()
+    monkeypatch.setattr(core.notify, "reach", reach)
     harness.enable(
         triage=TriageSettings(
             host="laptop",
@@ -631,7 +629,8 @@ async def test_vip_alerts_are_structural_and_push_once_per_pass(harness: Harness
     ]
     # One push for the pass, listing both, with where each was filed.
     assert len(pushed) == 1
-    assert "2 mail(s)" in pushed[0] and "[Petya Dimitrova] Rumen Petrov" in pushed[0] and "[Invoices]" in pushed[0]
+    assert "2 mails" in pushed[0] and "[Petya Dimitrova] Rumen Petrov" in pushed[0] and "[Invoices]" in pushed[0]
+    assert payloads[0] == {"type": "notice", "tag": "jarvis-mail", "path": "/mail"}
     # The day's triage message marks them too.
     convs = [c for c in await core.store.list_conversations() if c.kind.value == "triage"]
     text = (await core.store.list_messages(convs[0].id))[-1].content

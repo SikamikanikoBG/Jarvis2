@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 MAX_READ_BYTES = 256_000
+#: The most fs_fetch hands over in one piece: what the core attaches to a chat (its own limit).
+MAX_FETCH_BYTES = 25 * 1024 * 1024
 MAX_LIST_ENTRIES = 2_000
 MAX_SEARCH_RESULTS = 500
 
@@ -105,6 +107,27 @@ class Files:
             "returned": len(data),
             "truncated": int(offset) + len(data) < size,
             "text": text,
+        }
+
+    def fetch(self, path: str) -> dict[str, Any]:
+        """A whole file as bytes (base64), binary or not - for the core to attach to a chat."""
+        import base64
+        import mimetypes
+
+        target = self.resolve(path)
+        if not target.is_file():
+            raise FsError(f"{target} is not a file")
+        size = target.stat().st_size
+        if size > MAX_FETCH_BYTES:
+            raise FsError(
+                f"{target} is {size // 1_048_576} MB; at most {MAX_FETCH_BYTES // 1_048_576} MB can be attached"
+            )
+        return {
+            "path": str(target),
+            "name": target.name,
+            "size": size,
+            "mime": mimetypes.guess_type(target.name)[0] or "application/octet-stream",
+            "base64": base64.b64encode(target.read_bytes()).decode("ascii"),
         }
 
     def write(self, path: str, text: str, append: bool = False) -> dict[str, Any]:

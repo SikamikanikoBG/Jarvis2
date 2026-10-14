@@ -63,12 +63,19 @@ async def upload_text(request: Request, body: TextAttachment) -> Attachment:
 
 
 @router.get("/attachments/{attachment_id}")
-async def download(request: Request, attachment_id: str, thumb: bool = False) -> Response:
+async def download(request: Request, attachment_id: str, thumb: bool = False, download: bool = False) -> Response:
+    """The file. ``download=1`` asks the browser to save it rather than show it. A page or a
+    drawing (HTML, SVG) is shown sandboxed: no script in it runs, and it is not this app's origin,
+    so a file Jarvis brought back from the web cannot reach the app or its token."""
     core = core_of(request)
     stored = await core.attachments.get(attachment_id)
     if stored is None:
         raise HTTPException(404, "attachment not found")
     caching = _NO_STORE if stored.private else _A_DAY
+    if stored.attachment.mime in _ACTIVE_MIME:
+        caching = {**caching, "Content-Security-Policy": "sandbox", "X-Content-Type-Options": "nosniff"}
+    if download:
+        caching = {**caching, "Content-Disposition": _attachment(stored.attachment.name)}
     if thumb:
         made = await core.attachments.thumbnail(attachment_id)
         if made is not None:
@@ -82,7 +89,7 @@ async def download(request: Request, attachment_id: str, thumb: bool = False) ->
             return Response(
                 content=data,
                 media_type=mime,
-                headers={**caching, "Content-Disposition": _inline(stored.attachment.name)},
+                headers={"Content-Disposition": _inline(stored.attachment.name), **caching},
             )
     if stored.path is None or not stored.path.exists():
         if stored.attachment.text is not None:
@@ -92,8 +99,19 @@ async def download(request: Request, attachment_id: str, thumb: bool = False) ->
         stored.path,
         media_type=stored.attachment.mime,
         filename=stored.attachment.name,
-        headers=caching,
+        content_disposition_type="attachment" if download else "inline",
+        headers={k: v for k, v in caching.items() if k != "Content-Disposition"},
     )
+
+
+#: Types a browser would run as a page of this origin: shown sandboxed (see download()).
+_ACTIVE_MIME = frozenset({"text/html", "application/xhtml+xml", "image/svg+xml", "text/xml", "application/xml"})
+
+
+def _attachment(name: str) -> str:
+    from urllib.parse import quote
+
+    return f"attachment; filename*=UTF-8''{quote(name)}"
 
 
 def _inline(name: str) -> str:

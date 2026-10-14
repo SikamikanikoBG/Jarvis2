@@ -11,6 +11,12 @@ The chat has a single "+" and a single pipeline (docs/stories/09_attachments.md)
 
 Files live under ``JARVIS_HOME/attachments/<id>`` and die with their conversation.
 
+**Files from Jarvis** go the other way (``files.attach``): a report, a digest, a PDF from a host,
+attached to his reply so Arsen downloads it from the chat on his phone - what Discord was used
+for. They are stored as they are (any type, nothing extracted), marked ``meta.outgoing``, held
+for the run until its reply is written and then bound to that reply. The model is told only
+that it attached them, never fed their contents back.
+
 **Incognito is the exception, and it is absolute**: an attachment of an incognito chat never
 touches the disk. Its bytes, the text read out of it (a transcript, a document's words) and its
 thumbnail are held in this process's memory only; the SQLite row keeps the name, the kind and
@@ -114,6 +120,8 @@ class AttachmentStore:
         self.core = core
         # Incognito attachments, by id. This dict IS their storage: no file, no text column.
         self._held: dict[str, _Held] = {}
+        # Files a run attached and its reply does not carry yet: run id -> attachment ids.
+        self._outgoing: dict[str, list[str]] = {}
 
     @property
     def root(self) -> Path:
@@ -192,6 +200,36 @@ class AttachmentStore:
         path.write_bytes(data)
         await self._insert(att, conversation_id=conversation_id, path=path)
         return att
+
+    async def add_outgoing(
+        self, *, data: bytes, filename: str, mime: str | None, conversation_id: str, run_id: str
+    ) -> Attachment:
+        """A file Jarvis attaches to the reply he is writing in this run. Any type, stored as is."""
+        if not data:
+            raise AttachmentError("the file is empty")
+        if len(data) > MAX_BYTES:
+            raise AttachmentError(
+                f"{filename} is {len(data) // 1_048_576} MB; the limit is {MAX_BYTES // 1_048_576} MB"
+            )
+        name = Path(filename or "file").name or "file"
+        mime = (mime or mimetypes.guess_type(name)[0] or "application/octet-stream").split(";")[0].strip()
+        kind = (
+            AttachmentKind.IMAGE if mime.startswith("image/") and mime != "image/svg+xml" else AttachmentKind.DOCUMENT
+        )
+        att = Attachment(id=new_id("att"), kind=kind, name=name, mime=mime, bytes=len(data), meta={"outgoing": True})
+        if await self._conversation_is_private(conversation_id):
+            self._held[att.id] = _Held(data=data, text=None)
+            await self._insert(att, conversation_id=conversation_id, path=None, private=True)
+        else:
+            path = self.root / f"{att.id}{Path(name).suffix.lower() or _suffix_for(name, mime)}"
+            path.write_bytes(data)
+            await self._insert(att, conversation_id=conversation_id, path=path)
+        self._outgoing.setdefault(run_id, []).append(att.id)
+        return att
+
+    def take_outgoing(self, run_id: str) -> list[str]:
+        """The files this run attached that no reply carries yet - and they are taken."""
+        return self._outgoing.pop(run_id, [])
 
     async def _transcribe_video(self, data: bytes, meta: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
         """The clip's audio through the same Whisper the microphone uses, as the attachment's

@@ -29,6 +29,8 @@ export function MessageItem({ message }: { message: LocalMessage }) {
       {message.reasoning && <ReasoningFold text={message.reasoning} />}
       {message.channel === 'voice' && <SpokenMark />}
       <Markdown text={message.content} />
+      {/* Files Jarvis attached to this reply (files.attach): open or download on the phone. */}
+      <MessageAttachments attachments={message.attachments ?? []} />
       {message.partial && (
         <div className="msg-meta">
           <span className="partial-mark">

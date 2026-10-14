@@ -1744,3 +1744,27 @@
   height: 100%;
   background: #1e1e2e;
 }
+
+/* A file Jarvis attached to his reply (files.attach): its name opens it, the arrow saves it. */
+.att-file {
+  max-width: 100%;
+  padding: 6px 6px 6px 10px;
+  border-color: var(--accent);
+}
+.att-file a.truncate {
+  color: inherit;
+  text-decoration: none;
+  min-width: 0;
+}
+.att-download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-pill);
+  color: var(--accent);
+}
+.att-download:hover {
+  background: var(--bg-elevated);
+}

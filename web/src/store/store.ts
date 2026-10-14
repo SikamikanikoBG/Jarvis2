@@ -342,6 +342,13 @@ export const useStore = create<AppState>()((set, get) => ({
     // was already open, the service worker says so.
     if (ring) get().receiveRing(ring);
     navigator.serviceWorker?.addEventListener('message', (e: MessageEvent<{ type?: string; path?: string; say?: string; answered?: boolean }>) => {
+      // A notice was tapped (an important mail, the triage audit) while the app was open: go there.
+      if (e.data?.type === 'jarvis.navigate' && e.data.path) {
+        const target = parseLocation(new URL(e.data.path, window.location.origin).pathname);
+        if (target.conversationId) void get().openConversation(target.conversationId);
+        else get().setView(target.view);
+        return;
+      }
       if (e.data?.type !== 'jarvis.ring' || !e.data.path) return;
       const url = new URL(e.data.path, window.location.origin);
       if (e.data.say) url.searchParams.set('say', e.data.say);

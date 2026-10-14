@@ -492,6 +492,13 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
         """Text of a file under the allowed roots (UTF-8, up to 256 kB per call; use `offset` to continue when `truncated`). Binary files are refused."""
         return json_text(await _run("fs_read", lambda: asyncio.to_thread(deps.files.read, path, max_bytes, offset)))
 
+    # Called by the core (jarvis.attach), never offered to the model: a whole file as base64 would
+    # be megabytes of noise in its context. "jarvis/internal" is how the core knows.
+    @mcp.tool(name="fs_fetch", annotations=READ, meta={"jarvis/internal": True}, structured_output=False)
+    async def fs_fetch(path: str) -> str:
+        """The whole file at `path` (under the allowed roots) as base64, with its name, size and type - up to 25 MB, binary or text. For the core to attach it to a chat."""
+        return json_text(await _run("fs_fetch", lambda: asyncio.to_thread(deps.files.fetch, path)))
+
     @tool("fs_write", DESTRUCTIVE)
     async def fs_write(path: str, text: str, append: bool = False) -> str:
         """Write (or append) UTF-8 text to a file under the allowed roots, creating parent directories."""

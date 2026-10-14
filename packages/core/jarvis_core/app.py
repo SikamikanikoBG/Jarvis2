@@ -43,6 +43,7 @@ from jarvis_core.features.callme import CallMe
 from jarvis_core.features.collab import CollabAuthMiddleware, CollabKeys, build_mcp_server
 from jarvis_core.features.compaction import Compactor
 from jarvis_core.features.expiry import Reaper, delete_conversation
+from jarvis_core.features.files import FilesTools
 from jarvis_core.features.journal import DayJournal, TodayBlock
 from jarvis_core.features.knowledge import KnowledgeLearner, KnowledgeStore, KnowledgeTools
 from jarvis_core.features.mail import MailTools
@@ -365,6 +366,7 @@ class Core:
                 NotesTools(self.boards),
                 KnowledgeTools(self.knowledge),
                 ResultsTools(self.store),
+                FilesTools(self),
                 SkillsTools(self.skills),
                 ScheduleTools(self.schedules, tz=lambda: self.settings.timezone),
                 self.sessions,

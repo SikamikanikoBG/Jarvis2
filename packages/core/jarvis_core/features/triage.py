@@ -451,19 +451,27 @@ class TriageJob:
         )
 
     async def _push_alerts(self, report: TriageReport) -> None:
-        """One push per pass, not per mail: a VIP thread of five replies is one buzz."""
-        head = f"🔔 {len(report.alerts)} mail(s) you asked to be told about:"
-        body = "\n".join(f"• [{a['alert']}] {a['sender']} — {a['subject']}" for a in report.alerts[:15])
+        """One notification per pass, not per mail: a VIP thread of five replies is one buzz.
+
+        To the phone first (web push; a tap opens the Mail desk), Discord only when no device
+        takes it - the same channel a ring uses (features/notify.reach). Until 2026-10-14 these
+        went to Discord only."""
+        alerts = report.alerts
+        title = (
+            f"🔔 {alerts[0]['sender']}: {alerts[0]['subject']}"
+            if len(alerts) == 1
+            else f"🔔 {len(alerts)} mails you asked to be told about"
+        )
+        body = "\n".join(f"• [{a['alert']}] {a['sender']} — {a['subject']}" for a in alerts[:15])
         try:
-            res = await self.core.registry.call(
-                "notify.discord",
-                {"text": f"{head}\n{body}"},
-                cancel=asyncio.Event(),
-                idempotency_key=f"triage:alert:{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}",
-                timeout_s=30,
+            carrier = await self.core.notify.reach(
+                title=title[:120],
+                body=body,
+                link=self.core.notify.link("/mail"),
+                payload={"type": "notice", "tag": "jarvis-mail", "path": "/mail"},
             )
-            if res.kind.value == "error":
-                report.errors.append(f"alert not delivered: {res.text[:120]}")
+            if carrier is None:
+                report.errors.append("alert not delivered: no device took the push and Discord did not either")
         except Exception as exc:
             report.errors.append(f"alert not delivered: {exc}")
 

@@ -167,6 +167,7 @@ class McpProvider:
                     destructive=destructive,
                     idempotent=idempotent,
                     provider=self.name,
+                    internal=bool((tool.meta or {}).get("jarvis/internal")),
                 )
             )
         self.tool_count = len(specs)

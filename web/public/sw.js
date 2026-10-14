@@ -2,7 +2,7 @@
    It also takes Jarvis's rings (docs/stories/11_call_me.md): a web push from the core becomes a
    notification, and tapping it opens the app on the incoming call. Declining marks the chat read
    (its one /api call). */
-const SHELL = 'jarvis-shell-v7'; // v7: a meeting recorded on the phone stops from its notification
+const SHELL = 'jarvis-shell-v8'; // v8: notices (important mail, the triage audit) as push
 const SHELL_URLS = ['/', '/index.html', '/manifest.webmanifest', '/icons/icon.svg'];
 // The access token the app hands over (main.tsx), kept apart from the shell so a new shell keeps it.
 const AUTH = 'jarvis-auth';
@@ -53,6 +53,20 @@ self.addEventListener('push', (event) => {
   } catch {
     ring = null;
   }
+  if (ring && ring.type === 'notice') {
+    // Something to know, not a call: an important mail, the triage audit. A tap opens where it points.
+    event.waitUntil(
+      self.registration.showNotification(ring.title || 'Jarvis', {
+        body: ring.body || '',
+        tag: ring.tag || 'jarvis-notice',
+        renotify: true,
+        icon: '/icons/icon-192.png',
+        badge: '/icons/icon-192.png',
+        data: { type: 'notice', path: ring.path || '/' },
+      }),
+    );
+    return;
+  }
   if (!ring || ring.type !== 'call') return;
   event.waitUntil(
     self.registration.showNotification(ring.title || 'Jarvis', {
@@ -99,6 +113,20 @@ self.addEventListener('notificationclick', (event) => {
   const ring = event.notification.data || {};
   if (ring.type === 'meeting') {
     event.waitUntil(meetingClick(event, ring));
+    return;
+  }
+  if (ring.type === 'notice') {
+    event.notification.close();
+    event.waitUntil(
+      self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windows) => {
+        const open = windows.find((w) => new URL(w.url).origin === self.location.origin);
+        if (open) {
+          open.postMessage({ type: 'jarvis.navigate', path: ring.path || '/' });
+          return open.focus();
+        }
+        return self.clients.openWindow(ring.path || '/');
+      }),
+    );
     return;
   }
   event.notification.close();

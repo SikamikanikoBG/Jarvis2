@@ -22,6 +22,9 @@ class ToolSpec(BaseModel):
     destructive: bool = False
     idempotent: bool = False
     provider: str = "builtin"
+    # Called by the core itself (e.g. a host's fs_fetch behind jarvis.attach) and never offered to
+    # the model. An MCP server says so with ``_meta: {"jarvis/internal": true}`` on the tool.
+    internal: bool = False
 
     @property
     def namespace(self) -> str:

@@ -305,14 +305,15 @@ class TriageAudit:
             agree = f"{a['agreement']:.0%}" if a["agreement"] is not None else "n/a"
             warn = f", ⚠ {len(a['violations'])} violations" if a["violations"] else ""
             parts.append(f"{account.split('@')[0]}: {a['decisions']} mails, judge {agree}{warn}")
-        text = "🧾 Triage audit — " + ("; ".join(parts) if parts else "no live decisions in the last day")
+        text = "; ".join(parts) if parts else "no live decisions in the last day"
+        path = f"/c/{conv.id}"
         try:
-            await self.core.registry.call(
-                "notify.discord",
-                {"text": text},
-                cancel=asyncio.Event(),
-                idempotency_key=f"triage:audit:{day}",
-                timeout_s=30,
+            # The phone first; Discord only when no device takes it (features/notify.reach).
+            await self.core.notify.reach(
+                title="🧾 Triage audit",
+                body=text,
+                link=self.core.notify.link(path),
+                payload={"type": "notice", "tag": "jarvis-triage-audit", "path": path},
             )
         except Exception as exc:
             log.warning("triage audit push not delivered: %s", exc)

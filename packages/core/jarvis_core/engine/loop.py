@@ -192,7 +192,7 @@ class AgentLoop:
         s = self._settings()
         self._policy.mode = s.tool_exposure
         self._policy.threshold = s.facade_threshold
-        specs = self._registry.specs()
+        specs = [t for t in self._registry.specs() if not t.internal]
         if incognito:
             specs = [t for t in specs if not is_memory_writer(t)]
         if voice:
@@ -1125,6 +1125,13 @@ class AgentLoop:
         if run.channel is Channel.VOICE and message.name is None and message.role in (Role.USER, Role.ASSISTANT):
             message.channel = Channel.VOICE
         await self._store.add_message(message)
+        # An answer (an assistant message with no tool calls) carries the files the run attached.
+        if message.role is Role.ASSISTANT and not message.tool_calls and self._attachments is not None and message.id:
+            files = self._attachments.take_outgoing(run.id)
+            if files:
+                message.attachments = await self._attachments.bind(
+                    files, message_id=message.id, conversation_id=run.conversation_id
+                )
         # Conversation-level, so it bypasses the run emitter's seq and is not persisted twice.
         self._bus.publish(MessageCreated(message=message))
         return message

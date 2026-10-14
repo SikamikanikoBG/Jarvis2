@@ -626,7 +626,12 @@ class ContextAssembler:
         shown_ids: set[str] = set()
         for m in reversed(history):
             for att in by_message.get(m.id or "", []):
-                if att.kind in (AttachmentKind.IMAGE, AttachmentKind.VIDEO) and len(shown_ids) < budget:
+                outgoing = bool(att.meta.get("outgoing"))
+                if (
+                    att.kind in (AttachmentKind.IMAGE, AttachmentKind.VIDEO)
+                    and not outgoing
+                    and len(shown_ids) < budget
+                ):
                     shown_ids.add(att.id)
         out: list[Message] = []
         for m in history:
@@ -738,6 +743,9 @@ def _with_attachment_note(message: Message, attachments: list[Attachment], *, sh
     )
     for att in attachments:
         size = f"{att.bytes // 1024} kB" if att.bytes >= 1024 else f"{att.bytes} B"
+        if att.meta.get("outgoing"):
+            parts.append(f"[you attached {att.name} ({size}) to this reply; Arsen downloads it from the chat]")
+            continue
         if att.kind is AttachmentKind.IMAGE:
             note = f"[image attached: {att.name}, {size}"
             if not att.data_url:

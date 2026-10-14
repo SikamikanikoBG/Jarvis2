@@ -112,3 +112,17 @@ def test_edit_guards_binaries_missing_files_and_empty_old(root: Path):
         files.edit(str(root / "docs" / "a.txt"), "", "b")
     with pytest.raises(OutsideRoots):
         files.edit(str(root.parent / "outside.txt"), "a", "b")
+
+
+def test_fetch_hands_over_any_file_whole_for_the_core_to_attach(root: Path):
+    """files.attach (core) takes PDFs and workbooks too: fs_fetch reads bytes, not text."""
+    import base64
+
+    files = Files([root])
+    got = files.fetch(str(root / "bin.dat"))
+    assert base64.b64decode(got["base64"]) == b"\x00\x01\x02binary" and got["size"] == 9 and got["name"] == "bin.dat"
+    assert files.fetch(str(root / "docs" / "b.md"))["mime"] in ("text/markdown", "text/x-markdown")
+    with pytest.raises(FsError):
+        files.fetch(str(root / "docs"))
+    with pytest.raises(OutsideRoots):
+        Files([root / "docs"]).fetch(str(root / "bin.dat"))

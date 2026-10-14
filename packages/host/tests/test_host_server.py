@@ -57,6 +57,7 @@ EXPECTED_ANNOTATIONS = {
     "meeting_stop": ("mutating", False),
     "fs_list": ("read", True),
     "fs_read": ("read", True),
+    "fs_fetch": ("read", True),
     "fs_write": ("destructive", False),
     "fs_edit": ("destructive", False),
     "fs_search": ("read", True),
@@ -278,6 +279,8 @@ async def test_headless_host_drops_desktop_tools_and_says_what_it_is_for(world: 
     tools = {t.name: t for t in await build_mcp(make_deps(cfg, dispatch=world.dispatch), cfg).list_tools()}
     assert not [n for n in tools if n.startswith(DESKTOP_TOOL_PREFIXES)]
     assert {"shell_run", "fs_list", "fs_read", "fs_write", "fs_edit", "fs_search", "host_status"} <= set(tools)
+    # fs_fetch is there for the core and marked so; the core never offers it to the model.
+    assert (tools["fs_fetch"].meta or {}).get("jarvis/internal") is True
     assert (tools["shell_run"].description or "").startswith("Jarvis's own box. Run a ")
     assert (tools["fs_list"].description or "").startswith("Jarvis's own box. Entries of a directory")
 

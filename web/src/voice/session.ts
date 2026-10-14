@@ -291,6 +291,11 @@ export class CallSession {
   setRoute(route: CallRoute): void {
     this.o.listener.setRoute(route);
     this.set({ route });
+    if (this.state.phase === 'thinking') {
+      // Music on the earpiece, the pulse on the speaker: start the waiting sound again for the route.
+      this.o.cues?.thinking(false);
+      this.o.cues?.thinking(true);
+    }
   }
 
   // --- from the listener -------------------------------------------------------------------

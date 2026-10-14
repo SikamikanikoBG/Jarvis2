@@ -522,6 +522,7 @@ export const useStore = create<AppState>()((set, get) => ({
         waiting,
         volume: holdVolume,
         onHold: (on) => listener.setHold(on),
+        musicAllowed: () => session?.state.route !== 'speaker',
       }),
       onChange: (call) => set({ call: { ...call } }),
     });

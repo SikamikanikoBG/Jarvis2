@@ -534,3 +534,44 @@ async def test_a_look_at_the_day_catches_up_the_lines_it_does_not_have(harness: 
     await core.journal.overview()
     await core.journal.flush()
     assert len(writer.calls) == 1  # asked once, not on every look
+
+
+async def test_what_whisper_itself_scores_as_not_speech_is_not_words(tmp_path: Path):
+    """2026-10-14: hold music on the loudspeaker reached the microphone and came back as
+    "Абонирайте се!" - confident words (avg_logprob -0.2) that Whisper itself scored 0.85 as not
+    speech. Real Bulgarian speech scored 0.01-0.36."""
+    import httpx
+
+    from jarvis_core.features.stt import Transcriber
+    from jarvis_proto import Settings
+
+    body = {
+        "text": " Провери пощата. Абонирайте се!",
+        "language": "bg",
+        "segments": [
+            {
+                "start": 0.0,
+                "end": 1.5,
+                "text": " Провери пощата.",
+                "no_speech_prob": 0.16,
+                "avg_logprob": -0.39,
+                "compression_ratio": 0.83,
+            },
+            {
+                "start": 1.5,
+                "end": 4.0,
+                "text": " Абонирайте се!",
+                "no_speech_prob": 0.85,
+                "avg_logprob": -0.21,
+                "compression_ratio": 0.7,
+            },
+        ],
+    }
+    t = Transcriber(lambda: Settings(stt_url="http://whisper:9000", stt_kind="asr"))
+    t._client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=body)))  # pyright: ignore[reportPrivateUsage]
+    res = await t.transcribe(b"RIFF", filename="a.wav", mime="audio/wav", language="bg")
+    assert res.text == "Провери пощата." and [s["text"] for s in res.segments] == [" Провери пощата."]
+    only_music = {**body, "segments": body["segments"][1:]}
+    t._client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=only_music)))  # pyright: ignore[reportPrivateUsage]
+    assert (await t.transcribe(b"RIFF", filename="a.wav", mime="audio/wav")).text == ""
+    await t.aclose()

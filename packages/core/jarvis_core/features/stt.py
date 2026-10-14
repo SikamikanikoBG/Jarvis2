@@ -41,6 +41,15 @@ class SttResult:
     segments: list[dict[str, Any]] = field(default_factory=list)
 
 
+def invented(seg: dict[str, Any], no_speech_max: float) -> bool:
+    """Whisper's usual inventions on music, tones and silence, by its own scores (no word lists):
+    sure it is not speech, very unsure of the words, or the same words over and over."""
+    nsp = float(seg.get("no_speech_prob") or 0.0)
+    lp = float(seg.get("avg_logprob") or 0.0)
+    cr = float(seg.get("compression_ratio") or 1.0)
+    return nsp > no_speech_max or lp < -1.5 or cr > 2.6
+
+
 class Transcriber:
     def __init__(self, settings: Any) -> None:
         self._settings = settings  # Callable[[], Settings]
@@ -100,10 +109,13 @@ class Transcriber:
             raise SttError("STT backend returned non-JSON") from exc
         text = str(body.get("text") or "").strip()
         lang = body.get("language")
-        segments = [
-            {"t0": seg.get("start"), "t1": seg.get("end"), "text": seg.get("text", "")}
-            for seg in body.get("segments", []) or []
-        ]
+        raw = body.get("segments", []) or []
+        kept = [seg for seg in raw if not invented(seg, s.stt_no_speech_max)]
+        if raw and len(kept) < len(raw):
+            # What Whisper itself scores as not speech is not words: drop it, keep the rest.
+            log.info("stt: %d of %d segment(s) dropped as not speech", len(raw) - len(kept), len(raw))
+            text = " ".join(str(seg.get("text") or "").strip() for seg in kept).strip()
+        segments = [{"t0": seg.get("start"), "t1": seg.get("end"), "text": seg.get("text", "")} for seg in kept]
         # The nginx proxy in front of the Whisper backends reports who actually answered.
         chain = [p.strip() for p in (resp.headers.get("X-Whisper-Upstream") or "").split(",") if p.strip()]
         warning = None

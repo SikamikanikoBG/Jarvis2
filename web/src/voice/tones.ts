@@ -71,6 +71,9 @@ export class ToneCues implements Cues {
       volume?: number;
       /** Hold music started or stopped: the listener treats it like Jarvis's voice. */
       onHold?: (on: boolean) => void;
+      /** Whether music may play now. On the loudspeaker nothing subtracts it from the microphone
+       *  and Whisper heard it as "Абонирайте се!" (2026-10-14): the pulse plays instead. */
+      musicAllowed?: () => boolean;
     },
   ) {}
 
@@ -85,7 +88,7 @@ export class ToneCues implements Cues {
     if (!on || waiting === 'silence') return;
     this.thinkStart = setTimeout(() => {
       this.thinkStart = null;
-      if (waiting === 'music' && this.startMusic()) return;
+      if (waiting === 'music' && (this.o.musicAllowed?.() ?? true) && this.startMusic()) return;
       this.play(THINKING);
       this.thinkTimer = setInterval(() => this.play(THINKING), THINKING_EVERY_MS);
     }, THINKING_FIRST_MS);

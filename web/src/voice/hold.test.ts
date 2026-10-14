@@ -149,4 +149,16 @@ describe('ToneCues while he thinks', () => {
     expect(ctx.oscillators).toHaveLength(0);
     cues.close();
   });
+
+  it('on the loudspeaker the pulse plays instead of the music, which the microphone would hear', () => {
+    const ctx = new FakeContext();
+    const hold: boolean[] = [];
+    const cues = new ToneCues({ contextOf: () => asCtx(ctx), waiting: 'music', onHold: (on) => hold.push(on), musicAllowed: () => false, suppress: () => undefined });
+    cues.thinking(true);
+    vi.advanceTimersByTime(1500);
+    expect(hold).toEqual([]);
+    expect(ctx.oscillators).toHaveLength(2); // the soft pair, which shuts the microphone while it sounds
+    cues.close();
+  });
 });
+

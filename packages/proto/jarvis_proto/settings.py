@@ -762,6 +762,10 @@ class Settings(BaseModel):
     stt_kind: Literal["openai", "asr"] = "openai"  # OpenAI-compatible /v1/audio/transcriptions or WhisperX /asr
     stt_model: str = "large-v3"
     stt_languages: list[str] = Field(default_factory=lambda: ["bg", "en"])
+    # Whisper's own "this is not speech" score above which a recognised segment is dropped: music,
+    # a tone or a room comes back as "Абонирайте се!" - confidently (avg_logprob -0.2), but with
+    # no_speech_prob 0.82-0.85, against 0.01-0.36 for real Bulgarian speech (measured 2026-10-14).
+    stt_no_speech_max: float = Field(default=0.6, ge=0.0, le=1.0)
 
     @model_validator(mode="before")
     @classmethod

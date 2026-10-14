@@ -542,6 +542,20 @@ class AgentLoop:
                     for said in late:
                         messages.append(await self._persist(run, Message.user(said, channel=run.channel)))
                         await emit(RunSteered(run_id="", conversation_id="", text=said[:400]))
+                    if run.channel is Channel.VOICE:
+                        # On a call that answer was never read out: he went on talking first, and
+                        # answering the two halves one after the other is what he heard as Jarvis
+                        # "answering each command separately" (2026-10-14).
+                        messages.append(
+                            await self._persist(
+                                run,
+                                Message.user(
+                                    "[supervisor] He went on talking before that answer was read out, so he has "
+                                    "not heard it. Answer everything he has said in one spoken reply.",
+                                    name="supervisor",
+                                ),
+                            )
+                        )
                     think_next = True
                     continue
                 await self._done(run, ctl, message_id=assistant.id)

@@ -728,4 +728,64 @@ describe('CallSession', () => {
     // Asked for twice (fetched while written, then queued) - the same sentence both times.
     expect([...new Set(t.speaker.firsts)]).toEqual(['Първо.']);
   });
+
+  it('talking on while the answer is written: that answer is not read out, the one with all of it is', async () => {
+    const t = build();
+    await t.session.start();
+    t.transcriber.next = 'провери пощата';
+    t.listener.say();
+    await settle();
+    t.session.onRunQueued('r1', 'c1');
+    t.session.onDelta('r1', 'Пощата: три нови писма. ');
+    // He goes on before that step is over.
+    t.transcriber.next = 'и ми кажи времето';
+    t.listener.say();
+    await settle();
+    expect(t.transport.steered.map((s) => s.text)).toEqual(['и ми кажи времето']);
+    t.session.onStepDone('r1', false); // the answer to the first half only
+    await tick();
+    expect(t.speaker.spoken).toEqual([]);
+    // The core goes on with his words and answers both at once: that is what he hears.
+    t.session.onDelta('r1', 'Три нови писма, и е слънчево, 18 градуса.');
+    t.session.onStepDone('r1', false);
+    t.session.onRunDone('r1');
+    await tick();
+    t.speaker.finishAll();
+    await tick();
+    expect(t.speaker.spoken.map((x) => x.text).join(' ')).toBe('Три нови писма, и е слънчево, 18 градуса.');
+  });
+
+  it('if the core finished instead (his words came too late), the held answer is said after all', async () => {
+    const t = build();
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    t.session.onRunQueued('r1', 'c1');
+    t.session.onDelta('r1', 'Пощата: три нови писма. ');
+    t.transcriber.next = 'и времето';
+    t.listener.say();
+    await settle();
+    t.session.onStepDone('r1', false);
+    t.session.onRunDone('r1'); // no second step: the steer becomes a run of its own
+    await tick();
+    expect(t.speaker.spoken.map((x) => x.text)).toEqual(['Пощата: три нови писма.']);
+  });
+
+  it('words added while the run is calling tools are simply part of the next step', async () => {
+    const t = build();
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    t.session.onRunQueued('r1', 'c1');
+    t.transcriber.next = 'и времето';
+    t.listener.say();
+    await settle();
+    t.session.onStepDone('r1', true); // a tool step: his words reach the next one
+    t.session.onDelta('r1', 'Три писма и слънце.');
+    t.session.onStepDone('r1', false);
+    t.session.onRunDone('r1');
+    await tick();
+    expect(t.speaker.spoken.map((x) => x.text)).toEqual(['Три писма и слънце.']);
+  });
 });
+

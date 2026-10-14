@@ -284,3 +284,25 @@ def test_tts_synthesises_caches_and_says_when_it_cannot(client: TestClient, monk
     r = client.post("/api/tts", json={"text": "Нещо ново.", "lang": "bg"}, headers=_h())
     assert r.status_code == 502 and "voice service" in r.json()["detail"]
     assert client.post("/api/tts", json={"text": "   ", "lang": "bg"}, headers=_h()).status_code == 502
+
+
+async def test_words_added_while_a_call_answer_is_written_get_one_reply_for_both(harness: Harness):
+    """2026-10-14: talking fast on a call, each sentence was answered on its own. A steer that
+    lands while the answer is still being written runs one more step, and on a call the model is
+    told he never heard the first answer - so the reply covers everything he said."""
+    core = harness.core
+    harness.chat.push(
+        FakeTurn(text="Пощата: три нови писма, нищо спешно днес.", token_delay_s=0.05),
+        FakeTurn(text="Три нови писма, и е слънчево."),
+    )
+    conv = await core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    run, _ = await core.engine.create_run(text="провери пощата", conversation_id=conv.id, channel=Channel.VOICE)
+    await harness.wait_for(sub, "model.delta")
+    assert core.engine.steer(run.id, "и ми кажи времето")
+    await harness.wait_for(sub, "run.done", timeout=10)
+    second = harness.chat.calls[1][0]
+    said = [m.content for m in second if m.role.value == "user" and not m.name]
+    notes = [m.content for m in second if m.name == "supervisor"]
+    assert said[-1] == "и ми кажи времето"
+    assert notes and "has not heard it" in notes[-1]

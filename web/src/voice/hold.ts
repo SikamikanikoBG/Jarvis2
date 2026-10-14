@@ -100,8 +100,11 @@ export class HoldMusic {
     setTimeout(() => master.disconnect(), (FADE_OUT_S + AHEAD_S + 2) * 1000);
   }
 
+  /** Master gain. At the ear the music goes to the earpiece, which is far quieter than the
+   *  loudspeaker: at 0.16 x volume it was ~13 dB under his voice and vanished there (2026-10-14).
+   *  0.5 x volume puts the default ~5 dB under the voice. */
   private level(): number {
-    return Math.max(0.0001, 0.16 * Math.min(1, Math.max(0, this.o.volume)));
+    return Math.max(0.0001, 0.5 * Math.min(1, Math.max(0, this.o.volume)));
   }
 
   /** Put every bar that starts within the look-ahead on the clock. */

@@ -21,9 +21,9 @@
  *
  * - earpiece: the microphone is held throughout, and an `EchoGate` learns how loud he is in it
  *   so that only a voice clearly over his counts — a cut-in, not his own sentence;
- * - speaker: the microphone is released while he speaks and taken back when he stops. Nothing
- *   can be heard back, and on Android letting go of the microphone is what puts the phone out
- *   of call mode, so the audio goes to the loudspeaker.
+ * - speaker: the microphone is opened without the platform's echo cancelling - which is what
+ *   puts Android in call mode and the sound in the earpiece - and held throughout; the same gate
+ *   keeps his voice from the loudspeaker out of the utterances (see MIC_CONSTRAINTS).
  */
 
 import { EchoGate } from './gate';
@@ -45,8 +45,16 @@ const TURN_CONTEXT_MS = 8000;
 /** The worklet that taps the samples; served with the SPA (web/public/pcm-worklet.js). */
 const WORKLET_URL = '/pcm-worklet.js';
 
-const MIC_CONSTRAINTS: MediaStreamConstraints = {
-  audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+/**
+ * The microphone per route. Echo cancelling is what puts Android in call mode, and call mode is
+ * what sends every sound to the earpiece: on the speaker route it is off, the microphone stays
+ * open the whole time, and the echo gate (which learns how loud he is in the room) keeps his own
+ * voice from being heard as words. Releasing the microphone while he spoke was meant to leave
+ * call mode, but the phone switched back too late and he stayed in the earpiece (2026-10-14).
+ */
+const MIC_CONSTRAINTS: Record<CallRoute, MediaStreamConstraints> = {
+  earpiece: { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } },
+  speaker: { audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true, channelCount: 1 } },
 };
 
 export const micSupported = (): boolean =>
@@ -115,7 +123,7 @@ export class MicListener implements Listener {
     if (this.stream) return Promise.resolve();
     this.acquiring ??= (async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
+        const stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS[this.route]);
         if (!this.ctx || !this.tap) {
           stream.getTracks().forEach((t) => t.stop()); // stopped while we were asking
           return;
@@ -142,13 +150,8 @@ export class MicListener implements Listener {
   setSpeaking(on: boolean, echoCancelled = false): void {
     this.speaking = on;
     const now = performance.now() - this.t0;
-    if (on) this.gate.setProfile(echoCancelled);
-    if (this.route === 'speaker') {
-      // Let go of the microphone while he speaks; take it back when he stops.
-      if (on) this.release();
-      else void this.acquire().catch((e: unknown) => this.handlers?.onError(e instanceof Error ? e.message : 'The microphone could not be reopened.'));
-      return;
-    }
+    // On the speaker nothing subtracts his voice from the microphone, whatever plays it.
+    if (on) this.gate.setProfile(echoCancelled && this.route === 'earpiece');
     this.gate.setSpeaking(on, now, this.seg.noiseFloor);
     this.seg.setAttack(on ? CUT_IN_ATTACK_MS : null);
   }
@@ -159,7 +162,7 @@ export class MicListener implements Listener {
   setHold(on: boolean): void {
     if (this.speaking) return; // his voice already decides the gate
     const now = performance.now() - this.t0;
-    if (on) this.gate.setProfile(true);
+    if (on) this.gate.setProfile(this.route === 'earpiece');
     this.gate.setSpeaking(on, now, this.seg.noiseFloor);
     this.seg.setAttack(on ? CUT_IN_ATTACK_MS : null);
   }
@@ -167,9 +170,11 @@ export class MicListener implements Listener {
   setRoute(route: CallRoute): void {
     if (route === this.route) return;
     this.route = route;
-    // Switching mid-sentence: apply the new route's rule to the moment we are in.
+    // The route is the microphone's settings: reopen it with the new ones (if it is open yet).
+    if (!this.ctx) return;
+    this.release();
+    void this.acquire().catch((e: unknown) => this.handlers?.onError(e instanceof Error ? e.message : 'The microphone could not be reopened.'));
     if (this.speaking) this.setSpeaking(true);
-    else if (route === 'earpiece' && !this.stream) void this.acquire().catch(() => undefined);
   }
 
   setMuted(muted: boolean): void {

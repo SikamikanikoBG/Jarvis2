@@ -34,11 +34,10 @@ const CUT_NOTE = (heard: number, total: number) =>
 
 /**
  * Where his voice comes out. The web cannot pick the earpiece or the speaker by name; what it
- * can do is hold or release the microphone. On Android, an open microphone puts Chrome in the
- * phone's call mode — audio to the earpiece; a released one leaves it — audio to the speaker.
- * "earpiece" holds the microphone throughout (so a cut-in by voice works, through the echo
- * gate); "speaker" lets go of it while he speaks and takes it back when he stops, which is
- * also the only route where a loudspeaker and a microphone cannot feed each other at all.
+ * can choose is how the microphone is opened. On Android, a microphone with echo cancelling puts
+ * Chrome in the phone's call mode — audio to the earpiece; one without it leaves the phone in its
+ * normal mode — audio to the loudspeaker. Both hold the microphone throughout, so a cut-in by
+ * voice works on either, through the echo gate (listener.ts).
  */
 export type CallRoute = 'earpiece' | 'speaker';
 
@@ -220,6 +219,11 @@ export class CallSession {
   private replyLang: string | null = null;
   /** The current step's words, held until the step ends (see `onDelta`). */
   private stepText = '';
+  /** He added words (a steer) while the run was writing an answer he had not heard yet. That
+   *  answer is not read out: the core runs another step with his words in it (a late steer), and
+   *  that one is. Kept aside in case the core finished instead - then it is said after all. */
+  private steeredMidStep = false;
+  private supersededText = '';
   /** A second splitter, reading the step as it is written, purely to start fetching the voice
    *  for a sentence before the step is known to be an answer. Nothing it produces is spoken. */
   private preview = new SentenceSplitter();
@@ -465,6 +469,8 @@ export class CallSession {
     // first sentences only, and without being told it simply said the whole thing again
     // (2026-09-19, "просто ми повтори първия отговор").
     const outgoing = interrupted ? `${CUT_NOTE(heardOf, ofTotal)}\n${text}` : text;
+    // Talking on while the answer was being written: that answer is about half of what he said.
+    if (this.state.runId && !interrupted) this.steeredMidStep = true;
     const sent = this.state.runId ? this.o.transport.steer(this.state.runId, outgoing) : this.create(outgoing);
     if (!sent) {
       this.fail('The connection to Jarvis is down; try again in a moment.');
@@ -495,6 +501,7 @@ export class CallSession {
     if (this.steerWhenKnown) {
       const more = this.steerWhenKnown;
       this.steerWhenKnown = '';
+      this.steeredMidStep = true;
       if (!this.o.transport.steer(runId, more)) this.fail('The connection to Jarvis is down; part of what you said was lost.');
     }
   }
@@ -508,6 +515,8 @@ export class CallSession {
    */
   onDelta(runId: string, text: string): void {
     if (runId !== this.state.runId || this.state.phase === 'ended') return;
+    // A new step is being written: the core went on with his words, the stale answer is gone.
+    this.supersededText = '';
     this.stepText += text;
     // The words are still held until the step ends — a step that turns out to be tool calls has
     // written a plan, not a reply. But the VOICE for the first sentences can be fetched now, so
@@ -540,7 +549,17 @@ export class CallSession {
     this.stepText = '';
     this.preview = new SentenceSplitter();
     this.prefetched = 0;
-    if (endedInToolCalls || !text) return;
+    if (endedInToolCalls) {
+      this.steeredMidStep = false; // his words go into the next step anyway
+      return;
+    }
+    if (!text) return;
+    if (this.steeredMidStep) {
+      // An answer to what he said before he went on: held back, not read out.
+      this.steeredMidStep = false;
+      this.supersededText = text;
+      return;
+    }
     for (const sentence of this.splitter.push(text)) this.enqueue(sentence);
     const rest = this.splitter.flush();
     if (rest) this.enqueue(rest);
@@ -548,6 +567,13 @@ export class CallSession {
 
   onRunDone(runId: string): void {
     if (runId !== this.state.runId) return;
+    // The core finished without another step (his words came too late and start a run of their
+    // own): the held answer is all there is to what he asked first, so it is said.
+    if (this.supersededText) {
+      this.stepText = this.supersededText + this.stepText;
+      this.supersededText = '';
+    }
+    this.steeredMidStep = false;
     // A run that ends without a step-done for its last words (a cancel) still says them.
     if (this.stepText) {
       const text = this.stepText;

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Protocol, cast
 
 from pydantic import ValidationError
@@ -157,6 +158,9 @@ class AgentLoop:
         self._learner = learner
         self._attachments = attachments
         self._reflector = reflector
+        # Questions asked aloud on a call before an action that needs his go-ahead: when (see
+        # _voice_confirmation), by conversation and the exact call.
+        self._voice_asks: dict[tuple[str, str, str], tuple[datetime, str | None]] = {}
         self._shadow = shadow
 
     def _shadow_preflight(
@@ -750,8 +754,8 @@ class AgentLoop:
             # Before the argument check: what the model needs to hear is "not on a call", not
             # which field it forgot in a call it should not have made at all.
             error = (
-                f"{call.name} is not available on a call: on a call you think and remember, you do not act. "
-                "Tell Arsen in one sentence that you will do it once the call is over, if he says so in the chat."
+                f"{call.name} is not among the tools allowed on a call (settings.voice.namespaces). Tell Arsen "
+                "in one sentence that you can do it in the chat."
             )
         if error is None and spec is not None and is_memory_writer(spec) and await self._is_incognito(run):
             # Hidden from the list, but a model can still name a tool it was not offered.
@@ -802,7 +806,19 @@ class AgentLoop:
                 call.arguments["_policy_note"] = f"not on the approved-direct-send list: {', '.join(blocked)}"
                 log.info("email policy: drafting instead of sending to %s", ", ".join(blocked))
 
-        if self._settings().confirmations.needs_confirmation(
+        if (
+            self._settings().confirmations.needs_confirmation(
+                call.name, destructive=bool(spec and spec.destructive), unattended=run.kind in _UNATTENDED
+            )
+            and run.channel is Channel.VOICE
+        ):
+            # On a call nobody can tap a card at the ear: the model asks aloud, and the same call
+            # goes through once he has said something after the question (whether that was a yes
+            # is the model's to judge - it heard him; no word lists).
+            refusal = await self._voice_confirmation(run, call)
+            if refusal is not None:
+                return await self._tool_message(run, call, refusal, 0, emit), None
+        elif self._settings().confirmations.needs_confirmation(
             call.name, destructive=bool(spec and spec.destructive), unattended=run.kind in _UNATTENDED
         ):
             decision = await self._recorded_decision(run, call.id)
@@ -969,6 +985,35 @@ class AgentLoop:
         run.waiting_reason = None
         await self._store.save_run(run)
         await ctl.emitter.announce_activity()  # ...and back to "working"
+
+    async def _voice_confirmation(self, run: Run, call: ToolCall) -> ToolResult | None:
+        """None when this call may run now; otherwise what the model is told instead.
+
+        The first time a call that needs confirming is made in a conversation on a call, it is
+        refused with "ask him". The same call (name and arguments) made again goes through only
+        if he has said something since the question - in this run (a steer) or in a later one.
+        "Since" is by message, not by clock: two messages can share a timestamp."""
+        key = (run.conversation_id, call.name, json.dumps(call.arguments, sort_keys=True, default=str))
+        now = datetime.now(UTC)
+        self._voice_asks = {k: v for k, v in self._voice_asks.items() if now - v[0] < _VOICE_ASK_TTL}
+        said = [
+            m.id
+            for m in await self._store.list_messages(run.conversation_id, limit=60)
+            if m.role is Role.USER and m.name is None
+        ]
+        last = said[-1] if said else None
+        asked = self._voice_asks.get(key)
+        if asked is not None:
+            if last != asked[1]:
+                del self._voice_asks[key]
+                return None
+            return ToolResult.failure("he has not answered yet: wait for his reply before doing it")
+        self._voice_asks[key] = (now, last)
+        return ToolResult.failure(
+            "needs his spoken go-ahead first: say in one sentence exactly what you are about to do (what, "
+            f"to whom) and ask him. If he says yes, call {call.name} again with exactly the same arguments; "
+            "if he says no or changes it, do not."
+        )
 
     async def _recorded_decision(self, run: Run, call_id: str) -> tuple[bool, str | None] | None:
         decision: tuple[bool, str | None] | None = None
@@ -1157,6 +1202,8 @@ class AgentLoop:
 
 
 _PLAN_TOOLS = {spec.name for spec in PLAN_TOOLS}
+#: How long a question asked aloud on a call ("shall I send it?") waits for its answer.
+_VOICE_ASK_TTL = timedelta(minutes=15)
 # Two identical failures are a pattern; a third is a waste of a tool call and of the run.
 _SAME_FAILURE_LIMIT = 2
 

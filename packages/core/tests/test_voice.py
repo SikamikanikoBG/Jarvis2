@@ -66,6 +66,8 @@ async def test_a_typed_turn_carries_no_voice_block_and_is_marked_text(harness: H
 
 async def test_on_a_call_he_is_offered_only_the_namespaces_a_call_may_use(harness: Harness):
     core = harness.core
+    narrow = VoiceSettings(namespaces=["notes", "kg", "jarvis", "sessions"])
+    harness.enable(voice=narrow)
     harness.chat.push(FakeTurn(text="Noted."))
     conv = await core.store.create_conversation()
     sub = harness.subscribe(conv.id)
@@ -75,13 +77,14 @@ async def test_on_a_call_he_is_offered_only_the_namespaces_a_call_may_use(harnes
     await harness.wait_for(sub, "run.done")
     offered = {t.name for t in harness.chat.calls[0][1]}
     assert offered, "the default namespaces are still tools, not nothing"
-    assert all(n.split(".", 1)[0] in VoiceSettings().namespaces for n in offered), sorted(offered)
+    assert all(n.split(".", 1)[0] in narrow.namespaces for n in offered), sorted(offered)
     assert "notes.add" in offered  # he remembers
     assert not any(n.startswith("schedule.") or n.startswith("web.") or n.startswith("fetch.") for n in offered)
 
 
 async def test_a_tool_outside_the_call_policy_is_refused_by_name_not_run(harness: Harness):
     core = harness.core
+    harness.enable(voice=VoiceSettings(namespaces=["notes", "kg", "jarvis"]))
     harness.chat.push(
         FakeTurn(
             tool_calls=[ToolCall(id="c1", name="schedule.create", arguments={"cron": "0 9 * * 1", "prompt": "check"})]
@@ -93,7 +96,7 @@ async def test_a_tool_outside_the_call_policy_is_refused_by_name_not_run(harness
     await core.engine.create_run(text="пусни го всяка седмица", conversation_id=conv.id, channel=Channel.VOICE)
     seen = await harness.wait_for(sub, "run.done")
     results = [e for e in seen if e.type == "tool.result"]
-    assert results and results[0].result.kind.value == "error" and "on a call" in results[0].result.text
+    assert results and results[0].result.kind.value == "error" and "allowed on a call" in results[0].result.text
     assert await core.db.fetchall("SELECT id FROM schedules") == []
 
 
@@ -306,3 +309,50 @@ async def test_words_added_while_a_call_answer_is_written_get_one_reply_for_both
     notes = [m.content for m in second if m.name == "supervisor"]
     assert said[-1] == "и ми кажи времето"
     assert notes and "has not heard it" in notes[-1]
+
+
+async def test_by_default_a_call_has_every_tool(harness: Harness):
+    """2026-10-14: "всички инструменти да ги има и във voice call-а" - as in the chat."""
+    assert VoiceSettings().allows("jarvisvm") and VoiceSettings().allows("schedule")
+    harness.chat.push(FakeTurn(text="Done."))
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="добре", conversation_id=conv.id, channel=Channel.VOICE)
+    await harness.wait_for(sub, "run.done")
+    offered = {t.name for t in harness.chat.calls[0][1]}
+    assert "schedule.create" in offered and "notes.add" in offered
+
+
+async def test_on_a_call_an_action_that_needs_a_yes_is_asked_aloud_and_runs_after_he_answers(harness: Harness):
+    """No card can be tapped at the ear: the model is told to ask, and the same call goes through
+    once he has said something after the question (the model judged it a yes)."""
+    from jarvis_proto import Confirmations
+
+    core = harness.core
+    harness.enable(confirmations=Confirmations(mode="destructive", always_ask=["schedule.create"]))
+    args = {"name": "Бойлер", "cron": "0 9 * * 1", "prompt": "check the boiler"}
+    harness.chat.push(
+        FakeTurn(tool_calls=[ToolCall(id="c1", name="schedule.create", arguments=args)]),
+        FakeTurn(text="Shall I set a Monday 9:00 reminder to check the boiler?"),
+    )
+    conv = await core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await core.engine.create_run(
+        text="напомняй ми всеки понеделник за бойлера", conversation_id=conv.id, channel=Channel.VOICE
+    )
+    seen = await harness.wait_for(sub, "run.done")
+    first = [e for e in seen if e.type == "tool.result"]
+    assert first and "spoken go-ahead" in first[0].result.text
+    assert not any(e.type == "run.waiting_user" for e in seen), "a call never waits on a screen card"
+    assert await core.db.fetchall("SELECT id FROM schedules") == []
+
+    # He says yes; the model makes the same call again, and this time it runs.
+    harness.chat.push(
+        FakeTurn(tool_calls=[ToolCall(id="c2", name="schedule.create", arguments=args)]),
+        FakeTurn(text="Done, every Monday at nine."),
+    )
+    await core.engine.create_run(text="да", conversation_id=conv.id, channel=Channel.VOICE)
+    seen = await harness.wait_for(sub, "run.done")
+    second = [e for e in seen if e.type == "tool.result"]
+    assert second and second[0].result.kind.value != "error", second[0].result.text
+    assert len(await core.db.fetchall("SELECT id FROM schedules")) == 1

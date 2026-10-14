@@ -13,7 +13,8 @@ interface Props {
  *  place for an irreversible action, so mail and the shell are off until Arsen ticks them. */
 export function VoiceSection({ value, namespaces, onChange, error }: Props) {
   const patch = (p: Partial<VoiceSettings>) => onChange({ ...value, ...p });
-  const all = [...new Set([...namespaces, ...value.namespaces])].sort();
+  const everything = value.namespaces.includes('*');
+  const all = [...new Set([...namespaces, ...value.namespaces.filter((n) => n !== '*')])].sort();
   const toggle = (ns: string, on: boolean) =>
     patch({ namespaces: on ? [...new Set([...value.namespaces, ns])] : value.namespaces.filter((n) => n !== ns) });
   return (
@@ -23,7 +24,18 @@ export function VoiceSection({ value, namespaces, onChange, error }: Props) {
         <p>The headset beside the microphone. Same conversation, spoken; these decide how he behaves on it.</p>
       </div>
       {error && <div className="field-error">{error}</div>}
-      <div className="field">
+      <div className="think-row">
+        <Switch
+          checked={everything}
+          onChange={(v) => patch({ namespaces: v ? ['*'] : ['notes', 'kg', 'jarvis', 'sessions'] })}
+          label="All tools on a call"
+        />
+        <span className="small">All tools</span>
+        <span className="field-hint">
+          Everything he can do in the chat, by voice. Anything that sends, posts or deletes is said aloud first and waits for your yes.
+        </span>
+      </div>
+      <div className="field" hidden={everything}>
         <span className="field-label">Tools on a call</span>
         <div className="voice-namespaces" role="group" aria-label="Tools on a call">
           {all.map((ns) => (

@@ -24,6 +24,9 @@ export type CallPhase = 'idle' | 'connecting' | 'listening' | 'transcribing' | '
 /** However he pauses, what was recognised is sent no later than this after its first words. */
 const JOIN_DEADLINE_MS = 1500;
 
+/** The longest sentence before a tool step that is read out as where he has got to. */
+const PROGRESS_MAX_CHARS = 120;
+
 /** How many sentences of a reply have their voice fetched while the model is still writing.
  *  Two: the one he will hear first, and the one that must be ready when it ends. */
 const PREFETCH_SENTENCES = 2;
@@ -556,6 +559,12 @@ export class CallSession {
     this.prefetched = 0;
     if (endedInToolCalls) {
       this.steeredMidStep = false; // his words go into the next step anyway
+      // Where he has got to: the one sentence written before the tools ("Checking your mail."),
+      // read out while he waits, like the in-between replies in the chat (2026-10-14). Only
+      // the first sentence, and only a short one - the rest of a tool step is its working.
+      const lead = new SentenceSplitter();
+      const first = lead.push(text)[0] ?? lead.flush();
+      if (first && first.length <= PROGRESS_MAX_CHARS) this.enqueue(first);
       return;
     }
     if (!text) return;

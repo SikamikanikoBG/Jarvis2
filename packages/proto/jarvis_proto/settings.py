@@ -491,14 +491,14 @@ VOICE_STYLE_DEFAULT = (
     "numbered lists, no tables, no code, no links or file paths read out; spell nothing that "
     "sounds wrong aloud. Two or three sentences unless asked for more. If a proper answer needs "
     "to be long or needs a list, say so in a sentence and offer to write it in the chat. "
-    "Telling, explaining, remembering and looking things up are what a call is for: do them now, "
-    'never "after the call". Only an action with an effect outside this conversation - sending, '
-    "running, changing something - waits: say you will do it once the call is over and ask for "
-    "the word in the chat. If what you heard makes no sense, it was probably misheard: say what "
-    "you think was meant, or ask. "
-    "Your first words are the answer itself. Never talk about the call or about how you are "
-    "going to answer, never narrate your reasoning, never describe what the user wants or what "
-    "you are about to do - just say it."
+    'You have all your tools on the call: do what he asks now, never "after the call". Each time '
+    "you are about to use tools, first write one short sentence saying what you are doing - it is "
+    'read out while he waits ("Checking your mail.") - one sentence, never your reasoning. Before '
+    "anything that sends, posts, pays, deletes or changes something for other people, say exactly "
+    "what you are about to do and to whom, and wait for his yes. If what you heard makes no sense, "
+    "it was probably misheard: say what you think was meant, or ask. "
+    "When you answer, your first words are the answer itself: never talk about the call, never "
+    "narrate your reasoning, never describe what he wants - just say it."
 )
 
 
@@ -512,9 +512,10 @@ class VoiceSettings(BaseModel):
     carries so the reply is speakable; editable, like the persona.
     """
 
-    # ``sessions`` is there so a call can see the rest of the day (docs/stories/12_assistant.md):
-    # "anything else today?" is answered from the other chats, not from this one alone.
-    namespaces: list[str] = Field(default_factory=lambda: ["notes", "kg", "jarvis", "sessions"])
+    # "*" = every tool, as in the chat (2026-10-14: "всички инструменти да ги има и във voice
+    # call-а"). An explicit list narrows a call to those namespaces. Anything that would ask for a
+    # confirmation in the chat is confirmed by voice on a call (engine/loop.py).
+    namespaces: list[str] = Field(default_factory=lambda: ["*"])
     think: bool = False
     style: str = VOICE_STYLE_DEFAULT
     # Whose voice. "server": the core synthesises each sentence (Microsoft's neural voices
@@ -554,7 +555,7 @@ class VoiceSettings(BaseModel):
     hold_volume: float = Field(default=0.4, ge=0.0, le=1.0)
 
     def allows(self, namespace: str) -> bool:
-        return namespace in self.namespaces
+        return "*" in self.namespaces or namespace in self.namespaces
 
     def voice_for(self, lang: str) -> str | None:
         short = (lang or "").split("-")[0].lower()

@@ -220,22 +220,24 @@ describe('CallSession', () => {
     expect(t.session.state.runId).toBeNull();
   });
 
-  it('a step that ends in tool calls is not read out: its words were the plan, not the reply', async () => {
+  it('a step that ends in tool calls is read out only as its first short sentence: where he has got to', async () => {
     const t = build();
     await t.session.start();
     t.listener.say();
     await settle();
     t.session.onRunQueued('r1', 'c1');
-    t.session.onDelta('r1', 'The user is on a voice call. Let me look that up. ');
+    t.session.onDelta('r1', 'Checking your calendar. I will look at Friday and then the weekend for a slot that fits. ');
     t.session.onStepDone('r1', true);
     await tick();
-    expect(t.speaker.spoken).toEqual([]);
-    expect(t.session.state.phase).toBe('thinking');
+    expect(t.speaker.spoken.map((s) => s.text)).toEqual(['Checking your calendar.']);
+    t.speaker.finishAll();
+    await tick();
+    expect(t.session.state.phase).toBe('thinking'); // still working: back to waiting (and the music)
     t.session.onDelta('r1', 'Три дни. ');
     t.session.onStepDone('r1', false);
     t.session.onRunDone('r1');
     await tick();
-    expect(t.speaker.spoken.map((s) => s.text)).toEqual(['Три дни.']);
+    expect(t.speaker.spoken.map((s) => s.text)).toEqual(['Checking your calendar.', 'Три дни.']);
   });
 
   it('a cut-in while he speaks stops him and steers the run that is still working', async () => {
@@ -295,8 +297,8 @@ describe('CallSession', () => {
     t.listener.say();
     await settle();
     t.session.onRunQueued('r1', 'c1');
-    t.session.onDelta('r1', 'Трябва да проверя календара. Нека погледна.');
-    t.session.onStepDone('r1', true); // tool calls: that was the plan, not the reply
+    t.session.onDelta('r1', 'Трябва да проверя календара, като първо прегледам цялата седмица, после уикенда, после следващата седмица и чак тогава ще знам. Нека погледна.');
+    t.session.onStepDone('r1', true); // tool calls: a long first sentence is working, not news
     await tick();
     expect(t.speaker.spoken).toEqual([]);
     // ...and the next step starts its prefetch afresh (a sentence is only sure once something

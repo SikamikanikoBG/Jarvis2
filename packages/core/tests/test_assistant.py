@@ -176,7 +176,7 @@ async def test_a_call_carries_the_day_and_a_typed_turn_does_not(harness: Harness
 
 
 async def test_a_call_may_read_the_other_chats(harness: Harness):
-    assert "sessions" in VoiceSettings().namespaces
+    assert VoiceSettings().allows("sessions")
     await _with_a_day(harness)
     conv = await harness.core.store.create_conversation(title="Call")
     await _turn(harness, conv.id, "какво друго", "The card sold.", channel=Channel.VOICE)

@@ -272,6 +272,14 @@ export const api = {
     get: (id: string) => request<MeetingDetail>('GET', `/api/meetings/${encodeURIComponent(id)}`),
     create: (body: { title?: string; host: string }) => request<Meeting>('POST', '/api/meetings', body),
     stop: (id: string) => request<Meeting>('POST', `/api/meetings/${encodeURIComponent(id)}/stop`),
+    /** One piece of a meeting recorded on this device; `n` makes a retry harmless. */
+    chunk: (id: string, audio: Blob, t0: number, n: number) => {
+      const form = new FormData();
+      form.append('audio', audio, `piece-${n}.wav`);
+      form.append('t0', String(t0));
+      form.append('n', String(n));
+      return request<{ segments_added: number }>('POST', `/api/meetings/${encodeURIComponent(id)}/chunks`, form);
+    },
     /** Deletes the recording, its frames and the conversation holding its transcript. */
     remove: (id: string) => request<null>('DELETE', `/api/meetings/${encodeURIComponent(id)}`),
   },

@@ -1,3 +1,4 @@
+import { phoneRecorder } from './meetings/recorder';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles/tokens.css';
@@ -20,6 +21,10 @@ createRoot(rootEl).render(
     <App />
   </StrictMode>,
 );
+
+// A meeting this phone was recording when the page was last closed or killed: its pieces go up
+// now, whatever screen is open (src/meetings/recorder.ts).
+void phoneRecorder.recover();
 
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {

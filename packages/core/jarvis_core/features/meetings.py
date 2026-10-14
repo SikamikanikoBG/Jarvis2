@@ -1,7 +1,10 @@
 """Meetings: capture on a host, transcribe in the core, summarise with a run.
 
-Audio reaches the core either pushed by the host (``POST /api/meetings/{id}/chunks``) or pulled
-by the core from the host's ``meeting_pull`` tool while recording. Each chunk becomes
+Audio reaches the core either pushed (``POST /api/meetings/{id}/chunks``) or pulled by the core
+from the host's ``meeting_pull`` tool while recording. The phone (host ``PHONE_HOST``) records in
+the browser and pushes: there is no MCP host to start, pull or stop - the page cuts the audio at
+pauses, keeps each piece until the core has it, and numbers them so a retry is not transcribed
+twice. Each chunk becomes
 transcript segments (events + one ``transcript`` message in the meeting's conversation), so the
 summary run has the whole transcript as ordinary context.
 """
@@ -41,6 +44,8 @@ _SUMMARY_PROMPT = (
 )
 
 PULL_INTERVAL_S = 10.0
+#: A meeting recorded by the browser it was started from (the phone), not by an MCP host.
+PHONE_HOST = "phone"
 
 
 def _payload(text: str) -> Any:
@@ -144,6 +149,12 @@ class MeetingService:
             "INSERT INTO meetings(id, conversation_id, title, host, status, started_at) VALUES (?,?,?,?,?,?)",
             (meeting.id, conv.id, title, host, meeting.status.value, now.isoformat()),
         )
+        if host == PHONE_HOST:
+            # The page records and pushes its pieces; nothing to start, nothing to pull.
+            self.core.bus.publish(
+                MeetingChanged(meeting_id=meeting.id, conversation_id=conv.id, status=meeting.status.value)
+            )
+            return meeting
         res = await self.core.registry.call(
             f"{host}.meeting_start",
             {"meeting_id": meeting.id},
@@ -178,18 +189,19 @@ class MeetingService:
             poller.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await poller
-        res = await self.core.registry.call(
-            f"{meeting.host}.meeting_stop",
-            {"meeting_id": meeting.id},
-            cancel=asyncio.Event(),
-            idempotency_key=f"mtg:{meeting.id}:stop",
-            timeout_s=60,
-        )
-        # The stop reply CARRIES the last chunk: the host has already forgotten the recording, so
-        # a pull after it returns nothing. Ignoring this reply lost the closing seconds of every
-        # meeting.
-        if res.kind.value != "error":
-            self._ingest(meeting, _payload(res.text))
+        if meeting.host != PHONE_HOST:  # the phone has pushed every piece before it says stop
+            res = await self.core.registry.call(
+                f"{meeting.host}.meeting_stop",
+                {"meeting_id": meeting.id},
+                cancel=asyncio.Event(),
+                idempotency_key=f"mtg:{meeting.id}:stop",
+                timeout_s=60,
+            )
+            # The stop reply CARRIES the last chunk: the host has already forgotten the recording,
+            # so a pull after it returns nothing. Ignoring this reply lost the closing seconds of
+            # every meeting.
+            if res.kind.value != "error":
+                self._ingest(meeting, _payload(res.text))
         await self._drain(meeting)
         meeting = await self._set_status(meeting, MeetingStatus.SUMMARISING, ended_at=datetime.now(UTC))
         row = await self.core.db.fetchone(
@@ -342,10 +354,29 @@ class MeetingService:
                 await worker
         self._queues.pop(meeting.id, None)
 
-    async def ingest_chunk(self, meeting_id: str, audio: bytes, t0: float, *, filename: str, mime: str) -> int:
+    async def ingest_chunk(
+        self, meeting_id: str, audio: bytes, t0: float, *, filename: str, mime: str, n: int | None = None
+    ) -> int:
+        """Transcribe one piece of the recording. ``n`` numbers a pushed piece: one the core already
+        has is acknowledged again and not transcribed twice (the phone retries until it hears back)."""
         meeting = await self.get(meeting_id)
         if meeting is None:
             raise KeyError(meeting_id)
+        if n is not None:
+            done = await self.core.db.fetchone(
+                "SELECT segments FROM meeting_chunks WHERE meeting_id = ? AND n = ?", (meeting_id, n)
+            )
+            if done is not None:
+                return int(done["segments"])
+        added = await self._transcribe_chunk(meeting, audio, t0, filename=filename, mime=mime)
+        if n is not None:
+            await self.core.db.execute(
+                "INSERT OR IGNORE INTO meeting_chunks(meeting_id, n, segments) VALUES (?,?,?)", (meeting_id, n, added)
+            )
+        return added
+
+    async def _transcribe_chunk(self, meeting: Meeting, audio: bytes, t0: float, *, filename: str, mime: str) -> int:
+        meeting_id = meeting.id
         result = await self.core.transcriber.transcribe(audio, filename=filename, mime=mime)
         segments = result.segments or ([{"t0": 0.0, "t1": None, "text": result.text}] if result.text else [])
         added = 0

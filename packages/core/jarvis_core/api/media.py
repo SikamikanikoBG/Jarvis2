@@ -135,13 +135,18 @@ async def stop_meeting(request: Request, meeting_id: str) -> Meeting:
 
 @router.post("/meetings/{meeting_id}/chunks")
 async def meeting_chunk(
-    request: Request, meeting_id: str, audio: UploadFile = File(...), t0: float = Form(default=0.0)
+    request: Request,
+    meeting_id: str,
+    audio: UploadFile = File(...),
+    t0: float = Form(default=0.0),
+    n: int | None = Form(default=None, ge=0),
 ) -> dict[str, Any]:
+    """One piece of a recording. ``n`` (the phone numbers its pieces) makes a retry harmless."""
     core = core_of(request)
     data = await audio.read()
     try:
         added = await core.meetings.ingest_chunk(
-            meeting_id, data, t0, filename=audio.filename or "chunk.wav", mime=audio.content_type or "audio/wav"
+            meeting_id, data, t0, filename=audio.filename or "chunk.wav", mime=audio.content_type or "audio/wav", n=n
         )
     except KeyError as exc:
         raise HTTPException(404, "meeting not found") from exc

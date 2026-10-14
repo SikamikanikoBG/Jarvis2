@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { Icon } from '../components/Icon';
 import { Highlight } from '../components/Highlight';
@@ -11,6 +11,16 @@ import { errorText, useLoader } from '../lib/useLoader';
 import type { Meeting, MeetingStatus } from '../protocol/types';
 import { useStore } from '../store/store';
 import { DESKTOP_QUERY, useMediaQuery } from '../shell/useMediaQuery';
+import { phoneRecorder, type RecorderState } from './recorder';
+
+/** The host name of a meeting recorded by this browser (core: features/meetings.PHONE_HOST). */
+const PHONE = 'phone';
+
+function useRecorder(): RecorderState {
+  const [state, setState] = useState(phoneRecorder.snapshot);
+  useEffect(() => phoneRecorder.subscribe(setState), []);
+  return state;
+}
 
 const STATUS_CHIP: Record<MeetingStatus, string> = { recording: 'chip-danger', summarising: 'chip-accent', done: 'chip-ok', failed: 'chip-danger' };
 
@@ -34,6 +44,19 @@ export function MeetingsScreen() {
   const q = query.trim();
   const meetings = all.filter((m) => matchesQuery(q, m.title, m.host, m.status));
   const showList = desktop || selected === null;
+  const rec = useRecorder();
+
+  // Stop from the notification after Android had closed the page: the app opens with ?stop=.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get('stop');
+    if (!id) return;
+    params.delete('stop');
+    window.history.replaceState(null, '', window.location.pathname + (params.size ? `?${params.toString()}` : ''));
+    void phoneRecorder.recover().then(() => {
+      if (phoneRecorder.snapshot.meetingId === id) void phoneRecorder.stop().then(reload);
+    });
+  }, [reload]);
 
   return (
     <div className="screen">
@@ -47,6 +70,7 @@ export function MeetingsScreen() {
                 Start meeting
               </button>
             </div>
+            <RecorderBanner rec={rec} onChanged={reload} onOpen={setSelected} notify={notify} />
             {starting && (
               <StartForm
                 onClose={() => setStarting(false)}
@@ -64,7 +88,7 @@ export function MeetingsScreen() {
             {!loading && all.length === 0 && !starting && (
               <div className="empty">
                 <strong>No meetings recorded</strong>
-                <span>Start one: the host mixes mic and system audio, Jarvis transcribes live and summarises when you stop.</span>
+                <span>Start one: this phone records with its microphone (also with the screen locked), or a host mixes mic and system audio. Jarvis transcribes as it goes and summarises when you stop.</span>
               </div>
             )}
             {!loading && all.length > 0 && meetings.length === 0 && (
@@ -108,6 +132,60 @@ export function MeetingsScreen() {
   );
 }
 
+/** What this phone is doing with a meeting: recording it, sending the last pieces, or one the page
+ *  was closed in the middle of. */
+function RecorderBanner({
+  rec,
+  onChanged,
+  onOpen,
+  notify,
+}: {
+  rec: RecorderState;
+  onChanged: () => void;
+  onOpen: (id: string) => void;
+  notify: (text: string, level?: 'info' | 'error') => void;
+}) {
+  const now = useTicker(1000, rec.recording);
+  if (!rec.meetingId && !rec.pending) return null;
+  const id = rec.meetingId;
+  return (
+    <div className="card role-card" role="status">
+      {rec.recording && id && (
+        <div className="row">
+          <span className="dot dot-danger dot-pulse" />
+          <button type="button" className="kg-link grow truncate" onClick={() => onOpen(id)}>
+            Recording on this phone: {rec.title} · {formatDuration(now - rec.startedAt)}
+          </button>
+          <button type="button" className="btn btn-danger btn-sm" onClick={() => void phoneRecorder.stop().then(onChanged)}>
+            <Icon name="stop" size={14} />
+            Stop
+          </button>
+        </div>
+      )}
+      {rec.interrupted && id && (
+        <>
+          <div className="small">The app was closed while “{rec.title}” was recording. What was recorded is kept.</div>
+          <div className="row">
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => void phoneRecorder.start({ id, title: rec.title }, true).catch((e: unknown) => notify(errorText(e), 'error'))}
+            >
+              Continue recording
+            </button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => void phoneRecorder.finishInterrupted().then(onChanged)}>
+              Finish and summarise
+            </button>
+          </div>
+        </>
+      )}
+      {rec.finishing && <div className="small muted">Sending the last {rec.pending || ''} piece(s); the summary follows.</div>}
+      {!rec.meetingId && rec.pending > 0 && <div className="small muted">Sending {rec.pending} recorded piece(s)…</div>}
+      {rec.problem && <div className="small field-error">{rec.problem}</div>}
+    </div>
+  );
+}
+
 function StartForm({ onClose, onStarted }: { onClose: () => void; onStarted: (m: Meeting) => void }) {
   const loadStatus = useCallback(() => api.status(), []);
   const { data: status } = useLoader(loadStatus, 'hosts');
@@ -115,14 +193,27 @@ function StartForm({ onClose, onStarted }: { onClose: () => void; onStarted: (m:
   const [title, setTitle] = useState('');
   const [host, setHost] = useState('');
   const [err, setErr] = useState<string | null>(null);
-  const chosen = host || hosts[0] || '';
+  const [busy, setBusy] = useState(false);
+  const chosen = host || PHONE;
   const start = () => {
-    if (!chosen) return;
     const t = title.trim();
+    setBusy(true);
+    setErr(null);
     api.meetings
       .create(t ? { title: t, host: chosen } : { host: chosen })
-      .then(onStarted)
-      .catch((e: unknown) => setErr(errorText(e)));
+      .then(async (m) => {
+        if (chosen === PHONE) {
+          try {
+            await phoneRecorder.start({ id: m.id, title: m.title });
+          } catch (e) {
+            await api.meetings.remove(m.id).catch(() => undefined);
+            throw e;
+          }
+        }
+        onStarted(m);
+      })
+      .catch((e: unknown) => setErr(errorText(e)))
+      .finally(() => setBusy(false));
   };
   return (
     <div className="card role-card">
@@ -132,9 +223,9 @@ function StartForm({ onClose, onStarted }: { onClose: () => void; onStarted: (m:
           <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Steering committee" autoFocus />
         </div>
         <div className="field">
-          <label>Host (captures the audio)</label>
+          <label>Recorded by</label>
           <select className="select" value={chosen} onChange={(e) => setHost(e.target.value)}>
-            {hosts.length === 0 && <option value="">No host connected</option>}
+            <option value={PHONE}>This phone (its microphone)</option>
             {hosts.map((h) => (
               <option key={h} value={h}>
                 {h}
@@ -143,10 +234,15 @@ function StartForm({ onClose, onStarted }: { onClose: () => void; onStarted: (m:
           </select>
         </div>
       </div>
+      {chosen === PHONE && (
+        <div className="field-hint">
+          Keeps recording with the screen locked. Stop it here or from the notification; allow notifications to get the Stop button there.
+        </div>
+      )}
       {err && <div className="field-error">{err}</div>}
       <div className="row">
-        <button type="button" className="btn btn-primary btn-sm" onClick={start} disabled={!chosen}>
-          Start recording
+        <button type="button" className="btn btn-primary btn-sm" onClick={start} disabled={busy}>
+          {busy ? 'Starting…' : 'Start recording'}
         </button>
         <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>
           Cancel
@@ -186,8 +282,9 @@ function MeetingPanel({ id, version, onBack, desktop, onChanged, notify }: Panel
 
   const stop = () => {
     setStopping(true);
-    api.meetings
-      .stop(m.id)
+    // Recorded here: the recorder sends its last pieces first, then stops it at the core.
+    const request = m.host === PHONE && phoneRecorder.snapshot.meetingId === m.id ? phoneRecorder.stop() : api.meetings.stop(m.id);
+    request
       .then(() => {
         reload();
         onChanged();

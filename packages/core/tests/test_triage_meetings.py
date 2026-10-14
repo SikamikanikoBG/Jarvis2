@@ -1374,3 +1374,41 @@ async def test_a_decline_never_proposes_a_slot_a_later_accept_in_the_same_pass_t
     assert "09.09 09:00-09:30" in comment
     state = await core.rsvp.state()
     assert state is not None and state.answered_total == 2 and state.last_error is None
+
+
+async def test_a_phone_meeting_needs_no_host_and_a_retried_piece_is_heard_once(harness: Harness, monkeypatch: Any):
+    """The phone records in the browser and pushes pieces cut at pauses (2026-10-14: meetings from
+    the phone, even locked). No MCP host is started, pulled or stopped; a piece re-sent after a
+    lost answer is acknowledged, not transcribed again."""
+    from jarvis_core.features.meetings import PHONE_HOST
+
+    core = harness.core
+    heard: list[bytes] = []
+
+    async def fake_transcribe(audio: bytes, *, filename: str, mime: str, language: str | None = None) -> SttResult:
+        heard.append(audio)
+        return SttResult(text=audio.decode(), language="bg", backend="fake", duration_ms=5,
+                         segments=[{"t0": 0.0, "t1": 3.0, "text": audio.decode()}])  # fmt: skip
+
+    monkeypatch.setattr(core.transcriber, "transcribe", fake_transcribe)
+    meeting = await core.meetings.start(title="Обяд с Петър", host=PHONE_HOST)  # no host tools exist
+    assert meeting.status.value == "recording" and meeting.id not in core.meetings._pollers
+    assert (
+        await core.meetings.ingest_chunk(meeting.id, b"first piece", 0.0, filename="c.wav", mime="audio/wav", n=0) == 1
+    )
+    again = await core.meetings.ingest_chunk(meeting.id, b"first piece", 0.0, filename="c.wav", mime="audio/wav", n=0)
+    assert again == 1 and heard == [b"first piece"]  # acknowledged, not transcribed twice
+    await core.meetings.ingest_chunk(meeting.id, b"second piece", 38.2, filename="c.wav", mime="audio/wav", n=1)
+    detail = await core.meetings.detail(meeting.id)
+    assert detail is not None and [(s.t0, s.text) for s in detail.segments] == [
+        (0.0, "first piece"),
+        (38.2, "second piece"),
+    ]
+
+    harness.chat.push(FakeTurn(text="Lunch: agreed to meet on Friday."))
+    stopped = await core.meetings.stop(meeting.id)
+    assert stopped.status.value == "summarising" and stopped.summary_run_id
+    async with asyncio.timeout(10):
+        while (await core.meetings.get(meeting.id)).status.value == "summarising":  # type: ignore[union-attr]
+            await asyncio.sleep(0.05)
+    assert (await core.meetings.get(meeting.id)).status.value == "done"  # type: ignore[union-attr]

@@ -20,6 +20,16 @@ describe('SentenceSplitter', () => {
     expect(u.push('Пише Г. Иванов. Той е тук. И')).toEqual(['Пише Г. Иванов.', 'Той е тук.']);
   });
 
+  it('cuts after a sentence that ends inside Markdown emphasis or quotes', () => {
+    // The reply is split as written, before the Markdown is stripped (2026-10-15).
+    const s = new SentenceSplitter();
+    expect(s.push('You said: *Колко е часът?*\n\nI am here.')).toEqual(['You said: *Колко е часът?*']);
+    const t = new SentenceSplitter();
+    expect(t.push('**Готово.** Следва „второто“. **Трето** е')).toEqual(['**Готово.**', 'Следва „второто“.']);
+    const u = new SentenceSplitter();
+    expect(u.push('Той каза „Да.“ И')).toEqual(['Той каза „Да.“']);
+  });
+
   it('treats a paragraph break as a cut whatever follows, and swallows runs of enders', () => {
     const s = new SentenceSplitter();
     expect(s.push('Наистина?!\n\nдобре')).toEqual(['Наистина?!']);

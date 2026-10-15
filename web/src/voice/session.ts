@@ -232,6 +232,8 @@ export class CallSession {
    *  for a sentence before the step is known to be an answer. Nothing it produces is spoken. */
   private preview = new SentenceSplitter();
   private prefetched = 0;
+  /** The language the step being written will be said in, as far as the preview can tell. */
+  private previewLang: string | null = null;
   /** A route change is rebuilding the audio: sentences wait in the queue until it is done. */
   private rerouting = 0;
   /** The drain is being stopped for a route change, not a cut-in. */
@@ -542,6 +544,7 @@ export class CallSession {
     this.conversationId = conversationId;
     this.splitter = new SentenceSplitter();
     this.replyLang = null;
+    this.previewLang = null;
     this.o.speaker.beginReply?.();
     this.set({ runId });
     if (this.steerWhenKnown) {
@@ -575,7 +578,13 @@ export class CallSession {
       // Nothing of this reply queued yet: this sentence is the one he will wait for.
       const first = this.prefetched === 0 && this.state.saying.length === 0;
       this.prefetched += 1;
-      this.o.speaker.prepare?.(clean, scriptLanguage(clean, this.o.language), first);
+      // The language it will be SAID in: the reply's (see langFor), decided by the step's first
+      // sentence when the reply has none yet - not each sentence's own. Fetched in its own
+      // language, a sentence in the other script was fetched twice, the second time when it
+      // was due, and the wasted one held one of the core's two synthesis slots (2026-10-15).
+      // langFor itself is not asked: a step that turns out to be tools must not decide the reply.
+      this.previewLang ??= this.replyLang ?? (/\p{L}/u.test(clean) ? scriptLanguage(clean, this.o.language) : null);
+      this.o.speaker.prepare?.(clean, this.previewLang ?? this.o.language, first);
       if (this.prefetched >= PREFETCH_SENTENCES) break;
     }
   }
@@ -595,6 +604,7 @@ export class CallSession {
     this.stepText = '';
     this.preview = new SentenceSplitter();
     this.prefetched = 0;
+    this.previewLang = null;
     if (endedInToolCalls) {
       this.steeredMidStep = false; // his words go into the next step anyway
       // Where he has got to: the one sentence written before the tools ("Checking your mail."),

@@ -65,8 +65,11 @@ class FakeSpeaker implements Speaker {
   firsts: string[] = [];
   cancelled = 0;
   private pending: (() => void)[] = [];
-  prepare(text: string, _lang: string, first?: boolean): void {
+  /** `lang|text`, the key a server voice caches a prepared sentence by. */
+  preparedKeys: string[] = [];
+  prepare(text: string, lang: string, first?: boolean): void {
     this.prepared.push(text);
+    this.preparedKeys.push(`${lang}|${text}`);
     if (first) this.firsts.push(text);
   }
   available(): boolean {
@@ -912,5 +915,29 @@ describe('CallSession', () => {
     t.speaker.finishOne();
     await tick();
     expect(t.speaker.prepared).toContain('Пет.');
+  });
+
+  it('a sentence fetched while the step is written is fetched in the language it will be said in', async () => {
+    // Fetched in its own script's language, an English sentence in a Bulgarian-voiced reply was
+    // synthesised twice (2026-10-15).
+    const t = build();
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    t.session.onRunQueued('r1', 'c1');
+    t.session.onDelta('r1', 'Проверих пощата. Nothing new today. Това е.');
+    t.session.onStepDone('r1', false);
+    t.session.onRunDone('r1');
+    await tick();
+    t.speaker.finishAll();
+    await tick();
+    t.speaker.finishAll();
+    await tick();
+    const said = t.speaker.spoken.map((s) => `${s.lang}|${s.text}`);
+    expect(said).toContain('bg|Nothing new today.');
+    // Every sentence said was prepared under the key it is said with (the server voice
+    // ignores a key it already has), and never under another.
+    for (const key of said) expect(t.speaker.preparedKeys).toContain(key);
+    expect(t.speaker.preparedKeys).not.toContain('en|Nothing new today.');
   });
 });

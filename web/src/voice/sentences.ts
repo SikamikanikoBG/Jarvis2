@@ -10,8 +10,15 @@
 const ENDERS = /[.!?…]/;
 /** Abbreviations a full stop does not end a sentence after (lowercased, no dot). */
 const ABBREVIATIONS = new Set(['т', 'н', 'т.н', 'напр', 'г', 'ул', 'бул', 'тел', 'e.g', 'i.e', 'etc', 'vs', 'mr', 'mrs', 'dr', 'no', 'св', 'проф', 'инж', 'стр']);
-/** After an ender, one of these opens the next sentence: a space or a newline, then an upper-case letter or a digit or a quote. */
-const NEXT_START = /^(\s+)(["“„«(]?[A-ZА-ЯЁ0-9])/u;
+/** After an ender, one of these opens the next sentence: a space or a newline, then an upper-case
+ *  letter or a digit - after an opening quote or Markdown emphasis, if any ("**Готово.** Следва"). */
+const NEXT_START = /^(\s+)((?:[*_~`]{1,3})?["“„«(]?(?:[*_~`]{1,3})?[A-ZА-ЯЁ0-9])/u;
+/** What may close a sentence after its full stop: Markdown emphasis, a closing quote or bracket.
+ *  The splitter reads the reply as written, before `speakable` strips the Markdown, and "You
+ *  said: *Колко е часът?*" followed by a paragraph was never cut: a whole reply went to be
+ *  synthesised as one piece - a longer wait for the first word, and past 600 characters a 502
+ *  and the device voice (2026-10-15, found driving a call end to end). */
+const CLOSERS = /[*_~`"”“»)'’]/;
 
 export class SentenceSplitter {
   private buffer = '';
@@ -50,6 +57,7 @@ export class SentenceSplitter {
       // Swallow a run of enders ("?!", "...") as one.
       let end = i + 1;
       while (end < this.buffer.length && ENDERS.test(this.buffer[end] ?? '')) end += 1;
+      while (end < this.buffer.length && CLOSERS.test(this.buffer[end] ?? '')) end += 1;
       const rest = this.buffer.slice(end);
       // A paragraph break is always a cut, whatever follows.
       if (/^\s*\n\s*\n/.test(rest)) return end;

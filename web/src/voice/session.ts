@@ -267,7 +267,8 @@ export class CallSession {
       this.set({ phase: 'ended' });
       return;
     }
-    this.set({ phase: 'listening' });
+    // Hung up while the microphone was being asked for: it stays ended.
+    if (this.state.phase !== 'ended') this.set({ phase: 'listening' });
   }
 
   end(): void {
@@ -309,6 +310,9 @@ export class CallSession {
     }
     this.set({ route });
     this.rerouting += 1;
+    // The microphone is reopened: an utterance he was in the middle of is gone with it, and its
+    // pieces must not be glued to the front of the next one.
+    this.dropPieces();
     this.o.cues?.thinking(false);
     let unsaid: string[] = [];
     if (this.speaking) {
@@ -449,10 +453,13 @@ export class CallSession {
         this.heardLang = res.language;
       }
     } catch (e) {
+      if ((this.state.phase as CallPhase) === 'ended') return;
       this.fail(`I can't hear you right now — the speech service is not answering (${e instanceof Error ? e.message : 'error'}).`);
       this.set({ phase: 'listening' });
       return;
     }
+    // Hung up while Whisper worked: nothing more happens on this call, nothing is sent.
+    if ((this.state.phase as CallPhase) === 'ended') return;
     if (!text) {
       this.set({ phase: this.held ? 'transcribing' : 'listening' });
       this.onSpeechDropped();
@@ -632,10 +639,10 @@ export class CallSession {
   }
 
   onRunFailed(runId: string, error: string): void {
-    if (runId !== this.state.runId) return;
+    if (runId !== this.state.runId || this.state.phase === 'ended') return;
     this.set({ runId: null });
-    this.o.speaker.cancel();
     this.queue = [];
+    this.o.speaker.cancel();
     this.fail(`Something went wrong on my side: ${error}`);
     void this.sayProblem();
   }
@@ -660,13 +667,22 @@ export class CallSession {
 
   private async drain(): Promise<void> {
     this.cutIn = false;
-    this.o.listener.setSpeaking(true, this.o.speaker.cancellable?.() ?? false);
+    let echoCancelled = this.o.speaker.cancellable?.() ?? false;
+    this.o.listener.setSpeaking(true, echoCancelled);
     this.set({ phase: 'speaking' });
     try {
       while (this.queue.length > 0 && !this.cutIn && this.state.phase !== 'ended') {
         const sentence = this.queue.shift();
         if (sentence === undefined) break;
         this.current = sentence;
+        // The bar to cut in follows the voice actually playing: once the server voice has fallen
+        // back to the device's (outside the echo canceller), the low bar let Jarvis's own words
+        // through as a cut-in and he interrupted himself.
+        const cancelled = this.o.speaker.cancellable?.() ?? false;
+        if (cancelled !== echoCancelled) {
+          echoCancelled = cancelled;
+          this.o.listener.setSpeaking(true, cancelled);
+        }
         await this.o.speaker.speak(sentence, this.langFor(sentence));
         this.current = null;
         const problem = this.o.speaker.takeProblem?.();
@@ -701,10 +717,16 @@ export class CallSession {
       this.backToListening();
       return;
     }
+    // The answer it cut short is still unwinding: let it, or its ending would ungate the
+    // microphone in the middle of this sentence and his own words come back as a question.
+    await this.speaking;
+    if (this.state.phase === 'ended') return;
+    this.o.listener.setSpeaking(true, this.o.speaker.cancellable?.() ?? false);
     this.set({ phase: 'speaking' });
     try {
       await this.o.speaker.speak(p, scriptLanguage(p, this.o.language));
     } finally {
+      this.o.listener.setSpeaking(false);
       this.backToListening();
     }
   }

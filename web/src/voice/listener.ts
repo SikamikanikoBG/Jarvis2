@@ -81,6 +81,9 @@ export class MicListener implements Listener {
   /** The last pause of this utterance: a breath, if he goes on after it. */
   private lastPause: { at: number; sample: number } | null = null;
   private speaking = false;
+  private echoCancelled = false;
+  /** When the microphone was last lost and reopened. */
+  private lostAt = Number.NEGATIVE_INFINITY;
   /** Until this moment on the call's clock the microphone is ignored (a cue is sounding). */
   private suppressUntil = 0;
   private route: CallRoute = 'earpiece';
@@ -107,11 +110,13 @@ export class MicListener implements Listener {
     this.handlers = handlers;
     this.t0 = performance.now();
     this.started = true;
+    document.addEventListener('visibilitychange', this.onVisible);
     await this.open();
   }
 
   stop(): void {
     this.started = false;
+    document.removeEventListener('visibilitychange', this.onVisible);
     this.close();
     this.seg = new Segmenter();
     this.gate = new EchoGate();
@@ -132,6 +137,12 @@ export class MicListener implements Listener {
       if (ctx.state === 'suspended') await ctx.resume();
       await ctx.audioWorklet.addModule(WORKLET_URL);
       if (this.ctx !== ctx) return; // closed meanwhile
+      // Android suspends a page's audio for a real phone call, an alarm, another app taking the
+      // sound - and nothing resumed it: the call came back deaf and mute. Resume it as soon as
+      // it stops (statechange) and whenever the page is back in front (onVisible).
+      ctx.onstatechange = () => this.wake();
+      // A microphone the system took away (another app, a device that went) is opened again.
+      for (const track of stream.getAudioTracks()) track.onended = () => this.lost(stream);
       const tap = new AudioWorkletNode(ctx, 'pcm-tap', { numberOfInputs: 1, numberOfOutputs: 0, channelCount: 1 });
       const rate = ctx.sampleRate;
       tap.port.onmessage = (e: MessageEvent<Float32Array>) => this.onAudio(e.data, rate);
@@ -146,11 +157,39 @@ export class MicListener implements Listener {
     }
   }
 
+  private readonly onVisible = () => {
+    if (document.visibilityState === 'visible') this.wake();
+  };
+
+  /** The call's context stopped running while the call goes on: start it again. */
+  private wake(): void {
+    const ctx = this.ctx;
+    if (!this.started || this.rebuilding || !ctx || ctx.state === 'running' || ctx.state === 'closed') return;
+    void ctx.resume().catch(() => undefined);
+  }
+
+  /** The microphone ended without us closing it: open everything again on the same route. */
+  private lost(stream: MediaStream): void {
+    if (!this.started || this.stream !== stream || this.rerouting) return;
+    const now = performance.now();
+    // Lost again right after it was reopened: it is not coming back; say so, do not loop.
+    if (now - this.lostAt < 5000) {
+      this.handlers?.onError('The microphone keeps dropping out; hang up and call again.');
+      return;
+    }
+    this.lostAt = now;
+    this.handlers?.onError('The microphone was lost; reopening it.');
+    void this.rebuild();
+  }
+
   /** Everything open, let go: the microphone first, so the phone can leave call mode. */
   private close(): void {
     this.source?.disconnect();
     this.source = null;
-    this.stream?.getTracks().forEach((t) => t.stop());
+    this.stream?.getTracks().forEach((t) => {
+      t.onended = null;
+      t.stop();
+    });
     this.stream = null;
     this.tap?.port.close();
     this.tap?.disconnect();
@@ -161,6 +200,7 @@ export class MicListener implements Listener {
 
   setSpeaking(on: boolean, echoCancelled = false): void {
     this.speaking = on;
+    this.echoCancelled = echoCancelled;
     const now = performance.now() - this.t0;
     // On the speaker nothing subtracts his voice from the microphone, whatever plays it.
     if (on) this.gate.setProfile(echoCancelled && this.route === 'earpiece');
@@ -186,6 +226,12 @@ export class MicListener implements Listener {
     if (route === this.route) return this.rerouting ?? Promise.resolve();
     this.route = route;
     if (!this.started) return Promise.resolve();
+    return this.rebuild();
+  }
+
+  /** Close everything and open it again for the current route. One at a time; a call while one
+   *  runs joins it (and it reopens for the latest route). */
+  private rebuild(): Promise<void> {
     const run = async () => {
       this.rebuilding = true;
       try {
@@ -206,7 +252,7 @@ export class MicListener implements Listener {
         this.rebuilding = false;
         this.rerouting = null;
       }
-      if (this.speaking) this.setSpeaking(true);
+      if (this.speaking) this.setSpeaking(true, this.echoCancelled);
     };
     this.rerouting ??= run();
     return this.rerouting;

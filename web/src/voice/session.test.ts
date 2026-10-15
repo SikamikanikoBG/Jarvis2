@@ -837,5 +837,56 @@ describe('CallSession', () => {
     await tick();
     expect(t.speaker.spoken.map((x) => x.text)).toEqual(['Три писма и слънце.']);
   });
-});
 
+
+  it('hung up while Whisper works: nothing is sent and the call stays ended', async () => {
+    const transcriber = new FakeTranscriber();
+    transcriber.delayMs = 20;
+    const t = build({ transcriber });
+    await t.session.start();
+    t.listener.say();
+    t.session.end();
+    const changes = t.states.length;
+    await new Promise((r) => setTimeout(r, 40));
+    expect(t.transport.created).toEqual([]);
+    expect(t.session.state.phase).toBe('ended');
+    expect(t.states.length).toBe(changes);
+  });
+
+  it('hung up while the microphone is being asked for: the call stays ended', async () => {
+    const listener = new FakeListener();
+    let grant: () => void = () => undefined;
+    listener.start = (h) => {
+      listener.h = h;
+      return new Promise((r) => (grant = r));
+    };
+    const t = build({ listener });
+    const starting = t.session.start();
+    t.session.end();
+    grant();
+    await starting;
+    expect(t.session.state.phase).toBe('ended');
+  });
+
+  it('a failed run says so with the microphone gated, after the cut answer has unwound', async () => {
+    const t = build();
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    t.session.onRunQueued('r1', 'c1');
+    t.session.onDelta('r1', 'Първо. Второ.');
+    t.session.onStepDone('r1', false);
+    await tick();
+    expect(t.listener.gated).toBe(true);
+    t.session.onRunFailed('r1', 'boom');
+    await tick();
+    await tick();
+    // The old answer's ending must not leave the microphone open while the problem is said.
+    expect(t.speaker.spoken.at(-1)?.text).toContain('boom');
+    expect(t.listener.gated).toBe(true);
+    t.speaker.finishAll();
+    await tick();
+    expect(t.listener.gated).toBe(false);
+    expect(t.session.state.phase).toBe('listening');
+  });
+});

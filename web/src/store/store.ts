@@ -220,6 +220,8 @@ let noticeSeq = 0;
 let clientRefSeq = 0;
 /** The call in progress. One at a time; the store's `call` mirrors its state. */
 let session: CallSession | null = null;
+/** A call is being set up (settings, home chat) and has no session yet. */
+let callStarting = false;
 let speaker: DeviceSpeaker | ServerSpeaker | null = null;
 
 const ROUTE_KEY = 'jarvis_call_route';
@@ -426,7 +428,9 @@ export const useStore = create<AppState>()((set, get) => ({
   setMoreOpen: (open) => set({ moreOpen: open }),
 
   startCall: async (opts) => {
-    if (session) return;
+    // The session exists only after the settings and the home chat are fetched: until then a
+    // second tap on the call button started a second call, with a microphone of its own.
+    if (session || callStarting) return;
     const s = get();
     let open = s.openConversationId;
     const socket = ws;
@@ -434,6 +438,7 @@ export const useStore = create<AppState>()((set, get) => ({
       s.notify('Not connected to Jarvis.', 'error');
       return;
     }
+    callStarting = true;
     // Still inside the tap, before anything is awaited: fullscreen and portrait for the call,
     // and (iOS) leave to read the accelerometer that tells an ear from a look.
     holdScreen();
@@ -473,7 +478,7 @@ export const useStore = create<AppState>()((set, get) => ({
     // The voice plays through the microphone's own context (opened in this tap, proven
     // running), never a second one opened later while the phone is in call mode.
     speaker = tts === 'server' ? new ServerSpeaker({ contextOf: () => listener.audioContext, cache: !incognito }) : new DeviceSpeaker();
-    session = new CallSession({
+    const call: CallSession = new CallSession({
       listener,
       speaker,
       transcriber: {
@@ -522,19 +527,24 @@ export const useStore = create<AppState>()((set, get) => ({
         waiting,
         volume: holdVolume,
         onHold: (on) => listener.setHold(on),
-        musicAllowed: () => session?.state.route !== 'speaker',
+        musicAllowed: (): boolean => call.state.route !== 'speaker',
       }),
-      onChange: (call) => set({ call: { ...call } }),
+      // Only the live call draws the screen: a hung-up session finishing a recognition must not
+      // bring the call screen back.
+      onChange: (state) => {
+        if (session === call) set({ call: { ...state } });
+      },
     });
+    session = call;
+    callStarting = false;
     if (open) socket.send({ type: 'subscribe', conversation_id: open });
-    await session.start();
-    if (opts?.say && session.state.phase !== 'ended') session.say(opts.say);
-    if (session.state.phase === 'ended') {
+    await call.start();
+    if (session !== call) return; // hung up while the microphone was being asked for
+    if (opts?.say && call.state.phase !== 'ended') call.say(opts.say);
+    if (call.state.phase === 'ended') {
       // The microphone was refused or is missing: the reason is on the screen, the call is over.
-      const problem = session.state.problem;
-      session = null;
-      releaseScreen();
-      set({ call: null });
+      const problem = call.state.problem;
+      get().endCall();
       if (problem) get().notify(problem, 'error');
     }
   },

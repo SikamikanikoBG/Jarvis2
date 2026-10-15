@@ -31,8 +31,11 @@ class FakeListener implements Listener {
   setSpeaking(g: boolean): void {
     this.gated = g;
   }
-  setRoute(r: 'earpiece' | 'speaker'): void {
+  /** Set by a test to hold a route change open (the real one reopens the microphone and audio). */
+  routeGate: Promise<void> | null = null;
+  setRoute(r: 'earpiece' | 'speaker'): Promise<void> {
     this.route = r;
+    return this.routeGate ?? Promise.resolve();
   }
   setMuted(m: boolean): void {
     this.muted = m;
@@ -559,9 +562,54 @@ describe('CallSession', () => {
     await t.session.start();
     expect(t.listener.route).toBe('earpiece');
     expect(t.session.state.route).toBe('earpiece');
-    t.session.setRoute('speaker');
+    void t.session.setRoute('speaker');
     expect(t.listener.route).toBe('speaker');
     expect(t.session.state.route).toBe('speaker');
+  });
+
+  it('a route change mid-sentence says that sentence again on the new route, and nothing before it is ready', async () => {
+    // 2026-10-15: the audio is rebuilt on a route change (the output's kind is fixed when it opens).
+    const t = build();
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    t.session.onRunQueued('r1', 'c1');
+    t.session.onDelta('r1', 'Първо. Второ. Трето.');
+    t.session.onRunDone('r1');
+    await tick();
+    t.speaker.finishOne(); // "Първо." said
+    await tick();
+    expect(t.speaker.spoken.map((s) => s.text)).toEqual(['Първо.', 'Второ.']);
+    let open: () => void = () => undefined;
+    t.listener.routeGate = new Promise((r) => (open = r));
+    const switching = t.session.setRoute('speaker');
+    await tick();
+    // "Второ." was cut by the switch: not counted as heard, and nothing plays while the audio is down.
+    expect(t.session.state.spokenUpTo).toBe(1);
+    expect(t.speaker.spoken).toHaveLength(2);
+    open();
+    await switching;
+    await tick();
+    expect(t.speaker.spoken.map((s) => s.text)).toEqual(['Първо.', 'Второ.', 'Второ.']);
+    t.speaker.finishOne();
+    await tick();
+    t.speaker.finishOne();
+    await tick();
+    expect(t.speaker.spoken.map((s) => s.text).slice(3)).toEqual(['Трето.']);
+    expect(t.session.state.spokenUpTo).toBe(3);
+    expect(t.session.state.phase).toBe('listening');
+  });
+
+  it('a route change while he thinks starts the waiting sound again once the new route is up', async () => {
+    const t = build();
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    t.session.onRunQueued('r1', 'c1');
+    expect(t.session.state.phase).toBe('thinking');
+    t.cues.log = [];
+    await t.session.setRoute('speaker');
+    expect(t.cues.log).toEqual(['thinking:false', 'thinking:true']);
   });
 
   it('one reply, one voice: the first sentence with letters decides the language for the rest', async () => {

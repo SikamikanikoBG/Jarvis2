@@ -44,6 +44,8 @@ const PIECE_MIN_MS = 4000;
 const TURN_CONTEXT_MS = 8000;
 /** The worklet that taps the samples; served with the SPA (web/public/pcm-worklet.js). */
 const WORKLET_URL = '/pcm-worklet.js';
+/** Between letting the old microphone go and asking for the new one on a route change. */
+const REROUTE_GAP_MS = 250;
 
 /**
  * The microphone per route. Echo cancelling is what puts Android in call mode, and call mode is
@@ -85,66 +87,76 @@ export class MicListener implements Listener {
   private muted = false;
   private handlers: ListenerHandlers | null = null;
   private t0 = 0;
-  private acquiring: Promise<void> | null = null;
+  private started = false;
+  /** A route change is closing and reopening everything. */
+  private rebuilding = false;
+  private rerouting: Promise<void> | null = null;
 
-  /** The context the microphone runs in: created inside the "start call" tap and proven running
-   *  by the level ring, so the voice plays through it too rather than through a second context
-   *  opened later, outside any gesture, while the phone is in call mode. */
+  /** The context the microphone runs in, and the one the voice, the cues and the hold music
+   *  play through. Opened only AFTER the microphone: Chrome on Android fixes an output's kind when
+   *  it opens - a call's (earpiece, call volume) only while a microphone with echo cancelling is
+   *  open, a media one (loudspeaker, media volume) otherwise. Opened first, as it was until
+   *  alpha.70, the voice was media inside a call: the volume keys turned the call volume, which
+   *  played nothing, and the voice came out of the loudspeaker at the ear (2026-10-15). Null
+   *  while a route change rebuilds it. */
   get audioContext(): AudioContext | null {
-    return this.ctx && this.ctx.state !== 'closed' ? this.ctx : null;
+    return this.ctx && this.ctx.state !== 'closed' && !this.rebuilding ? this.ctx : null;
   }
 
   async start(handlers: ListenerHandlers): Promise<void> {
     this.handlers = handlers;
-    this.ctx = new AudioContext();
-    if (this.ctx.state === 'suspended') await this.ctx.resume();
-    await this.ctx.audioWorklet.addModule(WORKLET_URL);
-    this.tap = new AudioWorkletNode(this.ctx, 'pcm-tap', { numberOfInputs: 1, numberOfOutputs: 0, channelCount: 1 });
-    const rate = this.ctx.sampleRate;
-    this.tap.port.onmessage = (e: MessageEvent<Float32Array>) => this.onAudio(e.data, rate);
     this.t0 = performance.now();
-    await this.acquire();
+    this.started = true;
+    await this.open();
   }
 
   stop(): void {
-    this.release();
-    this.tap?.port.close();
-    this.tap?.disconnect();
-    this.tap = null;
-    void this.ctx?.close();
-    this.ctx = null;
+    this.started = false;
+    this.close();
     this.seg = new Segmenter();
     this.gate = new EchoGate();
     this.written = 0;
   }
 
-  /** Take the microphone (again). Idempotent; a second call while one is in flight joins it. */
-  private acquire(): Promise<void> {
-    if (this.stream) return Promise.resolve();
-    this.acquiring ??= (async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS[this.route]);
-        if (!this.ctx || !this.tap) {
-          stream.getTracks().forEach((t) => t.stop()); // stopped while we were asking
-          return;
-        }
-        this.stream = stream;
-        this.source = this.ctx.createMediaStreamSource(stream);
-        this.source.connect(this.tap);
-        // A fresh microphone is a fresh room: the floor warms up again before anything counts.
-        this.seg = new Segmenter(this.seg.opts);
-      } finally {
-        this.acquiring = null;
-      }
-    })();
-    return this.acquiring;
+  /** The microphone, then the context on it. A failure leaves nothing open. */
+  private async open(): Promise<void> {
+    const stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS[this.route]);
+    if (!this.started) {
+      stream.getTracks().forEach((t) => t.stop()); // hung up while we were asking
+      return;
+    }
+    this.stream = stream;
+    try {
+      const ctx = new AudioContext();
+      this.ctx = ctx;
+      if (ctx.state === 'suspended') await ctx.resume();
+      await ctx.audioWorklet.addModule(WORKLET_URL);
+      if (this.ctx !== ctx) return; // closed meanwhile
+      const tap = new AudioWorkletNode(ctx, 'pcm-tap', { numberOfInputs: 1, numberOfOutputs: 0, channelCount: 1 });
+      const rate = ctx.sampleRate;
+      tap.port.onmessage = (e: MessageEvent<Float32Array>) => this.onAudio(e.data, rate);
+      this.tap = tap;
+      this.source = ctx.createMediaStreamSource(stream);
+      this.source.connect(tap);
+      // A fresh microphone is a fresh room: the floor warms up again before anything counts.
+      this.seg = new Segmenter(this.seg.opts);
+    } catch (e) {
+      this.close();
+      throw e;
+    }
   }
 
-  private release(): void {
+  /** Everything open, let go: the microphone first, so the phone can leave call mode. */
+  private close(): void {
     this.source?.disconnect();
     this.source = null;
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
+    this.tap?.port.close();
+    this.tap?.disconnect();
+    this.tap = null;
+    void this.ctx?.close().catch(() => undefined);
+    this.ctx = null;
   }
 
   setSpeaking(on: boolean, echoCancelled = false): void {
@@ -167,14 +179,37 @@ export class MicListener implements Listener {
     this.seg.setAttack(on ? CUT_IN_ATTACK_MS : null);
   }
 
-  setRoute(route: CallRoute): void {
-    if (route === this.route) return;
+  /** The route is the microphone's settings AND the output's kind, fixed when the output opens:
+   *  both are closed and opened again, microphone first. Resolves once the new context is ready;
+   *  the session holds the voice and the hold music until then. */
+  setRoute(route: CallRoute): Promise<void> {
+    if (route === this.route) return this.rerouting ?? Promise.resolve();
     this.route = route;
-    // The route is the microphone's settings: reopen it with the new ones (if it is open yet).
-    if (!this.ctx) return;
-    this.release();
-    void this.acquire().catch((e: unknown) => this.handlers?.onError(e instanceof Error ? e.message : 'The microphone could not be reopened.'));
-    if (this.speaking) this.setSpeaking(true);
+    if (!this.started) return Promise.resolve();
+    const run = async () => {
+      this.rebuilding = true;
+      try {
+        this.close();
+        // Let the old microphone go all the way before the new one is asked for: Chrome leaves
+        // call mode only once no microphone is open, and an output opened while it is still in
+        // it would be a call's again.
+        await new Promise((r) => setTimeout(r, REROUTE_GAP_MS));
+        while (this.started) {
+          const want = this.route;
+          await this.open();
+          if (want === this.route || !this.started) break;
+          this.close(); // switched again while this one opened: once more, for the latest
+        }
+      } catch (e) {
+        this.handlers?.onError(e instanceof Error ? e.message : 'The microphone could not be reopened.');
+      } finally {
+        this.rebuilding = false;
+        this.rerouting = null;
+      }
+      if (this.speaking) this.setSpeaking(true);
+    };
+    this.rerouting ??= run();
+    return this.rerouting;
   }
 
   setMuted(muted: boolean): void {

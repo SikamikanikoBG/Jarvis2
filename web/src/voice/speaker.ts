@@ -99,6 +99,7 @@ export class DeviceSpeaker implements Speaker {
  */
 export class ServerSpeaker implements Speaker {
   private own: AudioContext | null = null;
+  private offline: OfflineAudioContext | null = null;
   private current: { source: AudioBufferSourceNode; resolve: () => void; watchdog: ReturnType<typeof setTimeout> } | null = null;
   private prepared = new Map<string, Promise<AudioBuffer | null>>();
   private readonly fallback = new DeviceSpeaker();
@@ -139,6 +140,17 @@ export class ServerSpeaker implements Speaker {
     return this.own;
   }
 
+  /** What decodes the clips: the call's context, or - while a route change has none to lend -
+   *  an offline one. Never a context of our own: that is an output, opened as media in the middle
+   *  of a call (listener.ts on why the moment an output opens matters). */
+  private decoder(): BaseAudioContext {
+    const lent = this.o.contextOf?.();
+    if (lent) return lent;
+    if (typeof OfflineAudioContext === 'undefined') return this.context();
+    this.offline ??= new OfflineAudioContext(1, 1, 48_000);
+    return this.offline;
+  }
+
   /** True once the context runs; false when it will not within the deadline. */
   private async running(ctx: AudioContext, deadlineMs = 1500): Promise<boolean> {
     if (ctx.state === 'running') return true;
@@ -151,7 +163,7 @@ export class ServerSpeaker implements Speaker {
   private async fetch(text: string, lang: string, first = false): Promise<AudioBuffer | null> {
     try {
       const bytes = await api.tts(text, lang, { cache: this.o.cache ?? true, first });
-      return await this.context().decodeAudioData(bytes);
+      return await this.decoder().decodeAudioData(bytes);
     } catch (e) {
       this.problem = `The server voice failed (${e instanceof Error ? e.message : 'error'}); using the device voice.`;
       return null;

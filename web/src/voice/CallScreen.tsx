@@ -64,6 +64,13 @@ export function CallScreen() {
   });
   const toggleCallMe = useStore((s) => s.toggleCallMe);
   const conv = useStore((s) => (s.openConversationId ? s.conversations[s.openConversationId] : undefined));
+  // The last contact's size: a tap that was a cheek (wider than a fingertip) presses nothing.
+  // The ear pose needs that cheek before the screen goes dark, so for a moment the controls are
+  // still there to meet it - and a face on its way up was pressing the speaker button (2026-10-15).
+  const lastContactWide = useRef(false);
+  const byFinger = (act: () => void) => () => {
+    if (!lastContactWide.current) act();
+  };
   const touch = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
   const [locked, setLocked] = useState(touch);
   const atEar = useAtEar(Boolean(call) && touch);
@@ -116,6 +123,9 @@ export function CallScreen() {
       role="dialog"
       aria-label="Call with Jarvis"
       aria-modal="true"
+      onPointerDownCapture={(e) => {
+        lastContactWide.current = !e.isPrimary || e.width > FINGER_MAX_PX || e.height > FINGER_MAX_PX;
+      }}
       onPointerDown={() => setTouchedAt(Date.now())}
     >
       <div className="call-head">
@@ -145,13 +155,13 @@ export function CallScreen() {
         </div>
       ) : (
         <div className="call-controls">
-          <button type="button" className={`call-btn${call.muted ? ' on' : ''}`} onClick={() => setMuted(!call.muted)} aria-pressed={call.muted} aria-label={call.muted ? 'Unmute' : 'Mute'}>
+          <button type="button" className={`call-btn${call.muted ? ' on' : ''}`} onClick={byFinger(() => setMuted(!call.muted))} aria-pressed={call.muted} aria-label={call.muted ? 'Unmute' : 'Mute'}>
             <Icon name={call.muted ? 'micOff' : 'mic'} size={22} />
           </button>
           <button
             type="button"
             className={`call-btn${call.route === 'speaker' ? ' on-accent' : ''}`}
-            onClick={() => setRoute(call.route === 'speaker' ? 'earpiece' : 'speaker')}
+            onClick={byFinger(() => setRoute(call.route === 'speaker' ? 'earpiece' : 'speaker'))}
             aria-pressed={call.route === 'speaker'}
             aria-label={call.route === 'speaker' ? 'Speaker on — switch to earpiece' : 'Switch to speaker'}
           >
@@ -160,7 +170,7 @@ export function CallScreen() {
           <button
             type="button"
             className={`call-btn${callMe ? ' on-accent' : ''}`}
-            onClick={() => toggleCallMe({ voice: true })}
+            onClick={byFinger(() => toggleCallMe({ voice: true }))}
             aria-pressed={callMe}
             aria-label={callMe ? 'Jarvis will call you back when this is done — tap to cancel' : 'Call me back when this is done'}
           >

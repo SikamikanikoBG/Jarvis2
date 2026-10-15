@@ -70,11 +70,12 @@ export interface Listener {
    *  he has spoken since. Absent: the release closes it, as always. */
   finish?(at: number): boolean;
   stop(): void;
-  /** Jarvis started or stopped speaking: the listener gates itself (earpiece) or lets the
-   *  microphone go and takes it back (speaker). `echoCancelled` says his voice is the page's
+  /** Jarvis started or stopped speaking: the listener gates the microphone against his voice.
+   *  `echoCancelled` says his voice is the page's
    *  own audio, which the browser subtracts from the microphone — a far lower bar to cut in. */
   setSpeaking(on: boolean, echoCancelled?: boolean): void;
-  setRoute(route: CallRoute): void;
+  /** Resolves when the new route's audio is ready to play on. */
+  setRoute(route: CallRoute): void | Promise<void>;
   setMuted(muted: boolean): void;
 }
 
@@ -231,6 +232,10 @@ export class CallSession {
    *  for a sentence before the step is known to be an answer. Nothing it produces is spoken. */
   private preview = new SentenceSplitter();
   private prefetched = 0;
+  /** A route change is rebuilding the audio: sentences wait in the queue until it is done. */
+  private rerouting = 0;
+  /** The drain is being stopped for a route change, not a cut-in. */
+  private rerouteStop = false;
 
   constructor(private readonly o: SessionOptions) {
     this.conversationId = o.conversationId;
@@ -246,7 +251,7 @@ export class CallSession {
     if (!this.o.speaker.available()) {
       this.set({ problem: 'This device has no voice to speak with.' });
     }
-    this.o.listener.setRoute(route);
+    void this.o.listener.setRoute(route); // not started yet: only remembered
     try {
       await this.o.listener.start({
         onLevel: (level) => this.set({ level }),
@@ -291,14 +296,40 @@ export class CallSession {
     this.speculative = null;
   }
 
-  setRoute(route: CallRoute): void {
-    this.o.listener.setRoute(route);
-    this.set({ route });
-    if (this.state.phase === 'thinking') {
-      // Music on the earpiece, the pulse on the speaker: start the waiting sound again for the route.
-      this.o.cues?.thinking(false);
-      this.o.cues?.thinking(true);
+  /**
+   * Switch where his voice comes out. The listener closes and reopens the microphone and the
+   * audio it plays on (listener.ts: the output's kind is fixed when it opens), so nothing may
+   * play meanwhile: the sentence being said stops and is said again, from its start, on the new
+   * route, and the waiting sound starts again for it (music at the ear, the pulse on the speaker).
+   */
+  async setRoute(route: CallRoute): Promise<void> {
+    if (route === this.state.route || this.state.phase === 'ended') {
+      await this.o.listener.setRoute(route);
+      return;
     }
+    this.set({ route });
+    this.rerouting += 1;
+    this.o.cues?.thinking(false);
+    let unsaid: string[] = [];
+    if (this.speaking) {
+      unsaid = this.current ? [this.current, ...this.queue] : [...this.queue];
+      this.queue = [];
+      this.rerouteStop = true;
+      this.o.speaker.cancel();
+      await this.speaking;
+      this.rerouteStop = false;
+    }
+    try {
+      await this.o.listener.setRoute(route);
+    } finally {
+      this.rerouting -= 1;
+    }
+    if ((this.state.phase as CallPhase) === 'ended') return; // hung up while the audio was rebuilt
+    this.queue = [...unsaid, ...this.queue];
+    if (this.rerouting > 0) return; // switched again meanwhile: the last switch resumes
+    if (this.queue.length > 0) this.startDrain();
+    else if (this.state.phase === 'thinking') this.o.cues?.thinking(true);
+    else if (this.state.phase === 'speaking') this.set({ phase: this.state.runId ? 'thinking' : 'listening' });
   }
 
   // --- from the listener -------------------------------------------------------------------
@@ -337,7 +368,7 @@ export class CallSession {
       await this.speaking;
       if (this.state.phase === 'ended' || this.held || this.suspended.length > 0) return;
       this.queue = [...rest, ...this.queue];
-      this.speaking ??= this.drain();
+      this.startDrain();
     })();
   }
 
@@ -618,7 +649,7 @@ export class CallSession {
     this.queue.push(clean);
     this.o.speaker.prepare?.(clean, this.langFor(clean), first);
     this.set({ saying: [...this.state.saying, clean] });
-    this.speaking ??= this.drain();
+    this.startDrain();
   }
 
   /** The reply's language: decided by its first sentence that has letters, then kept. */
@@ -640,7 +671,7 @@ export class CallSession {
         this.current = null;
         const problem = this.o.speaker.takeProblem?.();
         if (problem) this.fail(problem);
-        if (!this.cutIn) this.set({ spokenUpTo: this.state.spokenUpTo + 1 });
+        if (!this.cutIn && !this.rerouteStop) this.set({ spokenUpTo: this.state.spokenUpTo + 1 });
       }
     } finally {
       this.speaking = null;
@@ -649,8 +680,15 @@ export class CallSession {
     }
     if (this.state.phase === 'ended') return;
     if (this.cutIn) return; // already listening; the cut-in's words are on their way
+    if (this.rerouteStop) return; // the route change says the rest once the audio is back
     if (this.state.runId) this.set({ phase: 'thinking' }); // more is being written
     else this.backToListening();
+  }
+
+  /** Say what is queued - unless a route change is rebuilding the audio; it starts this itself. */
+  private startDrain(): void {
+    if (this.rerouting > 0) return;
+    this.speaking ??= this.drain();
   }
 
   private backToListening(): void {
@@ -685,7 +723,9 @@ export class CallSession {
   private set(patch: Partial<CallState>): void {
     const before = this.state.phase;
     this.state = { ...this.state, ...patch };
-    if (this.state.phase !== before) this.o.cues?.thinking(this.state.phase === 'thinking');
+    // While a route change rebuilds the audio there is nothing to play the waiting sound on; it
+    // starts again when the new route is up.
+    if (this.state.phase !== before && this.rerouting === 0) this.o.cues?.thinking(this.state.phase === 'thinking');
     this.o.onChange(this.state);
   }
 }

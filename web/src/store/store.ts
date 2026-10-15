@@ -608,7 +608,7 @@ export const useStore = create<AppState>()((set, get) => ({
 
   setCallRoute: (route) => {
     writeRoute(route);
-    session?.setRoute(route);
+    void session?.setRoute(route);
   },
 
   openConversation: async (id, opts = {}) => {

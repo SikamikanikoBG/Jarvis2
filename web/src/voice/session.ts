@@ -654,7 +654,10 @@ export class CallSession {
     if (!clean) return;
     const first = this.state.saying.length === 0;
     this.queue.push(clean);
-    this.o.speaker.prepare?.(clean, this.langFor(clean), first);
+    // Only the next few are fetched ahead (the drain fetches the rest as it goes). All of a long
+    // reply at once filled the core's two synthesis slots, and after a cut-in the new answer's
+    // first sentence waited behind the old answer's, which nobody would hear.
+    if (this.queue.length <= PREFETCH_SENTENCES) this.o.speaker.prepare?.(clean, this.langFor(clean), first);
     this.set({ saying: [...this.state.saying, clean] });
     this.startDrain();
   }
@@ -675,6 +678,9 @@ export class CallSession {
         const sentence = this.queue.shift();
         if (sentence === undefined) break;
         this.current = sentence;
+        // While this one plays, the one that has just come within reach gets ready.
+        const ahead = this.queue[PREFETCH_SENTENCES - 1];
+        if (ahead !== undefined) this.o.speaker.prepare?.(ahead, this.langFor(ahead));
         // The bar to cut in follows the voice actually playing: once the server voice has fallen
         // back to the device's (outside the echo canceller), the low bar let Jarvis's own words
         // through as a cut-in and he interrupted himself.

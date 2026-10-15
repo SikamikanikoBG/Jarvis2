@@ -56,7 +56,14 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+/** A sentence of the server voice: the core's own deadline (12 s) plus the network. */
+const TTS_TIMEOUT_MS = 15_000;
+/** Up to 30 s of speech recognised: seconds of work at most, so a minute is a dropped request. */
+const STT_TIMEOUT_MS = 60_000;
+
+/** `timeoutMs`: give up after this long. A call cannot wait on a request the network dropped (a
+ *  phone moving from Wi-Fi to mobile data): it would sit on "Heard you..." for good. */
+async function request<T>(method: string, path: string, body?: unknown, timeoutMs?: number): Promise<T> {
   const headers: Record<string, string> = { Accept: 'application/json' };
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -67,6 +74,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     headers,
     body: body === undefined ? null : multipart ? body : JSON.stringify(body),
     credentials: 'same-origin',
+    ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
   });
   if (res.status === 204) return null as T;
   const text = await res.text();
@@ -248,7 +256,9 @@ export const api = {
     const token = getToken();
     if (token) headers.Authorization = `Bearer ${token}`;
     const body = JSON.stringify({ text, lang, cache: opts.cache ?? true, first: opts.first ?? false });
-    const res = await fetch('/api/tts', { method: 'POST', headers, body, credentials: 'same-origin' });
+    // Past this the device voice says the sentence: better than a call sitting silent on
+    // "Speaking" behind a request the network dropped.
+    const res = await fetch('/api/tts', { method: 'POST', headers, body, credentials: 'same-origin', signal: AbortSignal.timeout(TTS_TIMEOUT_MS) });
     if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => ''));
     return res.arrayBuffer();
   },
@@ -261,7 +271,7 @@ export const api = {
     if (opts.prompt) form.append('prompt', opts.prompt);
     if (opts.turn) form.append('turn', 'true');
     if (opts.offsetMs) form.append('stt_offset_ms', String(Math.round(opts.offsetMs)));
-    return request<SttResponse>('POST', '/api/stt', form);
+    return request<SttResponse>('POST', '/api/stt', form, STT_TIMEOUT_MS);
   },
   assistant: {
     /** The Jarvis conversation, made on first use (docs/stories/12_assistant.md). */

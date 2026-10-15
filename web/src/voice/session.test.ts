@@ -889,4 +889,28 @@ describe('CallSession', () => {
     expect(t.listener.gated).toBe(false);
     expect(t.session.state.phase).toBe('listening');
   });
+
+  it('a long reply has only the next two sentences synthesised ahead, not all of it at once', async () => {
+    // All at once filled the core's two synthesis slots; after a cut-in the new answer waited
+    // behind sentences nobody would hear.
+    const t = build();
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    t.session.onRunQueued('r1', 'c1');
+    t.session.onStepDone('r1', false);
+    t.speaker.prepared = [];
+    t.session.say('Едно. Две. Три. Четири. Пет.');
+    await tick();
+    // "Едно." is playing; "Две." and "Три." are ready.
+    expect(t.speaker.spoken.map((s) => s.text)).toEqual(['Едно.']);
+    expect(new Set(t.speaker.prepared)).toEqual(new Set(['Едно.', 'Две.', 'Три.']));
+    t.speaker.finishOne();
+    await tick();
+    expect(t.speaker.prepared).toContain('Четири.');
+    expect(t.speaker.prepared).not.toContain('Пет.');
+    t.speaker.finishOne();
+    await tick();
+    expect(t.speaker.prepared).toContain('Пет.');
+  });
 });

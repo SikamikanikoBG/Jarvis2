@@ -109,6 +109,32 @@ export class VoiceLine {
     await up;
     this.settle();
     await this.listOutputs();
+    this.report('connected');
+    navigator.mediaDevices.addEventListener('devicechange', this.onDevices);
+  }
+
+  private readonly onDevices = () => void this.listOutputs().then(() => this.report('devicechange'));
+
+  /** What only the phone knows - its outputs and inputs as the browser names them, where the
+   *  call's sound is set to go - into the line's log, so a call is read from data, not guessed. */
+  private report(why: string): void {
+    void navigator.mediaDevices
+      .enumerateDevices()
+      .catch(() => [] as MediaDeviceInfo[])
+      .then((devices) => {
+        if (this.dc?.readyState !== 'open') return;
+        const audio = this.audio;
+        this.dc.send(
+          JSON.stringify({
+            t: 'diag',
+            why,
+            sink: audio?.sinkId ?? null,
+            setSinkId: 'setSinkId' in HTMLMediaElement.prototype,
+            devices: devices.map((d) => `${d.kind}:${d.label || d.deviceId.slice(0, 8)}`),
+            ua: navigator.userAgent,
+          }),
+        );
+      });
   }
 
   /** Say one sentence's audio; resolves true when it was heard out, false when it was cut. */
@@ -170,10 +196,12 @@ export class VoiceLine {
     const next = this.outputs[(at + 1) % this.outputs.length];
     if (!next) return false;
     await audio.setSinkId(next.deviceId);
+    this.report('output changed');
     return true;
   }
 
   close(): void {
+    navigator.mediaDevices.removeEventListener('devicechange', this.onDevices);
     this.stop();
     try {
       this.dc?.close();

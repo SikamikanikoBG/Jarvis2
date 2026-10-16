@@ -217,6 +217,9 @@ async def offer(request: web.Request) -> web.Response:
                     pending.clear()
                     log.info("%s: cut (%d queued)", call, len(line.queue))
                     line.stop()
+                case "diag":
+                    # The page's own account (line.ts report): devices, where the sound goes.
+                    log.info("%s: page %s", call, json.dumps({k: v for k, v in msg.items() if k != "t"}, ensure_ascii=False))
                 case "pause" | "resume":
                     line.paused = msg["t"] == "pause"
                     log.info("%s: %s", call, msg["t"])

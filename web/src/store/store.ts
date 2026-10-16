@@ -564,11 +564,16 @@ export const useStore = create<AppState>()((set, get) => ({
         listener.lineDown();
         if (line === callLine) set({ callLine: false });
       };
-      void callLine.connect().catch(() => callLine.giveUp());
     }
     if (open) socket.send({ type: 'subscribe', conversation_id: open });
     await call.start();
     if (session !== call) return; // hung up while the microphone was being asked for
+    // The line only once the microphone (echo cancelling on) is open: Chrome on Android fixes an
+    // output's kind when it opens - a call's (earpiece, call volume) only while such a microphone
+    // is open, media (the loudspeaker at the bottom) otherwise (listener.ts). Connected beside the
+    // microphone, the line's sound could open first: at the ear the cheek covered the speaker and
+    // Jarvis "disappeared" (2026-10-16).
+    if (callLine && call.state.phase !== 'ended') void callLine.connect().catch(() => callLine.giveUp());
     if (opts?.say && call.state.phase !== 'ended') call.say(opts.say);
     if (call.state.phase === 'ended') {
       // The microphone was refused or is missing: the reason is on the screen, the call is over.

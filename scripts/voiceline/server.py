@@ -23,6 +23,7 @@ Data channel "line", page -> line:
     {"t": "clip", "id": "...", "size": n}  then n bytes in binary messages: one sentence (MP3/WAV),
                                             played when the last byte is in, after those before it
     {"t": "stop"}                           cut: the sentence playing and those queued are dropped
+    {"t": "pause"} / {"t": "resume"}        hold the voice mid-word / go on from that very spot
     {"t": "music", "on": bool, "volume": 0..1}
 line -> page:
     {"t": "started", "id"} / {"t": "done", "id", "cut": bool} / {"t": "error", "id", "error"}
@@ -81,11 +82,12 @@ class Line:
     music_volume: float = 0.4
     gain: float = FLOOR
     music_pos: int = 0
+    paused: bool = False
 
     def next_frame(self) -> np.ndarray:
         out = np.zeros(FRAME, dtype=np.float32)
         filled = 0
-        while filled < FRAME and self.queue:
+        while filled < FRAME and self.queue and not self.paused:
             clip = self.queue[0]
             if not clip.started:
                 clip.started = True
@@ -115,6 +117,7 @@ class Line:
         out += self.music[idx] * ramp * (0.5 * self.music_volume)
 
     def stop(self) -> None:
+        self.paused = False
         for clip in self.queue:
             self.send({"t": "done", "id": clip.id, "cut": True})
         self.queue.clear()
@@ -214,6 +217,9 @@ async def offer(request: web.Request) -> web.Response:
                     pending.clear()
                     log.info("%s: cut (%d queued)", call, len(line.queue))
                     line.stop()
+                case "pause" | "resume":
+                    line.paused = msg["t"] == "pause"
+                    log.info("%s: %s", call, msg["t"])
                 case "music":
                     line.music_on = bool(msg.get("on"))
                     log.info("%s: music %s", call, "on" if line.music_on else "off")

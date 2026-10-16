@@ -114,6 +114,10 @@ export interface Speaker {
   beginReply?(): void;
   /** True when the page plays the audio itself, so the browser's echo canceller has it. */
   cancellable?(): boolean;
+  /** Hold the sentence where it is (a sound over him that may be words); `resume` goes on from
+   *  that very spot. A voice without them is cut at once and says the sentence again instead. */
+  pause?(): void;
+  resume?(): void;
 }
 
 export type Recognised = { text: string; language: string | null; turnComplete?: number | null };
@@ -199,6 +203,9 @@ export class CallSession {
   private suspended: string[] = [];
   /** The sentence being spoken right now, so a cut-in can put it back unsaid. */
   private current: string | null = null;
+  /** He made a sound over the voice and it is held mid-sentence (Speaker.pause) until the sound
+   *  turns out to be words - then it is cut - or nothing - then it goes on from where it stopped. */
+  private paused = false;
   /** How much of the answer he had actually heard when he cut in. */
   private cutAfter = 0;
   /** Recognised words waiting for him to finish (the join window), and the timer that sends them. */
@@ -274,6 +281,7 @@ export class CallSession {
   }
 
   end(): void {
+    this.paused = false;
     this.clearJoin();
     this.o.listener.stop();
     this.o.speaker.cancel();
@@ -289,6 +297,8 @@ export class CallSession {
   setMuted(muted: boolean): void {
     this.o.listener.setMuted(muted);
     if (muted) this.dropPieces();
+    // Muted mid-sound: nothing more will come of it.
+    if (muted && this.paused) this.onSpeechDropped();
     this.set({ muted });
   }
 
@@ -347,6 +357,16 @@ export class CallSession {
   // --- from the listener -------------------------------------------------------------------
 
   private onSpeechStart(): void {
+    if (this.state.phase === 'speaking' && this.o.speaker.pause && this.o.speaker.resume) {
+      // A sound is not yet a cut-in: a cheek on the glass, a breath, a chair (2026-10-16, "като
+      // допра телефона до бузата спирам да чувам Джарвис" - every such sound stopped him, and
+      // Whisper found no words in it). He pauses; words cut him (commitCut), nothing resumes him.
+      this.paused = true;
+      this.cutAfter = this.state.spokenUpTo;
+      this.o.speaker.pause();
+      this.set({ phase: 'listening' });
+      return;
+    }
     if (this.state.phase === 'speaking') {
       // Cut-in: he stops mid-sentence and listens. What was half-written before the cut is
       // dropped too — it was an answer to the question he has just been talked out of.
@@ -373,6 +393,14 @@ export class CallSession {
    * it — starting a second drain beside the first would say everything twice.
    */
   onSpeechDropped(): void {
+    if (this.paused) {
+      // Nothing he said: the voice goes on from the very word it stopped at.
+      this.paused = false;
+      if (this.state.phase === 'ended') return;
+      this.o.speaker.resume?.();
+      this.set({ phase: 'speaking' });
+      return;
+    }
     if (this.state.phase === 'ended' || this.suspended.length === 0 || this.held) return;
     const rest = this.suspended;
     this.suspended = [];
@@ -463,6 +491,10 @@ export class CallSession {
     } catch (e) {
       if ((this.state.phase as CallPhase) === 'ended') return;
       this.fail(`I can't hear you right now — the speech service is not answering (${e instanceof Error ? e.message : 'error'}).`);
+      if (this.paused) {
+        this.onSpeechDropped();
+        return;
+      }
       this.set({ phase: 'listening' });
       return;
     }
@@ -473,6 +505,8 @@ export class CallSession {
       this.onSpeechDropped();
       return;
     }
+    // Words: the paused voice was talked over after all.
+    this.commitCut();
     const first = !this.held;
     this.held = this.held ? `${this.held} ${text}` : text;
     this.set({ heard: this.held });
@@ -491,6 +525,18 @@ export class CallSession {
       this.joinTimer = null;
       this.send();
     }, wait);
+  }
+
+  /** A paused voice is cut for good, exactly as a cut-in without a pause would have cut it. */
+  private commitCut(): void {
+    if (!this.paused) return;
+    this.paused = false;
+    this.cutIn = true;
+    this.suspended = this.current ? [this.current, ...this.queue] : [...this.queue];
+    this.queue = [];
+    this.stepText = '';
+    this.splitter = new SentenceSplitter();
+    this.o.speaker.cancel();
   }
 
   private clearJoin(): void {
@@ -658,6 +704,7 @@ export class CallSession {
     if (runId !== this.state.runId || this.state.phase === 'ended') return;
     this.set({ runId: null });
     this.queue = [];
+    this.paused = false;
     this.o.speaker.cancel();
     this.fail(`Something went wrong on my side: ${error}`);
     void this.sayProblem();

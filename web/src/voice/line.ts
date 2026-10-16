@@ -36,7 +36,8 @@ export class VoiceLine {
   private dc: RTCDataChannel | null = null;
   private audio: HTMLAudioElement | null = null;
   private seq = 0;
-  private playing = new Map<string, { resolve: (heard: boolean) => void; watchdog: ReturnType<typeof setTimeout> }>();
+  private playing = new Map<string, { resolve: (heard: boolean) => void; watchdog: ReturnType<typeof setTimeout> | null; seconds: number }>();
+  private paused = false;
   private outputs: MediaDeviceInfo[] = [];
   /** The line is down (or never came up): the page plays the voice itself from here on. */
   down = false;
@@ -116,15 +117,36 @@ export class VoiceLine {
     if (dc?.readyState !== 'open' || this.down) return Promise.resolve(false);
     const id = `s${(this.seq += 1)}`;
     return new Promise<boolean>((resolve) => {
-      const watchdog = setTimeout(() => this.finish(id, false), seconds * 1000 + PLAY_SLACK_MS);
-      this.playing.set(id, { resolve, watchdog });
+      const watchdog = this.paused ? null : this.arm(id, seconds);
+      this.playing.set(id, { resolve, watchdog, seconds });
       dc.send(JSON.stringify({ t: 'clip', id, size: bytes.byteLength }));
       for (let i = 0; i < bytes.byteLength; i += CHUNK) dc.send(bytes.slice(i, i + CHUNK));
     });
   }
 
+  /** Hold the voice where it is; `resume` goes on from that spot. No sentence times out meanwhile. */
+  pause(): void {
+    this.paused = true;
+    if (this.dc?.readyState === 'open') this.dc.send(JSON.stringify({ t: 'pause' }));
+    for (const p of this.playing.values()) {
+      if (p.watchdog) clearTimeout(p.watchdog);
+      p.watchdog = null;
+    }
+  }
+
+  resume(): void {
+    this.paused = false;
+    if (this.dc?.readyState === 'open') this.dc.send(JSON.stringify({ t: 'resume' }));
+    for (const [id, p] of this.playing) p.watchdog ??= this.arm(id, p.seconds);
+  }
+
+  private arm(id: string, seconds: number): ReturnType<typeof setTimeout> {
+    return setTimeout(() => this.finish(id, false), seconds * 1000 + PLAY_SLACK_MS);
+  }
+
   /** Cut: what is playing and what is queued on the line stop now. */
   stop(): void {
+    this.paused = false;
     if (this.dc?.readyState === 'open') this.dc.send(JSON.stringify({ t: 'stop' }));
     for (const id of [...this.playing.keys()]) this.finish(id, false);
   }
@@ -186,7 +208,7 @@ export class VoiceLine {
     const p = this.playing.get(id);
     if (!p) return;
     this.playing.delete(id);
-    clearTimeout(p.watchdog);
+    if (p.watchdog) clearTimeout(p.watchdog);
     p.resolve(heard);
   }
 
@@ -259,6 +281,14 @@ export class LineSpeaker implements Speaker {
     // The line says when it has been heard out; the length only bounds the wait if it never does.
     await this.line.play(bytes, estimateSeconds(bytes));
     if (this.line.down) this.problem = 'The call line dropped; the voice now plays from the page.';
+  }
+
+  pause(): void {
+    if (!this.line.down) this.line.pause();
+  }
+
+  resume(): void {
+    if (!this.line.down) this.line.resume();
   }
 
   cancel(): void {

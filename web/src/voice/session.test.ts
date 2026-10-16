@@ -941,3 +941,72 @@ describe('CallSession', () => {
     expect(t.speaker.preparedKeys).not.toContain('en|Nothing new today.');
   });
 });
+
+/** A voice that can hold mid-sentence (the line, voice/line.ts). */
+class PausingSpeaker extends FakeSpeaker {
+  log: string[] = [];
+  pause(): void {
+    this.log.push('pause');
+  }
+  resume(): void {
+    this.log.push('resume');
+  }
+}
+
+describe('a sound over a voice that can pause', () => {
+  async function speakingThree() {
+    const speaker = new PausingSpeaker();
+    const t = build({ speaker });
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    t.session.onRunQueued('r1', 'c1');
+    t.session.onDelta('r1', 'Първо. Второ. Трето.');
+    t.session.onStepDone('r1', false);
+    t.session.onRunDone('r1');
+    await tick();
+    expect(t.session.state.phase).toBe('speaking');
+    return { ...t, speaker };
+  }
+
+  it('a sound with no words in it (a cheek on the glass) holds him and lets him go on mid-word', async () => {
+    const t = await speakingThree();
+    t.transcriber.next = ''; // Whisper: not speech
+    t.listener.say();
+    expect(t.speaker.log).toEqual(['pause']);
+    expect(t.speaker.cancelled).toBe(0);
+    await settle();
+    expect(t.speaker.log).toEqual(['pause', 'resume']);
+    expect(t.session.state.phase).toBe('speaking');
+    for (let i = 0; i < 3; i += 1) {
+      t.speaker.finishOne();
+      await tick();
+    }
+    // Nothing said twice, nothing cut, nothing sent.
+    expect(t.speaker.spoken.map((s) => s.text)).toEqual(['Първо.', 'Второ.', 'Трето.']);
+    expect(t.speaker.cancelled).toBe(0);
+    expect(t.transport.created).toHaveLength(1);
+  });
+
+  it('a cough the listener drops resumes him too', async () => {
+    const t = await speakingThree();
+    t.listener.cough();
+    expect(t.speaker.log).toEqual(['pause', 'resume']);
+    expect(t.speaker.cancelled).toBe(0);
+  });
+
+  it('words over him cut him for good, and the run hears he was cut off', async () => {
+    const t = await speakingThree();
+    t.transcriber.next = 'чакай';
+    t.listener.say();
+    expect(t.speaker.cancelled).toBe(0); // only paused while Whisper listens
+    await settle();
+    expect(t.speaker.cancelled).toBe(1);
+    t.speaker.finishAll();
+    await tick();
+    expect(t.speaker.spoken.map((s) => s.text)).toEqual(['Първо.']);
+    expect(t.transport.created).toHaveLength(2);
+    expect(t.transport.created[1]).toMatch(/cut you off/);
+    expect(t.transport.created[1]).toContain('чакай');
+  });
+});

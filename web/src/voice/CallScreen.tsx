@@ -131,7 +131,11 @@ export function CallScreen() {
     >
       <div className="call-head">
         <span className="call-title">{conv?.title ?? 'Jarvis'}</span>
-        <span className="call-elapsed mono">{elapsed}</span>
+        {/* Which way his voice reaches the phone: the line (a real call) or the page. */}
+        <span className="call-elapsed mono">
+          {onLine ? 'line · ' : ''}
+          {elapsed}
+        </span>
       </div>
 
       <Ring phase={call.phase} level={call.level} muted={call.muted} />

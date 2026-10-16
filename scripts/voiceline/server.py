@@ -24,7 +24,7 @@ Data channel "line", page -> line:
                                             played when the last byte is in, after those before it
     {"t": "stop"}                           cut: the sentence playing and those queued are dropped
     {"t": "pause"} / {"t": "resume"}        hold the voice mid-word / go on from that very spot
-    {"t": "music", "on": bool, "volume": 0..1}
+    {"t": "music", "on": bool, "volume": 0..1}  the music's loudness as a share of his voice's
 line -> page:
     {"t": "started", "id"} / {"t": "done", "id", "cut": bool} / {"t": "error", "id", "error"}
 """
@@ -58,6 +58,9 @@ FRAME = RATE // 50  # 20 ms, Opus's own frame
 FADE_IN_S = 1.6  # web voice/hold.ts: the music swells in, so a short wait barely hears it
 FADE_OUT_S = 0.35
 FLOOR = 1e-4  # where hold.ts's exponential ramps start and end
+# How loud his voice is before the first sentence of a call has been heard: the RMS of OmniVoice's
+# ryan and borislav, 0.098-0.107 (measured 2026-10-16). Replaced by each sentence actually played.
+VOICE_RMS_START = 0.1
 # Heard out: the last sample leaves here, then crosses the network and the phone's jitter buffer.
 # "done" waits that long, so the page does not open the microphone on the tail of a sentence.
 PLAYOUT_DELAY_S = 0.25
@@ -80,6 +83,10 @@ class Line:
     queue: list[Clip] = field(default_factory=list)
     music_on: bool = False
     music_volume: float = 0.4
+    # The music is as loud as his voice times the volume setting (0.4: about 8 dB under him). Copied
+    # from the page's own mix it was 21 dB under the voice and nobody heard it on an earpiece
+    # (2026-10-16, "не пуска музика докато мисли"). His voice is measured from what he says.
+    voice_rms: float = VOICE_RMS_START
     gain: float = FLOOR
     music_pos: int = 0
     paused: bool = False
@@ -113,8 +120,8 @@ class Line:
         self.gain = end
         idx = (self.music_pos + np.arange(FRAME)) % len(self.music)
         self.music_pos = (self.music_pos + FRAME) % len(self.music)
-        # hold.ts: master gain 0.5 x the volume setting
-        out += self.music[idx] * ramp * (0.5 * self.music_volume)
+        # self.music is at unit RMS (on_startup): scaled to his voice, then by the setting
+        out += self.music[idx] * ramp * (self.voice_rms * self.music_volume)
 
     def stop(self) -> None:
         self.paused = False
@@ -237,7 +244,9 @@ async def offer(request: web.Request) -> web.Response:
             send({"t": "error", "id": clip_id, "error": f"{type(exc).__name__}: {exc}"})
             send({"t": "done", "id": clip_id, "cut": False})
             return
-        log.info("%s: clip %s, %.1f s", call, clip_id, len(pcm) / RATE)
+        if len(pcm):
+            line.voice_rms = float(np.sqrt(np.mean(pcm**2)))
+        log.info("%s: clip %s, %.1f s, rms %.3f", call, clip_id, len(pcm) / RATE, line.voice_rms)
         line.queue.append(Clip(clip_id, pcm))
 
     @pc.on("connectionstatechange")
@@ -263,7 +272,8 @@ async def on_startup(_: web.Application) -> None:
     global MUSIC
     t0 = time.perf_counter()
     assert HOLD_RATE == RATE
-    MUSIC = await asyncio.get_running_loop().run_in_executor(None, render_hold)
+    loop = await asyncio.get_running_loop().run_in_executor(None, render_hold)
+    MUSIC = loop / float(np.sqrt(np.mean(loop**2)))  # unit RMS: Line scales it to his voice
     log.info("hold music rendered: %.1f s in %.1f s", len(MUSIC) / RATE, time.perf_counter() - t0)
 
 

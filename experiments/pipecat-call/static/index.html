@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Jarvis Call Test</title>
+<style>
+  :root { --bg:#0e1116; --panel:#171b22; --text:#e8ecf2; --dim:#8b95a5; --ok:#3fb950; --bad:#f85149; --warn:#d29922; --accent:#4c8dff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.4 system-ui, sans-serif; padding:16px; padding-bottom:40px; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .sub { color:var(--dim); font-size:13px; margin-bottom:16px; }
+  .state { font-size:22px; margin:12px 0 16px; min-height:30px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+  button { font:inherit; border:0; border-radius:12px; padding:14px 18px; background:var(--panel); color:var(--text); flex:1 1 40%; min-height:52px; }
+  button:disabled { opacity:.35; }
+  #call { background:var(--ok); color:#06120a; font-weight:600; flex-basis:100%; font-size:18px; }
+  #hang { background:var(--bad); color:#fff; font-weight:600; }
+  button.on { outline:2px solid var(--accent); }
+  .panel { background:var(--panel); border-radius:12px; padding:12px; margin-top:12px; font:12px/1.45 ui-monospace, monospace; overflow-wrap:anywhere; }
+  .panel b { color:var(--dim); font-weight:normal; }
+  .good { color:var(--ok); } .badc { color:var(--bad); } .warnc { color:var(--warn); }
+  #log div { border-top:1px solid #222833; padding:3px 0; }
+  #outputs button { flex:1 1 100%; min-height:40px; padding:8px 12px; font-size:14px; text-align:left; }
+</style>
+</head>
+<body>
+<h1>Jarvis — test line</h1>
+<div class="sub">Prototype (Pipecat / WebRTC). Separate from the real Jarvis; no tools, no memory.</div>
+
+<div class="state" id="state">Ready</div>
+<div class="row"><button id="call">Call</button></div>
+<div class="row">
+  <button id="mute" disabled>Mute</button>
+  <button id="speaker" disabled>Speaker</button>
+  <button id="hang" disabled>Hang up</button>
+</div>
+<div class="row" id="outputs"></div>
+
+<div class="panel" id="diag"><b>diagnostics appear when the call starts</b></div>
+<div class="panel" id="log"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const ui = { state: $('state'), call: $('call'), mute: $('mute'), speaker: $('speaker'), hang: $('hang'), diag: $('diag'), log: $('log'), outputs: $('outputs') };
+
+let pc = null, dc = null, mic = null, audio = null, pingTimer = null, statsTimer = null;
+let muted = false, outputs = [], pendingDiag = [];
+const diag = {};
+const t0 = performance.now();
+const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+
+function send(event, data) {
+  const msg = JSON.stringify({ type: 'diag', event, data: { ...data, client_t: Math.round(performance.now() - t0) / 1000 } });
+  if (dc && dc.readyState === 'open') dc.send(msg); else pendingDiag.push(msg);
+}
+function setState(s) { ui.state.textContent = s; }
+function logRow(text, cls) {
+  const d = document.createElement('div');
+  d.textContent = text; if (cls) d.className = cls;
+  ui.log.prepend(d);
+  while (ui.log.childNodes.length > 60) ui.log.lastChild.remove();
+}
+function renderDiag() {
+  const s = diag.settings || {};
+  const flag = (v) => v === true ? '<span class="good">on</span>' : v === false ? '<span class="badc">OFF</span>' : '<span class="warnc">?</span>';
+  ui.diag.innerHTML = [
+    `<b>peer</b> ${diag.pcState || '-'} · <b>ice</b> ${diag.iceState || '-'}`,
+    `<b>echoCancellation</b> ${flag(s.echoCancellation)} · <b>noiseSuppression</b> ${flag(s.noiseSuppression)} · <b>autoGainControl</b> ${flag(s.autoGainControl)}`,
+    `<b>mic</b> ${s.deviceId ? (diag.micLabel || s.deviceId.slice(0, 8)) : '-'} · ${s.sampleRate || '?'} Hz · ${s.channelCount || '?'} ch`,
+    `<b>output</b> ${diag.output || '-'} · <b>setSinkId</b> ${'setSinkId' in HTMLMediaElement.prototype ? 'yes' : 'no'} · <b>outputs</b> ${outputs.length}`,
+    `<b>in level</b> ${diag.inLevel ?? '-'} · <b>out level</b> ${diag.outLevel ?? '-'} · <b>rtt</b> ${diag.rtt ?? '-'} ms · <b>lost</b> ${diag.lost ?? '-'}`,
+    diag.echo ? `<b>echo return loss</b> ${diag.echo}` : '',
+  ].filter(Boolean).join('<br>');
+}
+
+async function listOutputs(reason) {
+  let devices = [];
+  try { devices = await navigator.mediaDevices.enumerateDevices(); } catch {}
+  const all = devices.map((d) => ({ kind: d.kind, label: d.label, id: d.deviceId.slice(0, 12) }));
+  outputs = devices.filter((d) => d.kind === 'audiooutput');
+  const mic = devices.find((d) => d.kind === 'audioinput' && d.deviceId === diag.settings?.deviceId);
+  if (mic) diag.micLabel = mic.label;
+  send('devices', { reason, devices: all });
+  ui.outputs.innerHTML = '';
+  if (outputs.length > 1 && 'setSinkId' in HTMLMediaElement.prototype) {
+    for (const d of outputs) {
+      const b = document.createElement('button');
+      b.textContent = '🔈 ' + (d.label || d.deviceId.slice(0, 8));
+      b.className = audio && audio.sinkId === d.deviceId ? 'on' : '';
+      b.onclick = () => useOutput(d.deviceId, 'picked');
+      ui.outputs.appendChild(b);
+    }
+  }
+  renderDiag();
+}
+
+async function useOutput(deviceId, why) {
+  if (!audio || !('setSinkId' in audio)) return;
+  try {
+    await audio.setSinkId(deviceId);
+    const d = outputs.find((o) => o.deviceId === deviceId);
+    diag.output = d ? (d.label || deviceId.slice(0, 8)) : deviceId || 'default';
+    if (why === 'picked') store.set('jarvis-call-output', deviceId);
+    send('route', { why, sinkId: deviceId, label: d?.label || null });
+    logRow(`output → ${diag.output} (${why})`);
+  } catch (e) {
+    send('route_error', { why, error: String(e) });
+    logRow(`output change failed: ${e}`, 'badc');
+  }
+  listOutputs('route');
+}
+
+// Speaker: Chrome on Android has no "speakerphone" switch of its own for a page; when it lists
+// several outputs, this cycles through them (the list above shows which is which).
+async function toggleSpeaker() {
+  if (!audio || outputs.length < 2 || !('setSinkId' in audio)) {
+    logRow('this browser offers no output choice to the page', 'warnc');
+    send('route_error', { why: 'toggle', error: 'no output choice', outputs: outputs.length, setSinkId: 'setSinkId' in HTMLMediaElement.prototype });
+    return;
+  }
+  const i = outputs.findIndex((o) => o.deviceId === audio.sinkId);
+  await useOutput(outputs[(i + 1) % outputs.length].deviceId, 'toggle');
+}
+
+async function stats() {
+  if (!pc) return;
+  const r = await pc.getStats();
+  const out = {};
+  r.forEach((s) => {
+    if (s.type === 'media-source' && s.kind === 'audio') { out.in_level = s.audioLevel; out.echo_return_loss = s.echoReturnLoss; out.echo_return_loss_enhancement = s.echoReturnLossEnhancement; }
+    if (s.type === 'inbound-rtp' && s.kind === 'audio') { out.out_level = s.audioLevel; out.packets_lost = s.packetsLost; out.jitter = s.jitter; out.concealed = s.concealedSamples; }
+    if (s.type === 'candidate-pair' && s.state === 'succeeded' && s.nominated) out.rtt_ms = Math.round((s.currentRoundTripTime || 0) * 1000);
+  });
+  diag.inLevel = out.in_level?.toFixed(3); diag.outLevel = out.out_level?.toFixed(3);
+  diag.rtt = out.rtt_ms; diag.lost = out.packets_lost;
+  if (out.echo_return_loss != null) diag.echo = `${out.echo_return_loss?.toFixed?.(1)} dB / +${out.echo_return_loss_enhancement?.toFixed?.(1)} dB`;
+  send('stats', out);
+  renderDiag();
+}
+
+async function call() {
+  ui.call.disabled = true;
+  setState('Calling…');
+  try {
+    mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  } catch (e) {
+    setState('Microphone refused: ' + e.message);
+    ui.call.disabled = false;
+    return;
+  }
+  const track = mic.getAudioTracks()[0];
+  diag.settings = track.getSettings();
+  send('track', { settings: diag.settings, constraints: track.getConstraints(), label: track.label, capabilities: track.getCapabilities?.() || null });
+  track.onended = () => send('track_ended', {});
+  track.onmute = () => send('track_muted', { by: 'system' });
+  track.onunmute = () => send('track_unmuted', { by: 'system' });
+
+  audio = new Audio();
+  audio.autoplay = true;
+  pc = new RTCPeerConnection();
+  pc.addTransceiver(track, { direction: 'sendrecv' });
+  dc = pc.createDataChannel('jarvis');
+  dc.onopen = () => {
+    for (const m of pendingDiag.splice(0)) dc.send(m);
+    pingTimer = setInterval(() => dc.readyState === 'open' && dc.send('ping: ' + Date.now()), 1000);
+  };
+  dc.onmessage = (ev) => {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.type !== 'trace') return;
+    const r = m.row;
+    const text = r.text ? ` “${r.text}”` : r.why ? ` (${r.why})` : '';
+    logRow(`${r.t.toFixed(1)}s ${r.kind}${text}`, r.kind === 'barge_in' ? 'warnc' : r.kind === 'error' ? 'badc' : '');
+    if (r.kind === 'hold.on') setState('Thinking… ♪');
+    if (r.kind === 'bot.speaking_start') setState('Jarvis is speaking');
+    if (r.kind === 'bot.speaking_stop' || r.kind === 'call.connected') setState('Listening');
+    if (r.kind === 'user.turn_start') setState('You are speaking');
+  };
+  pc.ontrack = (ev) => {
+    audio.srcObject = ev.streams[0] || new MediaStream([ev.track]);
+    audio.play().catch((e) => send('play_error', { error: String(e) }));
+    send('remote_track', {});
+  };
+  pc.onconnectionstatechange = () => {
+    diag.pcState = pc.connectionState; renderDiag();
+    send('pc_state', { state: pc.connectionState });
+    if (pc.connectionState === 'connected') { setState('Listening'); ui.hang.disabled = ui.mute.disabled = ui.speaker.disabled = false; }
+    if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) setState('Line ' + pc.connectionState);
+  };
+  pc.oniceconnectionstatechange = () => { diag.iceState = pc.iceConnectionState; renderDiag(); };
+
+  await pc.setLocalDescription(await pc.createOffer());
+  await new Promise((resolve) => {
+    if (pc.iceGatheringState === 'complete') return resolve();
+    pc.addEventListener('icegatheringstatechange', () => pc.iceGatheringState === 'complete' && resolve());
+    setTimeout(resolve, 3000);
+  });
+  const res = await fetch('api/offer', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type }) });
+  if (!res.ok) { setState('Bot refused the call: HTTP ' + res.status); hangup(); return; }
+  await pc.setRemoteDescription(await res.json());
+
+  navigator.mediaDevices.ondevicechange = () => listOutputs('devicechange');
+  document.onvisibilitychange = () => send('visibility', { state: document.visibilityState });
+  await listOutputs('call start');
+  const remembered = store.get('jarvis-call-output');
+  if (remembered && outputs.some((o) => o.deviceId === remembered)) await useOutput(remembered, 'remembered');
+  else diag.output = 'browser default';
+  statsTimer = setInterval(stats, 2000);
+  renderDiag();
+}
+
+function hangup() {
+  send('hangup', {});
+  clearInterval(pingTimer); clearInterval(statsTimer);
+  setTimeout(() => {
+    try { dc && dc.close(); } catch {}
+    try { pc && pc.close(); } catch {}
+    mic && mic.getTracks().forEach((t) => t.stop());
+    if (audio) { audio.srcObject = null; }
+    pc = dc = mic = audio = null;
+  }, 300);
+  setState('Call ended');
+  ui.call.disabled = false;
+  ui.hang.disabled = ui.mute.disabled = ui.speaker.disabled = true;
+  ui.outputs.innerHTML = '';
+  muted = false; ui.mute.textContent = 'Mute'; ui.mute.classList.remove('on');
+}
+
+ui.call.onclick = call;
+ui.hang.onclick = hangup;
+ui.speaker.onclick = toggleSpeaker;
+ui.mute.onclick = () => {
+  if (!mic) return;
+  muted = !muted;
+  mic.getAudioTracks().forEach((t) => (t.enabled = !muted));
+  ui.mute.textContent = muted ? 'Unmute' : 'Mute';
+  ui.mute.classList.toggle('on', muted);
+  send('mute', { muted });
+};
+</script>
+</body>
+</html>

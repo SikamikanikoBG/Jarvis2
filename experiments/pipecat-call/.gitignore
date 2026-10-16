@@ -1,0 +1,8 @@
+traces/
+.venv/
+bot.log
+bot.pid
+node_modules/
+assets/
+test/*.wav
+test/levels.json

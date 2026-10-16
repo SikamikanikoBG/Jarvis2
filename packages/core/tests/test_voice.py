@@ -289,6 +289,42 @@ def test_tts_synthesises_caches_and_says_when_it_cannot(client: TestClient, monk
     assert client.post("/api/tts", json={"text": "   ", "lang": "bg"}, headers=_h()).status_code == 502
 
 
+# --- /api/voice/line/offer: the call's WebRTC offer, through to the line ----------------------
+
+
+def test_the_line_offer_is_forwarded_and_a_dead_line_says_so(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    import httpx
+
+    seen: list[tuple[str, dict]] = []
+
+    class FakeClient:
+        def __init__(self, **_: object) -> None: ...
+
+        async def __aenter__(self) -> FakeClient:
+            return self
+
+        async def __aexit__(self, *_: object) -> None: ...
+
+        async def post(self, url: str, json: dict) -> httpx.Response:
+            seen.append((url, json))
+            return httpx.Response(200, json={"sdp": "v=0 answer", "type": "answer", "extra": 1})
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    offer = {"sdp": "v=0 offer", "type": "offer"}
+    assert client.post("/api/voice/line/offer", json=offer).status_code == 401  # the token guards it
+    r = client.post("/api/voice/line/offer", json=offer, headers=_h())
+    assert r.status_code == 200 and r.json() == {"sdp": "v=0 answer", "type": "answer"}
+    assert seen == [("http://host.docker.internal:9150/offer", offer)]
+
+    class DeadClient(FakeClient):
+        async def post(self, url: str, json: dict) -> httpx.Response:
+            raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(httpx, "AsyncClient", DeadClient)
+    r = client.post("/api/voice/line/offer", json=offer, headers=_h())
+    assert r.status_code == 502 and "line" in r.json()["detail"]
+
+
 async def test_words_added_while_a_call_answer_is_written_get_one_reply_for_both(harness: Harness):
     """2026-10-14: talking fast on a call, each sentence was answered on its own. A steer that
     lands while the answer is still being written runs one more step, and on a call the model is

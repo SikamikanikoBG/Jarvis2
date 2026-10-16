@@ -17,6 +17,7 @@ import { firstSentences } from '../voice/sentences';
 import { CallSession, type CallRoute, type CallState } from '../voice/session';
 import { ToneCues, type WaitingSound } from '../voice/tones';
 import { DeviceSpeaker, ServerSpeaker } from '../voice/speaker';
+import { LineCues, LineSpeaker, VoiceLine } from '../voice/line';
 import type {
   Attachment,
   BulkConversationAction,
@@ -84,6 +85,8 @@ export interface UiState {
   sessions: SessionRef[];
   /** The call in progress (docs/stories/10_voice.md), or null. A pure function of the session. */
   call: CallState | null;
+  /** The call's sound comes over the line (voice/line.ts), not from the page. */
+  callLine: boolean;
   /** Jarvis ringing: a ring opened from its notification, waiting to be answered or declined. */
   incoming: IncomingRing | null;
   /**
@@ -148,7 +151,8 @@ export interface Actions {
   setMoreOpen: (open: boolean) => void;
   /** Start a call in the open conversation (or a new chat). Must be called from a user gesture:
    *  the microphone and the first spoken word both need one. */
-  startCall: (opts?: { say?: string }) => Promise<void>;
+  /** `page`: the voice is played by the page, never the line - the old way, one tap away. */
+  startCall: (opts?: { say?: string; page?: boolean; route?: CallRoute }) => Promise<void>;
   endCall: () => void;
   /** A ring arrived (its notification was tapped): open its chat and show the incoming call -
    *  or, when Answer was tapped on the notification, go straight into the call if the page may. */
@@ -222,7 +226,9 @@ let clientRefSeq = 0;
 let session: CallSession | null = null;
 /** A call is being set up (settings, home chat) and has no session yet. */
 let callStarting = false;
-let speaker: DeviceSpeaker | ServerSpeaker | null = null;
+let speaker: DeviceSpeaker | ServerSpeaker | LineSpeaker | null = null;
+/** The call's line, when its sound goes over one (voice/line.ts). */
+let line: VoiceLine | null = null;
 
 const ROUTE_KEY = 'jarvis_call_route';
 function readRoute(): CallRoute {
@@ -273,6 +279,7 @@ export const useStore = create<AppState>()((set, get) => ({
   panelMode: isPanelMode(),
   version: null,
   call: null,
+  callLine: false,
   incoming: null,
   callMeNext: {},
   callMeDefault: true,
@@ -450,6 +457,7 @@ export const useStore = create<AppState>()((set, get) => ({
     let turnThreshold: number | null = null;
     let waiting: WaitingSound = 'music';
     let holdVolume = 0.4;
+    let useLine = !opts?.page;
     try {
       const settings = await api.settings.get();
       tts = settings.voice.tts;
@@ -457,6 +465,7 @@ export const useStore = create<AppState>()((set, get) => ({
       if (settings.voice.turn_detection) turnThreshold = settings.voice.turn_threshold;
       waiting = settings.voice.waiting_sound;
       holdVolume = settings.voice.hold_volume;
+      useLine = useLine && settings.voice.line;
     } catch {
       /* the defaults stand; the server voice falls back to the device on its own */
     }
@@ -474,10 +483,28 @@ export const useStore = create<AppState>()((set, get) => ({
         /* a new chat opens behind the call, the way it always did */
       }
     }
-    const listener = new MicListener();
-    // The voice plays through the microphone's own context (opened in this tap, proven
-    // running), never a second one opened later while the phone is in call mode.
-    speaker = tts === 'server' ? new ServerSpeaker({ contextOf: () => listener.audioContext, cache: !incognito }) : new DeviceSpeaker();
+    // The line: his voice and the music as a real call's remote track (voice/line.ts). It comes
+    // up beside the microphone; if it cannot, the page plays them itself, as before.
+    const onLine = useLine && tts === 'server' && typeof RTCPeerConnection !== 'undefined';
+    const callLine = onLine ? new VoiceLine() : null;
+    line = callLine;
+    const listener = new MicListener({ line: onLine });
+    // Off the line, the voice plays through the microphone's own context (opened in this tap,
+    // proven running), never a second one opened later while the phone is in call mode.
+    speaker = callLine
+      ? new LineSpeaker(callLine, { contextOf: () => listener.audioContext, cache: !incognito })
+      : tts === 'server'
+        ? new ServerSpeaker({ contextOf: () => listener.audioContext, cache: !incognito })
+        : new DeviceSpeaker();
+    const toneCues = new ToneCues({
+      contextOf: () => listener.audioContext,
+      suppress: (ms) => listener.suppress(ms),
+      waiting,
+      volume: holdVolume,
+      onHold: (on) => listener.setHold(on),
+      // On the speaker the page's own music reached the microphone; on the line it is the call's.
+      musicAllowed: (): boolean => callLine !== null || call.state.route !== 'speaker',
+    });
     const call: CallSession = new CallSession({
       listener,
       speaker,
@@ -518,17 +545,11 @@ export const useStore = create<AppState>()((set, get) => ({
       languages,
       turnThreshold,
       conversationId: open,
-      route: readRoute(),
+      // A call on the line opens where the phone puts a call (the earpiece); the toggle moves it.
+      route: callLine ? 'earpiece' : (opts?.route ?? readRoute()),
       // The call's quiet signals, on the microphone's own context so they are on its route and
-      // inside the echo canceller, and hushing the microphone for as long as they sound.
-      cues: new ToneCues({
-        contextOf: () => listener.audioContext,
-        suppress: (ms) => listener.suppress(ms),
-        waiting,
-        volume: holdVolume,
-        onHold: (on) => listener.setHold(on),
-        musicAllowed: (): boolean => call.state.route !== 'speaker',
-      }),
+      // hushing the microphone for as long as they sound; on the line the hold music is the call's.
+      cues: callLine ? new LineCues(callLine, toneCues, { waiting, volume: holdVolume, onHold: (on) => listener.setHold(on) }) : toneCues,
       // Only the live call draws the screen: a hung-up session finishing a recognition must not
       // bring the call screen back.
       onChange: (state) => {
@@ -537,6 +558,14 @@ export const useStore = create<AppState>()((set, get) => ({
     });
     session = call;
     callStarting = false;
+    set({ callLine: callLine !== null });
+    if (callLine) {
+      callLine.onDown = () => {
+        listener.lineDown();
+        if (line === callLine) set({ callLine: false });
+      };
+      void callLine.connect().catch(() => callLine.giveUp());
+    }
     if (open) socket.send({ type: 'subscribe', conversation_id: open });
     await call.start();
     if (session !== call) return; // hung up while the microphone was being asked for
@@ -552,8 +581,10 @@ export const useStore = create<AppState>()((set, get) => ({
   endCall: () => {
     session?.end();
     session = null;
-    if (speaker instanceof ServerSpeaker) speaker.close();
+    if (speaker instanceof ServerSpeaker || speaker instanceof LineSpeaker) speaker.close();
     speaker = null;
+    line?.close();
+    line = null;
     releaseScreen();
     set({ call: null });
   },
@@ -617,6 +648,21 @@ export const useStore = create<AppState>()((set, get) => ({
   setCallMuted: (muted) => session?.setMuted(muted),
 
   setCallRoute: (route) => {
+    if (line && !line.down && session) {
+      // On the line the route is the call's output, chosen without touching the microphone or
+      // what is being said. A browser that offers no choice gets the old way: the call starts
+      // again with the page playing the voice, on the speaker.
+      const call = session;
+      void line.nextOutput().then((moved) => {
+        if (session !== call) return;
+        if (moved) call.noteRoute(route);
+        else {
+          get().endCall();
+          void get().startCall({ page: true, route });
+        }
+      });
+      return;
+    }
     writeRoute(route);
     void session?.setRoute(route);
   },

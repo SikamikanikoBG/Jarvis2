@@ -553,6 +553,15 @@ class VoiceSettings(BaseModel):
     # the quiet pulse it replaced, or nothing - and how loud the music is (0..1).
     waiting_sound: Literal["music", "beeps", "silence"] = "music"
     hold_volume: float = Field(default=0.4, ge=0.0, le=1.0)
+    # The line (scripts/voiceline): his voice and the hold music reach the phone as the remote
+    # audio track of a real WebRTC call instead of being played by the page. Android then treats
+    # the page as a call - its echo canceller has the voice as reference, the sound stays on the
+    # call's route, the volume keys are the call's. The page falls back to playing it itself
+    # when the line cannot be reached. False = the page plays it, as before 2026-10-16.
+    line: bool = True
+    # Where the core reaches the line's signalling (the offer/answer only; the media goes
+    # straight between the phone and the line over the tailnet).
+    line_url: str = "http://host.docker.internal:9150"
 
     def allows(self, namespace: str) -> bool:
         return "*" in self.namespaces or namespace in self.namespaces

@@ -338,6 +338,12 @@ export class CallSession {
     else if (this.state.phase === 'speaking') this.set({ phase: this.state.runId ? 'thinking' : 'listening' });
   }
 
+  /** The route changed somewhere that needs nothing rebuilt (the line's output, line.ts): only
+   *  the screen is told. Nothing being said is interrupted. */
+  noteRoute(route: CallRoute): void {
+    if (this.state.phase !== 'ended') this.set({ route });
+  }
+
   // --- from the listener -------------------------------------------------------------------
 
   private onSpeechStart(): void {

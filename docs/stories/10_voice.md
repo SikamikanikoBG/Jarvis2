@@ -155,3 +155,35 @@ be *talked through* first — scoped, questioned, narrowed — before anyone doe
 3. **Call screen** (surface, touch guard, wake lock, composer entry, transcript glyph).
 4. **Cut-in, cues and polish** (barge-in calibration, the short tone on "heard", voice choice by
    script, the Settings section, story sign-off on the device).
+
+## The line (2026-10-16)
+
+The voice and the hold music used to be played by the page itself, through Web Audio. Android
+treated that as media, not as the far end of a call. So the phone's echo canceller had no
+reference for it: on the speaker the microphone heard Jarvis and the music, and Whisper wrote
+them down as Arsen's words. The output's route and volume stream also depended on the order in
+which things were opened. Seven patches in two days (alpha.67–73) piled heuristics on top.
+
+Now both reach the phone as the **remote audio track of a real WebRTC call**:
+
+- **Service:** `scripts/voiceline` (aiortc; container `jarvis2-voiceline`, host network, so the
+  phone reaches it over the tailnet).
+- **Offer:** the core forwards the call's offer (`POST /api/voice/line/offer`, behind the token).
+  The media goes straight between the phone and the line.
+- **What stays the same:** the session (`session.ts`) still decides everything that is said.
+  The sentences still come from `/api/tts`, and the microphone is still the listener's.
+- **What the page does now** (`voice/line.ts`): it hands each sentence's bytes to the line over
+  the call's data channel, and turns the hold music on and off there. The line mixes the music
+  into the call's track.
+- **Microphone and gate:** the microphone keeps echo cancelling on every route. While the line
+  is up the echo gate (`gate.ts`) is bypassed, because it guessed around a cause the line
+  removes. In a headless call the gate, learning a steady voice, swallowed a whole cut-in.
+- **Speaker:** the speaker toggle moves the call's output when the browser offers a choice
+  (`setSinkId`). When it offers none, the call starts again on the old line, on the speaker.
+- **Fallback:** `voice.line = false` returns to the old way. If the line cannot connect, or drops
+  mid-call, the page plays the voice itself again and the gate comes back.
+
+Verified headless (fake microphone, through the app): replies, music on the received track
+while he thinks, a cut-in stopping him mid-sentence. Not provable headless, only on the phone:
+that he no longer hears himself, the earpiece by default, the volume keys, whether Chrome on
+Android offers an output choice.

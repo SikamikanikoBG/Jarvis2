@@ -273,6 +273,11 @@ export const api = {
     if (opts.offsetMs) form.append('stt_offset_ms', String(Math.round(opts.offsetMs)));
     return request<SttResponse>('POST', '/api/stt', form, STT_TIMEOUT_MS);
   },
+  voice: {
+    /** A call's WebRTC offer for the line (scripts/voiceline), through the core; its answer back. */
+    lineOffer: (offer: { sdp: string; type: RTCSdpType }) =>
+      request<{ sdp: string; type: RTCSdpType }>('POST', '/api/voice/line/offer', offer),
+  },
   assistant: {
     /** The Jarvis conversation, made on first use (docs/stories/12_assistant.md). */
     home: () => request<Conversation>('POST', '/api/assistant/home'),

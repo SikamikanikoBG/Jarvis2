@@ -1,0 +1,9 @@
+[project]
+name = "jarvis-voiceline"
+version = "0.1.0"
+description = "The far end of a Jarvis call: voice and hold music as a WebRTC call's remote track"
+requires-python = ">=3.12,<3.13"
+dependencies = ["aiortc>=1.15", "aiohttp>=3.10", "numpy>=2.0"]
+
+[tool.uv]
+package = false

@@ -56,6 +56,7 @@ export function CallScreen() {
   const endCall = useStore((s) => s.endCall);
   const setMuted = useStore((s) => s.setCallMuted);
   const setRoute = useStore((s) => s.setCallRoute);
+  const onLine = useStore((s) => s.callLine);
   // The bell: hang up and be called back when the task he just gave is done.
   const callMe = useStore((s) => {
     const run = selectActiveRun(s, s.openConversationId);
@@ -192,7 +193,7 @@ export function CallScreen() {
       )}
       {!locked && (
         <div className="call-hint">
-          {call.route === 'speaker'
+          {call.route === 'speaker' && !onLine
             ? 'Speaker: he cannot hear you while he talks — wait for him to finish.'
             : touch
               ? 'Earpiece (or your headset). Talk over him to cut in.'

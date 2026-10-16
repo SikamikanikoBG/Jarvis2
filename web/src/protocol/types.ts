@@ -493,6 +493,9 @@ export interface VoiceSettings {
   waiting_sound: 'music' | 'beeps' | 'silence';
   /** Hold music volume, 0..1. */
   hold_volume: number;
+  /** The voice and the hold music as a real call's remote track (the line), not page audio. */
+  line: boolean;
+  line_url: string;
 }
 
 /** Jarvis as one assistant across his chats (docs/stories/12_assistant.md). */

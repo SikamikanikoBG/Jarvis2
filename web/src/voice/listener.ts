@@ -66,6 +66,25 @@ export const micSupported = (): boolean =>
   typeof AudioWorkletNode !== 'undefined';
 
 export class MicListener implements Listener {
+  /** On the line (line.ts) Jarvis's voice and the music are the call's remote track, which the
+   *  echo canceller has as its reference on every route: the microphone keeps echo cancelling on
+   *  the speaker too, and a route change is the line's output, not a new microphone. */
+  constructor(private readonly o: { line?: boolean } = {}) {
+    this.lineUp = o.line === true;
+  }
+
+  /** On the line, while it is up, nothing is gated: the phone's echo canceller has Jarvis's voice
+   *  and the music as its reference, which is the cause the gate (gate.ts) only guessed around -
+   *  and the gate, learning a steady voice, closed on a real cut-in (2026-10-16, headless: a whole
+   *  "Stop, what is two plus two?" over him never reached Whisper). A cut-in still has to hold
+   *  for CUT_IN_ATTACK_MS. If the line goes down the page plays the voice again, and the gate is
+   *  back with it. */
+  private lineUp: boolean;
+
+  lineDown(): void {
+    this.lineUp = false;
+  }
+
   private stream: MediaStream | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
   private ctx: AudioContext | null = null;
@@ -125,7 +144,7 @@ export class MicListener implements Listener {
 
   /** The microphone, then the context on it. A failure leaves nothing open. */
   private async open(): Promise<void> {
-    const stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS[this.route]);
+    const stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS[this.o.line ? 'earpiece' : this.route]);
     if (!this.started) {
       stream.getTracks().forEach((t) => t.stop()); // hung up while we were asking
       return;
@@ -203,7 +222,7 @@ export class MicListener implements Listener {
     this.echoCancelled = echoCancelled;
     const now = performance.now() - this.t0;
     // On the speaker nothing subtracts his voice from the microphone, whatever plays it.
-    if (on) this.gate.setProfile(echoCancelled && this.route === 'earpiece');
+    if (on) this.gate.setProfile(echoCancelled && (this.o.line === true || this.route === 'earpiece'));
     this.gate.setSpeaking(on, now, this.seg.noiseFloor);
     this.seg.setAttack(on ? CUT_IN_ATTACK_MS : null);
   }
@@ -214,7 +233,7 @@ export class MicListener implements Listener {
   setHold(on: boolean): void {
     if (this.speaking) return; // his voice already decides the gate
     const now = performance.now() - this.t0;
-    if (on) this.gate.setProfile(this.route === 'earpiece');
+    if (on) this.gate.setProfile(this.o.line === true || this.route === 'earpiece');
     this.gate.setSpeaking(on, now, this.seg.noiseFloor);
     this.seg.setAttack(on ? CUT_IN_ATTACK_MS : null);
   }
@@ -225,7 +244,7 @@ export class MicListener implements Listener {
   setRoute(route: CallRoute): Promise<void> {
     if (route === this.route) return this.rerouting ?? Promise.resolve();
     this.route = route;
-    if (!this.started) return Promise.resolve();
+    if (!this.started || this.o.line) return Promise.resolve();
     return this.rebuild();
   }
 
@@ -292,7 +311,7 @@ export class MicListener implements Listener {
     }
     const t = performance.now() - this.t0;
     // Through the gate: while he speaks, only a voice clearly over his own reaches the segmenter.
-    const level = t < this.suppressUntil ? 0 : this.gate.pass(rms, t, this.seg.noiseFloor);
+    const level = t < this.suppressUntil ? 0 : this.lineUp ? rms : this.gate.pass(rms, t, this.seg.noiseFloor);
     for (const ev of this.seg.push(level, t)) this.onSegment(ev, t);
   }
 

@@ -1,0 +1,21 @@
+# The far end of Jarvis's calls (server.py): voice and hold music as a WebRTC call's remote track.
+# Host networking: the phone reaches it over the tailnet with UDP, which a published port cannot
+# carry for ICE. Signalling listens on docker0 only (172.17.0.1), where the core reaches it as
+# host.docker.internal; the media ports are aiortc's own, per call.
+#
+#   cd scripts/voiceline && docker compose up -d --build
+services:
+  voiceline:
+    build: .
+    image: jarvis2-voiceline:latest
+    container_name: jarvis2-voiceline
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - BIND=172.17.0.1
+      - PORT=9150
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if b'true' in urllib.request.urlopen('http://172.17.0.1:9150/health').read() else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s

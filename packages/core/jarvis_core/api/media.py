@@ -86,6 +86,30 @@ async def tts(request: Request, body: TtsRequest) -> Response:
     return Response(content=audio, media_type=mime, headers=caching)
 
 
+class LineOffer(BaseModel):
+    sdp: str
+    type: str
+
+
+@router.post("/voice/line/offer")
+async def line_offer(request: Request, body: LineOffer) -> dict[str, str]:
+    """A call's WebRTC offer, handed to the line (scripts/voiceline) and its answer handed back:
+    the line has no token of its own, so it is reached only through here. 502 when the line is
+    down - the page then plays the voice itself, as before."""
+    import httpx
+
+    url = core_of(request).settings.voice.line_url.rstrip("/") + "/offer"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.post(url, json=body.model_dump())
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"the line is not answering: {type(exc).__name__}") from exc
+    if res.status_code != 200:
+        raise HTTPException(502, f"the line refused the call: HTTP {res.status_code}")
+    answer = res.json()
+    return {"sdp": str(answer["sdp"]), "type": str(answer["type"])}
+
+
 # --- meetings -------------------------------------------------------------------------------
 
 

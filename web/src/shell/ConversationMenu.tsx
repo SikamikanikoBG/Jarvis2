@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { InstructionsDialog } from '../chat/InstructionsDialog';
+import { useShowWork } from '../chat/showWork';
 import { IconButton, InlineConfirm, Menu, type MenuItem } from '../components/primitives';
 import { TTL_CHOICES, ttlLabel } from '../lib/privacy';
 import { useStore } from '../store/store';
@@ -19,6 +20,8 @@ export function ConversationMenu() {
   const exportConv = useStore((s) => s.exportConversation);
   const setInstructions = useStore((s) => s.setConversationInstructions);
   const setTtl = useStore((s) => s.setConversationTtl);
+  const showWork = useShowWork((s) => s.showWork);
+  const setShowWork = useShowWork((s) => s.setShowWork);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   // Two-level like the sidebar row: the actions, and the idle-time picker swaps in.
   const [menuMode, setMenuMode] = useState<'main' | 'ttl'>('main');
@@ -80,6 +83,8 @@ export function ConversationMenu() {
       icon: 'brain',
       onSelect: () => setInstructing(true),
     },
+    // Tools and thinking of finished replies: folded to one row each, or open as they ran.
+    { label: showWork ? 'Hide work' : 'Show work', icon: 'wrench', onSelect: () => setShowWork(!showWork) },
     { label: conv.pinned ? 'Unpin' : 'Pin', icon: 'pin', onSelect: () => void pin(id, !conv.pinned) },
     ...(conv.kind === 'chat'
       ? [

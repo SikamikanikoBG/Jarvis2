@@ -262,6 +262,42 @@
   border-radius: var(--radius-xs);
 }
 
+/* A finished run's work, folded to one row (WorkFold) */
+.work {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.work-row {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  user-select: none;
+}
+.work-row:hover {
+  color: var(--fg-2);
+}
+.work-row .chev {
+  transition: transform var(--dur);
+}
+.work.open > .work-row .chev {
+  transform: rotate(90deg);
+}
+.work-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 /* Tool card */
 .tool {
   align-self: flex-start;

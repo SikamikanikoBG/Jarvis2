@@ -56,7 +56,9 @@ export type TranscriptItem =
   | { kind: 'run'; key: string; runId: string }
   | { kind: 'summary'; key: string; text: string }
   /** A user-role message the core injected (context, plan, supervisor…): a collapsed note, never Arsen's bubble. */
-  | { kind: 'injected'; key: string; name: string | null; text: string };
+  | { kind: 'injected'; key: string; name: string | null; text: string }
+  /** A finished run's work between two things worth reading (tools, thinking, notes), folded into one row. */
+  | { kind: 'work'; key: string; runId: string; items: TranscriptItem[]; steps: number; errors: number };
 
 interface Block {
   order: number;
@@ -77,6 +79,8 @@ export interface TranscriptSource {
   streamRunIds: ReadonlySet<string>;
   /** Compaction summary, inserted as a divider after `up_to_message_id`. */
   summary?: ConversationSummary | null;
+  /** Fold each finished run's work into `work` items, so the chat reads as his words and the answers. */
+  foldWork?: boolean;
 }
 
 export function transcriptSource(state: ChatState, conversationId: string): TranscriptSource {
@@ -214,7 +218,67 @@ function buildBlock(src: TranscriptSource, block: Block): TranscriptItem[] {
     }
     items.push({ kind: 'run', key: `run:${runId}`, runId });
   }
-  return items;
+  const working = run ? !isTerminal(run.status) : hasStream;
+  return src.foldWork && runId && !working && !hasStream ? foldWork(items, runId) : items;
+}
+
+/** A run's outcome is part of what he reads, not of the work that led to it. */
+const OUTCOME_TAGS = new Set(['failed', 'waiting', 'budget', 'stopped', 'interrupted']);
+
+/** What stays in sight when a run is folded: his words, the answers, the outcome, the chips. */
+function inSight(item: TranscriptItem): boolean {
+  switch (item.kind) {
+    case 'message':
+      // An answer is a turn that ended with words; one that went on to call tools is narration.
+      return item.message.role === 'user' || (item.message.content.trim() !== '' && item.message.tool_calls.length === 0);
+    case 'note':
+      return OUTCOME_TAGS.has(item.note.tag);
+    case 'tool':
+    case 'injected':
+    case 'confirm':
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Each stretch of work between two things in sight becomes one `work` item. An answer's own
+ * reasoning moves into the stretch before it, so a finished reply is its text and files.
+ */
+function foldWork(items: TranscriptItem[], runId: string): TranscriptItem[] {
+  const out: TranscriptItem[] = [];
+  let stretch: TranscriptItem[] = [];
+  const close = () => {
+    if (stretch.length === 0) return;
+    const tools = stretch.flatMap((i) => (i.kind === 'tool' ? [i.card] : []));
+    out.push({
+      kind: 'work',
+      key: `work:${stretch[0]?.key ?? runId}`,
+      runId,
+      items: stretch,
+      steps: tools.length,
+      errors: tools.filter((c) => c.result?.kind === 'error' || c.confirm?.approved === false).length,
+    });
+    stretch = [];
+  };
+  for (const item of items) {
+    if (!inSight(item)) {
+      stretch.push(item);
+      continue;
+    }
+    if (item.kind === 'message' && item.message.role === 'assistant' && item.message.reasoning) {
+      const { message } = item;
+      stretch.push({ kind: 'message', key: `${item.key}:thought`, message: { ...message, content: '', attachments: [], reasoning: message.reasoning } });
+      close();
+      out.push({ ...item, message: { ...message, reasoning: null } });
+      continue;
+    }
+    close();
+    out.push(item);
+  }
+  close();
+  return out;
 }
 
 function msgKey(m: LocalMessage): string {

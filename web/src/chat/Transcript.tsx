@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { Icon } from '../components/Icon';
 import { useStore } from '../store/store';
 import type { TranscriptItem } from '../store/transcript';
@@ -10,6 +10,7 @@ import { RunChip } from './RunChip';
 import { StreamBubble } from './StreamBubble';
 import { SummaryDivider } from './SummaryDivider';
 import { ToolCard } from './ToolCard';
+import { WorkFold } from './WorkFold';
 
 interface Props {
   items: TranscriptItem[];
@@ -157,26 +158,7 @@ export function Transcript({ items }: Props) {
         tabIndex={-1}
       >
         <div ref={innerRef} className="transcript-inner">
-          {items.map((it) => {
-            switch (it.kind) {
-              case 'message':
-                return <MessageItem key={it.key} message={it.message} />;
-              case 'tool':
-                return <ToolCard key={it.key} card={it.card} />;
-              case 'note':
-                return <Note key={it.key} note={it.note} />;
-              case 'confirm':
-                return <ConfirmCard key={it.key} runId={it.runId} callId={it.callId} name={it.name} arguments={it.arguments} reason={it.reason} />;
-              case 'stream':
-                return <StreamBubble key={it.key} runId={it.runId} />;
-              case 'run':
-                return <RunChip key={it.key} runId={it.runId} />;
-              case 'summary':
-                return <SummaryDivider key={it.key} text={it.text} />;
-              case 'injected':
-                return <InjectedNote key={it.key} name={it.name} text={it.text} />;
-            }
-          })}
+          {items.map(renderItem)}
         </div>
       </div>
       {showJump && (
@@ -187,4 +169,31 @@ export function Transcript({ items }: Props) {
       )}
     </>
   );
+}
+
+function renderItem(it: TranscriptItem): ReactNode {
+  switch (it.kind) {
+    case 'message':
+      return <MessageItem key={it.key} message={it.message} />;
+    case 'tool':
+      return <ToolCard key={it.key} card={it.card} />;
+    case 'note':
+      return <Note key={it.key} note={it.note} />;
+    case 'confirm':
+      return <ConfirmCard key={it.key} runId={it.runId} callId={it.callId} name={it.name} arguments={it.arguments} reason={it.reason} />;
+    case 'stream':
+      return <StreamBubble key={it.key} runId={it.runId} />;
+    case 'run':
+      return <RunChip key={it.key} runId={it.runId} />;
+    case 'summary':
+      return <SummaryDivider key={it.key} text={it.text} />;
+    case 'injected':
+      return <InjectedNote key={it.key} name={it.name} text={it.text} />;
+    case 'work':
+      return (
+        <WorkFold key={it.key} steps={it.steps} errors={it.errors}>
+          {it.items.map(renderItem)}
+        </WorkFold>
+      );
+  }
 }

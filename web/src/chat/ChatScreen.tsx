@@ -34,6 +34,7 @@ export function ChatScreen() {
         runEvents: src.runEvents,
         summary: src.summary,
         streamRunIds: new Set(src.streamKeys ? src.streamKeys.split(',') : []),
+        foldWork: true,
       }),
     [src],
   );

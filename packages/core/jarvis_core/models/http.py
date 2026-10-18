@@ -54,7 +54,15 @@ async def stream_lines(
             attempt += 1
             log.warning("model call retry %d/%d: %s", attempt, _RETRIES, exc)
             await asyncio.sleep(_BACKOFF_S[min(attempt - 1, len(_BACKOFF_S) - 1)])
-        except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError, httpx.PoolTimeout) as exc:
+        # ConnectTimeout is an httpx timeout, not a ConnectError: without it here a vLLM that was
+        # slow to accept failed the run outright, never retried (2026-10-17).
+        except (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.RemoteProtocolError,
+            httpx.PoolTimeout,
+        ) as exc:
             if first_byte or attempt >= _RETRIES:
                 raise ModelError(f"{type(exc).__name__}: {exc}", retryable=not first_byte) from exc
             attempt += 1

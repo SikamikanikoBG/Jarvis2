@@ -230,6 +230,29 @@ async def test_5xx_before_first_byte_is_retried_then_fails():
     assert attempts["n"] == 3
 
 
+async def test_a_connect_timeout_is_retried_like_any_connection_error():
+    # 2026-10-17 08:39 call (run_1a14903d272_20447bc0): the first connect to vLLM timed out and
+    # the run failed on the spot with "ConnectTimeout: ", never retried - ConnectTimeout is a
+    # timeout in httpx, not a ConnectError.
+    spec = ModelSpec(provider=Provider.VLLM, base_url="http://x/v1", model="m")
+    adapter = OpenAICompatAdapter(spec)
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise httpx.ConnectTimeout("timed out", request=request)
+        return httpx.Response(200, content=b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n')
+
+    adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    import jarvis_core.models.http as http_mod
+
+    http_mod._BACKOFF_S = (0.0, 0.0)
+    chunks = await _collect(adapter, [Message.user("hi")])
+    assert attempts["n"] == 2
+    assert "".join(c.text for c in chunks if isinstance(c, ModelTextChunk)) == "ok"
+
+
 async def test_context_length_400_retries_once_with_max_tokens_that_fit():
     """vLLM's 400 says exactly how much room there is; the adapter asks for that instead of dying."""
     spec = ModelSpec(provider=Provider.VLLM, base_url="http://x/v1", model="m", think=False, max_tokens=16384)

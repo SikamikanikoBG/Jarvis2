@@ -26,6 +26,7 @@
  *   keeps his voice from the loudspeaker out of the utterances (see MIC_CONSTRAINTS).
  */
 
+import { earpieceInput } from './earpiece';
 import { EchoGate } from './gate';
 import { rmsOf, Segmenter, type SegmentEvent } from './segmenter';
 import type { CallRoute, Listener, ListenerHandlers } from './session';
@@ -145,7 +146,26 @@ export class MicListener implements Listener {
 
   /** The microphone, then the context on it. A failure leaves nothing open. */
   private async open(): Promise<void> {
-    const stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS[this.o.line ? 'earpiece' : this.route]);
+    const route: CallRoute = this.o.line ? 'earpiece' : this.route;
+    let stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS[route]);
+    // On the earpiece route, Chrome's earpiece route rather than "Default", which is the
+    // loudspeaker (earpiece.ts). Asked after the first microphone: device names are given out
+    // only once one has been allowed.
+    if (route === 'earpiece' && this.started) {
+      const devices = await navigator.mediaDevices.enumerateDevices().catch(() => [] as MediaDeviceInfo[]);
+      const id = earpieceInput(devices);
+      const now = stream.getAudioTracks()[0]?.getSettings?.().deviceId;
+      if (id && id !== now) {
+        stream.getTracks().forEach((t) => t.stop());
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: { ...(MIC_CONSTRAINTS.earpiece.audio as MediaTrackConstraints), deviceId: { exact: id } } });
+        } catch (e) {
+          // Refused or gone meanwhile: the call goes on as before rather than not at all.
+          callTrace.mark('mic.earpiece.failed', { error: e instanceof Error ? e.message : String(e) });
+          stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS[route]);
+        }
+      }
+    }
     if (!this.started) {
       stream.getTracks().forEach((t) => t.stop()); // hung up while we were asking
       return;

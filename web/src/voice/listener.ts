@@ -29,6 +29,7 @@
 import { EchoGate } from './gate';
 import { rmsOf, Segmenter, type SegmentEvent } from './segmenter';
 import type { CallRoute, Listener, ListenerHandlers } from './session';
+import { callTrace } from './trace';
 
 const TARGET_RATE = 16_000;
 /** Samples kept: the last minute at 16 kHz. An utterance is capped at 30 s by the segmenter. */
@@ -150,6 +151,8 @@ export class MicListener implements Listener {
       return;
     }
     this.stream = stream;
+    const track = stream.getAudioTracks()[0];
+    callTrace.mark('mic.open', { label: track?.label ?? null, settings: track?.getSettings?.() ?? null });
     try {
       const ctx = new AudioContext();
       this.ctx = ctx;
@@ -159,7 +162,10 @@ export class MicListener implements Listener {
       // Android suspends a page's audio for a real phone call, an alarm, another app taking the
       // sound - and nothing resumed it: the call came back deaf and mute. Resume it as soon as
       // it stops (statechange) and whenever the page is back in front (onVisible).
-      ctx.onstatechange = () => this.wake();
+      ctx.onstatechange = () => {
+        callTrace.mark('audio', { state: ctx.state });
+        this.wake();
+      };
       // A microphone the system took away (another app, a device that went) is opened again.
       for (const track of stream.getAudioTracks()) track.onended = () => this.lost(stream);
       const tap = new AudioWorkletNode(ctx, 'pcm-tap', { numberOfInputs: 1, numberOfOutputs: 0, channelCount: 1 });
@@ -189,6 +195,7 @@ export class MicListener implements Listener {
 
   /** The microphone ended without us closing it: open everything again on the same route. */
   private lost(stream: MediaStream): void {
+    callTrace.mark('mic.lost', { current: this.stream === stream });
     if (!this.started || this.stream !== stream || this.rerouting) return;
     const now = performance.now();
     // Lost again right after it was reopened: it is not coming back; say so, do not loop.

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { callTrace } from './trace';
 
 /**
  * Is the phone at an ear? (docs/stories/10_voice.md)
@@ -132,18 +133,28 @@ export function useAtEar(on: boolean): boolean {
   useEffect(() => {
     if (!on || typeof window === 'undefined' || !('DeviceMotionEvent' in window)) return;
     const tracker = new EarTracker();
+    let was = false;
+    const track = (now: boolean, why: string) => {
+      if (now !== was) callTrace.mark('ear', { on: now, why });
+      was = now;
+      return now;
+    };
     const onMotion = (e: DeviceMotionEvent) => {
       const a = e.accelerationIncludingGravity;
       if (a?.x == null || a.y == null || a.z == null) return;
-      setAtEar(tracker.feed({ x: a.x, y: a.y, z: a.z }, performance.now()));
+      const r = (v: number) => Math.round(v * 100) / 100;
+      callTrace.sample('g', 100, { x: r(a.x), y: r(a.y), z: r(a.z) });
+      setAtEar(track(tracker.feed({ x: a.x, y: a.y, z: a.z }, performance.now()), 'pose'));
     };
     // A cheek is a contact anywhere but a control, or a contact too wide to be a fingertip.
     // Capture phase, so the guard swallowing the touch does not hide it from us.
     const onContact = (e: PointerEvent) => {
       const onControl = e.target instanceof Element && e.target.closest('button') !== null;
+      const button = e.target instanceof Element ? e.target.closest('button')?.getAttribute('aria-label') : null;
+      callTrace.mark('touch', { w: Math.round(e.width), h: Math.round(e.height), x: Math.round(e.clientX), y: Math.round(e.clientY), primary: e.isPrimary, type: e.pointerType, button });
       if (!onControl || e.width > FINGER_MAX_PX || e.height > FINGER_MAX_PX) tracker.contact(performance.now());
     };
-    const stale = window.setInterval(() => setAtEar(tracker.tick(performance.now())), 500);
+    const stale = window.setInterval(() => setAtEar(track(tracker.tick(performance.now()), 'no sensor')), 500);
     window.addEventListener('devicemotion', onMotion);
     window.addEventListener('pointerdown', onContact, true);
     return () => {

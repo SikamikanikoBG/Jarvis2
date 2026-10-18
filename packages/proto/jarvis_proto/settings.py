@@ -776,6 +776,10 @@ class Settings(BaseModel):
     # a tone or a room comes back as "Абонирайте се!" - confidently (avg_logprob -0.2), but with
     # no_speech_prob 0.82-0.85, against 0.01-0.36 for real Bulgarian speech (measured 2026-10-14).
     stt_no_speech_max: float = Field(default=0.6, ge=0.0, le=1.0)
+    # Call diagnostics in <home>/voice-debug: every recognised clip with Whisper's scores (clips/),
+    # and each call's trace from the phone - tilt, touches, levels, pauses, line stats (traces/).
+    # To read what happens at the ear from data. Off by default; a diagnostic, not a feature.
+    voice_debug: bool = False
 
     @model_validator(mode="before")
     @classmethod

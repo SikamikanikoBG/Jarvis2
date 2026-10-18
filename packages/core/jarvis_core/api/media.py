@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import json
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from jarvis_core.api.deps import core_of, require_token
 from jarvis_core.features.mail import Mailbox, MailError
@@ -108,6 +110,34 @@ async def line_offer(request: Request, body: LineOffer) -> dict[str, str]:
         raise HTTPException(502, f"the line refused the call: HTTP {res.status_code}")
     answer = res.json()
     return {"sdp": str(answer["sdp"]), "type": str(answer["type"])}
+
+
+#: With settings.voice_debug on, the newest this many call traces are kept.
+KEEP_TRACES = 100
+
+
+class CallTrace(BaseModel):
+    #: The call's own id (voice/trace.ts), which names its file.
+    id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    events: list[dict[str, Any]] = Field(max_length=5000)
+
+
+@router.post("/voice/trace")
+async def voice_trace(request: Request, body: CallTrace) -> dict[str, bool]:
+    """A batch of a call's trace from the phone (voice/trace.ts): tilt, touches, levels, phases,
+    pauses, the line's stats. Appended to <home>/voice-debug/traces/<id>.jsonl while
+    settings.voice_debug is on; dropped otherwise."""
+    core = core_of(request)
+    if not core.settings.voice_debug:
+        return {"kept": False}
+    folder = core.config.home / "voice-debug" / "traces"
+    folder.mkdir(parents=True, exist_ok=True)
+    with (folder / f"{body.id}.jsonl").open("a", encoding="utf-8") as f:
+        for event in body.events:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    for old in sorted(folder.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)[:-KEEP_TRACES]:
+        old.unlink(missing_ok=True)
+    return {"kept": True}
 
 
 # --- meetings -------------------------------------------------------------------------------

@@ -18,6 +18,7 @@ import { CallSession, type CallRoute, type CallState } from '../voice/session';
 import { ToneCues, type WaitingSound } from '../voice/tones';
 import { DeviceSpeaker, ServerSpeaker } from '../voice/speaker';
 import { LineCues, LineSpeaker, VoiceLine } from '../voice/line';
+import { callTrace } from '../voice/trace';
 import type {
   Attachment,
   BulkConversationAction,
@@ -458,6 +459,7 @@ export const useStore = create<AppState>()((set, get) => ({
     let waiting: WaitingSound = 'music';
     let holdVolume = 0.4;
     let useLine = !opts?.page;
+    let debug = false;
     try {
       const settings = await api.settings.get();
       tts = settings.voice.tts;
@@ -466,6 +468,7 @@ export const useStore = create<AppState>()((set, get) => ({
       waiting = settings.voice.waiting_sound;
       holdVolume = settings.voice.hold_volume;
       useLine = useLine && settings.voice.line;
+      debug = settings.voice_debug;
     } catch {
       /* the defaults stand; the server voice falls back to the device on its own */
     }
@@ -488,6 +491,8 @@ export const useStore = create<AppState>()((set, get) => ({
     const onLine = useLine && tts === 'server' && typeof RTCPeerConnection !== 'undefined';
     const callLine = onLine ? new VoiceLine() : null;
     line = callLine;
+    if (debug) callTrace.start({ line: onLine, tts, languages, turnThreshold, waiting, holdVolume });
+    if (debug && callLine) callTrace.watchStats(() => callLine.stats());
     const listener = new MicListener({ line: onLine });
     // Off the line, the voice plays through the microphone's own context (opened in this tap,
     // proven running), never a second one opened later while the phone is in call mode.
@@ -512,8 +517,16 @@ export const useStore = create<AppState>()((set, get) => ({
         // The call's language goes along as a hint: a few words are too few for Whisper to
         // guess from, and a wrong guess came back as Greek letters (2026-09-16).
         transcribe: async (audio, language, o) => {
-          const res = await api.stt(audio, language, o);
-          return { text: res.text, language: res.language, turnComplete: res.turn_complete ?? null };
+          const t0 = performance.now();
+          callTrace.mark('stt.send', { bytes: audio.size, type: audio.type, language, turn: o?.turn ?? false, offsetMs: o?.offsetMs ?? 0 });
+          try {
+            const res = await api.stt(audio, language, o);
+            callTrace.mark('stt', { ms: Math.round(performance.now() - t0), text: res.text, language: res.language, turnComplete: res.turn_complete ?? null });
+            return { text: res.text, language: res.language, turnComplete: res.turn_complete ?? null };
+          } catch (e) {
+            callTrace.mark('stt.error', { ms: Math.round(performance.now() - t0), error: e instanceof Error ? e.message : String(e) });
+            throw e;
+          }
         },
       },
       transport: {
@@ -553,7 +566,13 @@ export const useStore = create<AppState>()((set, get) => ({
       // Only the live call draws the screen: a hung-up session finishing a recognition must not
       // bring the call screen back.
       onChange: (state) => {
-        if (session === call) set({ call: { ...state } });
+        if (session !== call) return;
+        const was = get().call;
+        if (was?.phase !== state.phase || was.muted !== state.muted || was.route !== state.route || was.online !== state.online) {
+          callTrace.mark('phase', { phase: state.phase, muted: state.muted, route: state.route, online: state.online, problem: state.problem });
+        }
+        callTrace.sample('level', 100, { v: Math.round(state.level * 1000) / 1000 });
+        set({ call: { ...state } });
       },
     });
     session = call;
@@ -585,6 +604,7 @@ export const useStore = create<AppState>()((set, get) => ({
 
   endCall: () => {
     session?.end();
+    callTrace.stop();
     session = null;
     if (speaker instanceof ServerSpeaker || speaker instanceof LineSpeaker) speaker.close();
     speaker = null;

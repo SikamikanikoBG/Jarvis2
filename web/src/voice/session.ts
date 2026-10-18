@@ -17,6 +17,7 @@
  */
 
 import { SentenceSplitter, scriptLanguage, speakable } from './sentences';
+import { callTrace } from './trace';
 import type { Cues } from './tones';
 
 export type CallPhase = 'idle' | 'connecting' | 'listening' | 'transcribing' | 'thinking' | 'speaking' | 'ended';
@@ -295,6 +296,7 @@ export class CallSession {
   }
 
   setMuted(muted: boolean): void {
+    callTrace.mark('mute', { muted });
     this.o.listener.setMuted(muted);
     if (muted) this.dropPieces();
     // Muted mid-sound: nothing more will come of it.
@@ -357,6 +359,7 @@ export class CallSession {
   // --- from the listener -------------------------------------------------------------------
 
   private onSpeechStart(): void {
+    callTrace.mark('speech', { phase: this.state.phase, then: this.state.phase !== 'speaking' ? 'listen' : this.o.speaker.pause && this.o.speaker.resume ? 'pause' : 'cut', spokenUpTo: this.state.spokenUpTo });
     if (this.state.phase === 'speaking' && this.o.speaker.pause && this.o.speaker.resume) {
       // A sound is not yet a cut-in: a cheek on the glass, a breath, a chair (2026-10-16, "като
       // допра телефона до бузата спирам да чувам Джарвис" - every such sound stopped him, and
@@ -393,6 +396,7 @@ export class CallSession {
    * it — starting a second drain beside the first would say everything twice.
    */
   onSpeechDropped(): void {
+    callTrace.mark('speech.dropped', { paused: this.paused, phase: this.state.phase });
     if (this.paused) {
       // Nothing he said: the voice goes on from the very word it stopped at.
       this.paused = false;
@@ -413,6 +417,7 @@ export class CallSession {
   }
 
   private onPause(audio: Blob, at: number, offsetMs?: number): void {
+    callTrace.mark('utt.pause', { at: Math.round(at), bytes: audio.size, offsetMs: offsetMs ?? 0 });
     if (this.state.phase === 'ended' || this.state.muted) return;
     const result = this.recognise(audio, offsetMs);
     this.speculative = { at, result };
@@ -457,6 +462,7 @@ export class CallSession {
   }
 
   private async onUtterance(audio: Blob, at?: number, offsetMs?: number): Promise<void> {
+    callTrace.mark('utt', { at: at === undefined ? null : Math.round(at), bytes: audio.size, offsetMs: offsetMs ?? 0, phase: this.state.phase });
     if (this.state.phase === 'ended' || this.state.muted) return;
     this.quietSince = this.now();
     this.set({ phase: 'transcribing', problem: null });
@@ -530,6 +536,7 @@ export class CallSession {
   /** A paused voice is cut for good, exactly as a cut-in without a pause would have cut it. */
   private commitCut(): void {
     if (!this.paused) return;
+    callTrace.mark('cut', { spokenUpTo: this.cutAfter });
     this.paused = false;
     this.cutIn = true;
     this.suspended = this.current ? [this.current, ...this.queue] : [...this.queue];

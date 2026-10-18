@@ -191,6 +191,11 @@ export function SettingsScreen() {
                 }
               />
             </Field>
+            <div className="think-row">
+              <Switch checked={draft.voice_debug} onChange={(v) => patch('voice_debug', v)} label="Record call diagnostics" />
+              <span className="small">Call diagnostics</span>
+              <span className="field-hint">Keeps every clip the microphone sends with Whisper's scores, and each call's trace from the phone (tilt, touches, levels, pauses, line stats), in the core's voice-debug folder. For finding faults; leave off otherwise.</span>
+            </div>
             <Field label="SearXNG URL" error={errors.searxng_url} hint="web.search goes here; empty = no search tool.">
               <input className="input" value={draft.searxng_url ?? ''} onChange={(e) => patch('searxng_url', e.target.value || null)} placeholder="http://…:8085" />
             </Field>

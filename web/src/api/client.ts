@@ -277,6 +277,8 @@ export const api = {
     /** A call's WebRTC offer for the line (scripts/voiceline), through the core; its answer back. */
     lineOffer: (offer: { sdp: string; type: RTCSdpType }) =>
       request<{ sdp: string; type: RTCSdpType }>('POST', '/api/voice/line/offer', offer),
+    /** A batch of a call's trace (voice/trace.ts); the core keeps it only with voice_debug on. */
+    trace: (id: string, events: Record<string, unknown>[]) => request<{ kept: boolean }>('POST', '/api/voice/trace', { id, events }, 10_000),
   },
   assistant: {
     /** The Jarvis conversation, made on first use (docs/stories/12_assistant.md). */

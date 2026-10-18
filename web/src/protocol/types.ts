@@ -599,6 +599,8 @@ export interface Settings {
   stt_kind: SttKind;
   stt_model: string;
   stt_languages: string[];
+  /** Call diagnostics: clips with Whisper's scores and each call's trace, kept in <home>/voice-debug. */
+  voice_debug: boolean;
   /** Push channel for notify.discord and scheduled-run summaries. Secret. */
   discord_webhook_url: string | null;
   /** The kinds of run that ring when they end without being asked to (docs/stories/11_call_me.md). */

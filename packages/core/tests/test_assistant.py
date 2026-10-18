@@ -575,3 +575,68 @@ async def test_what_whisper_itself_scores_as_not_speech_is_not_words(tmp_path: P
     t._client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=only_music)))  # pyright: ignore[reportPrivateUsage]
     assert (await t.transcribe(b"RIFF", filename="a.wav", mime="audio/wav")).text == ""
     await t.aclose()
+
+
+async def test_with_voice_debug_on_every_clip_is_kept_with_whispers_scores(tmp_path: Path):
+    import json
+
+    import httpx
+
+    from jarvis_core.features.stt import KEEP_CLIPS, Transcriber
+    from jarvis_proto import Settings
+
+    settings = Settings(stt_url="http://whisper:9000", stt_kind="asr")
+    segs = [
+        {"start": 0.0, "end": 0.8, "text": " Да.", "no_speech_prob": 0.1, "avg_logprob": -0.3},
+        {"start": 0.8, "end": 1.6, "text": " Абонирайте се!", "no_speech_prob": 0.85, "avg_logprob": -0.2},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"text": "Да. Абонирайте се!", "language": "bg", "segments": segs})
+
+    keep = tmp_path / "stt-kept"
+    t = Transcriber(lambda: settings, keep)
+    t._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # pyright: ignore[reportPrivateUsage]
+    # Off (the default): nothing is written.
+    await t.transcribe(b"RIFF-off", filename="a.wav", mime="audio/wav", prompt="Jarvis said")
+    assert not keep.exists()
+
+    settings.voice_debug = True
+    await t.transcribe(b"RIFF-on", filename="a.wav", mime="audio/wav", prompt="Jarvis said")
+    clips = sorted(keep.glob("*.wav"))
+    assert len(clips) == 1 and clips[0].read_bytes() == b"RIFF-on"
+    meta = json.loads(clips[0].with_suffix(".json").read_text())
+    assert meta["text"] == "Да." and meta["prompt"] == "Jarvis said"
+    assert [s["dropped"] for s in meta["segments"]] == [False, True]
+    assert meta["segments"][1]["no_speech_prob"] == 0.85
+
+    # Only the newest KEEP_CLIPS stay: a switch left on does not fill the disk.
+    for _ in range(KEEP_CLIPS + 3):
+        await t.transcribe(b"RIFF", filename="a.wav", mime="audio/wav")
+    assert len(list(keep.glob("*.wav"))) == KEEP_CLIPS
+    assert len(list(keep.glob("*.json"))) == KEEP_CLIPS
+    await t.aclose()
+
+
+def test_a_calls_trace_is_appended_to_its_file_only_with_voice_debug_on(client: TestClient):
+    import json
+
+    from jarvis_core.api.media import KEEP_TRACES
+
+    core: Core = client.app.state.core  # type: ignore[attr-defined]
+    traces = core.config.home / "voice-debug" / "traces"
+    batch = {"id": "20261018-101500-ab", "events": [{"t": 1, "k": "ear", "on": True}]}
+    # Off: accepted and dropped, so a phone with stale settings does not see errors.
+    assert client.post("/api/voice/trace", json=batch, headers=_h()).json() == {"kept": False}
+    assert not traces.exists()
+
+    core.settings.voice_debug = True
+    client.post("/api/voice/trace", json=batch, headers=_h())
+    client.post("/api/voice/trace", json={**batch, "events": [{"t": 2, "k": "pause"}]}, headers=_h())
+    lines = (traces / "20261018-101500-ab.jsonl").read_text().splitlines()
+    assert [json.loads(x)["k"] for x in lines] == ["ear", "pause"]
+    # The id names a file: nothing but a plain name is accepted.
+    assert client.post("/api/voice/trace", json={**batch, "id": "../x"}, headers=_h()).status_code == 422
+    for i in range(KEEP_TRACES + 2):
+        client.post("/api/voice/trace", json={**batch, "id": f"c{i:03d}"}, headers=_h())
+    assert len(list(traces.glob("*.jsonl"))) == KEEP_TRACES

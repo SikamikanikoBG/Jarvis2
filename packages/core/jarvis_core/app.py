@@ -111,7 +111,7 @@ class Core:
         self.web = WebTools(settings)
         self.mail = MailTools(settings)
         self.collab_keys = CollabKeys(self.db)
-        self.transcriber = Transcriber(settings)
+        self.transcriber = Transcriber(settings, self.config.home / "voice-debug" / "clips")
         self.synthesizer = Synthesizer(settings, self.config.home)
         self.turns = TurnDetector(self.config.home, fetch=self.config.fetch_models)
         self._home_lock = asyncio.Lock()

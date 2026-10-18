@@ -21,6 +21,7 @@ import { api } from '../api/client';
 import { DeviceSpeaker, ServerSpeaker } from './speaker';
 import type { Speaker } from './session';
 import type { Cues } from './tones';
+import { callTrace } from './trace';
 
 /** How long the call may take to come up before the page plays the voice itself after all. */
 const CONNECT_TIMEOUT_MS = 8000;
@@ -93,6 +94,7 @@ export class VoiceLine {
       dc.addEventListener('open', check);
     });
     pc.addEventListener('connectionstatechange', () => {
+      callTrace.mark('line.state', { state: pc.connectionState });
       if ((pc.connectionState === 'failed' || pc.connectionState === 'closed') && this.pc === pc) this.lose();
     });
     await pc.setLocalDescription(await pc.createOffer());
@@ -198,6 +200,25 @@ export class VoiceLine {
     await audio.setSinkId(next.deviceId);
     this.report('output changed');
     return true;
+  }
+
+  /** What the line looks like from the phone right now (voice/trace.ts): how loud the voice
+   *  arrives, packets lost, the jitter buffer and gaps filled in, the round trip, and whether the
+   *  element playing it is playing. */
+  async stats(): Promise<Record<string, unknown> | null> {
+    const pc = this.pc;
+    if (!pc) return null;
+    const out: Record<string, unknown> = { paused: this.paused, playing: this.playing.size, el: this.audio ? { paused: this.audio.paused, muted: this.audio.muted, volume: this.audio.volume } : null };
+    const report = await pc.getStats();
+    report.forEach((r: RTCStats & Record<string, unknown>) => {
+      if (r.type === 'inbound-rtp' && r.kind === 'audio') {
+        const pick = ['audioLevel', 'totalAudioEnergy', 'packetsReceived', 'packetsLost', 'jitter', 'jitterBufferDelay', 'jitterBufferEmittedCount', 'concealedSamples', 'silentConcealedSamples', 'totalSamplesReceived'] as const;
+        out.in = Object.fromEntries(pick.map((k) => [k, r[k] ?? null]));
+      } else if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) {
+        out.rtt = r.currentRoundTripTime ?? null;
+      }
+    });
+    return out;
   }
 
   close(): void {

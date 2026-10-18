@@ -3,9 +3,12 @@ red badge, never a different model (V1 served a backup model for three days in s
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -22,6 +25,11 @@ _MODEL_MAP = {
     "large-v3": "Systran/faster-whisper-large-v3",
 }
 
+
+#: With settings.voice_debug on, the newest this many clips are kept; older ones are deleted.
+KEEP_CLIPS = 300
+
+_EXT = {"audio/wav": ".wav", "audio/x-wav": ".wav", "audio/webm": ".webm", "audio/ogg": ".ogg", "audio/mp4": ".m4a"}
 
 #: Whisper reads at most 224 tokens of prompt; the tail of what was said is the part that matters.
 PROMPT_CHARS = 400
@@ -51,8 +59,9 @@ def invented(seg: dict[str, Any], no_speech_max: float) -> bool:
 
 
 class Transcriber:
-    def __init__(self, settings: Any) -> None:
+    def __init__(self, settings: Any, keep_dir: Path | None = None) -> None:
         self._settings = settings  # Callable[[], Settings]
+        self._keep_dir = keep_dir
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(20.0, read=300.0))
 
     async def aclose(self) -> None:
@@ -123,4 +132,33 @@ class Transcriber:
             warning = f"served by fallback upstream {chain[-1]} after {', '.join(chain[:-1])} failed"
             log.warning("stt: %s", warning)
         backend = f"{kind}:{chain[-1] if chain else s.stt_url}"
+        if s.voice_debug and self._keep_dir is not None:
+            self._keep(audio, mime, prompt, text, lang, raw, s.stt_no_speech_max)
         return SttResult(text=text, language=lang, backend=backend, duration_ms=ms, warning=warning, segments=segments)
+
+    def _keep(
+        self, audio: bytes, mime: str, prompt: str | None, text: str, lang: Any, raw: list[Any], nsm: float
+    ) -> None:
+        """The clip exactly as Whisper heard it, beside Whisper's own scores for every segment: what
+        a call's microphone really picks up is then read from data (2026-10-18, Jarvis paused at the
+        ear on sounds Whisper found no words in). Never fails a recognition."""
+        assert self._keep_dir is not None
+        try:
+            self._keep_dir.mkdir(parents=True, exist_ok=True)
+            stem = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            (self._keep_dir / (stem + _EXT.get(mime.split(";")[0], ".bin"))).write_bytes(audio)
+            meta = {
+                "at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+                "mime": mime,
+                "prompt": prompt,
+                "text": text,
+                "language": lang,
+                "segments": [{**seg, "dropped": invented(seg, nsm)} for seg in raw if isinstance(seg, dict)],
+            }
+            (self._keep_dir / (stem + ".json")).write_text(json.dumps(meta, ensure_ascii=False, indent=1))
+            stems = sorted({f.stem for f in self._keep_dir.iterdir() if f.is_file()})
+            for old in stems[:-KEEP_CLIPS]:
+                for f in self._keep_dir.glob(old + ".*"):
+                    f.unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("stt: could not keep the clip: %s", exc)

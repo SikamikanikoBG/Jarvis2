@@ -19,7 +19,17 @@ def test_runs_and_captures_output(tmp_path: Path):
         "import os, sys; print('out', os.getcwd() == sys.argv[0] or True); print('err', file=sys.stderr); sys.exit(3)"
     )
     assert res["exit_code"] == 3 and res["stdout"].startswith("out ") and res["stderr"] == "err\n"
-    assert res["cwd"] == str(tmp_path) and res["duration_ms"] >= 0
+    assert res["cwd"] == str(tmp_path)
+
+
+def test_the_same_command_with_the_same_output_is_the_same_answer(tmp_path: Path):
+    # 2026-10-17 call: one curl ran 16 times in a row with the same output, and the core's loop
+    # check never fired - it knows a repeat by an identical answer, and the answer carried how many
+    # milliseconds the command took. The core times every tool call itself.
+    shell = Shell(launcher=PY, default_cwd=tmp_path)
+    first = shell.run("import time; time.sleep(0.01); print('same')")
+    second = shell.run("import time; time.sleep(0.03); print('same')")
+    assert first == second
 
 
 def test_timeout_kills_and_raises_with_partial_output(tmp_path: Path):

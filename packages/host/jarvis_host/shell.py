@@ -22,7 +22,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -167,7 +166,6 @@ class Shell:
         if not workdir.is_dir():
             raise ShellError(f"cwd {workdir} is not a directory")
         argv = [*self.launcher, command]
-        t0 = time.monotonic()
         try:
             # own process group / session, so a timeout can take the whole tree down (kill_tree)
             if sys.platform == "win32":
@@ -208,11 +206,12 @@ class Shell:
                 out,
                 err,
             ) from None
+        # No timing in the answer: the core times every call, and a repeat is known by an identical
+        # answer - a stopwatch in it hid a curl run 16 times over from the loop check (2026-10-17).
         return {
             "exit_code": proc.returncode,
             "stdout": cap(_decode(stdout)),
             "stderr": cap(_decode(stderr)),
-            "duration_ms": int((time.monotonic() - t0) * 1000),
             "cwd": str(workdir),
             "interpreter": self.interpreter,
         }

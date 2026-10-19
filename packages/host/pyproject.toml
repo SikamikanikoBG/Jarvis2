@@ -1,6 +1,6 @@
 [project]
 name = "jarvis-host"
-version = "2.0.0a28"
+version = "2.0.0a29"
 description = "Jarvis V2 host daemon: exposes a machine's local capabilities as an MCP server"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -13,6 +13,7 @@ dependencies = [
     "comtypes>=1.2; sys_platform == 'win32'",
     "pyaudiowpatch==0.2.12.8; sys_platform == 'win32'",
     "mss>=9; sys_platform == 'win32'",
+    "pywinauto>=0.6.9; sys_platform == 'win32'",
 ]
 
 [project.scripts]

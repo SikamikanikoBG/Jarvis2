@@ -42,6 +42,7 @@ from jarvis_host.outlook import OutlookBackend, OutlookError, OutlookService, ou
 from jarvis_host.screen import Screen
 from jarvis_host.shell import Shell
 from jarvis_host.status import Status
+from jarvis_host.ui import Ui
 
 log = logging.getLogger("jarvis_host.tools")
 
@@ -71,6 +72,7 @@ class Deps:
     files: Files
     shell: Shell
     screen: Screen
+    ui: Ui
     audio: Audio
     status: Status
     meetings: MeetingCapture
@@ -103,6 +105,7 @@ def make_deps(
         files,
         shell,
         screen,
+        Ui(enabled=config.screen_enabled),
         Audio(),
         Status(config, worker, outlook),
         MeetingCapture(),
@@ -542,8 +545,42 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
     @tool("screen_grab", READ)
     async def screen_grab(monitor: int = 0) -> Image:
         """PNG screenshot: monitor 0 = all monitors as one image, 1.. = a single monitor."""
-        png, _geometry = await _run("screen_grab", lambda: asyncio.to_thread(deps.screen.grab, monitor))
+
+        async def grab() -> tuple[bytes, dict[str, int]]:
+            if deps.screen.enabled:
+                await deps.ui.run(deps.ui.console.ensure)  # a disconnected session has no screen
+            return await asyncio.to_thread(deps.screen.grab, monitor)
+
+        png, _geometry = await _run("screen_grab", grab)
         return Image(data=png, format="png")
+
+    @tool("screen_windows", READ)
+    async def screen_windows() -> str:
+        """The visible top-level windows on this desktop: title, handle, class, process id and screen rectangle. Start here to work a program's own window (a dialog, a sign-in prompt, an app with no other tool)."""
+        return json_text(await _run("screen_windows", lambda: deps.ui.run(deps.ui.windows)))
+
+    @tool("screen_controls", READ)
+    async def screen_controls(window: str, max_controls: int = 150) -> str:
+        """The named controls of one window (a title, part of one, or a handle from screen_windows): name, type (Button, Hyperlink, Edit ...), automation id, enabled, screen rectangle. Some windows draw their content themselves and list little or nothing here (e.g. Microsoft's sign-in dialog); then read screen_grab and click by coordinates."""
+        return json_text(await _run("screen_controls", lambda: deps.ui.run(deps.ui.controls, window, max_controls)))
+
+    @tool("screen_click", DESTRUCTIVE)
+    async def screen_click(
+        window: str | None = None,
+        name: str | None = None,
+        control_type: str | None = None,
+        x: int | None = None,
+        y: int | None = None,
+    ) -> str:
+        """Click a control by its name in a window (as screen_controls lists it; `control_type` narrows it, e.g. 'Button'), or click the screen at x, y - pixels as in screen_grab of monitor 0. A named control is pressed through UI Automation, which works even behind other windows. Check the result with screen_grab."""
+        return json_text(
+            await _run("screen_click", lambda: deps.ui.run(deps.ui.click, window, name, control_type, x, y))
+        )
+
+    @tool("screen_type", DESTRUCTIVE)
+    async def screen_type(text: str = "", keys: str = "", window: str | None = None, name: str | None = None) -> str:
+        """Type `text` as it is, then press `keys` (pywinauto key syntax: '{ENTER}', '{TAB}', '^a' = Ctrl+A, '%{F4}' = Alt+F4), into the field called `name` in `window`, or into whatever has the focus when neither is given."""
+        return json_text(await _run("screen_type", lambda: deps.ui.run(deps.ui.type, text, keys, window, name)))
 
     @tool("host_status", READ)
     async def host_status() -> str:

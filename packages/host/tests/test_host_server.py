@@ -67,6 +67,10 @@ EXPECTED_ANNOTATIONS = {
     # not stop an interactive run for a confirmation.
     "volume_set": ("mutating", True),
     "screen_grab": ("read", True),
+    "screen_windows": ("read", True),
+    "screen_controls": ("read", True),
+    "screen_click": ("destructive", False),
+    "screen_type": ("destructive", False),
     "host_status": ("read", True),
 }
 

@@ -36,6 +36,12 @@ MAX_CONTROLS = 300
 WALK_BUDGET_S = 20.0
 
 _TASK = "Jarvis2 host console"
+#: The window class Windows puts over a locked session (seen on jarvisvm 2026-10-19).
+_LOCK_CLASS = "LockScreenBackstopFrame"
+LOCKED = (
+    "the console is locked: a click or keys would go to the lock screen and screen_grab shows black. "
+    "It needs a sign-in at the machine; say so rather than retrying"
+)
 
 
 class Console:
@@ -113,6 +119,8 @@ class Ui:
                     "rect": _rect(w),
                 }
             )
+        if self._locked():
+            note = LOCKED
         return _with_note({"windows": rows}, note)
 
     def controls(self, window: str, max_controls: int = 150) -> dict[str, Any]:
@@ -152,7 +160,7 @@ class Ui:
         x: int | None = None,
         y: int | None = None,
     ) -> dict[str, Any]:
-        note = self._ready()
+        note = self._ready(acting=True)
         if name:
             if not window:
                 raise UiError("give the window the control is in (a title or a handle from screen_windows)")
@@ -178,7 +186,7 @@ class Ui:
     def type(
         self, text: str = "", keys: str = "", window: str | None = None, name: str | None = None
     ) -> dict[str, Any]:
-        note = self._ready()
+        note = self._ready(acting=True)
         if not text and not keys:
             raise UiError("give text to type and/or keys to press")
         target = "the focused control"
@@ -199,10 +207,16 @@ class Ui:
 
     # --- helpers -------------------------------------------------------------------------
 
-    def _ready(self) -> str | None:
+    def _ready(self, *, acting: bool = False) -> str | None:
         if not self.enabled:
             raise UiError("the screen tools are disabled on this host (screen.enabled = false in host.toml)")
-        return self.console.ensure()
+        note = self.console.ensure()
+        if acting and self._locked():
+            raise UiError(LOCKED)
+        return note
+
+    def _locked(self) -> bool:
+        return any(_safe(lambda w=w: w.element_info.class_name) == _LOCK_CLASS for w in self.desktop().windows())
 
     def _window(self, window: str) -> Any:
         desktop = self.desktop()

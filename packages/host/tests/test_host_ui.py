@@ -146,6 +146,18 @@ def test_text_is_typed_as_written_and_keys_are_pressed():
     assert _literal("~%^") == "{~}{%}{^}"
 
 
+def test_a_locked_console_is_said_and_nothing_is_clicked_or_typed_into_the_lock_screen():
+    lock = El("Backstop Window", "Window")
+    lock.element_info.class_name = "LockScreenBackstopFrame"
+    ui, seen = ui_with(lock, sign_in())
+    assert "locked" in ui.windows()["session"]
+    with pytest.raises(UiError, match="locked"):
+        ui.click(x=456, y=432)
+    with pytest.raises(UiError, match="locked"):
+        ui.type(keys="{ENTER}")
+    assert seen == []
+
+
 def test_the_tools_are_refused_when_the_screen_is_switched_off():
     ui, _ = ui_with(sign_in())
     ui.enabled = False

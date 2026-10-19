@@ -43,7 +43,7 @@ from jarvis_core.features.callme import CallMe
 from jarvis_core.features.collab import CollabAuthMiddleware, CollabKeys, build_mcp_server
 from jarvis_core.features.compaction import Compactor
 from jarvis_core.features.expiry import Reaper, delete_conversation
-from jarvis_core.features.files import FilesTools
+from jarvis_core.features.files import FilesTools, fetch_host_file
 from jarvis_core.features.journal import DayJournal, TodayBlock
 from jarvis_core.features.knowledge import KnowledgeLearner, KnowledgeStore, KnowledgeTools
 from jarvis_core.features.mail import MailTools
@@ -106,7 +106,9 @@ class Core:
         self.reflector = PlaybookReflector(self.skills, lambda: self.adapters.for_role(RoleName.CLASSIFIER))
         self.schedules = ScheduleStore(self.db, self.bus)
         # An extension is named after the MCP host at its address: the laptop's is "workocholic".
-        self.browser = WsProvider(namer=self._host_named)
+        self.browser = WsProvider(
+            namer=self._host_named, fetch_file=lambda host, path: fetch_host_file(self, host, path)
+        )
         self.notify = NotifyTools(settings, db=self.db)
         self.web = WebTools(settings)
         self.mail = MailTools(settings)

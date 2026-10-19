@@ -87,37 +87,43 @@ class FilesTools(BuiltinProvider):
         return ToolResult.data(f"Attached {att.name} ({size}); it appears under your reply, with Open and Download.")
 
     async def _fetch(self, host: str, path: str) -> tuple[bytes, str | None, str] | ToolResult:
-        """The file from the host: whole, as bytes, via its internal fs_fetch. A host that has none
-        yet (an older build) still gives a text file through fs_read."""
-        registry = self._core.registry
-        name = PurePath(path.replace("\\", "/")).name or "file"
-        if registry.get(f"{host}.fs_fetch") is not None:
-            res = await registry.call(
-                f"{host}.fs_fetch",
-                {"path": path},
-                cancel=asyncio.Event(),
-                idempotency_key=f"attach:{current_run_id.get()}:{host}:{path}",
-                timeout_s=120,
-            )
-            if res.kind.value == "error":
-                return ToolResult.failure(f"{host} could not hand over {path}: {res.text[:300]}")
-            try:
-                payload = json.loads(res.text)
-                return base64.b64decode(payload["base64"]), payload.get("mime"), payload.get("name") or name
-            except (ValueError, KeyError, TypeError) as exc:
-                return ToolResult.failure(f"{host} answered fs_fetch with something unreadable: {exc}")
-        if registry.get(f"{host}.fs_read") is None:
-            return ToolResult.failure(f"no host named {host!r} with file tools is connected")
+        fetched = await fetch_host_file(self._core, host, path)
+        return ToolResult.failure(fetched) if isinstance(fetched, str) else fetched
+
+
+async def fetch_host_file(core: Core, host: str, path: str) -> tuple[bytes, str | None, str] | str:
+    """The file from the host: whole, as bytes, via its internal fs_fetch, or why not. A host that
+    has none yet (an older build) still gives a text file through fs_read. files.attach and
+    browser.upload's host + path both come through here."""
+    registry = core.registry
+    name = PurePath(path.replace("\\", "/")).name or "file"
+    if registry.get(f"{host}.fs_fetch") is not None:
         res = await registry.call(
-            f"{host}.fs_read",
-            {"path": path, "max_bytes": 256_000},
+            f"{host}.fs_fetch",
+            {"path": path},
             cancel=asyncio.Event(),
-            idempotency_key=f"attach-read:{current_run_id.get()}:{host}:{path}",
-            timeout_s=60,
+            idempotency_key=f"attach:{current_run_id.get()}:{host}:{path}",
+            timeout_s=120,
         )
         if res.kind.value == "error":
-            return ToolResult.failure(f"{host} could not read {path}: {res.text[:300]}")
-        payload = json.loads(res.text)
-        if payload.get("truncated"):
-            return ToolResult.failure(f"{path} is larger than {host} can hand over without fs_fetch (update the host)")
-        return str(payload.get("text", "")).encode("utf-8"), None, name
+            return f"{host} could not hand over {path}: {res.text[:300]}"
+        try:
+            payload = json.loads(res.text)
+            return base64.b64decode(payload["base64"]), payload.get("mime"), payload.get("name") or name
+        except (ValueError, KeyError, TypeError) as exc:
+            return f"{host} answered fs_fetch with something unreadable: {exc}"
+    if registry.get(f"{host}.fs_read") is None:
+        return f"no host named {host!r} with file tools is connected"
+    res = await registry.call(
+        f"{host}.fs_read",
+        {"path": path, "max_bytes": 256_000},
+        cancel=asyncio.Event(),
+        idempotency_key=f"attach-read:{current_run_id.get()}:{host}:{path}",
+        timeout_s=60,
+    )
+    if res.kind.value == "error":
+        return f"{host} could not read {path}: {res.text[:300]}"
+    payload = json.loads(res.text)
+    if payload.get("truncated"):
+        return f"{path} is larger than {host} can hand over without fs_fetch (update the host)"
+    return str(payload.get("text", "")).encode("utf-8"), None, name

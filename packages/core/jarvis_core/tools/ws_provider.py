@@ -21,6 +21,7 @@ every connect would re-prefill every conversation. Who is connected goes in the 
 from __future__ import annotations
 
 import asyncio
+import base64
 import itertools
 import logging
 import re
@@ -37,6 +38,8 @@ from jarvis_proto import ToolImage, ToolResult, ToolResultKind, ToolSpec, new_id
 log = logging.getLogger(__name__)
 
 Sender = Callable[[dict[str, Any]], Awaitable[None]]
+#: A file on a host as (bytes, mime, its own name), or why it could not be had.
+FileFetcher = Callable[[str, str], Awaitable[tuple[bytes, str | None, str] | str]]
 
 NOT_CONNECTED = "browser extension not connected"
 TARGET_ARG = "browser"
@@ -46,6 +49,19 @@ TARGET_SCHEMA: dict[str, Any] = {
         "Which browser to act in, by name (the context lists the connected ones). Leave it out to "
         "stay in the browser this chat already works in, or to use the one Arsen used last."
     ),
+}
+
+# browser.upload's file on a host. The extension takes a url it can fetch or base64 data; a report
+# built in the workspace is neither (jarvisvm's browser cannot reach the workspace, and 4 MB of
+# base64 cannot pass through the model). So on 2026-10-18 the portfolio run put the report on a
+# public file host to get a url. The core fetches it instead and sends the extension the bytes.
+UPLOAD_FILE_SCHEMA: dict[str, dict[str, Any]] = {
+    "host": {
+        "type": "string",
+        "description": "With path: the host the file is on (e.g. 'workspace', 'jarvisvm'). The core fetches "
+        "it for you, so use this for any file Jarvis made or holds - never upload it somewhere public first.",
+    },
+    "path": {"type": "string", "description": "With host: the file's full path on that host."},
 }
 
 # An order, not a clock: two touches inside one tick of Windows' ~15 ms monotonic clock must
@@ -82,9 +98,13 @@ _OPENED_TAB = re.compile(r"work tab(?: for this chat)? \[tab (\d+)\]")
 class WsProvider:
     name = "browser"
 
-    def __init__(self, namer: Callable[[str | None], str | None] | None = None) -> None:
+    def __init__(
+        self, namer: Callable[[str | None], str | None] | None = None, fetch_file: FileFetcher | None = None
+    ) -> None:
         #: Maps a peer address to a name (the Core looks it up among the MCP hosts).
         self.namer = namer
+        #: Fetches browser.upload's host + path (the Core reads it with the host's fs_fetch).
+        self._fetch_file = fetch_file
         self._conns: dict[str, BrowserConn] = {}
         #: call_id -> (connection name, future): a result finds its call whichever socket it is.
         self._pending: dict[str, tuple[str, asyncio.Future[ToolResult]]] = {}
@@ -201,6 +221,8 @@ class WsProvider:
             for spec in conn.tools:
                 union[spec.name] = spec  # the most recent extension's version of a tool wins
         tools = [_with_target(s) for s in sorted(union.values(), key=lambda s: s.name)]
+        if self._fetch_file is not None:
+            tools = [_with_props(s, UPLOAD_FILE_SCHEMA) if s.name == "browser.upload" else s for s in tools]
         before = {t.name for t in self._tools}
         after = {t.name for t in tools}
         if before and before != after:
@@ -294,6 +316,11 @@ class WsProvider:
         if isinstance(picked, str):
             return ToolResult.failure(picked)
         conn = picked
+        if name == "browser.upload" and ("host" in arguments or "path" in arguments):
+            filled = await self._upload_file(arguments)
+            if isinstance(filled, str):
+                return ToolResult.failure(filled)
+            arguments = filled
         self._affinity[session] = conn.name
         conn.working.add(session)
         call_id = new_id("bcall")
@@ -326,6 +353,25 @@ class WsProvider:
             )
         finally:
             waiter.cancel()
+
+    async def _upload_file(self, arguments: dict[str, Any]) -> dict[str, Any] | str:
+        """browser.upload's host + path turned into the data the extension takes, or why not."""
+        host, path = str(arguments.pop("host", "") or ""), str(arguments.pop("path", "") or "")
+        if not host or not path:
+            return "browser.upload needs both host and path for a file on a host"
+        if arguments.get("url") or arguments.get("data"):
+            return "browser.upload takes one source: host + path, url, or data"
+        if self._fetch_file is None:
+            return "this core cannot fetch host files for browser.upload; send url or data"
+        fetched = await self._fetch_file(host, path)
+        if isinstance(fetched, str):
+            return fetched
+        data, mime, own = fetched
+        arguments["data"] = base64.b64encode(data).decode("ascii")
+        arguments["filename"] = arguments.get("filename") or own
+        if mime and not arguments.get("mime"):
+            arguments["mime"] = mime
+        return arguments
 
     def tools_changed_note(self, *, now: datetime | None = None, within: timedelta = timedelta(hours=24)) -> str | None:
         if self.changed_at is None or not (self.added or self.removed):
@@ -389,11 +435,16 @@ class WsProvider:
 
 def _with_target(spec: ToolSpec) -> ToolSpec:
     """The tool as the model sees it: its own arguments plus where to run it."""
+    return _with_props(spec, {TARGET_ARG: TARGET_SCHEMA})
+
+
+def _with_props(spec: ToolSpec, extra: dict[str, Any]) -> ToolSpec:
+    """The tool with arguments the core handles itself; one the extension already has stays its own."""
     schema: dict[str, Any] = dict(spec.input_schema or {"type": "object"})
     raw = schema.get("properties")
     props: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}  # pyright: ignore[reportUnknownArgumentType]
-    if TARGET_ARG in props:
+    missing = {k: v for k, v in extra.items() if k not in props}
+    if not missing:
         return spec
-    props[TARGET_ARG] = TARGET_SCHEMA
-    schema["properties"] = props
+    schema["properties"] = {**props, **missing}
     return spec.model_copy(update={"input_schema": schema})

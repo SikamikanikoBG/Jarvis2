@@ -6,10 +6,12 @@ while it was working correctly. The transcript is the fixture here.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from jarvis_core.engine.supervision import RunWatch, Supervisor, render_steps, step_of
-from jarvis_proto import RunBudget, Settings, ToolResult
+from jarvis_proto import Run, RunBudget, RunKind, Settings, ToolResult
 
 # What `browser.read` actually answered, one line per search, as stored on ardi. The first ~100
 # characters are the same every time; the query at the end is the only thing that differs.
@@ -78,6 +80,49 @@ def test_error_streak_still_arms(supervisor: Supervisor):
         "repeated identical call with an identical result: outlook.send x3",
         "3 consecutive tool errors",
     ]
+
+
+def test_a_long_run_is_due_a_progress_check_however_its_calls_vary(supervisor: Supervisor):
+    """The voice turn of 2026-10-18: 46 minutes writing the same script as pf_news4.py ...
+    pf_news24.py and running each into the same timeout. No two calls had the same arguments and
+    no two timeouts were cut at the same byte, so no repeat ever matched and no guard fired."""
+    steps = []
+    for i in range(4, 8):
+        steps.append(step_of("workspace.fs_write", {"path": f"pf_news{i}.py", "content": "x"}, ToolResult.data("ok")))
+        steps.append(
+            step_of(
+                "workspace.shell_run",
+                {"command": f"timeout 100 python3 pf_news{i}.py"},
+                ToolResult.data(f"exit 124 {i}"),
+            )
+        )
+    watch = watch_of(*steps)
+    assert supervisor.signals(watch) == []
+    watch.started -= 601
+    assert supervisor.signals(watch) == ["10 min of work since the last progress check"]
+    watch.reviewed_at_s = watch.elapsed_s()
+    assert supervisor.signals(watch) == [], "checked once per interval, not on every step after it"
+
+
+async def test_a_routine_progress_check_carries_on_when_the_judge_cannot_answer():
+    """Only a structural signal stops a run on a dead judge: a check that is merely due must not
+    end every long run while the judge's endpoint is down."""
+
+    class Down:
+        async def stream(self, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+            raise ConnectionError("judge endpoint down")
+            yield
+
+    async def emit(_event: object) -> None:
+        return None
+
+    supervisor = Supervisor(Settings, Down)  # type: ignore[arg-type]
+    watch = watch_of(step_of("workspace.shell_run", {"command": "make"}, ToolResult.data("building")))
+    watch.started -= 601
+    run = Run(id="r", conversation_id="c", kind=RunKind.SCHEDULED, input_text="build")
+    verdict = await supervisor.review(run, watch, [], emit, asyncio.Event())  # type: ignore[arg-type]
+    assert verdict is not None and verdict.verdict == "continue" and "could not evaluate" in verdict.reason
+    assert supervisor.signals(watch) == []
 
 
 def test_render_steps_states_the_shared_head_once_and_decodes_the_rest():

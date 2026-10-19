@@ -188,6 +188,8 @@ class TriageState(BaseModel):
     routed_today: int = 0
     last_run_at: datetime | None = None
     last_error: str | None = None
+    # When mail last reached triage, while the account has been reported as stalled.
+    stalled_since: datetime | None = None
 
 
 # --- meeting auto-RSVP --------------------------------------------------------------------

@@ -16,7 +16,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -133,6 +133,8 @@ class TriageReport:
     proposed: list[dict[str, str]] = field(default_factory=list)
     # VIP / keyword alerts this pass tripped: {account, alert, sender, subject, folder}
     alerts: list[dict[str, str]] = field(default_factory=list)
+    # Accounts this pass found newly stalled (no new mail for triage.stall_alert_hours), as sentences.
+    stalls: list[str] = field(default_factory=list)
 
     @property
     def blind(self) -> bool:
@@ -210,6 +212,7 @@ class TriageJob:
                 routed_today=r["routed_today"],
                 last_run_at=datetime.fromisoformat(r["last_run_at"]) if r["last_run_at"] else None,
                 last_error=r["last_error"],
+                stalled_since=datetime.fromisoformat(r["stalled_since"]) if r["stalled_since"] else None,
             )
             for r in rows
         ]
@@ -222,10 +225,10 @@ class TriageJob:
 
     async def _save_state(self, s: TriageState) -> None:
         await self.core.db.execute(
-            "INSERT INTO triage_state(account, cursor, day, processed_today, routed_today, last_run_at, last_error)"
-            " VALUES (?,?,?,?,?,?,?) ON CONFLICT(account) DO UPDATE SET cursor=excluded.cursor, day=excluded.day,"
-            " processed_today=excluded.processed_today, routed_today=excluded.routed_today,"
-            " last_run_at=excluded.last_run_at, last_error=excluded.last_error",
+            "INSERT INTO triage_state(account, cursor, day, processed_today, routed_today, last_run_at, last_error,"
+            " stalled_since) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(account) DO UPDATE SET cursor=excluded.cursor,"
+            " day=excluded.day, processed_today=excluded.processed_today, routed_today=excluded.routed_today,"
+            " last_run_at=excluded.last_run_at, last_error=excluded.last_error, stalled_since=excluded.stalled_since",
             (
                 s.account,
                 s.cursor,
@@ -234,6 +237,7 @@ class TriageJob:
                 s.routed_today,
                 s.last_run_at.isoformat() if s.last_run_at else None,
                 s.last_error,
+                s.stalled_since.isoformat() if s.stalled_since else None,
             ),
         )
 
@@ -400,6 +404,8 @@ class TriageJob:
             # Inbox and comes round again next pass.
             if cursor:
                 state.cursor = cursor
+            if not folder and (stall := await self._stall(account, state, report)):
+                report.errors.append(f"{account}: {stall}")
             state.last_run_at = datetime.now(UTC)
             state.last_error = next((e for e in report.errors if e.startswith(f"{account}:")), None)
             await self._save_state(state)
@@ -407,7 +413,49 @@ class TriageJob:
                 await self._append_summary(account, today, lines)
         if report.alerts and not dry_run:
             await self._push_alerts(report)
+        if report.stalls:
+            await self._push_stalls(report)
         return report
+
+    async def _stall(self, account: str, state: TriageState, report: TriageReport) -> str | None:
+        """Why the account looks stalled - no new mail has reached triage for
+        ``triage.stall_alert_hours`` - or None. A stall seen for the first time goes on
+        ``report.stalls`` (one push per stall); ``state.stalled_since`` remembers it.
+
+        A mail client that stopped syncing looks exactly like a quiet mailbox: every pass lists
+        the same Inbox, decides nothing and reports "0 processed, no errors". Gmail sat like that
+        from 2026-10-01 and the work mailbox from 2026-10-17 before a daily review noticed. Every
+        new mail is decided once, so the newest decision is when mail last arrived.
+        """
+        hours = self.core.settings.triage.stall_alert_hours
+        row = await self.core.db.fetchone("SELECT MAX(at) AS last FROM triage_decisions WHERE account = ?", (account,))
+        last = datetime.fromisoformat(row["last"]) if row and row["last"] else None
+        if hours <= 0 or last is None or datetime.now(UTC) - last < timedelta(hours=hours):
+            state.stalled_since = None  # a new account has nothing to compare with yet
+            return None
+        quiet = int((datetime.now(UTC) - last).total_seconds() // 3600)
+        local = last.astimezone(ZoneInfo(self.core.settings.timezone)).strftime("%d.%m %H:%M")
+        why = f"no new mail for {quiet} h (the last arrived {local}) - is the mail client still syncing?"
+        if state.stalled_since != last:
+            state.stalled_since = last
+            report.stalls.append(f"{account}: {why}")
+        return why
+
+    async def _push_stalls(self, report: TriageReport) -> None:
+        """The same road as a VIP alert (``_push_alerts``): the phone first, Discord when no device
+        takes it."""
+        title = "📭 No new mail is arriving" if len(report.stalls) > 1 else f"📭 No new mail: {report.stalls[0]}"
+        try:
+            carrier = await self.core.notify.reach(
+                title=title[:120],
+                body="\n".join(f"• {s}" for s in report.stalls),
+                link=self.core.notify.link("/mail"),
+                payload={"type": "notice", "tag": "jarvis-mail-stall", "path": "/mail"},
+            )
+            if carrier is None:
+                report.errors.append("stall alert not delivered: no device took the push and Discord did not either")
+        except Exception as exc:
+            report.errors.append(f"stall alert not delivered: {exc}")
 
     def _shadow(
         self,

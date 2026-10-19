@@ -188,12 +188,15 @@ class RunEngine:
         by_default = call_me is None
         if call_me is None:
             call_me = channel is Channel.TEXT and kind in settings.call_me_default
+        budget = settings.budgets.get(budget_kind or kind, Run(id="", conversation_id="", kind=kind).budget)
+        if channel is Channel.VOICE and settings.voice.max_turn_s > 0:
+            budget = budget.model_copy(update={"max_seconds": min(budget.max_seconds, settings.voice.max_turn_s)})
         run = Run(
             id=new_id("run"),
             conversation_id=conv.id,
             kind=kind,
             input_text=text,
-            budget=settings.budgets.get(budget_kind or kind, Run(id="", conversation_id="", kind=kind).budget),
+            budget=budget,
             priority=_PRIORITY[kind],
             think=think,
             think_level=think_level,

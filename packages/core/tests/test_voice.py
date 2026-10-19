@@ -19,7 +19,7 @@ from jarvis_core.app import Core, create_app
 from jarvis_core.config import CoreConfig
 from jarvis_core.models.base import reset_endpoint_semaphores
 from jarvis_core.models.fake import FakeAdapter, FakeTurn
-from jarvis_proto import Channel, RoleName, RunKind, ToolCall, VoiceSettings
+from jarvis_proto import Channel, RoleName, RunBudget, RunKind, ToolCall, VoiceSettings
 from tests.conftest import Harness
 
 BR = chr(10)
@@ -50,6 +50,23 @@ async def test_a_voice_turn_is_spoken_on_both_sides_and_briefed_in_the_turn_cont
     assert system.role.value == "system" and "Voice call" not in system.content, "the cached prefix is untouched"
     context = [m for m in sent if m.name == "context"]
     assert context and "## Voice call" in context[0].content and "read aloud" in context[0].content
+
+
+async def test_a_call_turn_has_the_voice_time_limit_however_long_a_chat_may_run(harness: Harness):
+    """He is on the line hearing hold music while a call turn works. On 2026-10-18 one turn looped
+    for 46 minutes under the chat budget (6000 s) until it was cancelled by hand."""
+    core = harness.core
+    budgets = {**core.settings.budgets, RunKind.CHAT: RunBudget(max_steps=250, max_tokens=1_000_000, max_seconds=6000)}
+    harness.enable(budgets=budgets, voice=core.settings.voice.model_copy(update={"max_turn_s": 600}))
+    conv = await core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    harness.chat.push(FakeTurn(text="On it."), FakeTurn(text="Done."))
+    spoken, _ = await core.engine.create_run(text="build the report", conversation_id=conv.id, channel=Channel.VOICE)
+    await harness.wait_for(sub, "run.done")
+    typed, _ = await core.engine.create_run(text="build the report", conversation_id=conv.id)
+    await harness.wait_for(sub, "run.done")
+    assert spoken.budget.max_seconds == 600 and spoken.budget.max_steps == 250
+    assert typed.budget.max_seconds == 6000
 
 
 async def test_a_typed_turn_carries_no_voice_block_and_is_marked_text(harness: Harness):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -760,6 +761,68 @@ async def test_mail_left_in_the_inbox_is_never_stranded_behind_a_clock(harness: 
     host.items = []
     third = await core.triage.run_once()
     assert third.processed == 0 and len(host.moves) == 2
+
+
+async def test_a_mailbox_no_new_mail_reaches_is_called_stalled_once_per_stall(harness: Harness, monkeypatch: Any):
+    """A mail client that stopped syncing looks exactly like a quiet mailbox: every pass lists the
+    same Inbox, decides nothing and says "0 processed, no errors". Gmail sat like that from
+    2026-10-01 and the work mailbox from 2026-10-17 before a daily review noticed."""
+    core = harness.core
+    host = await _with_host(harness)
+    pushed: list[str] = []
+
+    async def reach(*, title: str, body: str, link: str, payload: dict[str, Any]) -> str | None:
+        pushed.append(f"{title}\n{body}")
+        return "push"
+
+    monkeypatch.setattr(core.notify, "reach", reach)
+    harness.enable(
+        triage=TriageSettings(
+            host="laptop",
+            accounts=["Work"],
+            demand_routing=False,
+            categories=[{"name": "reference", "folder": "Action Hub/Reference", "rule": "anything informational"}],
+            stall_alert_hours=24,
+        )
+    )
+
+    async def last_mail_hours_ago(hours: int) -> None:
+        at = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
+        await core.db.execute("UPDATE triage_decisions SET at = ?", (at,))
+
+    host.items = [{"entry_id": "m1", "subject": "Latest", "from": {"name": "A"}, "received": "2026-10-17T08:00:00"}]
+    harness.chat.push(FakeTurn(text='{"category": "reference"}'))
+    assert (await core.triage.run_once()).errors == []
+
+    # Quiet, but not for long enough.
+    host.items = []
+    await last_mail_hours_ago(20)
+    assert (await core.triage.run_once()).errors == [] and pushed == []
+
+    # Nothing new for over a day: said in the pass, on the account's state, and on the phone once.
+    await last_mail_hours_ago(30)
+    report = await core.triage.run_once()
+    assert len(report.errors) == 1 and report.errors[0].startswith("Work: no new mail for 30 h")
+    assert len(pushed) == 1 and "Work" in pushed[0]
+    (state,) = await core.triage.states()
+    assert state.last_error and "no new mail" in state.last_error and state.stalled_since is not None
+    await core.triage.run_once()
+    assert len(pushed) == 1, "the same stall buzzed the phone again"
+
+    # Mail flows again: the stall is over, and a later one is a new stall worth telling.
+    host.items = [{"entry_id": "m2", "subject": "Back", "from": {"name": "B"}, "received": "2026-10-19T08:00:00"}]
+    harness.chat.push(FakeTurn(text='{"category": "reference"}'))
+    assert (await core.triage.run_once()).errors == []
+    (state,) = await core.triage.states()
+    assert state.stalled_since is None and state.last_error is None
+    host.items = []
+    await last_mail_hours_ago(26)
+    await core.triage.run_once()
+    assert len(pushed) == 2
+
+    # 0 switches it off.
+    harness.enable(triage=core.settings.triage.model_copy(update={"stall_alert_hours": 0}))
+    assert (await core.triage.run_once()).errors == []
 
 
 async def test_a_backlog_bigger_than_one_page_drains_instead_of_being_skipped(harness: Harness):

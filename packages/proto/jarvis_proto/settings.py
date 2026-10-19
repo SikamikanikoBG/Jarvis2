@@ -320,6 +320,9 @@ class TriageSettings(BaseModel):
     # how many decisions per account the judge re-checks.
     audit_hour: int = 19
     audit_sample: int = 30
+    # Hours without one new mail reaching triage before an account is reported as stalled (its
+    # mail client may have stopped syncing): one push per stall. 0 = never.
+    stall_alert_hours: int = 24
     # Per-account overrides, keyed by the account name `outlook_accounts` reports (case-insensitive).
     # The work mailbox and a personal Gmail want different folders and different rules.
     account_rules: dict[str, TriageRules] = Field(default_factory=dict)
@@ -517,6 +520,9 @@ class VoiceSettings(BaseModel):
     # confirmation in the chat is confirmed by voice on a call (engine/loop.py).
     namespaces: list[str] = Field(default_factory=lambda: ["*"])
     think: bool = False
+    # The longest a call turn may work, whatever the chat budget allows: he is on the line hearing
+    # hold music. When it runs out the turn says what it has. 0 = the chat budget alone.
+    max_turn_s: int = 600
     style: str = VOICE_STYLE_DEFAULT
     # Whose voice. "server": the core synthesises each sentence (Microsoft's neural voices
     # through edge-tts - natural Bulgarian, natural English, and the audio is the page's own so
@@ -682,6 +688,10 @@ class Settings(BaseModel):
     # which is the expensive thing this whole exercise removed. Raise it if the box grows.
     max_concurrent_runs_per_endpoint: int = 2
     repeated_call_threshold: int = 3
+    # Every this many seconds of work the judge looks at a run even when no structural signal
+    # fired (engine/supervision.py). A loop that renames its script or rewords its query never
+    # repeats a call exactly; on 2026-10-18 one ran 46 minutes that way. 0 = never.
+    progress_review_s: int = 600
     # Read-only calls the model asked for in one batch may go out together, up to this many.
     # Reads cannot collide with each other, so the only reason for a ceiling is politeness to
     # the machine on the other end (one Outlook COM host, one SearXNG).

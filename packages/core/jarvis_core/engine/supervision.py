@@ -2,7 +2,8 @@
 
 Budgets are mechanical and end the run with a summary. Structural signals (a repeated
 identical call, an error streak) never act on their own: they *summon* the judge, and the
-judge's verdict is executed by the loop. Every arming and every consumption is an event.
+judge's verdict is executed by the loop. So does a long run, every ``progress_review_s`` of
+work. Every arming and every consumption is an event.
 """
 
 from __future__ import annotations
@@ -54,6 +55,8 @@ class RunWatch:
     # so the time budget measures work, not waiting — a run that sleeps for a build is not a
     # runaway (13 Sep 2026).
     paused_s: float = 0.0
+    # Work time (elapsed_s) at the judge's last look; a progress check is due a fixed time after it.
+    reviewed_at_s: float = 0.0
     steps: list[StepRecord] = field(default_factory=list)
     # Site playbooks already shown in this run (skill names): once per run, not per click.
     playbooks_shown: set[str] = field(default_factory=set)
@@ -137,7 +140,8 @@ class Supervisor:
     # --- structural signals → judge -------------------------------------------------
 
     def signals(self, watch: RunWatch) -> list[str]:
-        """Structural evidence that the run is going nowhere. Never acts — it summons the judge.
+        """Why the judge should look at the run now: structural evidence that it is going nowhere,
+        or a progress check that is due. Never acts — it summons the judge.
 
         A repeat is the same arguments AND the same answer. Matching on the arguments alone
         called a loop on work that was moving: `browser.read {"mode": "text"}` carries nothing
@@ -146,6 +150,12 @@ class Supervisor:
         five times. On 2026-09-09 that stopped the DevBG scan twice, two minutes in. Same call
         with the same answer is still a loop, and still trips this.
         """
+        out = self._structural(watch)
+        if watch.steps and (due := self._check_due(watch)) is not None:
+            out.append(due)
+        return out
+
+    def _structural(self, watch: RunWatch) -> list[str]:
         out: list[str] = []
         threshold = self._settings().repeated_call_threshold
         if watch.steps:
@@ -158,6 +168,19 @@ class Supervisor:
                 out.append(f"{self._error_streak} consecutive tool errors")
         return out
 
+    def _check_due(self, watch: RunWatch) -> str | None:
+        """A progress check that is simply due: the time since the judge last looked.
+
+        A loop need not repeat a call exactly. On 2026-10-18 a voice turn wrote the same script
+        as pf_news4.py ... pf_news24.py and ran each into the same timeout for 46 minutes; the
+        names differed and every timeout was cut at a different byte, so nothing above matched.
+        Time is the one thing such a loop cannot vary.
+        """
+        every = self._settings().progress_review_s
+        if every <= 0 or watch.elapsed_s() - watch.reviewed_at_s < every:
+            return None
+        return f"{int(watch.elapsed_s() // 60)} min of work since the last progress check"
+
     async def review(
         self, run: Run, watch: RunWatch, messages: list[Message], emit: Emit, cancel: asyncio.Event
     ) -> Verdict | None:
@@ -165,8 +188,12 @@ class Supervisor:
         if not signals:
             return None
         detail = "; ".join(signals)
+        # Only a structural signal stops the run when the judge cannot answer; a check that is
+        # merely due must not end every long run while the judge's endpoint is down.
+        routine = not self._structural(watch)
         await emit(GuardArmed(run_id="", conversation_id="", guard="progress", detail=detail))
-        verdict = await self._ask_judge(run, watch, messages, detail, cancel)
+        verdict = await self._ask_judge(run, watch, messages, detail, cancel, routine=routine)
+        watch.reviewed_at_s = watch.elapsed_s()
         if verdict.verdict == "nudge" and watch.nudges >= self._max_nudges:
             verdict = Verdict("stop", f"{verdict.reason} (nudged {watch.nudges} times already)")
         await emit(JudgeVerdict(run_id="", conversation_id="", verdict=verdict.verdict, reason=verdict.reason))
@@ -176,7 +203,14 @@ class Supervisor:
         return verdict
 
     async def _ask_judge(
-        self, run: Run, watch: RunWatch, messages: list[Message], detail: str, cancel: asyncio.Event
+        self,
+        run: Run,
+        watch: RunWatch,
+        messages: list[Message],
+        detail: str,
+        cancel: asyncio.Event,
+        *,
+        routine: bool = False,
     ) -> Verdict:
         prompt = (
             "You supervise an AI assistant's task run. Decide whether it is making progress.\n"
@@ -187,6 +221,8 @@ class Supervisor:
             + "Some tools act on state their arguments do not name (a browser tab, a cursor). For\n"
             "those, identical arguments are normal and say nothing; judge by whether the RESULTS\n"
             "move forward. Waiting for a slow page is progress when a wait tool is what is being used.\n"
+            "A long run is fine while its results move forward. The same failure coming back under a\n"
+            "new name (a renamed script, a reworded query, a new file) is not progress.\n"
             'Answer with JSON only: {"verdict": "continue" | "nudge" | "stop", "reason": "<one sentence>"}.\n'
             "continue = the repetition is justified (e.g. paging); nudge = it should change approach — then "
             "the reason MUST name the tool or the concrete step to take instead, from the list above when one "
@@ -204,6 +240,10 @@ class Supervisor:
             return _parse_verdict(text)
         except Exception as exc:
             log.warning("judge unavailable: %s", exc)
+            if routine:
+                return Verdict(
+                    "continue", f"supervisor could not evaluate progress ({type(exc).__name__}); carrying on"
+                )
             return Verdict("stop", f"supervisor could not evaluate progress ({type(exc).__name__}); stopping")
 
     def _alternatives(self, watch: RunWatch) -> str:

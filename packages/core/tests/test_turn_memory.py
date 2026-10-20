@@ -82,7 +82,7 @@ async def test_the_previous_turns_answer_survives_its_own_bulk(harness: Harness)
     folders = next(m for m in messages if m.role is Role.TOOL)
     assert len(folders.content) < 1_300 and 'ref="@c1' in folders.content
     assert not any("x" * 1_000 in t for t in texts), "an earlier turn's skill text does not ride along"
-    assert texts[-1] == "предложи кратка визитка за събитието"
+    assert texts[-2] == "предложи кратка визитка за събитието" and messages[-1].name == "context"
     # Under the budget with room to spare: the trim had nothing to throw away.
     assert sum(len(t) + 8 for t in texts) < core.context.budget_chars
     # And the full folder dump is still in the DB for jarvis.result_read.
@@ -218,4 +218,5 @@ async def test_a_follow_up_after_a_long_run_still_knows_what_it_did(harness: Har
     assert "aiprocesstransformation@postbank.bg" in ledger.content
     assert "jarvisvm.host_status FAILED" in ledger.content
     # It sits right before this run's own messages, so the cached history prefix is untouched.
-    assert messages[-2] is ledger and messages[-1].content == "само прати мейла, вече имаш всичко"
+    assert messages[-3] is ledger and messages[-2].content == "само прати мейла, вече имаш всичко"
+    assert messages[-1].name == "context"

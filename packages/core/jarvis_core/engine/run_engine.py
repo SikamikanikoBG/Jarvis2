@@ -155,6 +155,7 @@ class RunEngine:
         attachment_ids: list[str] | None = None,
         channel: Channel = Channel.TEXT,
         call_me: bool | None = None,
+        timezone: str | None = None,
     ) -> tuple[Run, Conversation]:
         conv: Conversation | None = None
         if conversation_id:
@@ -203,6 +204,7 @@ class RunEngine:
             channel=channel,
             call_me=call_me,
             call_me_default=by_default and call_me,
+            timezone=timezone,
         )
         await self._store.create_run(run)
         # run_id must be set on the user message so resume can find the run's messages.

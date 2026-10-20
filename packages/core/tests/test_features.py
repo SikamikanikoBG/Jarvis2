@@ -246,7 +246,7 @@ async def test_compaction_happens_after_the_turn_not_in_its_way(harness: Harness
     a call waited 8-11 s for a summary before each of two answers, 2026-10-13)."""
     core = harness.core
     s = core.settings.model_copy(deep=True)
-    s.history_token_budget = 120  # ~380 chars
+    s.history_token_budget = 300  # ~960 chars
     core.apply_settings(s)
     summariser = FakeAdapter()
     core.adapters.fakes[RoleName.CLASSIFIER] = summariser

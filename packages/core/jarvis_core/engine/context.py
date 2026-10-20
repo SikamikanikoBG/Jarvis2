@@ -8,6 +8,7 @@ compactor summarises in the background, after a run (``compact_if_due``), never 
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
@@ -533,6 +534,8 @@ class ContextAssembler:
                 block = None
             if block:
                 out.append((type(provider).__name__, block))
+        if run.kind is not RunKind.TRIAGE:
+            out.append(("NowBlock", self._now_block(run, self._settings())))
         return out
 
     async def turn_context(self, run: Run, *, skill_names: list[str]) -> str | None:
@@ -597,6 +600,32 @@ class ContextAssembler:
             SYSTEM_RULES.format(assistant_name=s.assistant_name, user_name=s.user_name, language_hint=s.language_hint)
             + "\n\n"
             + self._date_line(s)
+        )
+
+    def _now_block(self, run: Run, s: Settings) -> str:
+        """The time where Arsen is and the language he is answered in, LAST in every turn's
+        context so both are the freshest thing the model reads.
+
+        The stable prefix carries only the date (a clock there would break the prefix cache), so
+        without this the model knew neither the hour nor that he was abroad: at Munich airport it
+        read a tracker's UTC departure as local time (review 2026-10-19). The language line
+        repeats rule 5 because a schedule's or his own Bulgarian pulled replies into Bulgarian."""
+        home = ZoneInfo(s.timezone)
+        here, where = home, s.timezone
+        if run.timezone and run.timezone != s.timezone:
+            # An unknown name from a device keeps the settings' zone.
+            with contextlib.suppress(ValueError, KeyError):
+                here, where = ZoneInfo(run.timezone), run.timezone
+        now = self._clock() if self._clock else datetime.now(home)
+        local = now.astimezone(here)
+        line = f"It is {local.strftime('%H:%M on %A %d.%m.%Y')} where {s.user_name} is ({where})"
+        if where != s.timezone:
+            line += f"; at home it is {now.astimezone(home).strftime('%H:%M')} ({s.timezone})"
+        return (
+            "## Now\n"
+            f"{line}. Times you read in a source are in that source's timezone - flight trackers, "
+            "APIs and logs often give UTC - so convert them to his time before you use or say them.\n"
+            f"Language: {s.language_hint}"
         )
 
     def _date_line(self, s: Settings) -> str:

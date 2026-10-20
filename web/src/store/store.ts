@@ -34,7 +34,7 @@ import type {
 import { isRunScoped, isTerminal } from '../protocol/types';
 import { applyFeatureEvents, initialFeatureState, type FeatureState } from './features';
 import { applyServerEvents } from './reducer';
-import { selectActiveRun, selectIncognitoNow, selectSendRefusal } from './selectors';
+import { selectActiveRun, selectIncognitoNow, selectSendRefusal, selectUnreadIds } from './selectors';
 import { NEW_CONVERSATION_KEY, initialChatState, omit, type ChatState, type LocalMessage } from './state';
 
 export interface Notice {
@@ -216,6 +216,8 @@ export interface Actions {
   clearSelection: () => void;
   /** One action over the whole selection, in one request. */
   bulkSelected: (action: BulkConversationAction, folderId?: string | null) => Promise<void>;
+  /** Mark every unread chat read in one request. */
+  markAllRead: () => Promise<void>;
 }
 
 export type AppState = ChatState & FeatureState & UiState & Actions;
@@ -230,6 +232,16 @@ let callStarting = false;
 let speaker: DeviceSpeaker | ServerSpeaker | LineSpeaker | null = null;
 /** The call's line, when its sound goes over one (voice/line.ts). */
 let line: VoiceLine | null = null;
+
+/** Where the phone is (Europe/Berlin on a trip), so the turn is told the local time there. */
+function deviceTimezone(): { timezone?: string } {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return tz ? { timezone: tz } : {};
+  } catch {
+    return {};
+  }
+}
 
 const ROUTE_KEY = 'jarvis_call_route';
 function readRoute(): CallRoute {
@@ -545,6 +557,7 @@ export const useStore = create<AppState>()((set, get) => ({
             think: null,
             think_level: null,
             channel: 'voice',
+            ...deviceTimezone(),
             ...callMeField(takeCallMe(set, get, conversationId)),
             // Same as a typed first message: the draft's privacy opens the chat (a call started
             // with the eye on was opening an ordinary, remembered chat - 2026-09-13).
@@ -800,6 +813,7 @@ export const useStore = create<AppState>()((set, get) => ({
       think: choice?.think ?? null,
       think_level: choice?.think ? (choice.think_level ?? null) : null,
       attachment_ids: attachments.map((a) => a.id),
+      ...deviceTimezone(),
       ...callMeField(takeCallMe(set, get, open)),
       // Only a first message opens a chat, so only then does the draft's privacy travel.
       ...(open ? {} : { incognito: s.draftPrivacy.incognito, ttl_seconds: s.draftPrivacy.ttlSeconds }),
@@ -1072,6 +1086,18 @@ export const useStore = create<AppState>()((set, get) => ({
 
   setSelection: (ids) => set({ selection: [...new Set(ids)], selectionAnchor: ids.at(-1) ?? null }),
   clearSelection: () => set({ selection: [], selectionAnchor: null }),
+
+  markAllRead: async () => {
+    const ids = selectUnreadIds(get().conversations);
+    if (ids.length === 0) return;
+    try {
+      const result = await api.conversations.bulk(ids, 'read');
+      const ts = new Date().toISOString();
+      get().applyEvents(result.updated.map((conversation) => ({ type: 'conversation.updated' as const, ts, conversation })));
+    } catch (e) {
+      get().notify(`Could not mark the chats read: ${errorText(e)}`, 'error');
+    }
+  },
 
   bulkSelected: async (action, folderId) => {
     const ids = get().selection;

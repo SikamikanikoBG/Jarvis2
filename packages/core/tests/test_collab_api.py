@@ -99,7 +99,7 @@ def test_openai_compatible_facade_streaming_and_not(client: TestClient):
     finish = json.loads(frames[-2][5:])["choices"][0]["finish_reason"]
     assert finish == "stop"
     msgs = client.get(f"/api/conversations/{conv_id}/messages", headers=OWNER).json()
-    assert [m["role"] for m in msgs] == ["user", "assistant", "user", "assistant"]
+    assert [m["role"] for m in msgs if m["name"] != "context"] == ["user", "assistant", "user", "assistant"]
 
 
 def test_pair_returns_qr_with_token(client: TestClient):

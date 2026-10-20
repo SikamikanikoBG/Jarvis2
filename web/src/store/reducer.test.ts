@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatFolder, Conversation, Message, ModelUsage, Run, ServerEvent } from '../protocol/types';
 import { applyServerEvent, applyServerEvents } from './reducer';
-import { selectActiveRun, selectPendingConfirm, selectSendRefusal, selectSidebar } from './selectors';
+import { selectActiveRun, selectPendingConfirm, selectSendRefusal, selectSidebar, selectUnreadIds } from './selectors';
 import { initialChatState, type ChatState, type LocalMessage } from './state';
 import { buildTranscript, buildTranscriptFrom, transcriptSource } from './transcript';
 
@@ -186,6 +186,16 @@ describe('applyServerEvent — waiting for the user', () => {
 });
 
 describe('applyServerEvent — conversations', () => {
+  it('lists every unread chat, filed or not, but not archived ones, for "Mark all read"', () => {
+    const all = {
+      a: conv('a', 1000, { unread: true }),
+      b: conv('b', 2000, { unread: true, folder_key: 'sch_1', kind: 'scheduled' }),
+      c: conv('c', 3000),
+      d: conv('d', 4000, { unread: true, archived: true }),
+    };
+    expect(selectUnreadIds(all).sort()).toEqual(['a', 'b']);
+  });
+
   it('inserts and sorts conversations newest first on conversation.updated', () => {
     let s = initialChatState();
     s = applyServerEvent(s, { type: 'conversation.updated', ts: iso(0), conversation: conv('old', 1000) }, T0);

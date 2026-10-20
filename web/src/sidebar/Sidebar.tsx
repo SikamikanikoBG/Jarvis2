@@ -3,7 +3,7 @@ import { Icon } from '../components/Icon';
 import { IconButton } from '../components/primitives';
 import { DISAPPEAR_DEFAULT_TTL, ttlLabel } from '../lib/privacy';
 import type { Conversation } from '../protocol/types';
-import { selectSidebar, type Folder, type SidebarModel } from '../store/selectors';
+import { selectSidebar, selectUnreadIds, type Folder, type SidebarModel } from '../store/selectors';
 import { useStore } from '../store/store';
 import { ActivityCount } from './ActivityDot';
 import { ChatFolderRow } from './ChatFolderRow';
@@ -26,6 +26,8 @@ export function Sidebar() {
   const bulk = useStore((s) => s.bulkSelected);
   const move = useStore((s) => s.moveConversation);
   const attentionOnly = useStore((s) => s.attentionOnly);
+  const markAllRead = useStore((s) => s.markAllRead);
+  const unread = useMemo(() => selectUnreadIds(conversations).length, [conversations]);
   const setAttentionOnly = useStore((s) => s.setAttentionOnly);
   const model = useMemo(
     () => selectSidebar(conversations, chatFolders, { attentionOnly, keepId: openId }),
@@ -168,6 +170,12 @@ export function Sidebar() {
           onDrop={onDropToRoot}
         >
           {loaded && <SidebarEmpty model={model} attentionOnly={attentionOnly} onShowAll={() => setAttentionOnly(false)} />}
+          {attentionOnly && unread > 0 && !selecting && (
+            <button type="button" className="mark-all-read" onClick={() => void markAllRead()}>
+              <Icon name="check" size={14} />
+              Mark all read ({unread})
+            </button>
+          )}
           {model.chats.map((c) => (
             <ConversationRow
               key={c.id}

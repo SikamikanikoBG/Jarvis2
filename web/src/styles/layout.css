@@ -204,6 +204,23 @@
   padding: 0 8px 16px;
   scrollbar-width: thin;
 }
+.mark-all-read {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin: 2px 0 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-surface);
+  color: var(--fg-2);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.mark-all-read:hover {
+  color: var(--fg);
+}
 .sidebar-section {
   margin-top: 6px;
 }

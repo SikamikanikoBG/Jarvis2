@@ -11,7 +11,7 @@ from jarvis_core.config import CoreConfig
 from jarvis_core.engine.bus import Subscriber
 from jarvis_core.models.base import reset_endpoint_semaphores
 from jarvis_core.models.fake import FakeAdapter
-from jarvis_proto import AssistantSettings, ModelSpec, Provider, RoleName, Settings
+from jarvis_proto import AssistantSettings, Confirmations, ModelSpec, Provider, RoleName, Settings
 
 
 def fake_settings() -> Settings:
@@ -26,6 +26,8 @@ def fake_settings() -> Settings:
         tool_exposure="flat",
         # The day journal writes a digest with a model call after every run: off, like learning.
         assistant=AssistantSettings(journal=False),
+        # The outbound check is a classifier call before browser actions: off, like the planner.
+        confirmations=Confirmations(outbound_check=[]),
     )
 
 

@@ -49,6 +49,11 @@ export function ConfirmationsSection({ value, onChange, error }: { value: Confir
           <textarea id="always-ask" className="textarea mono" rows={4} value={value.always_ask.join('\n')} onChange={(e) => patch({ always_ask: lines(e.target.value) })} placeholder="*.outlook_send" />
           <div className="field-hint">Wins over the mode: the last stop before something irreversible.</div>
         </div>
+        <div className="field">
+          <label htmlFor="outbound-check">Check before acting for me (one per line)</label>
+          <textarea id="outbound-check" className="textarea mono" rows={3} value={value.outbound_check.join('\n')} onChange={(e) => patch({ outbound_check: lines(e.target.value) })} placeholder={'browser.click\nbrowser.type'} />
+          <div className="field-hint">A model reads each such call with your request: anything that sends, posts or pays for you that you did not ask for waits for your go-ahead, whatever the mode. Not in scheduled runs.</div>
+        </div>
       </div>
     </section>
   );

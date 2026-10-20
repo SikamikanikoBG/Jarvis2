@@ -123,6 +123,8 @@ export interface Run {
   call_me: boolean;
   /** The ring came from settings.call_me_default, not from him: quiet while he watches the chat. */
   call_me_default: boolean;
+  /** IANA timezone of the device it was sent from; null = settings.timezone. */
+  timezone?: string | null;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -281,6 +283,8 @@ export interface TriageSettings {
   audit_hour: number;
   /** Decisions per account the audit's judge re-checks. */
   audit_sample: number;
+  /** The audit's second opinion reasons first (the triage lane with thinking on). */
+  audit_think: boolean;
   /** Per-account overrides, keyed by the account name (work mailbox vs personal Gmail). */
   account_rules: Record<string, TriageRules>;
 }
@@ -456,6 +460,9 @@ export interface Confirmations {
   always_allow: string[];
   /** Names that always ask, even with mode "off". */
   always_ask: string[];
+  /** Tools checked by a model, in runs he is present for: one that sends, posts or pays for
+   * him and that he did not ask for waits for his go-ahead, whatever the mode. */
+  outbound_check: string[];
 }
 
 /** Who Jarvis may write to directly; everyone else gets a draft in Outlook. */
@@ -1084,6 +1091,8 @@ export interface RunCreateRequest {
   channel?: Channel;
   /** The bell, if he touched it: ring (or not) when this run ends. Absent = the settings decide. */
   call_me?: boolean;
+  /** This device's IANA timezone, so the turn knows the time where he is. */
+  timezone?: string;
 }
 export interface RunCancelRequest {
   type: 'run.cancel';

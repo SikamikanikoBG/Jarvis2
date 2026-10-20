@@ -320,6 +320,9 @@ class TriageSettings(BaseModel):
     # how many decisions per account the judge re-checks.
     audit_hour: int = 19
     audit_sample: int = 30
+    # The audit's second opinion comes from the triage lane with thinking on instead of the
+    # quick judge role: once a day, off Arsen's lane, so the seconds of reasoning cost nothing.
+    audit_think: bool = False
     # Hours without one new mail reaching triage before an account is reported as stalled (its
     # mail client may have stopped syncing): one push per stall. 0 = never.
     stall_alert_hours: int = 24
@@ -452,6 +455,12 @@ class Confirmations(BaseModel):
     always_allow: list[str] = Field(default_factory=list)
     # Names that ALWAYS ask, even with mode="off". The last line before something irreversible.
     always_ask: list[str] = Field(default_factory=lambda: ["*.outlook_send"])
+    # Tools that act for him on other people's sites (the browser clicks Send in his Gmail; the
+    # e-mail policy never sees that). In a run he is present for, each such call is first shown to
+    # the classifier with his request: one that sends, posts, pays or promises something to
+    # someone else, and that he did not ask for, waits for his go-ahead - whatever ``mode`` says.
+    # Unattended runs are not checked: the schedule's prompt is what authorised them.
+    outbound_check: list[str] = Field(default_factory=lambda: ["browser.click", "browser.type"])
 
     @staticmethod
     def _matches(name: str, pattern: str) -> bool:
@@ -462,6 +471,9 @@ class Confirmations(BaseModel):
         if pattern.startswith("*."):
             return name.split(".", 1)[-1] == pattern[2:]
         return False
+
+    def checks_outbound(self, name: str, *, unattended: bool) -> bool:
+        return not unattended and any(self._matches(name, p) for p in self.outbound_check)
 
     def needs_confirmation(self, name: str, *, destructive: bool, unattended: bool) -> bool:
         if any(self._matches(name, p) for p in self.always_ask):

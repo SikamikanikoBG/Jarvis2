@@ -88,7 +88,7 @@ def test_ws_chat_roundtrip(client: TestClient):
         events = client.get(f"/api/runs/{run_id}/events", headers=_h()).json()
         assert events and all(e["type"] != "model.delta" for e in events)
         msgs = client.get(f"/api/conversations/{conv_id}/messages", headers=_h()).json()
-        assert [m["role"] for m in msgs] == ["user", "assistant"]
+        assert [m["role"] for m in msgs if m["name"] != "context"] == ["user", "assistant"]
         runs = client.get(f"/api/conversations/{conv_id}/runs", headers=_h()).json()
         assert runs[0]["status"] == "done"
 

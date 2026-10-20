@@ -160,7 +160,12 @@ class TriageAudit:
             preview=inp.get("preview", ""),
             chosen=_chosen(row.get("prod") or {}),
         )
-        adapter = self.core.adapters.for_role(RoleName.JUDGE, kind=RunKind.TRIAGE)
+        if self.core.settings.triage.audit_think:
+            # The judge role may not think (its budget would go on reasoning); the triage lane
+            # may, and once a day off Arsen's lane the seconds cost nothing.
+            adapter = self.core.adapters.for_role(RoleName.CHAT, think=True, kind=RunKind.TRIAGE)
+        else:
+            adapter = self.core.adapters.for_role(RoleName.JUDGE, kind=RunKind.TRIAGE)
         text = ""
         async for chunk in adapter.stream([Message.user(prompt)], [], cancel=asyncio.Event()):
             if isinstance(chunk, ModelTextChunk):

@@ -217,6 +217,8 @@ def test_site_playbook_rides_on_the_first_browser_result_for_that_host(client: T
                 ]
             ),
             FakeTurn(tool_calls=[ToolCall(id="c2", name="browser.click", arguments={"ref": "@e9"})]),
+            # A click in a run he is present for is first shown to the outbound check.
+            FakeTurn(text='{"outbound": false, "asked": false, "what": "opens the chat"}'),
             FakeTurn(text="done"),
         )
         with client.websocket_connect("/ws") as ui:

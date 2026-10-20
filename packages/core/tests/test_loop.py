@@ -89,6 +89,7 @@ async def test_plain_reply_is_streamed_and_persisted(harness: Harness):
     assert "model.call" in types and types.count("model.delta") >= 4
     assert any(e.type == "model.delta" and e.kind == "reasoning" for e in seen)
     msgs = await harness.core.store.list_messages(conv.id)
+    msgs = [m for m in msgs if m.name != "context"]
     assert [m.role.value for m in msgs] == ["user", "assistant"]
     assert msgs[1].content == "Hello Arsen, all good." and msgs[1].reasoning == "thinking a bit"
     done = await harness.core.store.get_run(run.id)

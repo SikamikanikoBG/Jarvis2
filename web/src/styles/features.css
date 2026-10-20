@@ -173,11 +173,6 @@
 .msg.has-actions:focus-within .msg-actions {
   opacity: 1;
 }
-@media (hover: none) {
-  .msg-actions {
-    opacity: 1;
-  }
-}
 .msg-action {
   background: var(--bg-surface);
   border: 1px solid var(--border);
@@ -190,6 +185,18 @@
   right: auto;
   left: -14px;
   transform: translateX(-100%);
+}
+/* A phone has no hover, so the bar is always shown: in its own row at the foot of the bubble,
+   never floating over the first line of the text (Arsen, 2026-10-20). */
+@media (hover: none) {
+  .msg-actions,
+  .msg-user .msg-actions {
+    position: static;
+    transform: none;
+    opacity: 1;
+    justify-content: flex-end;
+    margin-top: 6px;
+  }
 }
 
 /* --- code blocks: language + copy (docs/WAVE2.md slice 0) --- */

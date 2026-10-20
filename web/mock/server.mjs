@@ -175,7 +175,7 @@ let settings = {
   timezone: 'Europe/Sofia',
   language_hint: 'Reply in the language the user wrote in (Bulgarian or English).',
   personality: { enabled: true, formality: 'casual', humor: 'witty', verbosity: 'concise', address_style: 'name', persona: 'Dry, quick and unimpressed by hype. You have opinions and you state them in one line. You never pad, never flatter, and never explain what Arsen already knows.' },
-  confirmations: { mode: 'destructive', always_allow: [], always_ask: ['*.outlook_send'] },
+  confirmations: { mode: 'destructive', always_allow: [], always_ask: ['*.outlook_send'], outbound_check: ['browser.click', 'browser.type'] },
   email: { approved_direct_send: ['rumen@postbank.bg', '@postbank.bg'], allow_any_recipient: false },
   roles: Object.fromEntries(
     ['chat', 'planner', 'classifier', 'judge', 'triage'].map((r) => [

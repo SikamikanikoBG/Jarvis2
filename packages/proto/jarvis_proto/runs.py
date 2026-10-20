@@ -142,6 +142,9 @@ class Run(BaseModel):
     # The ring came from settings.call_me_default, not from him: it is skipped while he is
     # watching the chat. Asked for (the bell, jarvis.call_me) it rings whatever he is doing.
     call_me_default: bool = False
+    # The IANA timezone of the device he sent it from (the phone in Munich, not the server in
+    # Sofia): the turn is told the time where he is. None = settings.timezone.
+    timezone: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     started_at: datetime | None = None
     finished_at: datetime | None = None

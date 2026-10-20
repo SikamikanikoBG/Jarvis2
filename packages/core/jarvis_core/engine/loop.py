@@ -26,6 +26,7 @@ from jarvis_core.engine.context import (
 from jarvis_core.engine.control import RunCancelledError, RunControl
 from jarvis_core.engine.supervision import Emit, RunWatch, StepRecord, Supervisor, args_hash, step_of
 from jarvis_core.engine.views import AGED_VIEW_CHARS, aged, view_of
+from jarvis_core.features.outbound import unasked_outbound
 from jarvis_core.features.planner import PLAN_TOOLS
 from jarvis_core.features.shadow import ShadowRecorder, preflight_questions
 from jarvis_core.models.base import (
@@ -806,24 +807,29 @@ class AgentLoop:
                 call.arguments["_policy_note"] = f"not on the approved-direct-send list: {', '.join(blocked)}"
                 log.info("email policy: drafting instead of sending to %s", ", ".join(blocked))
 
-        if (
-            self._settings().confirmations.needs_confirmation(
-                call.name, destructive=bool(spec and spec.destructive), unattended=run.kind in _UNATTENDED
-            )
-            and run.channel is Channel.VOICE
-        ):
+        confirmations = self._settings().confirmations
+        unattended = run.kind in _UNATTENDED
+        confirm = confirmations.needs_confirmation(
+            call.name, destructive=bool(spec and spec.destructive), unattended=unattended
+        )
+        reason = "this action cannot be undone"
+        if not confirm and confirmations.checks_outbound(call.name, unattended=unattended):
+            # Whatever the mode: something said or promised to others in his name that he did
+            # not ask for waits for him (features/outbound.py).
+            outbound = await self._unasked_outbound(run, call)
+            if outbound is not None:
+                confirm, reason = True, outbound
+        if confirm and run.channel is Channel.VOICE:
             # On a call nobody can tap a card at the ear: the model asks aloud, and the same call
             # goes through once he has said something after the question (whether that was a yes
             # is the model's to judge - it heard him; no word lists).
             refusal = await self._voice_confirmation(run, call)
             if refusal is not None:
                 return await self._tool_message(run, call, refusal, 0, emit), None
-        elif self._settings().confirmations.needs_confirmation(
-            call.name, destructive=bool(spec and spec.destructive), unattended=run.kind in _UNATTENDED
-        ):
+        elif confirm:
             decision = await self._recorded_decision(run, call.id)
             if decision is None:
-                await self._wait_for_confirmation(run, ctl, call, reason="this action cannot be undone")
+                await self._wait_for_confirmation(run, ctl, call, reason=reason)
                 decision = await self._recorded_decision(run, call.id)
             if decision is not None and not decision[0]:
                 note = f" ({decision[1]})" if decision[1] else ""
@@ -1013,6 +1019,19 @@ class AgentLoop:
             "needs his spoken go-ahead first: say in one sentence exactly what you are about to do (what, "
             f"to whom) and ask him. If he says yes, call {call.name} again with exactly the same arguments; "
             "if he says no or changes it, do not."
+        )
+
+    async def _unasked_outbound(self, run: Run, call: ToolCall) -> str | None:
+        """Why this call must wait for him, or None (features/outbound.py). The classifier runs
+        on the run's lane, like every role inside a run."""
+        history = await self._store.list_messages(run.conversation_id, limit=40)
+        return await unasked_outbound(
+            self._adapters(RoleName.CLASSIFIER, kind=run.kind),
+            call,
+            user=self._settings().user_name,
+            request=run.input_text,
+            history=[m for m in history if m.run_id != run.id or m.role is Role.USER],
+            run_messages=await self._store.list_run_messages(run.id),
         )
 
     async def _recorded_decision(self, run: Run, call_id: str) -> tuple[bool, str | None] | None:

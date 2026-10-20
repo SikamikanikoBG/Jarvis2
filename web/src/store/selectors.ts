@@ -84,6 +84,14 @@ export function wantsAttention(c: Conversation): boolean {
   return c.activity !== 'idle' || c.unread;
 }
 
+/** Every unread chat, filed or not, archived ones aside: what "Mark all read" clears in one go
+ * instead of opening each scheduled report in turn (Arsen, 2026-10-20). */
+export function selectUnreadIds(conversations: Record<string, Conversation>): string[] {
+  return Object.values(conversations)
+    .filter((c) => c.unread && !c.archived)
+    .map((c) => c.id);
+}
+
 export function selectSidebar(
   conversations: Record<string, Conversation>,
   chatFolders: ChatFolder[] = [],

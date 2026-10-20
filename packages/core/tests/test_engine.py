@@ -85,6 +85,7 @@ async def test_restart_during_read_only_tool_resumes_and_finishes(harness: Harne
     stored = [e["type"] for e in await harness.core.store.list_events(run.id)]
     assert "run.interrupted" in stored and "run.resumed" in stored and stored[-1] == "run.done"
     msgs = await harness.core.store.list_messages(conv.id)
+    msgs = [m for m in msgs if m.name != "context"]
     assert [m.role.value for m in msgs] == ["user", "assistant", "tool", "assistant"]
     assert msgs[2].content == "resumed-result" and msgs[-1].content == "finished after restart"
     assert tools.calls == []  # the original instance never completed
@@ -147,7 +148,9 @@ async def test_confirmation_survives_a_restart_while_waiting(harness: Harness):
 async def test_priority_and_concurrency(harness: Harness):
     harness.core.engine._max = 1
     order: list[str] = []
-    harness.chat.on_call = lambda n: order.append(harness.chat.calls[-1][0][-1].content)
+    harness.chat.on_call = lambda n: order.append(
+        next(m.content for m in reversed(harness.chat.calls[-1][0]) if m.name != "context")
+    )
     harness.chat.push(FakeTurn(hang=True), FakeTurn(text="x"), FakeTurn(text="y"))
     # Separate conversations so the last message of each context is that run's own input.
     c1 = await harness.core.store.create_conversation()

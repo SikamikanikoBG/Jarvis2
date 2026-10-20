@@ -95,7 +95,7 @@ detected by a content signature and refused rather than clicked.
 Tab targeting: the **active tab** first (so co-browsing works when you switch
 to a page and say "read this"), falling back to the Jarvis work tab; the tab
 running the Jarvis web app itself (same host as the core URL) is never read or
-driven. `read {tab}` brings that tab to the front so the following actions land
+driven. Every page tool takes `{tab}` (the id each result names) and brings that tab to the front so the following actions land
 on the same page.
 
 Frames: when the top document has iframes, `read` folds their text in; `find`,

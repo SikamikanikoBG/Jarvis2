@@ -53,6 +53,11 @@ const WEBSTORE = /^https:\/\/(chromewebstore\.google\.com|chrome\.google\.com\/w
 // The description is the only guidance a local 27B model gets — say WHEN.
 // ---------------------------------------------------------------------------
 
+// Every result names its tab ("[tab 487142913] …"), so the model passes it back on the next
+// call; only browser.read used to accept it and the others refused the whole call (review
+// 2026-10-19). Any tool that acts on a page takes it, with read's meaning.
+const TAB_PROP = { type: "integer", description: "Tab id from browser.tabs or a previous result; that tab is brought to the front. Omit for the active tab." };
+
 const TOOLS = [
   {
     name: "browser.tabs",
@@ -87,7 +92,7 @@ const TOOLS = [
     input_schema: {
       type: "object",
       properties: {
-        tab: { type: "integer", description: "Tab id from browser.tabs; that tab is brought to the front. Omit for the active tab." },
+        tab: TAB_PROP,
         mode: { type: "string", enum: ["text", "outline"], default: "text" },
         offset: { type: "integer", minimum: 0, default: 0, description: "text mode only: continue from this character offset, as given by a previous [truncated] marker." },
       },
@@ -103,7 +108,7 @@ const TOOLS = [
       "cheaper than reading the whole outline.",
     input_schema: {
       type: "object",
-      properties: { query: { type: "string", minLength: 1, description: "Words that appear on the page." } },
+      properties: { tab: TAB_PROP, query: { type: "string", minLength: 1, description: "Words that appear on the page." } },
       required: ["query"],
       additionalProperties: false,
     },
@@ -117,7 +122,7 @@ const TOOLS = [
       "ones covered by a modal, and reports what changed. Never click a chip whose label reads like a message — it sends it.",
     input_schema: {
       type: "object",
-      properties: { ref: { type: "string", minLength: 1, description: "@ref such as @e12, or the control's visible text." } },
+      properties: { tab: TAB_PROP, ref: { type: "string", minLength: 1, description: "@ref such as @e12, or the control's visible text." } },
       required: ["ref"],
       additionalProperties: false,
     },
@@ -132,6 +137,7 @@ const TOOLS = [
     input_schema: {
       type: "object",
       properties: {
+        tab: TAB_PROP,
         ref: { type: "string", minLength: 1, description: "@ref of the field, from browser.read mode=outline or browser.find." },
         text: { type: "string", description: "The text to type. Newlines are kept." },
         submit: { type: "boolean", default: false, description: "Press Enter / submit the form after typing." },
@@ -155,6 +161,7 @@ const TOOLS = [
     input_schema: {
       type: "object",
       properties: {
+        tab: TAB_PROP,
         url: { type: "string", description: "Absolute http(s) URL of the file to attach." },
         data: { type: "string", description: "The file as base64, or a data: URI — when it is not reachable on the web." },
         filename: { type: "string", description: "The name to hand the site. Defaults to the URL's last segment." },
@@ -174,6 +181,7 @@ const TOOLS = [
     input_schema: {
       type: "object",
       properties: {
+        tab: TAB_PROP,
         ref: { type: "string", description: "@ref of an element to scroll into view." },
         direction: { type: "string", enum: ["up", "down", "top", "bottom"], description: "Ignored when ref is given. Default: down." },
       },
@@ -202,6 +210,7 @@ const TOOLS = [
     input_schema: {
       type: "object",
       properties: {
+        tab: TAB_PROP,
         code: { type: "string", description: "JavaScript — the body of an async function. `return` what you want to see." },
         page_world: { type: "boolean", description: "Run in the page's main world (access to its JS globals). Default false." },
       },
@@ -220,6 +229,7 @@ const TOOLS = [
     input_schema: {
       type: "object",
       properties: {
+        tab: TAB_PROP,
         text: { type: "string", description: "Return as soon as this phrase appears on the page (case-insensitive)." },
         timeout_s: { type: "integer", minimum: 1, maximum: 120, description: "How long to wait at most. Default 30." },
       },
@@ -991,14 +1001,14 @@ async function toolRead(args, session) {
 }
 
 async function toolFind(args, session) {
-  const tab = await targetTab(session);
+  const tab = await pickTab(args.tab, session);
   const query = String(args.query == null ? "" : args.query);
   const res = await readWithFrameFallback(tab, "find", { text: query });
   return fromKernel(tab, res, "find");
 }
 
 async function toolAct(op, args, session) {
-  const tab = await targetTab(session);
+  const tab = await pickTab(args.tab, session);
   const ref = String(args.ref == null ? "" : args.ref).trim();
   if (!ref && op === "click") {
     throw new Error("browser.click needs a ref — @e12 from browser.read mode=outline or browser.find, " +
@@ -1130,7 +1140,7 @@ async function toolUpload(args, session) {
   if (!name) name = "upload" + (EXT_BY_MIME[mime] || "");
   if (!mime) mime = "application/octet-stream";
 
-  const tab = await targetTab(session);
+  const tab = await pickTab(args.tab, session);
   const res = await actWithFrameFallback(tab, "upload", {
     selector: String(args.ref == null ? "" : args.ref).trim(),
     name: name, mime: mime, b64: b64, bytes: bytes,
@@ -1141,7 +1151,7 @@ async function toolUpload(args, session) {
 }
 
 async function toolScroll(args, session) {
-  const tab = await targetTab(session);
+  const tab = await pickTab(args.tab, session);
   const ref = String(args.ref == null ? "" : args.ref).trim();
   if (ref) {
     const res = await actWithFrameFallback(tab, "scroll", { selector: ref, direction: "element" });
@@ -1186,7 +1196,7 @@ function renderValue(v) {
 // runs in is stated every time and the page's main world is opt-in: a bank's
 // CSP may refuse it, and that refusal is reported as the fact it is.
 async function toolEval(args, session) {
-  const tab = await targetTab(session);
+  const tab = await pickTab(args.tab, session);
   assertScriptable(tab);
   const code = String(args.code == null ? "" : args.code);
   if (!code.trim()) throw new Error("browser.eval needs code");
@@ -1247,7 +1257,7 @@ function newSince(before, after) {
 }
 
 async function toolWait(args, session) {
-  const tab = await targetTab(session);
+  const tab = await pickTab(args.tab, session);
   const want = String(args.text == null ? "" : args.text).trim().toLowerCase();
   const total = waitBudgetMs(args);
   const started = Date.now();

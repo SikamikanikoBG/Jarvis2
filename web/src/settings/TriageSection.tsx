@@ -60,6 +60,10 @@ export function TriageSection({ value, hosts, onChange, error }: Props) {
           <div className="field-hint">How many of the day&apos;s decisions the judge re-checks.</div>
         </div>
         <div className="field">
+          <Switch checked={value.audit_think} onChange={(v) => patch({ audit_think: v })} label="Audit judge thinks before its verdict" />
+          <div className="field-hint">Slower, once a day on the triage lane; more reliable second opinions.</div>
+        </div>
+        <div className="field">
           <label>Host (MCP server)</label>
           <select className="select" value={value.host} onChange={(e) => patch({ host: e.target.value })}>
             <option value="">— none —</option>

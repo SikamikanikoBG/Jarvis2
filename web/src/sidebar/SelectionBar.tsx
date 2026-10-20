@@ -72,6 +72,7 @@ export function SelectionBar({ visibleIds, onNewFolder, onExit }: Props) {
         aria-haspopup="menu"
         onClick={(e) => setMoveAnchor(moveAnchor ? null : e.currentTarget)}
       />
+      <IconButton icon="check" label="Mark selected read" size="sm" disabled={n === 0} onClick={() => run(bulk('read'))} />
       <IconButton icon="archive" label="Archive selected" size="sm" disabled={n === 0} onClick={() => run(bulk('archive'))} />
       <IconButton icon="trash" label="Delete selected" size="sm" className="danger" disabled={n === 0} onClick={() => setConfirm(true)} />
       <IconButton icon="x" label="Done selecting" size="sm" onClick={onExit} />

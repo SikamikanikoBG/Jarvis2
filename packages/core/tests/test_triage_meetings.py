@@ -525,6 +525,35 @@ async def test_the_audit_flags_gate_violations_and_reports_the_judges_disagreeme
     assert "2 rule violation(s)" in text and "judge agrees 50% of 2 sampled" in text
 
 
+async def test_the_audit_judge_can_reason_before_its_verdict(harness: Harness):
+    """triage.audit_think: the daily audit's second opinion is given by a lane model with
+    thinking on (review 2026-10-19: the quick judge agreed 60% and misread who wrote a mail).
+    The judge role itself stays a no-thinking behaviour."""
+    from jarvis_core.models.fake import FakeAdapter
+    from jarvis_proto import RoleName
+
+    core = harness.core
+    harness.enable(triage=TriageSettings(host="laptop", accounts=["Work"], audit_think=True))
+    now = datetime.now(UTC).isoformat()
+    rows = [
+        {
+            "id": 1, "point": "mail", "source": "live", "at": now,
+            "input": {"from": "X <x@bank.bg>", "to": "", "cc": "", "subject": "s", "preview": "", "_account": "Work"},
+            "prod": {"category": "", "folder": ""},
+        }
+    ]  # fmt: skip
+
+    async def fake_rows(*, since_id: int = 0, limit: int = 1000) -> list[dict]:
+        return [r for r in rows if r["id"] > since_id][:limit]
+
+    core.shadow.rows = fake_rows  # type: ignore[method-assign]
+    thinker = FakeAdapter([FakeTurn(reasoning="who wrote it?", text='{"verdict": "ok", "better": "", "why": ""}')])
+    core.adapters.fakes[RoleName.BACKGROUND] = thinker  # triage runs on the background lane
+    report = await core.triage_audit.run(sample=1)
+    assert report["accounts"]["Work"]["agreement"] == 1.0
+    assert len(thinker.calls) == 1 and thinker.spec.think and harness.judge.calls == []
+
+
 async def test_a_conversation_is_judged_as_a_whole_and_its_inbox_mails_move_together(harness: Harness):
     """Arsen, 2026-09-30: triage a thread, not mail by mail. A reply alone says little; the
     conversation (earlier messages from any folder, his own replies marked) decides, once, and

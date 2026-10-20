@@ -366,6 +366,8 @@ class RunCreateRequest(BaseModel):
     # Ring when this run ends (docs/stories/11_call_me.md): the bell's state when it was sent.
     # None = he did not touch it, and settings.call_me_default decides.
     call_me: bool | None = None
+    # The sending device's IANA timezone (Intl.DateTimeFormat().resolvedOptions().timeZone).
+    timezone: str | None = None
 
 
 class RunCancelRequest(BaseModel):

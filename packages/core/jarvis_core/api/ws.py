@@ -107,6 +107,7 @@ async def _ui_leg(ws: WebSocket) -> None:
                     attachment_ids=msg.attachment_ids,
                     channel=msg.channel,
                     call_me=msg.call_me,
+                    timezone=msg.timezone,
                 )
             elif isinstance(msg, RunSteerRequest):
                 # Too late is not an error: if the run finished between Arsen pressing enter and

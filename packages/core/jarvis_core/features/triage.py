@@ -329,13 +329,21 @@ class TriageJob:
                 if entry_id and (dry_run or not await self._decided(entry_id, account)):
                     pending.append(item)
             decisions = await self._decide(pending, cfg, account, rules, host)
+            unjudged = 0
             for item in pending:
                 entry_id = str(item["entry_id"])
-                category, target, route_ms = decisions[entry_id]
+                decision = decisions[entry_id]
                 subject = str(item.get("subject") or "")
                 # Structural, before any judgement: a VIP mail must never be missed because a
                 # classifier had an opinion about it.
                 alert = rules.alert_for(self._sender_address(item), self._sender(item), subject)
+                if decision is None and not alert and not dry_run:
+                    # The model did not answer, so nothing was decided: no record, and the mail
+                    # is still in the Inbox for the next pass. A VIP mail is alerted now and
+                    # left there, as before - the alert must not wait for the model.
+                    unjudged += 1
+                    continue
+                category, target, route_ms = decision or (None, None, 0.0)
                 self._shadow(item, account, rules, category, target, alert, route_ms, dry_run=dry_run, folder=folder)
                 if alert:
                     report.alerts.append(
@@ -398,6 +406,11 @@ class TriageJob:
                 lines.append(f"- {mark}{self._sender(item) or '?'} — {subject[:70]} → {action}")
             if dry_run:
                 continue  # nothing is persisted on a dry run
+            if unjudged:
+                report.errors.append(
+                    f"{account}: {unjudged} mail(s) not classified (the model did not answer); retried next pass"
+                )
+                lines.append(f"- {unjudged} mail(s) not classified: the model did not answer; retried next pass")
             # Informational only now — the newest mail this pass saw, for the status screen. It
             # no longer filters anything, so it can no longer strand mail behind it, and there is
             # nothing to hold back when a move fails: an undecided mail is simply still in the
@@ -668,8 +681,9 @@ class TriageJob:
 
     async def _decide(
         self, items: list[dict[str, Any]], cfg: Any, account: str, rules: Any, host: str
-    ) -> dict[str, tuple[str | None, str | None, float]]:
-        """Where each mail goes: entry_id -> (category, folder, ms).
+    ) -> dict[str, tuple[str | None, str | None, float] | None]:
+        """Where each mail goes: entry_id -> (category, folder, ms), or None when the model
+        could not be asked (nothing decided).
 
         Structural rules first, per mail (a DM number, a boss writing). The rest is judged a
         CONVERSATION at a time: a reply alone ("Agreed, let's go") says nothing, and replies of
@@ -677,7 +691,7 @@ class TriageJob:
         classified with the whole conversation as context - earlier messages from any folder,
         Arsen's own replies from Sent Items marked - and every Inbox mail of that thread follows.
         """
-        out: dict[str, tuple[str | None, str | None, float]] = {}
+        out: dict[str, tuple[str | None, str | None, float] | None] = {}
         threads: dict[str, list[dict[str, Any]]] = {}
         for item in items:
             entry_id = str(item["entry_id"])
@@ -692,10 +706,10 @@ class TriageJob:
             t0 = time.perf_counter()
             newest = max(members, key=lambda i: str(i.get("received") or ""))
             context = [] if key.startswith("single:") else await self._thread(host, account, newest)
-            category, target = await self._classify(newest, rules, thread=context)
+            judged = await self._classify(newest, rules, thread=context)
             ms = (time.perf_counter() - t0) * 1000
             for item in members:
-                out[str(item["entry_id"])] = (category, target, ms)
+                out[str(item["entry_id"])] = (*judged, ms) if judged is not None else None
         return out
 
     async def _thread(self, host: str, account: str, item: dict[str, Any]) -> list[dict[str, Any]]:
@@ -734,8 +748,9 @@ class TriageJob:
         rules: Any = None,
         *,
         thread: list[dict[str, Any]] | None = None,
-    ) -> tuple[str | None, str | None]:
-        """(category, folder) for one mail: the structural rules, then the model."""
+    ) -> tuple[str | None, str | None] | None:
+        """(category, folder) for one mail: the structural rules, then the model (None when
+        the model did not answer)."""
         rules = rules if rules is not None else cfg.rules_for(account)
         pre = await self._structural(item, cfg, account, rules)
         if pre is not _UNDECIDED:
@@ -771,9 +786,10 @@ class TriageJob:
 
     async def _classify(
         self, item: dict[str, Any], rules: Any, *, thread: list[dict[str, Any]] | None = None
-    ) -> tuple[str | None, str | None]:
+    ) -> tuple[str | None, str | None] | None:
         """The model's (category, folder) for a mail no structural rule decided; ``thread`` is
-        its conversation, oldest first, and makes it judge the conversation as a whole."""
+        its conversation, oldest first, and makes it judge the conversation as a whole. None
+        when the model could not be asked - an outage is not a decision to leave the mail."""
         subject = str(item.get("subject") or "")
         preview = str(item.get("preview") or item.get("body_preview") or item.get("snippet") or "")
         address = self._sender_address(item)
@@ -806,7 +822,7 @@ class TriageJob:
             name = str(data.get("category") or "").strip() if isinstance(data, dict) else ""
         except Exception as exc:
             log.warning("triage classify skipped: %s", exc)
-            return None, None
+            return None
         for c in offered:
             if c.get("name") == name and c.get("folder"):
                 return name, str(c["folder"])

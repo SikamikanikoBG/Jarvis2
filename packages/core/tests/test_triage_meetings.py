@@ -749,6 +749,45 @@ async def test_triage_retries_a_mail_it_could_not_move_and_says_it_could_not(har
     assert third.processed == 0 and third.routed == 0 and len(host.moves) == 2
 
 
+async def test_a_mail_the_classifier_could_not_judge_is_retried_not_left_for_good(harness: Harness):
+    """A model that does not answer has decided nothing, so the mail must stay undecided.
+
+    Measured 2026-10-20: the triage lane timed out for an hour, and every mail of that hour was
+    recorded "left" - in the Inbox for good, never judged, while the next passes found the
+    model fine again. A failed call is now said on the account and the mail comes round again.
+    """
+    core = harness.core
+    host = await _with_host(harness)
+    harness.enable(
+        triage=TriageSettings(
+            host="laptop",
+            accounts=["Work"],
+            categories=[{"name": "invoices", "folder": "Finance/Invoices", "rule": "invoices"}],
+        )
+    )
+    # e1 is a demand (no classifier); lunch → none, the invoice's call fails, digest → none.
+    harness.chat.push(
+        FakeTurn(text='{"category": "none"}'),
+        FakeTurn(fail_before_first_byte=True),
+        FakeTurn(text='{"category": "none"}'),
+    )
+
+    first = await core.triage.run_once()
+    assert host.moves == [("e1", "Demands/DM-4521")]
+    assert first.processed == 3
+    assert await core.db.fetchone("SELECT 1 FROM triage_decisions WHERE entry_id = 'e3'") is None
+    assert any("not classified" in e for e in first.errors)
+    states = await core.triage.states()
+    assert states[0].last_error and "not classified" in states[0].last_error
+
+    # The model is back: only the invoice is judged again, and this time it is filed.
+    harness.chat.push(FakeTurn(text='{"category": "invoices"}'))
+    second = await core.triage.run_once()
+    assert second.errors == [] and second.processed == 1 and second.routed == 1
+    assert host.moves == [("e1", "Demands/DM-4521"), ("e3", "Finance/Invoices")]
+    assert (await core.triage.states())[0].last_error is None
+
+
 async def test_mail_left_in_the_inbox_is_never_stranded_behind_a_clock(harness: Harness):
     """The Inbox is the queue. A mail is skipped because it was DECIDED, not because of when it
     arrived.

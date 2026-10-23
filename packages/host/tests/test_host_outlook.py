@@ -399,9 +399,11 @@ def _appt(
     busy: int = 2,
 ) -> Appointment:
     """An appointment `days` ahead at `hour`:00 (weekday-shifted so work-hour logic applies)."""
-    start = datetime.now().astimezone().replace(hour=hour, minute=0, second=0, microsecond=0) + timedelta(days=days)
+    # Walked on the local wall clock, then given that day's own offset (a DST change may lie between).
+    start = datetime.now().replace(hour=hour, minute=0, second=0, microsecond=0) + timedelta(days=days)
     while start.weekday() >= 5:
         start += timedelta(days=1)
+    start = start.astimezone()
     a = Appointment(subject, start, start + timedelta(minutes=minutes))
     a.MeetingStatus, a.ResponseStatus, a.BusyStatus = status, response, busy
     a.organizer_address = organizer
@@ -451,12 +453,12 @@ def test_calendar_respond_sends_and_a_decline_removes_the_appointment(backend: O
 
 
 def test_calendar_free_slots_ignores_pending_invites_and_keeps_work_hours(backend: OutlookBackend, world: World):
-    day = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    day = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
     while day.weekday() >= 5:
         day += timedelta(days=1)
 
     def at(h: int, m: int = 0) -> datetime:
-        return day.replace(hour=h, minute=m)
+        return day.replace(hour=h, minute=m).astimezone()
 
     committed = Appointment("Committed", at(9), at(10))
     committed.MeetingStatus, committed.ResponseStatus = 3, 3
@@ -465,10 +467,32 @@ def test_calendar_free_slots_ignores_pending_invites_and_keeps_work_hours(backen
     own = Appointment("Own", at(11), at(12))
     for a in (committed, pending, own):
         world.calendar.add(a)
-    res = backend.calendar_free_slots("", day.isoformat(), 1, 60, 9, 13, 5)
+    res = backend.calendar_free_slots("", day.astimezone().isoformat(), 1, 60, 9, 13, 5)
     # 09 busy; 10-11 free (an unanswered invite does not block); 11 busy; 12-13 free; 13 = end of day.
     assert [s["start"][11:16] for s in res["slots"]] == ["10:00", "12:00"]
     assert res["busy_considered"] == 2 and res["duration_min"] == 60
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs time.tzset to pin the zone")
+def test_free_slots_keep_work_hours_on_the_far_side_of_a_dst_change(
+    backend: OutlookBackend, monkeypatch: pytest.MonkeyPatch
+):
+    # Asked on Friday 23.10 (+03:00) for slots next week: Sofia goes to +02:00 on Sunday 25.10.
+    # Carrying Friday's offset forward offered "09:00+03:00" on Monday - 08:00 on Arsen's
+    # clock - and a slot read as 10:00 could sit on a real 10:00 meeting.
+    monkeypatch.setenv("TZ", "Europe/Sofia")
+    time.tzset()
+    try:
+        res = backend.calendar_free_slots("", "2026-10-23T08:00:00+03:00", 3, 60, 9, 11, 10)
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+    assert [s["start"] for s in res["slots"]] == [
+        "2026-10-23T09:00:00+03:00",
+        "2026-10-23T10:00:00+03:00",
+        "2026-10-26T09:00:00+02:00",
+        "2026-10-26T10:00:00+02:00",
+    ]
 
 
 def test_com_dates_keep_outlooks_local_wall_clock_whatever_pywin32_labels_them(backend: OutlookBackend, world: World):

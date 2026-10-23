@@ -1760,16 +1760,18 @@ class OutlookBackend:
             except (KeyError, ValueError):
                 continue
         slots: list[dict[str, str]] = []
-        day = s0.replace(hour=0, minute=0)
-        while day < window_end and len(slots) < max(1, int(limit or 3)):
+        # Days are walked on the local wall clock and each work hour gets its own offset: s0's
+        # offset carried across a DST change put Monday's "09:00" at 08:00 on Arsen's clock.
+        day = s0.replace(hour=0, minute=0, tzinfo=None)
+        while day.astimezone() < window_end and len(slots) < max(1, int(limit or 3)):
             if day.weekday() < 5:
-                cursor = day.replace(hour=int(work_start_hour), minute=0)
+                cursor = day.replace(hour=int(work_start_hour)).astimezone()
                 if cursor < s0:
                     # First day: start at the next half hour after `start`.
                     minute = 30 if s0.minute > 0 and s0.minute <= 30 else 0
                     cursor = s0.replace(minute=minute) + (timedelta(hours=1) if s0.minute > 30 else timedelta())
-                    cursor = max(cursor, day.replace(hour=int(work_start_hour), minute=0))
-                day_end = day.replace(hour=int(work_end_hour), minute=0)
+                    cursor = max(cursor, day.replace(hour=int(work_start_hour)).astimezone())
+                day_end = day.replace(hour=int(work_end_hour)).astimezone()
                 while cursor + dur <= day_end and len(slots) < max(1, int(limit or 3)):
                     slot_end = cursor + dur
                     if not any(b_s < slot_end and b_e > cursor for b_s, b_e in busy):

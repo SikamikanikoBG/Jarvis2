@@ -425,6 +425,18 @@ class AgentLoop:
             await emit(
                 ModelDone(run_id="", conversation_id="", usage=usage, finish_reason=finish, tool_call_count=len(calls))
             )
+            # A tool call can run out of output room too: its arguments arrive half-written and
+            # vLLM still says finish_reason=tool_calls. Review 2026-10-22, World news: two calls
+            # carrying a whole HTML page stopped at exactly 16,384 tokens, "not valid JSON" sent
+            # the model guessing at an Outlook size limit, and the draft was never made.
+            if finish == "length" or usage.completion_tokens >= (adapter.spec.max_tokens or _DEFAULT_MAX_TOKENS):
+                spent = f"{usage.completion_tokens:,} output tokens"
+                calls = [
+                    c.model_copy(update={"arguments": {**c.arguments, "__cut_off__": spent}})
+                    if "__raw__" in c.arguments
+                    else c
+                    for c in calls
+                ]
 
             # Running out of output room is not the same as having nothing to say, and the two
             # used to be one branch. Measured 2026-09-06 on "HTML презентация за българското

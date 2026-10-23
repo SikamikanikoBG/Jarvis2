@@ -136,6 +136,48 @@ async def test_invalid_arguments_go_back_to_the_model_as_an_error(harness: Harne
     assert tools.calls == []  # never executed
 
 
+async def test_a_tool_call_cut_off_at_the_allowance_says_so_not_invalid_json(harness: Harness):
+    """A tool call that runs out of output room arrives as half-written JSON, and vLLM still
+    reports finish_reason=tool_calls. Review 2026-10-22, World news: two calls with a whole HTML
+    page in their arguments stopped at exactly 16,384 tokens; "not valid JSON" made the model
+    guess at an Outlook size limit, and the digest's draft was never made."""
+    tools = await with_tools(harness)
+    harness.chat.push(
+        FakeTurn(
+            tool_calls=[ToolCall(id="c1", name="test.echo", arguments={"__raw__": '{"text": "<html><body>'})],
+            completion_tokens=16_384,
+            finish_reason="tool_calls",
+        ),
+        FakeTurn(text="ok"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="go", conversation_id=conv.id)
+    seen = await harness.wait_for(sub, "run.done")
+    tr = next(e for e in seen if e.type == "tool.result")
+    assert tr.result.kind is ToolResultKind.ERROR
+    assert "cut off" in tr.result.text and "16,384" in tr.result.text and "parts" in tr.result.text
+    assert "not valid JSON" not in tr.result.text
+    assert tools.calls == []  # never executed
+
+
+async def test_invalid_json_well_inside_the_allowance_is_still_invalid_json(harness: Harness):
+    await with_tools(harness)
+    harness.chat.push(
+        FakeTurn(
+            tool_calls=[ToolCall(id="c1", name="test.echo", arguments={"__raw__": '{"text": x}'})],
+            completion_tokens=40,
+        ),
+        FakeTurn(text="ok"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="go", conversation_id=conv.id)
+    seen = await harness.wait_for(sub, "run.done")
+    tr = next(e for e in seen if e.type == "tool.result")
+    assert "not valid JSON" in tr.result.text and "cut off" not in tr.result.text
+
+
 async def test_unknown_tool_is_an_error_result(harness: Harness):
     harness.chat.push(
         FakeTurn(tool_calls=[ToolCall(id="c1", name="nope.x", arguments={})]),

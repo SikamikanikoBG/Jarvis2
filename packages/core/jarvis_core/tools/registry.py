@@ -245,6 +245,13 @@ class ToolRegistry:
         spec = self.get(name)
         if spec is None:
             return self.cannot_route(name)
+        if "__raw__" in arguments and "__cut_off__" in arguments:
+            return (
+                f"the call to {name} was cut off: your reply reached its output allowance "
+                f"({arguments['__cut_off__']}) before the arguments were complete, so nothing was run. "
+                "Do not send the same call again: send large content in parts (several smaller calls, "
+                "appending where the tool allows it) or make it shorter."
+            )
         if "__raw__" in arguments:
             return f"arguments for {name} were not valid JSON: {arguments['__raw__'][:200]!r}"
         _decode_stringified(arguments, spec.input_schema)

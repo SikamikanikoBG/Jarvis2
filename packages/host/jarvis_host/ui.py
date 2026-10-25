@@ -227,11 +227,12 @@ class Ui:
                     return w
             raise UiError(f"no window with handle {wanted}; see screen_windows")
         titled = [w for w in desktop.windows() if _safe(w.window_text) and _safe(w.is_visible, False)]
-        for match in (
+        matchers: tuple[Callable[[str], bool], ...] = (
             lambda t: t == wanted.lower(),
             lambda t: t.startswith(wanted.lower()),
             lambda t: wanted.lower() in t,
-        ):
+        )
+        for match in matchers:
             hits = [w for w in titled if match(_safe(w.window_text).lower())]
             if hits:
                 return hits[0]

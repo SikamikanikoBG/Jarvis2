@@ -146,7 +146,7 @@ class Transcriber:
         try:
             self._keep_dir.mkdir(parents=True, exist_ok=True)
             stem = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-            (self._keep_dir / (stem + _EXT.get(mime.split(";")[0], ".bin"))).write_bytes(audio)
+            (self._keep_dir / (stem + _EXT.get(mime.split(";", maxsplit=1)[0], ".bin"))).write_bytes(audio)
             meta = {
                 "at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
                 "mime": mime,

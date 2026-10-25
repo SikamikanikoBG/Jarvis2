@@ -118,6 +118,7 @@ class AdapterGetter(Protocol):
         *,
         think: bool | None = None,
         think_level: ThinkLevel | None = None,
+        kind: RunKind | None = None,
         exact: bool = False,
     ) -> ModelAdapter: ...
 

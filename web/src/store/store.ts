@@ -66,6 +66,11 @@ export interface UiState {
    * from its very first word. Reset once that chat exists.
    */
   draftPrivacy: DraftPrivacy;
+  /**
+   * Arsen asked for a new chat (the + button, the shortcut): the call button then talks in that
+   * new chat, not in the Jarvis home line. Off again once any conversation opens.
+   */
+  freshChat: boolean;
   /** Compaction summary per conversation; `undefined` = not fetched, `null` = none. */
   summaries: Record<string, ConversationSummary | null | undefined>;
   /** Mobile "More" navigation sheet. */
@@ -298,6 +303,7 @@ export const useStore = create<AppState>()((set, get) => ({
   callMeDefault: true,
   thinkChoice: {},
   draftPrivacy: DRAFT_NORMAL,
+  freshChat: false,
   summaries: {},
   moreOpen: false,
   editing: null,
@@ -408,6 +414,7 @@ export const useStore = create<AppState>()((set, get) => ({
     // A conversation the server created for our null-conversation send: subscribe and route to it.
     if (after.openConversationId && after.openConversationId !== before.openConversationId) {
       const id = after.openConversationId;
+      set({ freshChat: false });
       ws?.send({ type: 'subscribe', conversation_id: id });
       rememberConversation(id);
       navigate(after.view, id, true);
@@ -489,7 +496,8 @@ export const useStore = create<AppState>()((set, get) => ({
     const incognito = selectIncognitoNow(s);
     // No chat open: the call is to Jarvis himself, in the one conversation that is about the day
     // rather than a task (docs/stories/12_assistant.md). If it cannot be had, a new chat as before.
-    if (!open && !incognito) {
+    // Not after "New chat": that asked for an empty chat, and the call starts it.
+    if (!open && !incognito && !s.freshChat) {
       try {
         const home = await api.assistant.home();
         await get().openConversation(home.id);
@@ -708,7 +716,7 @@ export const useStore = create<AppState>()((set, get) => ({
   openConversation: async (id, opts = {}) => {
     const prev = get().openConversationId;
     if (prev && prev !== id) ws?.send({ type: 'unsubscribe', conversation_id: prev });
-    set({ openConversationId: id, view: opts.stay ? get().view : 'chat', sidebarOpen: false, pendingNewConversation: null });
+    set({ openConversationId: id, view: opts.stay ? get().view : 'chat', sidebarOpen: false, pendingNewConversation: null, freshChat: false });
     rememberConversation(id);
     if (!opts.silent && !opts.stay) navigate('chat', id, opts.replace ?? false);
     if (!id) return;
@@ -730,6 +738,7 @@ export const useStore = create<AppState>()((set, get) => ({
       sidebarOpen: false,
       pendingNewConversation: null,
       draftPrivacy: DRAFT_NORMAL,
+      freshChat: true,
       messages: omit(s.messages, NEW_CONVERSATION_KEY),
     }));
     rememberConversation(null);

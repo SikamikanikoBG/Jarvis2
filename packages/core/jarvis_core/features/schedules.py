@@ -49,9 +49,23 @@ def compute_next(cron: str | None, at: datetime | None, tz: str, after: datetime
         return at
     if cron:
         zone = ZoneInfo(tz)
-        base = after.astimezone(zone)
-        return croniter(cron, base).get_next(datetime).astimezone(UTC)
+        it = croniter(cron, after.astimezone(zone))
+        # Like cron: a schedule set to certain hours fires once at a wall-clock time the clocks
+        # go back over (its first occurrence); one with every hour keeps to real time.
+        fixed_hours = it.expanded[1] != ["*"]
+        while True:
+            nxt = it.get_next(datetime)
+            if not (fixed_hours and _repeated_wall_time(nxt, zone)):
+                return nxt.astimezone(UTC)
     return None
+
+
+def _repeated_wall_time(value: datetime, zone: ZoneInfo) -> bool:
+    """True when ``value`` is the second occurrence of a local time that happens twice."""
+    wall = value.replace(tzinfo=None)
+    first = wall.replace(tzinfo=zone, fold=0)
+    second = wall.replace(tzinfo=zone, fold=1)
+    return first.utcoffset() != second.utcoffset() and value.astimezone(UTC) == second.astimezone(UTC)
 
 
 class ScheduleStore:

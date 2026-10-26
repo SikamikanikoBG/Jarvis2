@@ -24,7 +24,7 @@ import logging
 import random
 import re
 from collections import Counter
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -64,6 +64,20 @@ another answer is clearly better.
 Answer JSON only: {{"verdict": "ok" or "wrong", "better": "<category name or none>", "why": "<one short sentence>"}}"""
 
 
+def seconds_until_hour(hour: int, tz: str, now: datetime) -> float:
+    """Real seconds from ``now`` to the next ``hour``:00 on the wall clock of ``tz``.
+
+    Compared and subtracted in UTC: two datetimes that share a tzinfo subtract on the wall clock,
+    so a day with a clock change would come out an hour short or long."""
+    zone = ZoneInfo(tz)
+    day = now.astimezone(zone).date()
+    for offset in (0, 1):
+        nxt = datetime.combine(day + timedelta(days=offset), time(hour), tzinfo=zone).astimezone(UTC)
+        if nxt > now:
+            return (nxt - now.astimezone(UTC)).total_seconds()
+    raise AssertionError("unreachable")
+
+
 def _address(sender: str) -> str:
     m = re.search(r"<([^>]+)>", sender)
     return (m.group(1) if m else sender).strip()
@@ -91,12 +105,7 @@ class TriageAudit:
             self._task = None
 
     def _seconds_to_next(self, hour: int) -> float:
-        tz = ZoneInfo(self.core.settings.timezone)
-        now = datetime.now(tz)
-        nxt = now.replace(hour=hour, minute=0, second=0, microsecond=0)
-        if nxt <= now:
-            nxt += timedelta(days=1)
-        return (nxt - now).total_seconds()
+        return seconds_until_hour(hour, self.core.settings.timezone, datetime.now(UTC))
 
     async def _loop(self) -> None:
         while True:

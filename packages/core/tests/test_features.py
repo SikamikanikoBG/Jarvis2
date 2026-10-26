@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+from jarvis_core.features.schedules import compute_next
+from jarvis_core.features.triage_audit import seconds_until_hour
 from jarvis_core.models.base import ModelDoneChunk, ModelTextChunk
 from jarvis_core.models.fake import FakeAdapter, FakeTurn
 from jarvis_core.tools.facades import ExposurePolicy, build_facades
@@ -481,6 +483,39 @@ async def test_cron_schedule_skip_policy_advances_without_firing(harness: Harnes
     s = await core.schedules.get(sched.id)
     assert s is not None and s.next_fire is not None and s.next_fire > datetime.now(UTC)
     assert await core.schedules.fires(sched.id) == []
+
+
+def test_a_fixed_time_schedule_fires_once_when_the_clocks_go_back():
+    """2026-10-25, Sofia: 03:00 happened twice (EEST, then EET after 04:00 became 03:00 again).
+    The daily 03:00 portfolio run fired at both and mailed its report twice. A schedule set to a
+    wall-clock time fires at its first occurrence only; one that runs every hour keeps doing so."""
+    tz = "Europe/Sofia"
+    first = compute_next("0 3 * * *", None, tz, datetime(2026, 10, 24, 20, 0, tzinfo=UTC))
+    assert first == datetime(2026, 10, 25, 0, 0, tzinfo=UTC)  # 03:00 EEST
+    assert compute_next("0 3 * * *", None, tz, first + timedelta(seconds=5)) == datetime(2026, 10, 26, 1, 0, tzinfo=UTC)
+    half = compute_next("30 3 * * *", None, tz, first)
+    assert half == datetime(2026, 10, 25, 0, 30, tzinfo=UTC)
+    assert compute_next("30 3 * * *", None, tz, half + timedelta(seconds=5)) == datetime(
+        2026, 10, 26, 1, 30, tzinfo=UTC
+    )
+    # Hourly still means every hour of real time, the repeated hour included.
+    assert compute_next("0 * * * *", None, tz, first + timedelta(seconds=5)) == datetime(2026, 10, 25, 1, 0, tzinfo=UTC)
+    # An ordinary day is untouched.
+    assert compute_next("0 3 * * *", None, tz, datetime(2026, 10, 26, 1, 0, 5, tzinfo=UTC)) == datetime(
+        2026, 10, 27, 1, 0, tzinfo=UTC
+    )
+
+
+def test_triage_audit_waits_real_time_to_its_hour_across_a_clock_change():
+    """The 19:00 audit ran at 18:10 on 2026-10-25: the wait was worked out on the wall clock, so the
+    hour the clocks went back was missing from it."""
+    tz = "Europe/Sofia"
+    after_last = datetime(2026, 10, 24, 16, 4, tzinfo=UTC)  # 19:04 EEST, just after the 10-24 audit
+    target = datetime(2026, 10, 25, 17, 0, tzinfo=UTC)  # 19:00 EET
+    assert seconds_until_hour(19, tz, after_last) == (target - after_last).total_seconds()
+    # Before the hour on the same day, and on an ordinary day.
+    assert seconds_until_hour(19, tz, datetime(2026, 10, 26, 16, 30, tzinfo=UTC)) == 1800
+    assert seconds_until_hour(19, tz, datetime(2026, 10, 26, 17, 0, tzinfo=UTC)) == 24 * 3600
 
 
 async def test_run_now_appears_in_the_schedule_history(harness: Harness):

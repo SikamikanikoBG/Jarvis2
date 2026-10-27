@@ -313,6 +313,10 @@ async def test_multi_step_request_gets_a_plan_and_steps_advance(harness: Harness
     assert any(call[0][-1].name == "plan" and "## Plan" in call[0][-1].content for call in plan_calls)
     # The trailer is not persisted.
     assert not any(m.name == "plan" for m in await core.store.list_messages(conv.id))
+    # The nudge leaves room to stop and ask: on 2026-10-26 a run that had asked Arsen to confirm
+    # the amount of a real-money order read "finish them" as an order and went on without him.
+    nudge = next(m for m in await core.store.list_messages(conv.id) if m.name == "supervisor")
+    assert "waiting for Arsen" in nudge.content
     # ...and exactly ONE of it exists per call. The trailer was only popped when it was still
     # the last message, but a step that calls a tool puts the assistant message and the tool
     # results after it, so every such step left its block behind: the model ended up reading

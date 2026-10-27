@@ -545,7 +545,10 @@ class AgentLoop:
                             run,
                             Message.user(
                                 f"[supervisor] The plan still has open steps: {open_steps}. Finish them and mark each "
-                                "with jarvis.plan_step_done, or skip them explicitly, then answer.",
+                                "with jarvis.plan_step_done, or skip them explicitly, then answer. If your answer "
+                                "asks Arsen for a decision, a confirmation or information the next steps need, you "
+                                "are waiting for Arsen: leave those steps open, do nothing in his place, and end "
+                                "with that question again.",
                                 name="supervisor",
                             ),
                         )

@@ -15,6 +15,7 @@ import { SettingsNav } from './SettingsNav';
 import { TriageSection } from './TriageSection';
 import { AssistantSection } from './AssistantSection';
 import { SessionsSection } from './SessionsSection';
+import { TasksSection } from './TasksSection';
 import { ShadowSection } from './ShadowSection';
 import { VoiceSection } from './VoiceSection';
 
@@ -229,6 +230,12 @@ export function SettingsScreen() {
         <div id="settings-sessions" className="settings-anchor">
           <SessionsSection value={draft.sessions} onChange={(v) => patch('sessions', v)} error={errors.sessions} />
         </div>
+
+        {draft.tasks && (
+          <div id="settings-tasks" className="settings-anchor">
+            <TasksSection value={draft.tasks} onChange={(v) => patch('tasks', v)} error={errors.tasks} />
+          </div>
+        )}
 
         {draft.assistant && (
           <div id="settings-assistant" className="settings-anchor">

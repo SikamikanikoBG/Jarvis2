@@ -153,6 +153,11 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     keywords: ['@', 'handle', 'mention', 'chats talking', 'another chat', 'wake', 'chain', 'hops'],
   },
   {
+    id: 'settings-tasks',
+    label: 'Tasks',
+    keywords: ['delegate', 'background', 'task', 'noted', 'after the call', 'approval', 'report', 'sub-agent'],
+  },
+  {
     id: 'settings-assistant',
     label: 'Assistant',
     keywords: ['day', 'today', 'journal', 'overview', 'digest', 'waiting on me', 'jarvis conversation', 'home', 'summaries', 'background lane'],

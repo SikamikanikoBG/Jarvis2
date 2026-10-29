@@ -357,8 +357,21 @@ export const api = {
     list: () => request<ToolSpec[]>('GET', '/api/tools'),
     reload: () => request<ToolSpec[]>('POST', '/api/tools/reload'),
   },
+  /** Hang-up from a page that is going away: a keepalive request outlives the page. */
+  calls: {
+    end: (callId: string) => {
+      const token = getToken();
+      void fetch(`/api/calls/${encodeURIComponent(callId)}/end`, {
+        method: 'POST',
+        keepalive: true,
+        credentials: 'same-origin',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      }).catch(() => undefined);
+    },
+  },
   /** Delegated tasks (docs/stories/13_delegated_tasks.md): a chat's cards, or every open one. */
   tasks: {
+    status: () => request<{ enabled: boolean; calls_open: number; voice_style_note: string | null }>('GET', '/api/tasks/status'),
     list: (conversationId: string | null, open = false) =>
       request<Task[]>('GET', `/api/tasks?${conversationId ? `conversation_id=${encodeURIComponent(conversationId)}&` : ''}open=${open ? 1 : 0}`),
   },

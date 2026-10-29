@@ -389,6 +389,9 @@ class RunCreateRequest(BaseModel):
     call_me: bool | None = None
     # The sending device's IANA timezone (Intl.DateTimeFormat().resolvedOptions().timeZone).
     timezone: str | None = None
+    # The call this voice turn belongs to: the web's id for one call, hang-up to hang-up. What a
+    # task noted on the call hangs on (docs/stories/13_delegated_tasks.md).
+    call_id: str | None = None
 
 
 class RunCancelRequest(BaseModel):
@@ -419,6 +422,7 @@ class RunSteerRequest(BaseModel):
     # A cut-in on a call is a steer too; when the run has already finished it becomes a voice
     # run of its own, and either way the words are marked as spoken in the transcript.
     channel: Channel = Channel.TEXT
+    call_id: str | None = None
 
 
 class ToolConfirmRequest(BaseModel):
@@ -467,6 +471,22 @@ class TaskSteerRequest(BaseModel):
     text: str
 
 
+class CallAlive(BaseModel):
+    """The call's page is still there - every 20 s from the web, and with every turn. Silence on
+    the line is not a dropped call; a page that stopped saying this is (settings.tasks)."""
+
+    type: Literal["call.alive"] = "call.alive"
+    call_id: str
+    conversation_id: str | None = None
+
+
+class CallEnded(BaseModel):
+    """Hang-up: what was noted on the call starts now."""
+
+    type: Literal["call.ended"] = "call.ended"
+    call_id: str
+
+
 ClientMessage = Annotated[
     RunCreateRequest
     | RunCancelRequest
@@ -478,7 +498,9 @@ ClientMessage = Annotated[
     | Ping
     | Presence
     | TaskCancelRequest
-    | TaskSteerRequest,
+    | TaskSteerRequest
+    | CallAlive
+    | CallEnded,
     Field(discriminator="type"),
 ]
 

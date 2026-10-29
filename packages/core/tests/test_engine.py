@@ -239,3 +239,34 @@ def test_stored_budgets_and_routing_get_the_kinds_added_since():
     assert s.run_routing[RunKind.TASK] is RoleName.CHAT
     # And the round trip keeps them: what is saved again is complete.
     assert set(Settings.model_validate(s.model_dump(mode="json")).budgets) == set(RunKind)
+
+
+async def test_an_approval_given_before_a_restart_does_not_answer_did_it_complete(harness: Harness):
+    """Approved, sent, and the core restarted before the result came back: the approval said "do
+    it", not "it did not happen". Taken as the answer, the call ran a second time (2026-10-29)."""
+    tools = await with_tools(harness)
+    in_flight = asyncio.Event()
+
+    async def slow_send(**_: object):
+        from jarvis_proto import ToolResult
+
+        in_flight.set()
+        await asyncio.sleep(30)
+        return ToolResult.data("never")
+
+    tools._entries["test.send"].fn = slow_send  # pyright: ignore[reportPrivateUsage]
+    harness.chat.push(FakeTurn(tool_calls=[ToolCall(id="c1", name="test.send", arguments={})]))
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    run, _ = await harness.core.engine.create_run(text="send", conversation_id=conv.id)
+    await harness.wait_for(sub, "run.waiting_user")
+    assert await harness.core.engine.confirm(run.id, "c1", True)
+    await in_flight.wait()
+
+    await harness.restart()
+    tools2 = await with_tools(harness)
+    sub2 = harness.subscribe(conv.id)
+    seen = await harness.wait_for(sub2, "run.waiting_user", timeout=10)
+    req = next(e for e in seen if e.type == "tool.confirm_requested")
+    assert "did it complete?" in req.reason
+    assert tools2.calls == []  # not sent again on the strength of the first approval

@@ -359,6 +359,14 @@ class RunEngine:
             for _, ctl in self._active.values()
         )
 
+    def call_turn_running(self, call_id: str) -> bool:
+        """A turn of this call is being answered right now: the call is not over, however long
+        ago its page last spoke."""
+        return any(
+            ctl.emitter.run.call_id == call_id and not ctl.emitter.run.status.terminal
+            for _, ctl in self._active.values()
+        )
+
     async def _dispatch(self) -> None:
         while True:
             await self._wake.wait()

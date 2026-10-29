@@ -6,6 +6,8 @@ these pydantic models. The web client's TypeScript types are generated from them
 """
 
 from jarvis_proto.events import (
+    CallAlive,
+    CallEnded,
     ClientMessage,
     ContextBreakdown,
     ConversationDeleted,
@@ -130,6 +132,8 @@ __all__ = [
     "Attachment",
     "AttachmentKind",
     "Board",
+    "CallAlive",
+    "CallEnded",
     "Channel",
     "ChatFolder",
     "ClientMessage",

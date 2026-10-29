@@ -134,6 +134,25 @@ async def the_task(h: Harness, pred: Callable[[Task], bool] = lambda t: True, ti
     return found[0]
 
 
+async def reported(h: Harness, pred: Callable[[Task], bool] = lambda t: True, timeout: float = 8.0) -> Task:
+    """The task once its report is in the chat: the id is claimed first, the messages follow."""
+
+    async def written(t: Task) -> bool:
+        if not t.report_message_id:
+            return False
+        rows = await h.core.db.fetchall("SELECT id FROM messages WHERE id = ?", (t.report_message_id,))
+        return bool(rows)
+
+    found: list[Task] = []
+
+    async def check() -> bool:
+        found[:] = [t for t in await h.core.tasks.store.list() if pred(t) and await written(t)]
+        return bool(found)
+
+    await until(check, timeout)
+    return found[0]
+
+
 async def ask(h: Harness, text: str, conversation_id: str | None = None, **kw: Any):
     return await h.core.engine.create_run(text=text, conversation_id=conversation_id, from_owner=True, **kw)
 
@@ -166,7 +185,7 @@ async def test_a_delegated_task_runs_in_its_own_conversation_and_reports_back_ve
     watcher = harness.subscribe(elsewhere.id)
     run, conv = await ask(harness, "Find me a hotel near the Rathaus for 14-16 Nov")
 
-    task = await the_task(harness, lambda t: t.state.terminal and t.report_message_id is not None)
+    task = await reported(harness, lambda t: t.state.terminal)
     assert task.state is TaskState.DONE
     assert task.outcome is not None and task.outcome.dod[0].verified
     # His own words, verbatim, copied by the code - not the model's paraphrase.
@@ -208,7 +227,7 @@ async def test_a_forged_or_failed_ref_is_claimed_not_verified_and_never_done(har
         FakeTurn(text="All done!"),
     )
     _, conv = await ask(harness, "prices and a link")
-    task = await the_task(harness, lambda t: t.report_message_id is not None)
+    task = await reported(harness)
     assert task.state is TaskState.PARTIAL  # claimed is not shown
     first, second = task.outcome.dod if task.outcome else []
     assert first.met and not first.verified and "c999 is not a call or a file of this task" in (first.why or "")
@@ -237,7 +256,7 @@ async def test_bookkeeping_is_not_evidence_and_an_outward_item_needs_an_approved
     assert tools.calls == []
     assert task.waiting is not None
     await harness.core.engine.confirm(task.waiting.run_id, task.waiting.call_id, True)
-    task = await the_task(harness, lambda t: t.report_message_id is not None)
+    task = await reported(harness)
     sent, read = task.outcome.dod if task.outcome else []
     assert sent.outward and sent.verified
     assert not read.verified and "bookkeeping" in (read.why or "")
@@ -255,7 +274,7 @@ async def test_an_outward_item_cited_by_a_read_is_not_verified(harness: Harness)
         FakeTurn(text="Sent."),
     )
     await ask(harness, "send it")
-    task = await the_task(harness, lambda t: t.report_message_id is not None)
+    task = await reported(harness)
     assert task.state is TaskState.PARTIAL
     assert task.outcome is not None and "only read" in (task.outcome.dod[0].why or "")
 
@@ -496,7 +515,7 @@ async def test_a_machine_going_down_mid_task_ends_it_not_done_at_once(harness: H
     split.push(FakeTurn(tool_calls=[delegate(needs=("hosty",))]), FakeTurn(text="ok"))
     split.task.push(FakeTurn(tool_calls=[ToolCall(id="h1", name="hosty.read", arguments={})]), FakeTurn(text="never"))
     _, conv = await ask(harness, "read it")
-    task = await the_task(harness, lambda t: t.report_message_id is not None)
+    task = await reported(harness)
     assert task.state is TaskState.NOT_DONE
     reason = task.outcome.stopped_reason if task.outcome else ""
     assert reason and reason.startswith("hosty is not reachable (down since") and "connection lost" in reason
@@ -546,7 +565,7 @@ async def test_a_task_asks_what_only_he_knows_and_his_answer_continues_it(harnes
         FakeTurn(text="Done within budget."),
     )
     await harness.core.tasks.steer(task.id, "Up to 180 a night")
-    task = await the_task(harness, lambda t: t.state is TaskState.DONE and t.report_message_id is not None)
+    task = await reported(harness, lambda t: t.state is TaskState.DONE)
     assert task.outcome is not None and task.outcome.question is None
     words = [
         m.content
@@ -586,7 +605,7 @@ async def test_cancelling_a_working_task_stops_it_and_reports_it_cancelled(harne
     task = await the_task(harness, lambda t: t.state is TaskState.RUNNING)
     await until(lambda: len(split.task.calls) == 1)
     await harness.core.tasks.cancel(task.id)
-    task = await the_task(harness, lambda t: t.report_message_id is not None)
+    task = await reported(harness)
     assert task.state is TaskState.CANCELLED
     assert "Task: Hotels — cancelled" in (await harness.core.store.list_messages(conv.id))[-1].content
 
@@ -603,7 +622,7 @@ async def test_a_task_that_runs_out_of_budget_is_not_done_never_done(harness: Ha
         FakeTurn(text="Here is what I found so far."),  # the wrap-up
     )
     _, conv = await ask(harness, "big research")
-    task = await the_task(harness, lambda t: t.report_message_id is not None)
+    task = await reported(harness)
     assert task.state is TaskState.NOT_DONE
     assert task.outcome is not None and "step budget reached" in (task.outcome.stopped_reason or "")
     assert task.outcome.dod[0].met is None
@@ -697,7 +716,7 @@ async def test_the_report_waits_for_the_chat_to_fall_quiet(harness: Harness):
     assert (await harness.core.tasks.store.get(task.id)).report_message_id is None
     assert not any(m.task_id for m in await harness.core.store.list_messages(conv.id))
     tools.gate.set()
-    task = await the_task(harness, lambda t: t.report_message_id is not None)
+    task = await reported(harness)
     msgs = await harness.core.store.list_messages(conv.id)
     # After the chat's own answer, never in the middle of the run that was writing it.
     answer = next(i for i, m in enumerate(msgs) if m.content == "And here is the rest of my answer.")
@@ -716,8 +735,14 @@ async def test_files_the_task_attached_travel_with_the_report(harness: Harness):
         FakeTurn(text="list attached"),
     )
     await ask(harness, "a list please")
-    task = await the_task(harness, lambda t: t.report_message_id is not None)
+    task = await reported(harness)
     assert task.state is TaskState.DONE  # files.attach needs no approval (settings.tasks.no_approval)
+
+    # The report id is claimed first (exactly once), the files are moved onto it right after.
+    async def moved() -> list[str]:
+        return [f.name for f in await harness.core.attachments.for_message(task.report_message_id or "")]
+
+    await until(moved)
     files = await harness.core.attachments.for_message(task.report_message_id or "")
     assert [f.name for f in files] == ["hotels.md"]
     assert (await harness.core.attachments.get(files[0].id)) is not None
@@ -735,7 +760,7 @@ async def test_an_incognito_chats_task_is_as_private_as_the_chat(harness: Harnes
         FakeTurn(text="."),
     )
     await ask(harness, "find a gift for Maria", secret.id)
-    task = await the_task(harness, lambda t: t.report_message_id is not None)
+    task = await reported(harness)
     assert task.incognito
     own = await harness.core.store.get_conversation(task.conversation_id or "")
     assert own is not None and own.incognito
@@ -764,7 +789,7 @@ async def test_a_restart_while_a_task_waits_for_approval_loses_nothing(harness: 
     assert waiting is not None and waiting.state is TaskState.WAITING and waiting.waiting is not None
     split.task.push(FakeTurn(tool_calls=[finish("f1", (1, True, ["w1"]))]), FakeTurn(text="written"))
     await harness.core.engine.confirm(waiting.waiting.run_id, waiting.waiting.call_id, True)
-    task = await the_task(harness, lambda t: t.report_message_id is not None)
+    task = await reported(harness)
     assert task.state is TaskState.DONE and tools.calls == ["write"]
     await asyncio.sleep(0.2)
     assert (
@@ -810,7 +835,7 @@ async def test_an_approval_nobody_answers_expires_with_a_re_read_note(harness: H
     await harness.core.tasks.sweep(now=datetime.now(UTC) + timedelta(hours=1))
     assert (await harness.core.tasks.store.get(task.id)).state is TaskState.WAITING  # not yet
     await harness.core.tasks.sweep(now=datetime.now(UTC) + timedelta(hours=5))
-    task = await the_task(harness, lambda t: t.report_message_id is not None)
+    task = await reported(harness)
     assert tools.calls == [] and task.state is TaskState.NOT_DONE and task.note == "an approval expired unanswered"
     result = next(m for m in split.task.calls[1][0] if m.role is Role.TOOL and m.tool_call_id == "w1")
     assert "approval expired" in result.content and "re-read the source" in result.content
@@ -825,7 +850,7 @@ async def test_deleting_the_chat_takes_its_tasks_with_it(harness: Harness):
         FakeTurn(tool_calls=[echo("c1")]), FakeTurn(tool_calls=[finish("f1", (1, True, ["c1"]))]), FakeTurn(text=".")
     )
     _, conv = await ask(harness, "x")
-    task = await the_task(harness, lambda t: t.report_message_id is not None)
+    task = await reported(harness)
     watcher = harness.subscribe("elsewhere")
     await harness.core.delete_conversation(conv.id)
     assert await harness.core.store.get_conversation(task.conversation_id or "") is None
@@ -893,3 +918,45 @@ async def test_with_everything_up_the_health_block_costs_nothing(harness: Harnes
     block = HealthBlock(AllUp, lambda: harness.core.settings)
     run = Run(id="r", conversation_id="c", kind=RunKind.CHAT)
     assert await block.context_block(run, skill_names=[]) is None
+
+
+async def test_a_restart_in_the_middle_of_an_approved_action_asks_on_the_card_whether_it_happened(harness: Harness):
+    split = await tasks_on(harness)
+    tools = await with_tools(harness)
+    pushes(harness)
+    in_flight = asyncio.Event()
+
+    async def slow_write(**_: object) -> ToolResult:
+        in_flight.set()
+        await asyncio.sleep(30)
+        return ToolResult.data("never")
+
+    tools._entries["test.write"].fn = slow_write  # pyright: ignore[reportPrivateUsage]
+    split.push(FakeTurn(tool_calls=[delegate(dod=("it is written",))]), FakeTurn(text="ok"))
+    split.task.push(FakeTurn(tool_calls=[ToolCall(id="w1", name="test.write", arguments={})]))
+    await ask(harness, "write it")
+    task = await the_task(harness, lambda t: t.state is TaskState.WAITING)
+    assert task.waiting is not None
+    await harness.core.engine.confirm(task.waiting.run_id, task.waiting.call_id, True)
+    await in_flight.wait()
+    await harness.restart()
+    await tasks_on(harness)
+    tools = await with_tools(harness)
+    pushes(harness)
+
+    async def parked() -> bool:
+        run = await harness.core.store.get_run(task.run_id or "")
+        return run is not None and run.status is RunStatus.WAITING_USER
+
+    await until(parked)
+    # The harness boots the engine before the task service; the core starts the service first.
+    # Either way reconcile rebuilds the card from the run's own log.
+    await harness.core.tasks.reconcile()
+    task = await the_task(harness, lambda t: t.state is TaskState.WAITING and t.note is not None)
+    # The card says why it asks again, in the engine's own words, and that the core restarted.
+    assert task.waiting is not None and "did it complete?" in task.waiting.reason
+    assert task.note == "resumed after a restart of the core"
+    split.task.push(FakeTurn(tool_calls=[finish("f1", (1, True, ["w1"]))]), FakeTurn(text="written"))
+    await harness.core.engine.confirm(task.waiting.run_id, task.waiting.call_id, True)
+    task = await reported(harness)
+    assert tools.calls == ["write"] and task.state is TaskState.DONE

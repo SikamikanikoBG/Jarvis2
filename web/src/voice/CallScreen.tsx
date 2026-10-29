@@ -5,6 +5,7 @@ import { formatSeconds } from '../lib/format';
 import { NEW_CONVERSATION_KEY } from '../store/state';
 import { selectActiveRun } from '../store/selectors';
 import { useStore } from '../store/store';
+import { NotedList } from './NotedList';
 import { FINGER_MAX_PX, useAtEar } from './earPose';
 import type { CallPhase, CallState } from './session';
 import { SLIDE_DONE, slide } from './slide';
@@ -144,6 +145,8 @@ export function CallScreen() {
       </div>
 
       <Captions call={call} />
+
+      <NotedList />
 
       {call.problem && (
         <div className="call-problem" role="alert">

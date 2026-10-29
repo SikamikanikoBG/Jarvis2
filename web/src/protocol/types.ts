@@ -585,6 +585,8 @@ export interface VoiceSettings {
   namespaces: string[];
   think: boolean;
   style: string;
+  /** Which built-in default the style was brought up to date with; 2 = since delegated tasks. */
+  style_version?: number;
   /** "server": the core's neural voices, the device voice as fallback; "device": speechSynthesis only. */
   tts: 'server' | 'device';
   /** Which synthesiser the core uses: Microsoft's cloud voices, or Jarvis's own on ardi's 3090. */
@@ -1226,6 +1228,8 @@ export interface RunCreateRequest {
   call_me?: boolean;
   /** This device's IANA timezone, so the turn knows the time where he is. */
   timezone?: string;
+  /** The call this voice turn belongs to (voice/callLife.ts): what noted tasks hang on. */
+  call_id?: string;
 }
 export interface RunCancelRequest {
   type: 'run.cancel';
@@ -1245,6 +1249,7 @@ export interface RunSteerRequest {
   client_ref?: string | null;
   /** A cut-in on a call; arriving late, it becomes a voice run of its own. */
   channel?: Channel;
+  call_id?: string;
 }
 export interface ToolConfirmRequest {
   type: 'tool.confirm';
@@ -1282,6 +1287,18 @@ export interface TaskSteerRequest {
   text: string;
 }
 
+/** The call's page is still there (every 20 s, voice/callLife.ts). */
+export interface CallAlive {
+  type: 'call.alive';
+  call_id: string;
+  conversation_id: string | null;
+}
+/** Hang-up: what was noted on the call starts now. */
+export interface CallEnded {
+  type: 'call.ended';
+  call_id: string;
+}
+
 export type ClientMessage =
   | RunCreateRequest
   | RunCancelRequest
@@ -1293,7 +1310,9 @@ export type ClientMessage =
   | Ping
   | Presence
   | TaskCancelRequest
-  | TaskSteerRequest;
+  | TaskSteerRequest
+  | CallAlive
+  | CallEnded;
 
 // ---- REST-only shapes (server.py contract, not in jarvis_proto) -----------------------
 

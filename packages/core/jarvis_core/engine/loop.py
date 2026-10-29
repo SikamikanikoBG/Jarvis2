@@ -797,8 +797,11 @@ class AgentLoop:
         read_only = spec.read_only if spec else False
         key = f"{run.id}:{call.id}"
         if resumed and not read_only:
-            # We do not know whether the mutation happened. Ask, unless already answered.
-            decision = await self._recorded_decision(run, call.id)
+            # We do not know whether the mutation happened. Ask, unless already answered. An
+            # approval given BEFORE the call went out does not answer that: it said "do it", not
+            # "it did not happen" - taken as the answer, a mail approved and sent just before a
+            # restart went out twice (found building delegated tasks, 2026-10-29).
+            decision = await self._recorded_decision(run, call.id, after_dispatch=True)
             if decision is None:
                 await self._wait_for_confirmation(
                     run,
@@ -806,7 +809,7 @@ class AgentLoop:
                     call,
                     reason="interrupted during this action — did it complete? Approve to run it again, reject to skip.",
                 )
-                decision = await self._recorded_decision(run, call.id)
+                decision = await self._recorded_decision(run, call.id, after_dispatch=True)
             if decision is not None and not decision[0]:
                 message = await self._tool_message(
                     run, call, ToolResult.failure("skipped by user after interruption"), 0, emit
@@ -1146,10 +1149,18 @@ class AgentLoop:
             run_messages=await self._store.list_run_messages(run.id),
         )
 
-    async def _recorded_decision(self, run: Run, call_id: str) -> tuple[bool, str | None] | None:
+    async def _recorded_decision(
+        self, run: Run, call_id: str, *, after_dispatch: bool = False
+    ) -> tuple[bool, str | None] | None:
+        """Arsen's last answer about this call. ``after_dispatch``: only one given after the call
+        went out (its tool.call event), i.e. an answer to "did it complete?"."""
         decision: tuple[bool, str | None] | None = None
         for ev in await self._store.list_events(run.id):
-            if ev.get("type") == "tool.confirm_resolved" and ev.get("call_id") == call_id:
+            if ev.get("call_id") != call_id:
+                continue
+            if ev.get("type") == "tool.call" and after_dispatch:
+                decision = None  # what was said before it went out does not count
+            elif ev.get("type") == "tool.confirm_resolved":
                 decision = (bool(ev.get("approved")), ev.get("note"))
         return decision
 

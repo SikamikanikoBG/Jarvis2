@@ -459,6 +459,56 @@ overview_chars, overview_on_calls, home_conversation_id, housekeeping_lane}`,
 `voice.{turn_detection, turn_threshold, omnivoice_first_steps}`; `sessions` is in the default
 `voice.namespaces`.
 
+## Delegated tasks (core 2.0.0a101 → a102, docs/stories/13_delegated_tasks.md)
+
+Behind `settings.tasks.enabled` (default **false**): off, no task tool is offered, no task block is
+sent, call messages are accepted and ignored, and a call keeps its old "do it now" rule.
+
+```
+GET  /api/tasks?conversation_id=&open=0|1   → Task[]   (a chat's cards, or every task; open=1 leaves out ended ones)
+GET  /api/tasks/status                      → {enabled, calls_open, voice_style_note, <state>: n …}
+GET  /api/tasks/{id}                        → Task     (404 unknown)
+POST /api/tasks/{id}/cancel                 → Task     (a working task stops at its next step; a noted one is dropped)
+POST /api/tasks/{id}/steer   {text}         → Task     (into the working run, or a new round of the task)
+POST /api/calls/{call_id}/end                          204 (hang-up from a page going away: fetch keepalive)
+GET  /api/status                            → … tasks: {enabled, <state>: n}
+```
+
+`Task {id, title, state, brief, origin_conversation_id, origin_run_id, call_id, conversation_id,
+run_id, depth, outcome, waiting, report_message_id, incognito, note, paused, created_at,
+started_at, finished_at, updated_at}`. `state` is `noted | queued | running | waiting |
+needs_input | done | partial | not_done | failed | cancelled | dropped`.
+`brief {goal, context, constraints[], dod[{item, outward}], approvals[], needs[], assumptions[],
+asked[], written}` — `asked` is Arsen's own words, copied by the core from the run that made the
+task. `outcome {summary, dod[DodResult], question, stopped_reason, finished}`; `DodResult {item,
+outward, met: bool|null, refs[], verified, why, note}` — `verified` is the core's check that a
+ref is a call or file of this task that succeeded (for an `outward` item: a non-read-only call
+Arsen approved that did not become a draft). `waiting {run_id, call_id, name, arguments, reason,
+since}` is the step parked on his approval: answer it with the ordinary `tool.confirm {run_id,
+call_id}`. `paused` = held between steps while a call is open (not stored).
+
+The task's work lives in its own conversation (`kind: "task"`, `folder_key` = the chat that
+asked), hidden from the sidebar and never unread. The report lands in the chat that asked as two
+messages carrying `task_id`: a `role: user, name: "task"` core note ("[core note, not from
+Arsen] …") and the assistant report (`run_id: null`), written only while no run works in that
+chat; files the task attached move onto it. Tasks noted on one call report together in one
+"After the call — …" message.
+
+WS server events (to every client): `task.changed {task}`, `task.removed {task_id}`.
+WS client messages: `task.cancel {task_id}`, `task.steer {task_id, text}`,
+`call.alive {call_id, conversation_id}` (every 20 s while a call's page is there),
+`call.ended {call_id}` (hang-up); `run.create` and `run.steer` take `call_id` on a call. A call
+whose page said nothing for `tasks.call_drop_after_s` (240) is ended as dropped by the sweeper;
+noted tasks start exactly once whichever end comes first.
+
+Tools: `tasks.delegate`, `tasks.note` (on a call), `tasks.drop`, `tasks.amend`, `tasks.list`,
+`tasks.cancel`, `tasks.steer` — only for a chat run started by Arsen's own message
+(`Run.from_owner`) that no other session has steered into; `task.brief`, `task.finish`,
+`task.ask`, `task.origin` — only in a task's own run. Settings: `tasks.{enabled, max_running,
+max_depth, no_approval, deny_tools, approval_ttl_s, call_drop_after_s}`, `voice.style_version`.
+Migrations 0019 (`tasks`, `messages.task_id`, `runs.from_owner`, `runs.call_id`) and 0020
+(`calls`).
+
 ## Meetings (Phase 6)
 
 ```

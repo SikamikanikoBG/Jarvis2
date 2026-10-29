@@ -61,7 +61,14 @@ from jarvis_core.features.sessions import SessionsTools
 from jarvis_core.features.shadow import ShadowRecorder
 from jarvis_core.features.skills import SkillDetector, SkillsTools, SkillStore
 from jarvis_core.features.stt import Transcriber
-from jarvis_core.features.tasks import HealthBlock, TaskBlock, TasksBlock, TaskService, TasksTools
+from jarvis_core.features.tasks import (
+    HealthBlock,
+    TaskBlock,
+    TasksBlock,
+    TaskService,
+    TasksTools,
+    voice_style_upgrade,
+)
 from jarvis_core.features.titles import Titler
 from jarvis_core.features.triage import TriageJob
 from jarvis_core.features.triage_audit import TriageAudit
@@ -299,6 +306,7 @@ class Core:
         # whatever a previous build left there is removed now, not on the next delete.
         await self.attachments.scrub_private()
         self.apply_settings(await self.store.load_settings())
+        await self._upgrade_voice_style()
         # What each machine could do before the restart, so a host that is asleep right now does
         # not look like a machine without capabilities.
         await self.registry.load_memory()
@@ -322,6 +330,15 @@ class Core:
         self._journal_catch_up = asyncio.create_task(self._catch_up_journal(), name="journal-catch-up")
         self._mcp_watch = asyncio.create_task(self._watch_mcp(), name="mcp-watch")
         log.info("jarvis-core %s ready (db=%s, tools=%d)", __version__, self.db.path, len(self.registry.specs()))
+
+    async def _upgrade_voice_style(self) -> None:
+        """A call style stored before delegated tasks loses its "never after the call" sentence,
+        once, and keeps everything else (features/tasks.voice_style_upgrade)."""
+        updated, note = voice_style_upgrade(self.settings)
+        self.tasks.voice_style_note = note
+        if updated is not None:
+            await self.store.save_settings(updated, only_keys={"voice"})
+            self.apply_settings(updated)
 
     async def _watch_mcp(self) -> None:
         """Keep every MCP server's tool list true, without waiting for a tool call to fail.
@@ -438,6 +455,7 @@ def create_app(config: CoreConfig | None = None, *, core: Core | None = None) ->
     app.include_router(attachments_api.router)
     app.include_router(push_api.router)
     app.include_router(tasks_api.router)
+    app.include_router(tasks_api.calls)
     app.include_router(openai_compat.router)
     app.include_router(ws.router)
 

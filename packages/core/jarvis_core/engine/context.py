@@ -32,6 +32,7 @@ from jarvis_proto import (
     Settings,
     ToolSpec,
 )
+from jarvis_proto.settings import CALL_WORK_NOW
 
 # One numbered list behind a precedence block. Count, not length, is what degrades the
 # local model (V1 lesson), so keep this short and add rules only when a test demands one.
@@ -855,7 +856,12 @@ class VoiceBlock:
     async def context_block(self, run: Run, *, skill_names: list[str]) -> str | None:
         if run.channel is not Channel.VOICE:
             return None
-        style = self._settings().voice.style.strip()
+        s = self._settings()
+        style = s.voice.style.strip()
+        # With tasks off a call does everything on the line, as it always did; with tasks on the
+        # tasks block says what to note for after the call (features/tasks.py).
+        if not s.tasks.enabled and CALL_WORK_NOW not in style:
+            style = f"{style} {CALL_WORK_NOW}".strip()
         return "## Voice call\n" + style if style else None
 
 

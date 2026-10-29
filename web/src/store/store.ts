@@ -15,6 +15,7 @@ import { requestMotionPermission } from '../voice/earPose';
 import { holdScreen, releaseScreen } from '../voice/screenHold';
 import { firstSentences } from '../voice/sentences';
 import { CallSession, type CallRoute, type CallState } from '../voice/session';
+import { CallLife } from '../voice/callLife';
 import { ToneCues, type WaitingSound } from '../voice/tones';
 import { DeviceSpeaker, ServerSpeaker } from '../voice/speaker';
 import { LineCues, LineSpeaker, VoiceLine } from '../voice/line';
@@ -92,6 +93,8 @@ export interface UiState {
   sessions: SessionRef[];
   /** The call in progress (docs/stories/10_voice.md), or null. A pure function of the session. */
   call: CallState | null;
+  /** The live call's id (voice/callLife.ts): what the call screen's noted list is about. */
+  callId: string | null;
   /** The call's sound comes over the line (voice/line.ts), not from the page. */
   callLine: boolean;
   /** Jarvis ringing: a ring opened from its notification, waiting to be answered or declined. */
@@ -246,6 +249,8 @@ let callStarting = false;
 let speaker: DeviceSpeaker | ServerSpeaker | LineSpeaker | null = null;
 /** The call's line, when its sound goes over one (voice/line.ts). */
 let line: VoiceLine | null = null;
+/** The call as the core sees it: its id, the heartbeat, the hang-up (voice/callLife.ts). */
+let callLife: CallLife | null = null;
 
 /** Where the phone is (Europe/Berlin on a trip), so the turn is told the local time there. */
 function deviceTimezone(): { timezone?: string } {
@@ -306,6 +311,7 @@ export const useStore = create<AppState>()((set, get) => ({
   panelMode: isPanelMode(),
   version: null,
   call: null,
+  callId: null,
   callLine: false,
   incoming: null,
   callMeNext: {},
@@ -351,6 +357,8 @@ export const useStore = create<AppState>()((set, get) => ({
           void loadConversations(set, get);
           void get().loadFolders();
           void loadOpenTasks(set);
+          // Still on the call: a reconnect is not a hang-up, and the core hears it at once.
+          callLife?.alive();
         }
       },
     });
@@ -367,6 +375,10 @@ export const useStore = create<AppState>()((set, get) => ({
       if (document.visibilityState === 'visible') wake();
     });
     window.addEventListener('online', wake);
+    // The page is going away with a call on it (closed, navigated off): that is a hang-up.
+    window.addEventListener('pagehide', (e) => {
+      if (!e.persisted) callLife?.end(true);
+    });
 
     void loadConversations(set, get);
     void get().loadFolders();
@@ -426,6 +438,7 @@ export const useStore = create<AppState>()((set, get) => ({
     // A conversation the server created for our null-conversation send: subscribe and route to it.
     if (after.openConversationId && after.openConversationId !== before.openConversationId) {
       const id = after.openConversationId;
+      callLife?.setConversation(id);
       set({ freshChat: false });
       ws?.send({ type: 'subscribe', conversation_id: id });
       rememberConversation(id);
@@ -578,13 +591,14 @@ export const useStore = create<AppState>()((set, get) => ({
             think_level: null,
             channel: 'voice',
             ...deviceTimezone(),
+            ...(callLife ? { call_id: callLife.id } : {}),
             ...callMeField(takeCallMe(set, get, conversationId)),
             // Same as a typed first message: the draft's privacy opens the chat (a call started
             // with the eye on was opening an ordinary, remembered chat - 2026-09-13).
             ...(conversationId ? {} : { incognito: s.draftPrivacy.incognito, ttl_seconds: s.draftPrivacy.ttlSeconds }),
           });
         },
-        steer: (runId, text) => socket.send({ type: 'run.steer', run_id: runId, text, channel: 'voice' }),
+        steer: (runId, text) => socket.send({ type: 'run.steer', run_id: runId, text, channel: 'voice', ...(callLife ? { call_id: callLife.id } : {}) }),
         cancel: (runId) => void socket.send({ type: 'run.cancel', run_id: runId }),
       },
       language: languages[0] ?? 'bg',
@@ -610,6 +624,9 @@ export const useStore = create<AppState>()((set, get) => ({
     });
     session = call;
     callStarting = false;
+    callLife = new CallLife({ send: (m) => socket.send(m), beacon: (id) => api.calls.end(id) }, open);
+    callLife.start();
+    set({ callId: callLife.id });
     set({ callLine: callLine !== null });
     if (callLine) {
       callLine.onDown = () => {
@@ -636,6 +653,10 @@ export const useStore = create<AppState>()((set, get) => ({
   },
 
   endCall: () => {
+    // Hang-up first, while the socket is surely there: what was noted on the call starts now.
+    callLife?.end();
+    callLife = null;
+    set({ callId: null });
     session?.end();
     callTrace.stop();
     session = null;

@@ -924,3 +924,4 @@
   cursor: pointer;
 }
 .tasks-pop button:hover { background: var(--bg-surface); }
+.field-warn { color: var(--warn); }

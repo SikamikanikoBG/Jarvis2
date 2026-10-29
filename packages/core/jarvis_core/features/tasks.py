@@ -23,6 +23,13 @@ plainly that it is not, and why. That is what this module adds, on top of the en
   the tools a task needs are checked when it is made and again when it starts, and a task whose
   tool's machine goes down mid-way ends on it ("not done: X down since 08:10").
 
+- **On a call, note it; do it after.** A call turn notes longer work (``tasks.note``: a title,
+  his words kept by the code) and stays a conversation. The call's page sends its id with every
+  turn, a heartbeat, and ``call.ended`` at hang-up; a page that went quiet for
+  ``tasks.call_drop_after_s`` has dropped. Either way the noted tasks start exactly once (one
+  conditional UPDATE), each writes its own brief as its first step, and one after-call report
+  says how each went.
+
 The knowing-enough and understanding-the-goal halves of "can I" are the model's judgement, led
 by the tool descriptions. There is no list of words anywhere in here.
 """
@@ -80,6 +87,7 @@ from jarvis_proto.events import (
     ToolConfirmRequested,
     ToolConfirmResolved,
 )
+from jarvis_proto.settings import CALL_WORK_NOW, VOICE_STYLE_DEFAULT
 
 if TYPE_CHECKING:
     from jarvis_core.app import Core
@@ -256,6 +264,10 @@ class TaskStore:
         )
         return bool(rows)
 
+    async def runs_of_call(self, call_id: str) -> list[str]:
+        rows = await self.db.fetchall("SELECT id FROM runs WHERE call_id = ? ORDER BY created_at", (call_id,))
+        return [r["id"] for r in rows]
+
     async def claim_noted(self, call_id: str) -> list[str]:
         """Every task noted on this call, moved to queued in one statement on the one writer: a
         second hang-up, a reconnect or the sweeper finds nothing left to start."""
@@ -385,8 +397,9 @@ def render_report(task: Task, *, answer: str = "") -> str:
     return "\n\n".join(parts)
 
 
-def brief_text(task: Task, *, user: str) -> str:
-    """The task's first message: the brief as the task's model reads it."""
+def brief_text(task: Task, *, user: str, call: str = "") -> str:
+    """The task's first message: the brief as the task's model reads it. ``call``: the call it
+    was noted on, as it went, for a task whose brief it writes itself."""
     b = task.brief
     lines = [f"# Task: {task.title}"]
     if not b.written:
@@ -413,6 +426,8 @@ def brief_text(task: Task, *, user: str) -> str:
         lines.append("## Needs his approval\n" + "\n".join(f"- {a}" for a in b.approvals))
     if b.assumptions:
         lines.append("## Assumed (he did not say)\n" + "\n".join(f"- {a}" for a in b.assumptions))
+    if call:
+        lines.append(f"## The call it was noted on\n{call}")
     return "\n\n".join(lines)
 
 
@@ -442,6 +457,10 @@ class TaskService:
         #: (task id, tool call id) already pushed as "needs your approval".
         self._asked: set[tuple[str, str]] = set()
         self._lock = asyncio.Lock()
+        #: Open calls: call id -> when the page last said it was there (the calls table, in memory).
+        self._calls: dict[str, datetime] = {}
+        #: Set at boot when the stored call style could not be brought up to date (Settings → Voice).
+        self.voice_style_note: str | None = None
 
     @property
     def settings(self) -> Settings:
@@ -469,7 +488,16 @@ class TaskService:
     async def reconcile(self) -> None:
         """After a restart: nothing is lost silently. A round whose run ended while the core was
         down is finished now; a task whose run is gone is reported as failed; a report that was
-        owed is written."""
+        owed is written; calls that were open are open again (the sweeper ends the dropped ones),
+        and what was noted on a call that had already ended starts."""
+        for row in await self.core.db.fetchall("SELECT id, last_seen_at FROM calls WHERE ended_at IS NULL"):
+            self._calls[row["id"]] = _dt(row["last_seen_at"]) or _now()
+        for row in await self.core.db.fetchall(
+            "SELECT DISTINCT t.call_id FROM tasks t JOIN calls c ON c.id = t.call_id"
+            " WHERE t.state = ? AND c.ended_at IS NOT NULL",
+            (TaskState.NOTED.value,),
+        ):
+            await self._start_noted(row["call_id"])
         for task in await self.store.list(open_only=True):
             if task.state in (TaskState.NOTED, TaskState.NEEDS_INPUT) or task.run_id is None:
                 continue
@@ -481,9 +509,36 @@ class TaskService:
                 await self._end(task, TaskState.FAILED)
             elif run.status.terminal:
                 await self._round_ended(task, run)
+            elif run.status is RunStatus.WAITING_USER:
+                await self._mirror_waiting(task, run)
         for task in await self.store.list(states=tuple(s for s in TaskState if s.terminal), limit=50):
             if self._owes_report(task):
                 await self._report(task)
+
+    async def _mirror_waiting(self, task: Task, run: Run) -> None:
+        """The card's approval, rebuilt from the run's own log: the question it is parked on is the
+        last one asked and not yet answered ("did it complete?" after a restart included)."""
+        asked: dict[str, Any] = {}
+        for ev in await self.core.store.list_events(run.id):
+            if ev.get("type") == "tool.confirm_requested":
+                asked[str(ev.get("call_id"))] = ev
+            elif ev.get("type") == "tool.confirm_resolved":
+                asked.pop(str(ev.get("call_id")), None)
+        if not asked:
+            return
+        ev = list(asked.values())[-1]
+        task.waiting = TaskWaiting(
+            run_id=run.id,
+            call_id=str(ev.get("call_id")),
+            name=str(ev.get("name")),
+            arguments=dict(ev.get("arguments") or {}),
+            reason=str(ev.get("reason") or ""),
+        )
+        task.state = TaskState.WAITING
+        if any(e.get("type") == "run.resumed" for e in await self.core.store.list_events(run.id)):
+            task.note = "resumed after a restart of the core"
+        await self.store.save(task)
+        self.publish(task)
 
     # --- the loop's questions (engine.loop.TaskGate) -----------------------------------------
 
@@ -539,15 +594,20 @@ class TaskService:
         task.outcome = (task.outcome or TaskOutcome()).model_copy(update={"stopped_reason": reason})
         await self.store.save(task)
 
+    def calls_open(self) -> int:
+        return len(self._calls)
+
     def call_open(self) -> bool:
-        return self.core.engine.on_a_call()
+        """Arsen is on a call: a call turn is running, or a call's page is still there. A task
+        neither starts nor takes a step while this is true - the voice comes first."""
+        return self.core.engine.on_a_call() or bool(self._calls)
 
     async def paused(self, run: Run, on: bool) -> None:
         task = await self.store.by_run(run.id)
         if task is None:
             return
         (self._paused.add if on else self._paused.discard)(task.id)
-        self._publish(task)
+        self.publish(task)
 
     def may_start(self, running: int) -> bool:
         """The engine's question for a queued task run (``RunEngine.set_task_gate``)."""
@@ -584,7 +644,7 @@ class TaskService:
         made = stored.id == task.id
         if made:
             log.info("task %s made (%s) from run %s: %s", stored.id, stored.state.value, run.id, stored.title)
-            self._publish(stored)
+            self.publish(stored)
         return stored, made
 
     def down_for(self, needs: list[str]) -> tuple[str, str, datetime] | None:
@@ -627,8 +687,11 @@ class TaskService:
             task.conversation_id = conv.id
             self.core.bus.publish(ConversationUpdated(conversation=conv))
         user = self.settings.user_name
+        if text is None:
+            call = await self.call_transcript(task) if task.call_id and not task.brief.written else ""
+            text = brief_text(task, user=user, call=call)
         run, _ = await self.core.engine.create_run(
-            text=text if text is not None else brief_text(task, user=user),
+            text=text,
             conversation_id=task.conversation_id,
             kind=RunKind.TASK,
             call_me=False,
@@ -643,8 +706,72 @@ class TaskService:
         if task.outcome is not None:
             task.outcome = task.outcome.model_copy(update={"question": None, "stopped_reason": None})
         await self.store.save(task)
-        self._publish(task)
+        self.publish(task)
         return task
+
+    async def call_transcript(self, task: Task) -> str:
+        """What was said on the call a task was noted on, copied by the code: his words and the
+        replies, in order - what its first step writes the brief from."""
+        if not task.call_id:
+            return ""
+        user = self.settings.user_name
+        lines: list[str] = []
+        for run_id in await self.store.runs_of_call(task.call_id):
+            for m in await self.core.store.list_run_messages(run_id):
+                if not m.content.strip() or m.name is not None:
+                    continue
+                if m.role is Role.USER:
+                    lines.append(f"{user}: {m.content.strip()}")
+                elif m.role is Role.ASSISTANT and not m.tool_calls:
+                    lines.append(f"Jarvis: {m.content.strip()}")
+        return "\n".join(lines)
+
+    # --- calls ---------------------------------------------------------------------------------
+
+    async def call_seen(self, call_id: str, conversation_id: str | None) -> None:
+        """The call's page is there: a turn, or its heartbeat. A call that had been taken for
+        dropped and speaks again is open again - only what is noted from now on waits for its end."""
+        if not self.settings.tasks.enabled or not call_id:
+            return
+        now = _now().isoformat()
+        await self.core.db.execute(
+            "INSERT INTO calls(id, conversation_id, started_at, last_seen_at) VALUES (?,?,?,?)"
+            " ON CONFLICT(id) DO UPDATE SET last_seen_at = excluded.last_seen_at, ended_at = NULL, end_reason = NULL,"
+            " conversation_id = COALESCE(calls.conversation_id, excluded.conversation_id)",
+            (call_id, conversation_id, now, now),
+        )
+        self._calls[call_id] = _now()
+
+    async def call_ended(self, call_id: str, *, how: str) -> list[str]:
+        """Hang-up or drop: the call is over and what was noted on it starts, exactly once - a
+        second hang-up, a reconnect or the sweeper finds nothing left to start."""
+        self._calls.pop(call_id, None)
+        rows = await self.core.db.fetchall(
+            "UPDATE calls SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL RETURNING id",
+            (_now().isoformat(), how, call_id),
+        )
+        if rows:
+            log.info("call %s ended (%s)", call_id, how)
+        started = await self._start_noted(call_id)
+        self.core.engine.wake()
+        return started
+
+    async def _start_noted(self, call_id: str) -> list[str]:
+        started: list[str] = []
+        for task_id in await self.store.claim_noted(call_id):
+            task = await self.store.get(task_id)
+            if task is not None:
+                await self.begin(task)
+                started.append(task_id)
+        return started
+
+    async def _sweep_calls(self, at: datetime) -> None:
+        """A call whose page has said nothing for ``call_drop_after_s`` has dropped - never one
+        that is only quiet (the page keeps saying it is there), and never in the middle of a turn."""
+        limit = timedelta(seconds=self.settings.tasks.call_drop_after_s)
+        for call_id, last in list(self._calls.items()):
+            if at - last >= limit and not self.core.engine.call_turn_running(call_id):
+                await self.call_ended(call_id, how="drop")
 
     def queued_ahead(self, task: Task, tasks: list[Task]) -> int:
         return sum(1 for t in tasks if t.id != task.id and t.state in (TaskState.QUEUED, TaskState.RUNNING))
@@ -677,7 +804,7 @@ class TaskService:
         if task.state is TaskState.NOTED:
             task.brief.asked.append(words)
             await self.store.save(task)
-            self._publish(task)
+            self.publish(task)
             return task
         if task.run_id and self.core.engine.steer(task.run_id, words):
             return task
@@ -717,7 +844,7 @@ class TaskService:
                     if isinstance(event, RunResumed):
                         task.note = "resumed after a restart of the core"
                     await self.store.save(task)
-                    self._publish(task)
+                    self.publish(task)
             elif isinstance(event, ToolConfirmRequested):
                 task.waiting = TaskWaiting(
                     run_id=event.run_id,
@@ -730,16 +857,18 @@ class TaskService:
             elif isinstance(event, RunWaitingUser):
                 task.state = TaskState.WAITING
                 await self.store.save(task)
-                self._publish(task)
+                self.publish(task)
                 if (task.id, event.call_id or "") not in self._asked:
                     self._asked.add((task.id, event.call_id or ""))
                     await self._push_waiting(task)
+                if task.call_id:
+                    await self._settle_call(task)
             elif isinstance(event, ToolConfirmResolved):
                 task.waiting = None
                 if task.state is TaskState.WAITING:
                     task.state = TaskState.RUNNING
                 await self.store.save(task)
-                self._publish(task)
+                self.publish(task)
             else:
                 run = await self.core.store.get_run(event.run_id)
                 if run is not None:
@@ -766,8 +895,10 @@ class TaskService:
             task.state = TaskState.NEEDS_INPUT
             task.outcome = outcome
             await self.store.save(task)
-            self._publish(task)
+            self.publish(task)
             await self._push(task, f"Task needs your answer · {task.title}", outcome.question)
+            if task.call_id:
+                await self._settle_call(task)
             return
         ledger = await ledger_of(self.core, task)
         if outcome.finished:
@@ -788,7 +919,7 @@ class TaskService:
         task.waiting = None
         await self.store.save(task)
         log.info("task %s → %s", task.id, state.value)
-        self._publish(task)
+        self.publish(task)
         if self._owes_report(task):
             await self._report(task)
         self.core.engine.wake()
@@ -809,7 +940,18 @@ class TaskService:
             if task is None or task.origin_conversation_id != run.conversation_id:
                 continue
             self._deferred.discard(task_id)
-            await self._report(task)
+            if task.state.terminal:
+                await self._report(task)
+            elif task.call_id and task.state.settled:
+                await self._settle_call(task)
+
+    async def _settle_call(self, task: Task) -> None:
+        """A task from a call now waits on Arsen: if it was the last of the call's to settle, the
+        after-call report goes out now rather than when the last approval is answered."""
+        if self.core.engine.working_run_in(task.origin_conversation_id):
+            self._deferred.add(task.id)
+            return
+        await self._call_report(task)
 
     async def _final_answer(self, task: Task) -> Message | None:
         if task.run_id is None:
@@ -821,7 +963,8 @@ class TaskService:
 
     async def _report(self, task: Task) -> None:
         """Into the chat that asked, once per round, and only while no run is working there - a
-        message written in the middle of a run would land in that run's history."""
+        message written in the middle of a run would land in that run's history. Tasks from one
+        call report together, once the last of them has settled."""
         if not self._owes_report(task):
             return
         if self.core.engine.working_run_in(task.origin_conversation_id):
@@ -829,6 +972,8 @@ class TaskService:
             return
         if await self.core.store.get_conversation(task.origin_conversation_id) is None:
             return  # the chat is gone, and with it the place to report
+        if task.call_id and await self._call_report(task):
+            return
         answer = await self._final_answer(task)
         report = Message.assistant(
             render_report(task, answer=answer.content if answer else ""),
@@ -850,31 +995,86 @@ class TaskService:
             conversation_id=task.origin_conversation_id,
             task_id=task.id,
         )
-        await self.core.store.add_message(note)
-        await self.core.store.add_message(report)
-        if task.conversation_id is not None:
-            # The files it attached travel with the report, to where he asked.
-            files = [
-                a.id
-                for a in await self.core.attachments.for_conversation(task.conversation_id)
-                if a.meta.get("outgoing")
-            ]
-            if files:
-                report.attachments = await self.core.attachments.bind(
-                    files, message_id=report.id, conversation_id=task.origin_conversation_id
-                )
-        self.core.bus.publish(MessageCreated(message=note))
-        self.core.bus.publish(MessageCreated(message=report))
-        if not self.core.bus.has_subscribers(task.origin_conversation_id):
-            conv = await self.core.store.update_conversation(task.origin_conversation_id, unread=1)
-        else:
-            conv = await self.core.store.get_conversation(task.origin_conversation_id)
-        if conv is not None:
-            self.core.bus.publish(ConversationUpdated(conversation=conv))
-        self._publish(task)
+        # The files it attached travel with the report, to where he asked.
+        await self._post(task.origin_conversation_id, note, report, [task])
+        self.publish(task)
         outcome = task.outcome or TaskOutcome()
         body = outcome.summary or (answer.content if answer else "") or outcome.stopped_reason or ""
         await self._push(task, f"Task {_STATE_WORDS[task.state]} · {task.title}", body)
+
+    async def _call_report(self, task: Task) -> bool:
+        """The after-call report: every task noted on one call, in one message, with one notice -
+        written when the last of them has ended or is waiting on Arsen. False when the call's
+        report has already gone out (this task finished after it, and reports on its own)."""
+        call_id = task.call_id or ""
+        row = await self.core.db.fetchone("SELECT report_message_id FROM calls WHERE id = ?", (call_id,))
+        if row is not None and row["report_message_id"]:
+            return False
+        tasks = [t for t in await self.store.list(call_id=call_id) if t.state is not TaskState.DROPPED]
+        tasks.sort(key=lambda t: t.created_at)
+        if any(not t.state.settled for t in tasks):
+            return True  # the rest are still going; the last one to settle writes it
+        report = Message.assistant("", id=new_id("msg"), conversation_id=task.origin_conversation_id, task_id=task.id)
+        assert report.id is not None
+        claimed = await self.core.db.fetchall(
+            "UPDATE calls SET report_message_id = ? WHERE id = ? AND report_message_id IS NULL RETURNING id",
+            (report.id, call_id),
+        )
+        if row is not None and not claimed:
+            return True  # someone else is writing it
+        ended = [t for t in tasks if t.state.terminal]
+        for t in ended:
+            if await self.store.claim_report(t.id, report.id):
+                t.report_message_id = report.id
+        sections: list[str] = []
+        for t in tasks:
+            if t.state.terminal:
+                answer = await self._final_answer(t)
+                sections.append(render_report(t, answer=answer.content if answer else ""))
+            else:
+                sections.append(f"**Task: {t.title} — {_STATE_WORDS[t.state]}**\n{_waiting_line(t)}")
+        counts: dict[str, int] = {}
+        for t in tasks:
+            counts[_STATE_WORDS[t.state]] = counts.get(_STATE_WORDS[t.state], 0) + 1
+        tally = ", ".join(f"{n} {words}" for words, n in counts.items())
+        report.content = f"**After the call — {tally}**\n\n" + "\n\n".join(sections)
+        user = self.settings.user_name
+        note = Message.user(
+            f"[core note, not from {user}] The tasks noted on the call are through ({tally}); the after-call "
+            "report follows.",
+            name="task",
+            conversation_id=task.origin_conversation_id,
+            task_id=task.id,
+        )
+        await self._post(task.origin_conversation_id, note, report, ended)
+        for t in tasks:
+            self.publish(t)
+        await self._push(task, f"After the call: {tally}", f"{len(tasks)} task(s) from the call.", raw=True)
+        return True
+
+    async def _post(self, origin: str, note: Message, report: Message, tasks: list[Task]) -> None:
+        """The note and the report into the chat that asked, the files the tasks attached moved
+        onto the report, and the chat marked unread when nobody is looking at it."""
+        assert report.id is not None
+        await self.core.store.add_message(note)
+        await self.core.store.add_message(report)
+        files = [
+            a.id
+            for t in tasks
+            if t.conversation_id is not None
+            for a in await self.core.attachments.for_conversation(t.conversation_id)
+            if a.meta.get("outgoing")
+        ]
+        if files:
+            report.attachments = await self.core.attachments.bind(files, message_id=report.id, conversation_id=origin)
+        self.core.bus.publish(MessageCreated(message=note))
+        self.core.bus.publish(MessageCreated(message=report))
+        if not self.core.bus.has_subscribers(origin):
+            conv = await self.core.store.update_conversation(origin, unread=1)
+        else:
+            conv = await self.core.store.get_conversation(origin)
+        if conv is not None:
+            self.core.bus.publish(ConversationUpdated(conversation=conv))
 
     # --- pushes -----------------------------------------------------------------------------------
 
@@ -918,9 +1118,11 @@ class TaskService:
                 log.exception("tasks sweep failed")
 
     async def sweep(self, now: datetime | None = None) -> None:
-        """Approvals nobody answered in ``approval_ttl_s`` are turned down, with a note that makes
-        the task read its source again before it asks anew."""
+        """Calls whose page went quiet are ended (dropped). Approvals nobody answered in
+        ``approval_ttl_s`` are turned down, with a note that makes the task read its source again
+        before it asks anew."""
         at = now or _now()
+        await self._sweep_calls(at)
         ttl = timedelta(seconds=self.settings.tasks.approval_ttl_s)
         for task in await self.store.list(states=(TaskState.WAITING,)):
             w = task.waiting
@@ -937,7 +1139,7 @@ class TaskService:
 
     # --- events out ------------------------------------------------------------------------------------
 
-    def _publish(self, task: Task) -> None:
+    def publish(self, task: Task) -> None:
         shown = task.model_copy(update={"paused": task.id in self._paused})
         self.core.bus.publish(TaskChanged(task=shown))
 
@@ -988,6 +1190,16 @@ class _BriefArgs(BaseModel):
 
 class _DelegateArgs(_BriefArgs):
     title: str = Field(max_length=80, description="A few words for the card, in English")
+
+
+class _NoteArgs(BaseModel):
+    title: str = Field(max_length=80, description="A few words for the noted list, in English")
+    needs: list[str] = Field(default_factory=list, description="Tool namespaces it will need, if you know them")
+
+
+class _AmendArgs(BaseModel):
+    task_id: str
+    change: str = Field(description="What changes, as he said it")
 
 
 class _TaskIdArgs(BaseModel):
@@ -1161,6 +1373,76 @@ class TasksTools(BuiltinProvider):
             return ToolResult.failure(f"no task {task_id}")
         return ToolResult.data(f'"{task.title}" has it ({_detail(task)}).')
 
+    # --- on a call -------------------------------------------------------------------------------
+
+    @tool(
+        "tasks.note",
+        description=(
+            "On a call: note work that needs many steps or minutes, to be done after the call - a title is "
+            "enough, his words are kept for you. Then say 'noted' in a few words and stay in the conversation. "
+            "It starts by itself when the call ends; the report comes to this chat. Quick things you do now. "
+            "If it is the same as something already noted, amend that one instead."
+        ),
+        args=_NoteArgs,
+    )
+    async def _note(self, title: str, needs: list[str], idempotency_key: str = "") -> ToolResult:
+        run = await self._run()
+        if run is None or not run.call_id:
+            return ToolResult.failure("tasks.note works on a call")
+        service = self._service()
+        if (bad := self._unknown(needs)) is not None:
+            return ToolResult.failure(bad)
+        await service.call_seen(run.call_id, run.conversation_id)
+        brief = TaskBrief(needs=needs, asked=await service.asked_words(run.id), written=False)
+        task, _ = await service.create(
+            run=run, origin_key=_origin_key(idempotency_key, run), title=title, brief=brief, state=TaskState.NOTED
+        )
+        noted = await service.store.list(call_id=run.call_id, states=(TaskState.NOTED,))
+        return ToolResult.data(
+            f'Noted: "{task.title}" ({task.id}; {len(noted)} noted on this call). Say "noted" in a few words. '
+            "It starts when the call ends."
+        )
+
+    @tool(
+        "tasks.drop",
+        description="Take back something noted on this call ('forget the hotel one'). It will not start.",
+        args=_TaskIdArgs,
+    )
+    async def _drop(self, task_id: str) -> ToolResult:
+        service = self._service()
+        task = await self._noted_here(task_id)
+        if isinstance(task, ToolResult):
+            return task
+        await service.cancel(task.id)
+        return ToolResult.data(f'Dropped "{task.title}".')
+
+    @tool(
+        "tasks.amend",
+        description="Change something noted on this call ('3 nights, not 2'): his new words go with it.",
+        args=_AmendArgs,
+    )
+    async def _amend(self, task_id: str, change: str) -> ToolResult:
+        service = self._service()
+        task = await self._noted_here(task_id)
+        if isinstance(task, ToolResult):
+            return task
+        run = await self._run()
+        words = await service.asked_words(run.id) if run else []
+        task.brief.asked.extend(w for w in words if w not in task.brief.asked)
+        task.brief.context = "\n".join(p for p in (task.brief.context, f"Changed on the call: {change.strip()}") if p)
+        await service.store.save(task)
+        service.publish(task)
+        return ToolResult.data(f'"{task.title}" changed. It starts when the call ends.')
+
+    async def _noted_here(self, task_id: str) -> Task | ToolResult:
+        run = await self._run()
+        task = await self._service().store.get(task_id)
+        if task is None or run is None or task.call_id != run.call_id:
+            return ToolResult.failure(f"nothing noted on this call as {task_id}; see the noted list")
+        if task.state is not TaskState.NOTED:
+            return ToolResult.failure(f'"{task.title}" is {_STATE_WORDS[task.state]}, not just noted')
+        return task
+
     # --- the task's own run -------------------------------------------------------------------
 
     @tool(
@@ -1202,6 +1484,52 @@ class TasksTools(BuiltinProvider):
             + "\n".join(lines)
             + "\nIf an id was wrong, call task.finish again with the right one; otherwise write your final reply."
         )
+
+    @tool(
+        "task.brief",
+        description=(
+            "Write this task's brief from his words and the call in the first message - before any other tool. "
+            "The context must hold every name, date, amount and link it needs; the DoD 1-8 checkable items; "
+            "what you assume that he did not say goes in assumptions. The card shows it to him."
+        ),
+        args=_BriefArgs,
+        read_only=True,
+    )
+    async def _brief(
+        self,
+        goal: str,
+        context: str,
+        dod: list[dict[str, Any]],
+        constraints: list[str],
+        approvals: list[str],
+        needs: list[str],
+        assumptions: list[str],
+    ) -> ToolResult:
+        service = self._service()
+        run = await self._run()
+        task = await service.store.by_run(run.id) if run else None
+        if task is None:
+            return ToolResult.failure("task.brief works only inside a delegated task")
+        if task.brief.written:
+            return ToolResult.failure("the brief is already written; work from it")
+        if (bad := self._unknown(needs)) is not None:
+            return ToolResult.failure(bad)
+        task.brief = task.brief.model_copy(
+            update={
+                "goal": goal,
+                "context": context,
+                "dod": [DodItem.model_validate(d) for d in dod],
+                "constraints": constraints,
+                "approvals": approvals,
+                "needs": sorted({*task.brief.needs, *needs}),
+                "assumptions": assumptions,
+                "written": True,
+            }
+        )
+        await service.store.save(task)
+        service.publish(task)
+        dod_lines = "\n".join(f"{i}. {d.item}" for i, d in enumerate(task.brief.dod, 1))
+        return ToolResult.data(f"Brief written. Definition of Done:\n{dod_lines}\nNow do the work.")
 
     @tool(
         "task.ask",
@@ -1256,6 +1584,15 @@ class TasksTools(BuiltinProvider):
 def _origin_key(idempotency_key: str, run: Run) -> str:
     """One task per tool call: a resumed run re-running the same call gets the same key."""
     return idempotency_key.removesuffix(":retry") or f"{run.id}:{new_id('call')}"
+
+
+def _waiting_line(task: Task) -> str:
+    """What a task that waits on Arsen needs from him, for the after-call report."""
+    if task.state is TaskState.WAITING and task.waiting:
+        return f"It waits for your OK on {task.waiting.name} - approve or deny it on the task's card."
+    if task.state is TaskState.NEEDS_INPUT and task.outcome and task.outcome.question:
+        return f'It asks: "{_one_line(task.outcome.question, 300)}" - answer on the task\'s card.'
+    return ""
 
 
 def _detail(task: Task) -> str:
@@ -1322,7 +1659,11 @@ class TasksBlock:
         parts: list[str] = []
         if run.channel is Channel.VOICE:
             parts.append(_call_policy(run, self._settings()))
-        live = [t for t in tasks if not t.state.terminal]
+            noted = [t for t in tasks if run.call_id and t.call_id == run.call_id and t.state is TaskState.NOTED]
+            if noted:
+                lines = "\n".join(f'- {t.id} · {t.title}: "{_one_line(" / ".join(t.brief.asked), 300)}"' for t in noted)
+                parts.append(f"Noted on this call so far (his words as heard):\n{lines}")
+        live = [t for t in tasks if not t.state.terminal and t.state is not TaskState.NOTED]
         if live:
             parts.append("Open tasks in this chat:\n" + "\n".join(f"- {t.id} · {t.title} — {_detail(t)}" for t in live))
         new = [t for t in tasks if t.state.terminal and t.finished_at and since and t.finished_at > since]
@@ -1379,6 +1720,37 @@ class HealthBlock:
             f"{lines}\n"
             "Their tools fail until they are back: do not promise work that needs them - say so, and why."
         )
+
+
+def voice_style_upgrade(settings: Settings) -> tuple[Settings | None, str | None]:
+    """Take the old "do it now, never after the call" sentence out of a stored call style, once.
+
+    Settings are stored per top-level key, so a ``voice`` saved before tasks keeps the old default's
+    text whatever the new default says - and Arsen's live style (edited 2026-10-20) has that exact
+    sentence, verbatim, among his own lines. It is taken out and every other word of his is kept.
+    Returns (settings to save, or None; a note for Settings → Voice when it could not be done).
+    An exact sentence of our own old default, versioned by ``voice.style_version`` - not a word list.
+    """
+    voice = settings.voice
+    if voice.style_version >= 2:
+        return None, None
+    style = voice.style
+    note: str | None = None
+    if CALL_WORK_NOW in style:
+        style = style.replace(f"{CALL_WORK_NOW} ", "").replace(f" {CALL_WORK_NOW}", "").replace(CALL_WORK_NOW, "")
+        log.info("voice style: the old 'never after the call' sentence was taken out; the rest is kept")
+    elif style.strip() != VOICE_STYLE_DEFAULT.strip():
+        note = (
+            "This call style was edited before delegated tasks and does not have the old 'do it now, never after "
+            "the call' sentence in its known form. If it tells Jarvis to do everything during the call, take that "
+            "out: noted tasks need the call to end first. Saving the style here clears this note."
+        )
+        log.warning("voice style: the old 'never after the call' sentence was not found; left as it is")
+        return None, note
+    updated = settings.model_copy(deep=True)
+    updated.voice.style = style
+    updated.voice.style_version = 2
+    return updated, note
 
 
 def task_json(task: Task) -> dict[str, Any]:

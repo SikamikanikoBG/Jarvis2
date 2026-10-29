@@ -4,6 +4,8 @@ are for a page that has just loaded and for scripts."""
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -15,6 +17,19 @@ router = APIRouter(prefix="/api/tasks", dependencies=[Depends(require_token)])
 
 class SteerBody(BaseModel):
     text: str = Field(min_length=1, max_length=8_000)
+
+
+@router.get("/status")
+async def tasks_status(request: Request) -> dict[str, Any]:
+    """Whether tasks are on, how many calls are open, and what Settings → Voice should say about a
+    call style that could not be brought up to date."""
+    core = core_of(request)
+    return {
+        "enabled": core.settings.tasks.enabled,
+        "calls_open": core.tasks.calls_open(),
+        "voice_style_note": core.tasks.voice_style_note,
+        **await core.tasks.counts(),
+    }
 
 
 @router.get("", response_model=list[Task])
@@ -37,6 +52,16 @@ async def cancel_task(request: Request, task_id: str) -> Task:
     if task is None:
         raise HTTPException(404, "no such task")
     return task
+
+
+calls = APIRouter(prefix="/api/calls", dependencies=[Depends(require_token)])
+
+
+@calls.post("/{call_id}/end", status_code=204)
+async def end_call(request: Request, call_id: str) -> None:
+    """Hang-up from a page that is going away (pagehide): the WebSocket may already be closed, a
+    keepalive request still goes out. The same exactly-once end as ``call.ended``."""
+    await core_of(request).tasks.call_ended(call_id, how="hangup")
 
 
 @router.post("/{task_id}/steer", response_model=Task)

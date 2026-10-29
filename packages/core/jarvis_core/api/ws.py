@@ -18,6 +18,8 @@ from jarvis_core.features.expiry import valid_ttl
 from jarvis_core.tools.ws_provider import BrowserConn
 from jarvis_proto import (
     INCOGNITO_TITLE,
+    CallAlive,
+    CallEnded,
     Pong,
     RunCallMeRequest,
     RunCancelRequest,
@@ -99,6 +101,8 @@ async def _ui_leg(ws: WebSocket) -> None:
                     core.bus.publish(ConversationUpdated(conversation=conv))
                     conversation_id = conv.id
                 sub.conversations.add(conversation_id)
+                if msg.call_id:
+                    await core.tasks.call_seen(msg.call_id, conversation_id)
                 await core.engine.create_run(
                     text=msg.text,
                     conversation_id=conversation_id,
@@ -112,17 +116,24 @@ async def _ui_leg(ws: WebSocket) -> None:
                     timezone=msg.timezone,
                     # His own message: the only kind of run that may hand work to a task.
                     from_owner=True,
+                    call_id=msg.call_id,
                 )
             elif isinstance(msg, RunSteerRequest):
                 # Too late is not an error: if the run finished between Arsen pressing enter and
                 # this arriving, the message becomes an ordinary new turn rather than vanishing.
                 # A cut-in on a call that arrives late becomes a voice run of its own.
+                if msg.call_id:
+                    await core.tasks.call_seen(msg.call_id, None)
                 if not core.engine.steer(msg.run_id, msg.text):
                     run = await core.store.get_run(msg.run_id)
                     if run is not None:
                         sub.conversations.add(run.conversation_id)
                         await core.engine.create_run(
-                            text=msg.text, conversation_id=run.conversation_id, channel=msg.channel, from_owner=True
+                            text=msg.text,
+                            conversation_id=run.conversation_id,
+                            channel=msg.channel,
+                            from_owner=True,
+                            call_id=msg.call_id,
                         )
             elif isinstance(msg, RunCancelRequest):
                 await core.engine.cancel(msg.run_id)
@@ -134,6 +145,11 @@ async def _ui_leg(ws: WebSocket) -> None:
                 await core.tasks.cancel(msg.task_id)
             elif isinstance(msg, TaskSteerRequest):
                 await core.tasks.steer(msg.task_id, msg.text)
+            elif isinstance(msg, CallAlive):
+                await core.tasks.call_seen(msg.call_id, msg.conversation_id)
+            elif isinstance(msg, CallEnded):
+                # Hang-up. A dropped socket is NOT one: a phone that reconnects is still on the call.
+                await core.tasks.call_ended(msg.call_id, how="hangup")
             if sub.dead:
                 await ws.close(code=1008, reason="slow consumer")
                 break

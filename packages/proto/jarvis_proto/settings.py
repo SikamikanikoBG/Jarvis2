@@ -513,6 +513,13 @@ class Personality(BaseModel):
     )
 
 
+#: The work policy a call used to carry inside its style, word for word. Since tasks
+#: (2026-10-29) it is not part of the style: with tasks off VoiceBlock still says it; with tasks
+#: on, the tasks block says to note longer work for after the call instead. A style stored
+#: before then has it inside, and the core takes this one sentence out of it once
+#: (features/tasks.voice_style_upgrade) - an exact sentence of our own old default, not a word list.
+CALL_WORK_NOW = 'You have all your tools on the call: do what he asks now, never "after the call".'
+
 VOICE_STYLE_DEFAULT = (
     "You are on a voice call: what you write is read aloud by a speech synthesiser, and the "
     "person listening cannot see it. Answer the way a person on the phone would - short spoken "
@@ -520,8 +527,7 @@ VOICE_STYLE_DEFAULT = (
     "numbered lists, no tables, no code, no links or file paths read out; spell nothing that "
     "sounds wrong aloud. Two or three sentences unless asked for more. If a proper answer needs "
     "to be long or needs a list, say so in a sentence and offer to write it in the chat. "
-    'You have all your tools on the call: do what he asks now, never "after the call". Each time '
-    "you are about to use tools, first write one short sentence saying what you are doing - it is "
+    "Each time you are about to use tools, first write one short sentence saying what you are doing - it is "
     'read out while he waits ("Checking your mail.") - one sentence, never your reasoning. Before '
     "anything that sends, posts, pays, deletes or changes something for other people, say exactly "
     "what you are about to do and to whom, and wait for his yes. If what you heard makes no sense, "
@@ -550,6 +556,10 @@ class VoiceSettings(BaseModel):
     # hold music. When it runs out the turn says what it has. 0 = the chat budget alone.
     max_turn_s: int = 600
     style: str = VOICE_STYLE_DEFAULT
+    # Which built-in default ``style`` was last brought up to date with. 2 = the work policy is no
+    # longer in it (delegated tasks, 2026-10-29: features/tasks.voice_style_upgrade). A style saved
+    # from Settings after that is his own and counts as current.
+    style_version: int = 1
     # Whose voice. "server": the core synthesises each sentence (Microsoft's neural voices
     # through edge-tts - natural Bulgarian, natural English, and the audio is the page's own so
     # the browser's echo canceller can hear it and Android keeps it on one route) and the
@@ -664,10 +674,19 @@ class TasksSettings(BaseModel):
     max_running: int = Field(default=1, ge=1, le=4)
     #: 1 = a task cannot hand work on to another task.
     max_depth: int = Field(default=1, ge=1, le=3)
-    #: Non-read-only tools a task may use without asking: moving around a page and Jarvis's own
-    #: memory - nothing that reaches anyone else. An exact name or a `namespace.*` / `*.tool` glob.
+    #: Non-read-only tools a task may use without asking: reading a page (the fetch server sends no
+    #: read-only hint, but a GET is all it does), moving around a page and Jarvis's own memory -
+    #: nothing that reaches anyone else. An exact name or a `namespace.*` / `*.tool` glob.
     no_approval: list[str] = Field(
-        default_factory=lambda: ["files.attach", "task.*", "notes.*", "kg.*", "browser.open", "browser.scroll"]
+        default_factory=lambda: [
+            "files.attach",
+            "task.*",
+            "notes.*",
+            "kg.*",
+            "fetch.fetch",
+            "browser.open",
+            "browser.scroll",
+        ]
     )
     #: Never offered to a task: a long job left unattended on a host's shell is what took a box
     #: down twice (2026-10-11, 2026-10-15).

@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react';
+import { api } from '../api/client';
 import { Switch } from '../components/primitives';
 import type { VoiceSettings } from '../protocol/types';
 
@@ -13,6 +15,14 @@ interface Props {
  *  place for an irreversible action, so mail and the shell are off until Arsen ticks them. */
 export function VoiceSection({ value, namespaces, onChange, error }: Props) {
   const patch = (p: Partial<VoiceSettings>) => onChange({ ...value, ...p });
+  const [styleNote, setStyleNote] = useState<string | null>(null);
+  useEffect(() => {
+    // A call style the core could not bring up to date for delegated tasks says so here.
+    api.tasks
+      .status()
+      .then((s) => setStyleNote(s.voice_style_note))
+      .catch(() => setStyleNote(null));
+  }, []);
   const everything = value.namespaces.includes('*');
   const all = [...new Set([...namespaces, ...value.namespaces.filter((n) => n !== '*')])].sort();
   const toggle = (ns: string, on: boolean) =>
@@ -211,8 +221,10 @@ export function VoiceSection({ value, namespaces, onChange, error }: Props) {
       </div>
       <div className="field">
         <label htmlFor="voice-style">How he speaks on a call</label>
-        <textarea id="voice-style" className="textarea" rows={5} value={value.style} onChange={(e) => patch({ style: e.target.value })} />
+        {/* Edited here, it is his own style as of now: style_version 2 (docs/stories/13_delegated_tasks.md). */}
+        <textarea id="voice-style" className="textarea" rows={5} value={value.style} onChange={(e) => patch({ style: e.target.value, style_version: 2 })} />
         <div className="field-hint">Added to the turn's context on a call only, so the cached prompt for typed chats is untouched.</div>
+        {styleNote && value.style_version !== 2 && <div className="field-hint field-warn">{styleNote}</div>}
       </div>
     </section>
   );

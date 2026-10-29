@@ -39,6 +39,7 @@ import type {
   SkillContent,
   StatusResponse,
   SttResponse,
+  Task,
   ToolSpec,
   TriageState,
   Whoami,
@@ -355,5 +356,10 @@ export const api = {
   tools: {
     list: () => request<ToolSpec[]>('GET', '/api/tools'),
     reload: () => request<ToolSpec[]>('POST', '/api/tools/reload'),
+  },
+  /** Delegated tasks (docs/stories/13_delegated_tasks.md): a chat's cards, or every open one. */
+  tasks: {
+    list: (conversationId: string | null, open = false) =>
+      request<Task[]>('GET', `/api/tasks?${conversationId ? `conversation_id=${encodeURIComponent(conversationId)}&` : ''}open=${open ? 1 : 0}`),
   },
 };

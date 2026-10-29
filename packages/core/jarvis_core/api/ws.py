@@ -24,6 +24,8 @@ from jarvis_proto import (
     RunCreateRequest,
     RunSteerRequest,
     Subscribe,
+    TaskCancelRequest,
+    TaskSteerRequest,
     ToolConfirmRequest,
     Unsubscribe,
     parse_client_message,
@@ -108,6 +110,8 @@ async def _ui_leg(ws: WebSocket) -> None:
                     channel=msg.channel,
                     call_me=msg.call_me,
                     timezone=msg.timezone,
+                    # His own message: the only kind of run that may hand work to a task.
+                    from_owner=True,
                 )
             elif isinstance(msg, RunSteerRequest):
                 # Too late is not an error: if the run finished between Arsen pressing enter and
@@ -118,7 +122,7 @@ async def _ui_leg(ws: WebSocket) -> None:
                     if run is not None:
                         sub.conversations.add(run.conversation_id)
                         await core.engine.create_run(
-                            text=msg.text, conversation_id=run.conversation_id, channel=msg.channel
+                            text=msg.text, conversation_id=run.conversation_id, channel=msg.channel, from_owner=True
                         )
             elif isinstance(msg, RunCancelRequest):
                 await core.engine.cancel(msg.run_id)
@@ -126,6 +130,10 @@ async def _ui_leg(ws: WebSocket) -> None:
                 await core.engine.set_call_me(msg.run_id, msg.on)
             elif isinstance(msg, ToolConfirmRequest):
                 await core.engine.confirm(msg.run_id, msg.call_id, msg.approved, msg.note)
+            elif isinstance(msg, TaskCancelRequest):
+                await core.tasks.cancel(msg.task_id)
+            elif isinstance(msg, TaskSteerRequest):
+                await core.tasks.steer(msg.task_id, msg.text)
             if sub.dead:
                 await ws.close(code=1008, reason="slow consumer")
                 break

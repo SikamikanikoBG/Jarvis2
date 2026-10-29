@@ -30,10 +30,11 @@ import type {
   SessionRef,
   RunScopedEvent,
   ServerEvent,
+  Task,
 } from '../protocol/types';
 import { isRunScoped, isTerminal } from '../protocol/types';
 import { applyFeatureEvents, initialFeatureState, type FeatureState } from './features';
-import { applyServerEvents } from './reducer';
+import { applyServerEvents, taskChanged } from './reducer';
 import { selectActiveRun, selectIncognitoNow, selectSendRefusal, selectUnreadIds } from './selectors';
 import { NEW_CONVERSATION_KEY, initialChatState, omit, type ChatState, type LocalMessage } from './state';
 
@@ -102,6 +103,8 @@ export interface UiState {
   callMeNext: Record<string, boolean | undefined>;
   /** Whether a chat rings by default when its task is done (settings.call_me_default). */
   callMeDefault: boolean;
+  /** settings.tasks.approval_ttl_s, for "expires at" on a task's approval; null = not known. */
+  approvalTtlS: number | null;
   /** Sidebar multi-select: the chosen conversation ids. Empty means not selecting anything. */
   selection: string[];
   /** The row a shift-click measures its range from. */
@@ -142,6 +145,12 @@ export interface Actions {
   send: (text: string) => boolean;
   stop: () => void;
   confirmTool: (runId: string, callId: string, approved: boolean, note?: string) => void;
+  /** Delegated tasks from their card (docs/stories/13_delegated_tasks.md). */
+  cancelTask: (taskId: string) => void;
+  /** An answer to what the task asked, or a change of mind: into it, or a new round of it. */
+  steerTask: (taskId: string, text: string) => boolean;
+  /** The task's own conversation: its brief, every step, the full result. */
+  openTaskWork: (task: Task) => void;
   renameConversation: (id: string, title: string) => Promise<void>;
   archiveConversation: (id: string, archived: boolean) => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
@@ -301,6 +310,7 @@ export const useStore = create<AppState>()((set, get) => ({
   incoming: null,
   callMeNext: {},
   callMeDefault: true,
+  approvalTtlS: null,
   thinkChoice: {},
   draftPrivacy: DRAFT_NORMAL,
   freshChat: false,
@@ -340,6 +350,7 @@ export const useStore = create<AppState>()((set, get) => ({
         if (isReconnect) {
           void loadConversations(set, get);
           void get().loadFolders();
+          void loadOpenTasks(set);
         }
       },
     });
@@ -359,6 +370,7 @@ export const useStore = create<AppState>()((set, get) => ({
 
     void loadConversations(set, get);
     void get().loadFolders();
+    void loadOpenTasks(set);
     api.health()
       .then((h) => set({ version: h.version }))
       .catch(() => undefined);
@@ -387,7 +399,7 @@ export const useStore = create<AppState>()((set, get) => ({
     void refreshPush().catch(() => undefined);
     api.settings
       .get()
-      .then((st) => set({ callMeDefault: st.call_me_default.includes('chat') }))
+      .then((st) => set({ callMeDefault: st.call_me_default.includes('chat'), approvalTtlS: st.tasks?.approval_ttl_s ?? null }))
       .catch(() => undefined);
 
     window.addEventListener('popstate', () => {
@@ -748,13 +760,16 @@ export const useStore = create<AppState>()((set, get) => ({
   refreshConversation: async (id) => {
     set({ loadingMessagesFor: id });
     try {
-      const [conv, serverMessages, serverRuns, summary] = await Promise.all([
+      const [conv, serverMessages, serverRuns, summary, tasks] = await Promise.all([
         get().conversations[id] ? Promise.resolve(null) : api.conversations.get(id),
         api.conversations.messages(id),
         api.conversations.runs(id),
         api.conversations.summary(id).catch(() => null),
+        // The cards of this chat. A core without tasks (older build) answers 404: no cards.
+        api.tasks.list(id).catch(() => [] as Task[]),
       ]);
       set((s) => ({ ...mergeConversationData(s, id, conv, serverMessages, serverRuns), summaries: { ...s.summaries, [id]: summary } }));
+      if (tasks.length) set((s) => tasks.reduce((acc, t) => taskChanged(acc, t), s));
       for (const run of serverRuns) {
         if (!isTerminal(run.status)) void get().loadRunEvents(run.id);
       }
@@ -838,6 +853,24 @@ export const useStore = create<AppState>()((set, get) => ({
     } else {
       s.notify('Not connected — could not send Stop.', 'error');
     }
+  },
+
+  cancelTask: (taskId) => {
+    if (!ws?.send({ type: 'task.cancel', task_id: taskId })) get().notify('Not connected — could not cancel the task.', 'error');
+  },
+
+  steerTask: (taskId, text) => {
+    const words = text.trim();
+    if (!words) return false;
+    if (!ws?.send({ type: 'task.steer', task_id: taskId, text: words })) {
+      get().notify('Not connected — the task did not get it.', 'error');
+      return false;
+    }
+    return true;
+  },
+
+  openTaskWork: (task) => {
+    if (task.conversation_id) void get().openConversation(task.conversation_id);
   },
 
   confirmTool: (runId, callId, approved, note) => {
@@ -1233,6 +1266,16 @@ async function loadConversations(set: Set, get: Get): Promise<void> {
       return;
     }
     get().notify(`Could not load conversations: ${errorText(e)}`, 'error');
+  }
+}
+
+/** Every open task, for the header chip of whichever chat is open (the cards load with their chat). */
+async function loadOpenTasks(set: Set): Promise<void> {
+  try {
+    const open = await api.tasks.list(null, true);
+    set((s) => open.reduce((acc, t) => taskChanged(acc, t), s));
+  } catch {
+    /* an older core has no tasks; nothing to show */
   }
 }
 

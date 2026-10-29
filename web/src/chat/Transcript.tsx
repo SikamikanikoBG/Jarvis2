@@ -9,6 +9,7 @@ import { Note } from './Note';
 import { RunChip } from './RunChip';
 import { StreamBubble } from './StreamBubble';
 import { SummaryDivider } from './SummaryDivider';
+import { TaskCard } from './TaskCard';
 import { ToolCard } from './ToolCard';
 import { WorkFold } from './WorkFold';
 
@@ -189,6 +190,8 @@ function renderItem(it: TranscriptItem): ReactNode {
       return <SummaryDivider key={it.key} text={it.text} />;
     case 'injected':
       return <InjectedNote key={it.key} name={it.name} text={it.text} />;
+    case 'task':
+      return <TaskCard key={it.key} taskId={it.taskId} />;
     case 'work':
       return (
         <WorkFold key={it.key} steps={it.steps} errors={it.errors}>

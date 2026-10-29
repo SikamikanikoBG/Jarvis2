@@ -144,6 +144,11 @@ def _default_routing() -> dict[RunKind, RoleName]:
         RunKind.SCHEDULED: RoleName.CHAT,
         RunKind.TRIAGE: RoleName.BACKGROUND,
         RunKind.MEETING: RoleName.BACKGROUND,
+        # A chat about one mail thread is Arsen typing, like any chat.
+        RunKind.MAIL: RoleName.CHAT,
+        # Tasks read a lot, like scheduled runs: the lane with the room. Which lane serves them
+        # better while a call is on is measured on the alpha (docs/stories/13_delegated_tasks.md).
+        RunKind.TASK: RoleName.CHAT,
     }
 
 
@@ -156,6 +161,10 @@ def _default_budgets() -> dict[RunKind, RunBudget]:
         RunKind.TRIAGE: RunBudget(max_steps=300, max_tokens=1_000_000, max_seconds=1800),
         RunKind.MEETING: RunBudget(max_steps=30, max_tokens=400_000, max_seconds=900),
         RunKind.SYSTEM: RunBudget(max_steps=10, max_tokens=50_000, max_seconds=120),
+        RunKind.MAIL: RunBudget(max_steps=25, max_tokens=200_000, max_seconds=600),
+        # Longer than a chat turn - the point of a task is that nobody waits for it - and bounded:
+        # at the end the run writes what it has and the report says "stopped here".
+        RunKind.TASK: RunBudget(max_steps=60, max_tokens=800_000, max_seconds=1800),
     }
 
 
@@ -438,6 +447,17 @@ class EmailPolicy(BaseModel):
         return [r for r in self.split_recipients(*fields) if not self.is_approved(r)]
 
 
+def tool_matches(name: str, pattern: str) -> bool:
+    """A tool name against an exact name, ``*``, a ``namespace.*`` or a ``*.tool`` glob."""
+    if pattern in (name, "*"):
+        return True
+    if pattern.endswith(".*"):
+        return name.startswith(pattern[:-1])
+    if pattern.startswith("*."):
+        return name.split(".", 1)[-1] == pattern[2:]
+    return False
+
+
 class Confirmations(BaseModel):
     """When Jarvis stops to ask before running a tool.
 
@@ -464,13 +484,7 @@ class Confirmations(BaseModel):
 
     @staticmethod
     def _matches(name: str, pattern: str) -> bool:
-        if pattern in (name, "*"):
-            return True
-        if pattern.endswith(".*"):
-            return name.startswith(pattern[:-1])
-        if pattern.startswith("*."):
-            return name.split(".", 1)[-1] == pattern[2:]
-        return False
+        return tool_matches(name, pattern)
 
     def checks_outbound(self, name: str, *, unattended: bool) -> bool:
         return not unattended and any(self._matches(name, p) for p in self.outbound_check)
@@ -632,6 +646,47 @@ class SessionsSettings(BaseModel):
     reply_timeout_s: int = 180
 
 
+class TasksSettings(BaseModel):
+    """Delegated tasks (docs/stories/13_delegated_tasks.md): work handed to a run of its own and
+    reported back where Arsen asked.
+
+    Off until the alpha passes: with ``enabled`` false no task tool is offered, no task block is
+    sent and a call keeps its old "do it now" rule word for word.
+
+    A task runs with nobody watching, so the 2026-10-15 lesson (a run nobody watched rebooted the
+    box) is settings here, not hope: every action that is not read-only waits for his approval
+    whatever ``confirmations`` says, except the names on ``no_approval``; the names on
+    ``deny_tools`` are never offered to a task at all.
+    """
+
+    enabled: bool = False
+    #: Tasks working at once. One: the GPU pair is shared with his chats and his calls.
+    max_running: int = Field(default=1, ge=1, le=4)
+    #: 1 = a task cannot hand work on to another task.
+    max_depth: int = Field(default=1, ge=1, le=3)
+    #: Non-read-only tools a task may use without asking: moving around a page and Jarvis's own
+    #: memory - nothing that reaches anyone else. An exact name or a `namespace.*` / `*.tool` glob.
+    no_approval: list[str] = Field(
+        default_factory=lambda: ["files.attach", "task.*", "notes.*", "kg.*", "browser.open", "browser.scroll"]
+    )
+    #: Never offered to a task: a long job left unattended on a host's shell is what took a box
+    #: down twice (2026-10-11, 2026-10-15).
+    deny_tools: list[str] = Field(default_factory=lambda: ["*.shell_run", "*.fs_write", "*.fs_edit"])
+    #: An approval nobody answered in this long is turned down with "re-read the source and ask
+    #: again": a draft approved four hours later may answer a thread that has moved on.
+    approval_ttl_s: int = Field(default=14_400, ge=60)
+    #: A call whose page has said nothing (no turn, no heartbeat) this long has dropped, and its
+    #: noted tasks start. Above Chrome's throttled timers on a locked phone (one wake a minute).
+    call_drop_after_s: int = Field(default=240, ge=30)
+
+    def needs_approval(self, name: str, *, read_only: bool) -> bool:
+        """In a task: anything that is not read-only asks, unless Arsen freed it by name."""
+        return not read_only and not any(tool_matches(name, p) for p in self.no_approval)
+
+    def denies(self, name: str) -> bool:
+        return any(tool_matches(name, p) for p in self.deny_tools)
+
+
 class ShadowSettings(BaseModel):
     """A second opinion that is recorded, never obeyed (features/shadow.py).
 
@@ -774,6 +829,7 @@ class Settings(BaseModel):
     sessions: SessionsSettings = Field(default_factory=SessionsSettings)
     assistant: AssistantSettings = Field(default_factory=AssistantSettings)
     shadow: ShadowSettings = Field(default_factory=ShadowSettings)
+    tasks: TasksSettings = Field(default_factory=TasksSettings)
     # The address people actually reach this core on (e.g. the Tailscale Serve HTTPS URL).
     # Used for pairing/QR; without it the URL is derived from the request. The phone's mic and
     # the PWA need a secure context, so this is normally an https:// URL.
@@ -813,6 +869,26 @@ class Settings(BaseModel):
             chat = roles.get(RoleName.CHAT.value, roles.get(RoleName.CHAT))
             if chat is not None and RoleName.BACKGROUND.value not in roles and RoleName.BACKGROUND not in roles:
                 data = {**data, "roles": {**roles, RoleName.BACKGROUND.value: copy.deepcopy(chat)}}
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _kinds_added_later_get_defaults(cls, data: object) -> object:
+        # Settings are stored one top-level key per row, so a stored `budgets` or `run_routing`
+        # predates every kind added since and replaces the defaults whole: a task run read its
+        # budget from nowhere and fell back to a 25-step chat turn, and MAIL had no entry at all
+        # (2026-10-29). A kind the stored dict does not name gets its built-in default; every
+        # value that IS stored stays as it is.
+        if not isinstance(data, dict):
+            return data
+        for key, defaults in (("budgets", _default_budgets()), ("run_routing", _default_routing())):
+            stored = data.get(key)
+            if not isinstance(stored, dict):
+                continue
+            named = {k.value if isinstance(k, RunKind) else str(k) for k in stored}
+            missing = {kind.value: value for kind, value in defaults.items() if kind.value not in named}
+            if missing:
+                data = {**data, key: {**stored, **missing}}
         return data
 
     def lane_for(self, kind: RunKind) -> RoleName:

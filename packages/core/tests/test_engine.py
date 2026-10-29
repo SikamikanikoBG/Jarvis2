@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import time
 
+import pytest
+
+from jarvis_core.engine.run_engine import _PRIORITY
 from jarvis_core.models.fake import FakeTurn
-from jarvis_proto import RunStatus, ToolCall
+from jarvis_proto import RoleName, RunKind, RunStatus, Settings, ToolCall
 from tests.conftest import Harness
 from tests.test_loop import with_tools
 
@@ -202,3 +205,37 @@ async def test_new_conversation_is_titled_from_the_first_message(harness: Harnes
         e for e in [sub.queue.get_nowait() for _ in range(sub.queue.qsize())] if e.type == "conversation.updated"
     ]
     assert updated and updated[0].conversation.id == conv.id
+
+
+# --- every kind of run is wired (slice 0 of docs/stories/13_delegated_tasks.md) -----------
+
+
+@pytest.mark.parametrize("kind", list(RunKind))
+async def test_every_run_kind_has_a_priority_a_lane_and_a_budget(harness: Harness, kind: RunKind):
+    """A kind added to RunKind and forgotten in one of the three tables used to surface only
+    when a run of it was made: MAIL had no priority, and create_run(kind=MAIL) raised KeyError."""
+    defaults = Settings()
+    assert kind in _PRIORITY
+    assert kind in defaults.run_routing and kind in defaults.budgets
+    harness.chat.push(FakeTurn(text="ok"))
+    run, conv = await harness.core.engine.create_run(text="hi", kind=kind)
+    assert run.priority == _PRIORITY[kind] and run.budget == harness.core.settings.budgets[kind]
+    assert conv.kind.value == (kind.value if kind is not RunKind.SYSTEM else "chat")
+    await harness.core.engine.cancel(run.id)
+
+
+def test_stored_budgets_and_routing_get_the_kinds_added_since():
+    """Settings are stored one key per row: a `budgets` saved before TASK existed must not leave
+    TASK on the generic 25-step fallback, and what WAS stored stays as stored."""
+    stored = {
+        "budgets": {"chat": {"max_steps": 250, "max_tokens": 1, "max_seconds": 2}},
+        "run_routing": {"chat": "background"},
+    }
+    s = Settings.model_validate(stored)
+    assert s.budgets[RunKind.CHAT].max_steps == 250
+    assert s.budgets[RunKind.TASK] == Settings().budgets[RunKind.TASK]
+    assert s.budgets[RunKind.MAIL] == Settings().budgets[RunKind.MAIL]
+    assert s.run_routing[RunKind.CHAT] is RoleName.BACKGROUND
+    assert s.run_routing[RunKind.TASK] is RoleName.CHAT
+    # And the round trip keeps them: what is saved again is complete.
+    assert set(Settings.model_validate(s.model_dump(mode="json")).budgets) == set(RunKind)

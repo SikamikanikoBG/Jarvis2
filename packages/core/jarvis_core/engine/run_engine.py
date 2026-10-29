@@ -30,6 +30,7 @@ from jarvis_proto import (
     Message,
     Role,
     Run,
+    RunBudget,
     RunKind,
     RunStatus,
     Settings,
@@ -55,8 +56,12 @@ _BESIDE_A_CALL = frozenset({RunKind.CHAT, RunKind.SYSTEM})
 
 _PRIORITY = {
     RunKind.CHAT: 0,
+    # A chat about one mail thread is Arsen typing (features/maildesk.py).
+    RunKind.MAIL: 0,
     RunKind.COLLAB: 1,
     RunKind.MEETING: 2,
+    # Arsen asked for it, so it goes ahead of what the clock started; it never goes ahead of him.
+    RunKind.TASK: 2,
     RunKind.SCHEDULED: 3,
     RunKind.TRIAGE: 4,
     RunKind.SYSTEM: 5,
@@ -92,12 +97,27 @@ class RunEngine:
         self._dispatcher: asyncio.Task[None] | None = None
         self._stopping = False
         #: Called after every run ends; see on_finished().
-        self._finished_hook: Callable[[Run], Awaitable[None]] | None = None
+        self._finished_hooks: list[Callable[[Run], Awaitable[None]]] = []
+        #: Whether a TASK run may start now (features/tasks.py): at most tasks.max_running at once,
+        #: none while Arsen is on a call. None = no rule, as before tasks existed.
+        self._task_gate: Callable[[int], bool] | None = None
 
     def on_finished(self, hook: Callable[[Run], Awaitable[None]] | None) -> None:
-        """Called after every run ends, whatever happened to it. The browser uses it to let a
-        session's work tab go (tools/ws_provider.job_done)."""
-        self._finished_hook = hook
+        """Called after every run ends, whatever happened to it, once it is out of the engine's
+        books (``working_run_in`` no longer names it). The browser uses it to let a session's
+        work tab go (tools/ws_provider.job_done); delegated tasks to post a report that waited
+        for the chat to fall quiet. Hooks run in the order they were added."""
+        if hook is not None:
+            self._finished_hooks.append(hook)
+
+    def set_task_gate(self, gate: Callable[[int], bool] | None) -> None:
+        """``gate(running_tasks)``: True when one more TASK run may start now."""
+        self._task_gate = gate
+
+    def wake(self) -> None:
+        """Look at the queue again: something a held run was waiting for has changed (a call
+        ended, a setting moved)."""
+        self._wake.set()
 
     def set_titler(self, titler: Callable[[str, str], Awaitable[str | None]] | None) -> None:
         """Swap or disable the auto-titler (tests script every model turn and switch it off)."""
@@ -156,6 +176,8 @@ class RunEngine:
         channel: Channel = Channel.TEXT,
         call_me: bool | None = None,
         timezone: str | None = None,
+        from_owner: bool = False,
+        call_id: str | None = None,
     ) -> tuple[Run, Conversation]:
         conv: Conversation | None = None
         if conversation_id:
@@ -189,7 +211,7 @@ class RunEngine:
         by_default = call_me is None
         if call_me is None:
             call_me = channel is Channel.TEXT and kind in settings.call_me_default
-        budget = settings.budgets.get(budget_kind or kind, Run(id="", conversation_id="", kind=kind).budget)
+        budget = settings.budgets.get(budget_kind or kind, RunBudget())
         if channel is Channel.VOICE and settings.voice.max_turn_s > 0:
             budget = budget.model_copy(update={"max_seconds": min(budget.max_seconds, settings.voice.max_turn_s)})
         run = Run(
@@ -205,6 +227,8 @@ class RunEngine:
             call_me=call_me,
             call_me_default=by_default and call_me,
             timezone=timezone,
+            from_owner=from_owner,
+            call_id=call_id if channel is Channel.VOICE else None,
         )
         await self._store.create_run(run)
         # run_id must be set on the user message so resume can find the run's messages.
@@ -246,19 +270,29 @@ class RunEngine:
         ctl.cancel.set()
         return True
 
-    def steer(self, run_id: str, text: str) -> bool:
+    def steer(self, run_id: str, text: str, *, by_owner: bool = True) -> bool:
         """Hand a working run another message. False when it is not running any more.
 
         Watching a run head the wrong way and having to wait for it to finish is the worst
         moment in the loop. The message is picked up at the run's next step, so nothing in
         flight is interrupted and nothing already done is thrown away. False is not a failure —
         the caller starts an ordinary run instead, which is what "too late" should mean.
+
+        ``by_owner=False``: the words are not Arsen's (another session's), and the run is marked
+        so for the rest of its life.
         """
         entry = self._active.get(run_id)
         if entry is None or entry[1].emitter.run.status.terminal or not text.strip():
             return False
         entry[1].steers.append(text.strip())
+        if not by_owner:
+            entry[1].steered_by_other = True
         return True
+
+    def steered_by_other(self, run_id: str) -> bool:
+        """Something other than Arsen has joined this run while it worked (see steer)."""
+        entry = self._active.get(run_id)
+        return entry is not None and entry[1].steered_by_other
 
     async def set_call_me(self, run_id: str, on: bool) -> bool:
         """Ring (or no longer ring) Arsen when this run ends: the bell pressed while it works, or
@@ -344,6 +378,16 @@ class RunEngine:
                     self._queued[run_id] = run
                     held.append(entry)
                     continue
+                # A task waits on a rule of its own: one at a time on the shared cards, and none
+                # starting while a call is open at all - not only while a call turn is running.
+                if (
+                    run.kind is RunKind.TASK
+                    and self._task_gate is not None
+                    and not self._task_gate(self._running_tasks())
+                ):
+                    self._queued[run_id] = run
+                    held.append(entry)
+                    continue
                 resumed = bool(getattr(run, "_resumed", False))
                 ctl = RunControl(emitter=RunEmitter(run, self._store, self._bus), resumed=resumed)
                 task = asyncio.create_task(self._execute(run, ctl), name=f"run-{run.id}")
@@ -390,6 +434,13 @@ class RunEngine:
         """Parked (waiting_user) runs hold no slot: a question to Arsen must not block the queue."""
         return sum(1 for _t, c in self._active.values() if c.emitter.run.status is not RunStatus.WAITING_USER)
 
+    def _running_tasks(self) -> int:
+        return sum(
+            1
+            for _t, c in self._active.values()
+            if c.emitter.run.kind is RunKind.TASK and c.emitter.run.status is not RunStatus.WAITING_USER
+        )
+
     async def _fail(self, run: Run, emitter: RunEmitter, error: str) -> None:
         run.status = RunStatus.FAILED
         run.error = error
@@ -398,12 +449,16 @@ class RunEngine:
         await emitter.emit(RunFailed(run_id="", conversation_id="", error=error))
 
     async def _after_run(self, run: Run) -> None:
-        if self._finished_hook is not None:
+        for hook in self._finished_hooks:
             try:
-                await self._finished_hook(run)
+                await hook(run)
             except Exception as exc:  # a hook is a courtesy; a run does not fail for it
                 log.warning("after-run hook failed: %s", exc)
-        unread = run.status.terminal and not self._bus.has_subscribers(run.conversation_id)
+        # A task's own conversation is never unread: its card and its report in the chat that
+        # asked are where Arsen reads it (docs/stories/13_delegated_tasks.md).
+        unread = (
+            run.status.terminal and run.kind is not RunKind.TASK and not self._bus.has_subscribers(run.conversation_id)
+        )
         conv = (
             await self._store.update_conversation(run.conversation_id, unread=int(unread))
             if unread

@@ -1,4 +1,4 @@
-import type { Conversation, Message, Run, RunScopedEvent } from '../protocol/types';
+import type { Conversation, Message, Run, RunScopedEvent, Task } from '../protocol/types';
 
 /** A persisted message, or one the UI added optimistically while the server confirms it. */
 export type LocalMessage = Message & { optimistic?: boolean };
@@ -40,6 +40,8 @@ export interface ChatState {
   pendingNewConversation: { clientRef: string; text: string } | null;
   /** Run ids the user asked to cancel; cleared by the terminal event. */
   cancelRequested: Record<string, true | undefined>;
+  /** Delegated tasks by id (docs/stories/13_delegated_tasks.md): the cards, the chip, the call's noted list. */
+  tasks: Record<string, Task>;
 }
 
 /** Key under which optimistic messages live before the server names the conversation. */
@@ -65,5 +67,6 @@ export function initialChatState(): ChatState {
     openConversationId: null,
     pendingNewConversation: null,
     cancelRequested: {},
+    tasks: {},
   };
 }

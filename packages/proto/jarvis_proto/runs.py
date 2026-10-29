@@ -21,6 +21,9 @@ class RunKind(StrEnum):
     MEETING = "meeting"
     MAIL = "mail"
     SYSTEM = "system"
+    # Work Arsen handed off to be done in the background, in a conversation of its own, and
+    # reported back where he asked (docs/stories/13_delegated_tasks.md).
+    TASK = "task"
 
 
 class RunStatus(StrEnum):
@@ -145,6 +148,13 @@ class Run(BaseModel):
     # The IANA timezone of the device he sent it from (the phone in Munich, not the server in
     # Sofia): the turn is told the time where he is. None = settings.timezone.
     timezone: str | None = None
+    # Started by Arsen's own message (the web's run.create), not by the machine: a schedule,
+    # another session, an outside caller. Only such a run may hand work to a task - "only tasks
+    # Jarvis announced to him" (docs/stories/13_delegated_tasks.md), checked in code.
+    from_owner: bool = False
+    # The call this voice run is a turn of (the web's id for one call, hang-up to hang-up). What
+    # a task noted on the call hangs on, so it starts when that call ends.
+    call_id: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -158,6 +168,9 @@ class ConversationKind(StrEnum):
     MEETING = "meeting"
     MAIL = "mail"
     ARCHIVE = "archive"
+    # A delegated task's own work: hidden from the sidebar, reached from its card in the chat
+    # that asked (features/tasks.py).
+    TASK = "task"
 
 
 class ConversationActivity(StrEnum):

@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { Icon } from '../components/Icon';
 import { ttlLabel } from '../lib/privacy';
-import { selectActiveRun } from '../store/selectors';
+import { selectActiveRun, selectTasksFor } from '../store/selectors';
 import { NEW_CONVERSATION_KEY } from '../store/state';
 import { useStore } from '../store/store';
 import { buildTranscriptFrom } from '../store/transcript';
@@ -23,6 +23,10 @@ export function ChatScreen() {
       streamKeys: Object.keys(s.streams)
         .filter((k) => s.streams[k])
         .join(','),
+      // Which cards and where, as one string: a task's state moving must not rebuild the transcript.
+      taskKeys: selectTasksFor(s.tasks, convKey)
+        .map((t) => `${t.id}:${t.origin_run_id ?? ''}`)
+        .join(','),
     })),
   );
   const items = useMemo(
@@ -35,6 +39,12 @@ export function ChatScreen() {
         summary: src.summary,
         streamRunIds: new Set(src.streamKeys ? src.streamKeys.split(',') : []),
         foldWork: true,
+        tasks: src.taskKeys
+          ? src.taskKeys.split(',').map((k) => {
+              const [id = '', run = ''] = k.split(':');
+              return { id, originRunId: run || null };
+            })
+          : [],
       }),
     [src],
   );

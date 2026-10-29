@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, TypeAdapter
 
 from jarvis_proto.messages import Channel, Message, ToolResult
 from jarvis_proto.runs import Conversation, ModelUsage, Plan, Run, RunKind, ThinkLevel
+from jarvis_proto.tasks import Task
 
 
 class _Base(BaseModel):
@@ -291,6 +292,24 @@ class MeetingChanged(_Base):
     status: str
 
 
+class TaskChanged(_Base):
+    """A delegated task moved (docs/stories/13_delegated_tasks.md).
+
+    Conversation-level, so it reaches every client: the card lives in the chat that asked, the
+    Tasks chip in the header of whichever chat is open, the noted list on the call screen.
+    """
+
+    type: Literal["task.changed"] = "task.changed"
+    task: Task
+
+
+class TaskRemoved(_Base):
+    """A task is gone: its chat was deleted."""
+
+    type: Literal["task.removed"] = "task.removed"
+    task_id: str
+
+
 ServerEvent = Annotated[
     RunQueued
     | RunStarted
@@ -327,7 +346,9 @@ ServerEvent = Annotated[
     | ScheduleChanged
     | ToolsChanged
     | MeetingSegment
-    | MeetingChanged,
+    | MeetingChanged
+    | TaskChanged
+    | TaskRemoved,
     Field(discriminator="type"),
 ]
 
@@ -430,6 +451,22 @@ class Presence(BaseModel):
     visible: bool
 
 
+class TaskCancelRequest(BaseModel):
+    """Cancel from the card: a running task stops at its next step, a noted one never starts."""
+
+    type: Literal["task.cancel"] = "task.cancel"
+    task_id: str
+
+
+class TaskSteerRequest(BaseModel):
+    """Words for a task from its card: an answer to what it asked, or a change of mind. A
+    working task reads them at its next step; one that has stopped carries on with them."""
+
+    type: Literal["task.steer"] = "task.steer"
+    task_id: str
+    text: str
+
+
 ClientMessage = Annotated[
     RunCreateRequest
     | RunCancelRequest
@@ -439,7 +476,9 @@ ClientMessage = Annotated[
     | Subscribe
     | Unsubscribe
     | Ping
-    | Presence,
+    | Presence
+    | TaskCancelRequest
+    | TaskSteerRequest,
     Field(discriminator="type"),
 ]
 

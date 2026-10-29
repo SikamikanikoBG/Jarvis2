@@ -1,9 +1,10 @@
 import type { DraftPrivacy } from '../lib/privacy';
-import type { ChatFolder, Conversation, ConversationKind, Run, ToolConfirmRequested } from '../protocol/types';
-import { isTerminal } from '../protocol/types';
+import type { ChatFolder, Conversation, ConversationKind, Run, Task, ToolConfirmRequested } from '../protocol/types';
+import { isTaskOpen, isTerminal } from '../protocol/types';
 import type { ChatState } from './state';
 
-export type FolderKind = Exclude<ConversationKind, 'chat'>;
+/** A task's own conversation is not a folder: it is reached from its card in the chat that asked. */
+export type FolderKind = Exclude<ConversationKind, 'chat' | 'task'>;
 
 export const FOLDER_ORDER: readonly FolderKind[] = ['scheduled', 'triage', 'mail', 'meeting', 'collab', 'archive'];
 
@@ -67,7 +68,12 @@ const byPinnedThenUpdated = (a: Conversation, b: Conversation) => Number(b.pinne
 
 function folderOf(c: Conversation): FolderKind | 'chat' {
   if (c.archived || c.kind === 'archive') return 'archive';
-  return c.kind;
+  return c.kind === 'task' ? 'chat' : c.kind;
+}
+
+/** Not a row of the sidebar at all (Gate B 2026-10-29): a task's work lives behind its card. */
+function inSidebar(c: Conversation): boolean {
+  return c.kind !== 'task';
 }
 
 /**
@@ -86,6 +92,19 @@ export function wantsAttention(c: Conversation): boolean {
 
 /** Every unread chat, filed or not, archived ones aside: what "Mark all read" clears in one go
  * instead of opening each scheduled report in turn (Arsen, 2026-10-20). */
+/** This chat's tasks, oldest first (dropped ones - taken back on the call - are not shown). */
+export function selectTasksFor(tasks: Record<string, Task>, conversationId: string | null): Task[] {
+  if (!conversationId) return [];
+  return Object.values(tasks)
+    .filter((t) => t.origin_conversation_id === conversationId && t.state !== 'dropped')
+    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+}
+
+/** What the header chip counts: this chat's tasks that are not over. */
+export function selectOpenTasks(tasks: Record<string, Task>, conversationId: string | null): Task[] {
+  return selectTasksFor(tasks, conversationId).filter((t) => isTaskOpen(t.state));
+}
+
 export function selectUnreadIds(conversations: Record<string, Conversation>): string[] {
   return Object.values(conversations)
     .filter((c) => c.unread && !c.archived)
@@ -97,7 +116,7 @@ export function selectSidebar(
   chatFolders: ChatFolder[] = [],
   { attentionOnly = false, keepId = null }: { attentionOnly?: boolean; keepId?: string | null } = {},
 ): SidebarModel {
-  const all = Object.values(conversations).sort(byUpdatedDesc);
+  const all = Object.values(conversations).filter(inSidebar).sort(byUpdatedDesc);
   const wanted = all.filter(wantsAttention);
   // The filter is a flat list on purpose: it answers one question — what is waiting for me —
   // and a scheduled fire that is working belongs in that answer next to a chat, not behind a

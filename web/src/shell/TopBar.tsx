@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { TasksChip } from '../chat/TasksChip';
 import { Icon } from '../components/Icon';
 import { Drawer, IconButton } from '../components/primitives';
 import { effectiveTheme } from '../lib/theme';
@@ -59,6 +60,7 @@ export function TopBar({ desktop, panel = false }: { desktop: boolean; panel?: b
               <>
                 <span className="truncate">{heading}</span>
                 {activeRun && <span className="dot dot-accent dot-pulse" aria-label="Run in progress" />}
+                <TasksChip />
                 <ConversationMenu key={openId ?? 'none'} />
               </>
             )}
@@ -70,6 +72,7 @@ export function TopBar({ desktop, panel = false }: { desktop: boolean; panel?: b
           <div className="topbar-title">
             <span className="truncate">{heading}</span>
             {view === 'chat' && activeRun && <span className="dot dot-accent dot-pulse" aria-label="Run in progress" />}
+            {view === 'chat' && <TasksChip />}
           </div>
           {view === 'chat' && <ConversationMenu key={openId ?? 'none'} />}
         </>

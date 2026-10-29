@@ -97,6 +97,10 @@ class BuiltinProvider:
         sig = inspect.signature(entry.fn)
         if "cancel" in sig.parameters:
             kwargs["cancel"] = cancel
+        # "<run id>:<call id>": a tool that makes something once per call (tasks.delegate) keys it
+        # on this, so a resumed run cannot make it twice.
+        if "idempotency_key" in sig.parameters:
+            kwargs["idempotency_key"] = idempotency_key
         return await entry.fn(**kwargs)
 
 

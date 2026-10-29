@@ -13,6 +13,8 @@ export const INJECTED_LABELS: Readonly<Record<string, string>> = {
   frame: 'Screen frame',
   triage: 'Triage batch',
   playbook: 'Playbook learned',
+  // The core's note before a delegated task's report; the transcript shows the task's card instead.
+  task: 'Task report',
 };
 
 export const CONTEXT_MARKER = '[Context for the request above]';

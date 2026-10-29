@@ -12,6 +12,7 @@ import difflib
 import json
 import logging
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 import jsonschema
@@ -52,6 +53,9 @@ class ToolRegistry:
         self._providers: list[ToolProvider] = []
         self._index: dict[str, tuple[ToolProvider, ToolSpec]] = {}
         self._errors: dict[str, str] = {}
+        # When each provider's current error was first seen: "down since 08:10" is what tells
+        # Arsen whether to wait or to give up (docs/stories/13_delegated_tasks.md).
+        self._since: dict[str, datetime] = {}
         # The last tool set each provider was known to have. The model-facing list must describe
         # what Jarvis can DO, not what happens to be reachable this second: the tool list renders
         # into the system prompt, so a provider dropping out re-prefills every conversation
@@ -135,10 +139,7 @@ class ToolRegistry:
             listed, error = None, getattr(provider, "error", None) or f"{type(exc).__name__}: {exc}"
             log.warning("provider %s failed to re-list tools: %s", provider.name, error)
         specs = await self._resolve(provider, listed, error)
-        if error is None:
-            self._errors.pop(provider.name, None)
-        else:
-            self._errors[provider.name] = error
+        self._set_error(provider.name, error)
         index = {name: entry for name, entry in self._index.items() if entry[0] is not provider}
         for spec in specs:
             index[spec.name] = (provider, spec)
@@ -156,7 +157,15 @@ class ToolRegistry:
         prompt every time Arsen closed his browser, re-prefilling every conversation. The
         provider's own call path already answers "not connected" for anything invoked meanwhile.
         """
-        self._errors[provider.name] = error or getattr(provider, "error", None) or "not connected"
+        self._set_error(provider.name, error or getattr(provider, "error", None) or "not connected")
+
+    def _set_error(self, name: str, error: str | None) -> None:
+        if error is None:
+            self._errors.pop(name, None)
+            self._since.pop(name, None)
+            return
+        self._errors[name] = error
+        self._since.setdefault(name, datetime.now(UTC))
 
     def forget(self, provider: ToolProvider) -> None:
         """Drop a provider's tools and its memory (the provider itself is going away)."""
@@ -165,7 +174,7 @@ class ToolRegistry:
 
     async def refresh(self) -> None:
         index: dict[str, tuple[ToolProvider, ToolSpec]] = {}
-        self._errors = {}
+        failing: dict[str, str] = {}
         for provider in self._providers:
             try:
                 listed: list[ToolSpec] | None = await provider.list_tools()
@@ -174,12 +183,14 @@ class ToolRegistry:
                 listed, error = None, getattr(provider, "error", None) or f"{type(exc).__name__}: {exc}"
                 log.warning("provider %s failed to list tools: %s", provider.name, error)
             if error is not None:
-                self._errors[provider.name] = error
+                failing[provider.name] = error
             for spec in await self._resolve(provider, listed, error):
                 if spec.name in index:
                     log.warning("tool %s from %s shadows an earlier provider", spec.name, provider.name)
                 index[spec.name] = (provider, spec)
         self._index = index
+        for name in {*self._errors, *failing}:
+            self._set_error(name, failing.get(name))
 
     def provider_health(self) -> list[dict[str, Any]]:
         """Per provider: how many tools it contributes and why it failed, if it did."""
@@ -190,6 +201,27 @@ class ToolRegistry:
             error = errors.get(provider.name) or (getattr(provider, "error", None) if count == 0 else None)
             out.append({"name": provider.name, "tools": count, "ok": error is None, "error": error})
         return out
+
+    def down(self, namespace: str) -> tuple[str, datetime] | None:
+        """Why the machine behind ``namespace`` cannot be reached right now, and since when;
+        None when it can, or when nothing serves that namespace. A status, not a guess: it is
+        the provider's own error from its last listing or its dropped connection."""
+        names = {p.name for p, s in self._index.values() if s.namespace == namespace}
+        names |= {p.name for p in self._providers if p.name == namespace}
+        for name in sorted(names):
+            if (error := self._errors.get(name)) is not None:
+                return error, self._since.get(name, datetime.now(UTC))
+        return None
+
+    def serves(self, namespace: str) -> bool:
+        """Some provider offers (or offered, before it went down) tools in ``namespace``."""
+        return any(s.namespace == namespace for _, s in self._index.values()) or any(
+            p.name == namespace for p in self._providers
+        )
+
+    def failing(self) -> list[tuple[str, str, datetime]]:
+        """Every provider that cannot be reached now: (name, error, since), by name."""
+        return [(name, error, self._since.get(name, datetime.now(UTC))) for name, error in sorted(self._errors.items())]
 
     def specs(self) -> list[ToolSpec]:
         """Sorted by name, always.

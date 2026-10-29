@@ -796,3 +796,131 @@
   align-items: center;
   justify-content: center;
 }
+
+/* Delegated tasks (docs/stories/13_delegated_tasks.md): the card in the chat that asked, the
+   header chip. Colour only for state, like everything else here. */
+.task-card {
+  align-self: stretch;
+  max-width: var(--composer-max);
+  border: 1px solid var(--border-strong);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.task-card.task-run { border-left-color: var(--accent); }
+.task-card.task-done { border-left-color: var(--ok); }
+.task-card.task-wait { border-left-color: var(--warn); }
+.task-card.task-fail { border-left-color: var(--danger); }
+.task-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.task-title { flex: 1; min-width: 0; }
+.task-pill {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.pill-run { background: var(--accent-soft); color: var(--accent); }
+.pill-done { background: var(--ok-soft); color: var(--ok); }
+.pill-wait { background: var(--warn-soft); color: var(--warn); }
+.pill-fail { background: var(--danger-soft); color: var(--danger); }
+.pill-muted { background: var(--bg-elevated); color: var(--fg-muted); }
+.task-meta { font-size: var(--fs-xs); }
+.task-dod {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+.task-unverified { color: var(--warn); }
+.task-assumed, .task-stopped { font-size: var(--fs-sm); color: var(--fg-2); overflow-wrap: anywhere; }
+.task-question {
+  padding: 8px 10px;
+  border-radius: var(--radius-xs);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn);
+  overflow-wrap: anywhere;
+}
+.task-steer { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.task-steer .input { flex: 1; min-width: 160px; }
+.task-brief summary {
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  color: var(--fg-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.task-brief[open] .chev { transform: rotate(90deg); }
+.task-brief-body { font-size: var(--fs-sm); color: var(--fg-2); overflow-wrap: anywhere; }
+.task-brief-body p { margin: 4px 0; }
+.task-brief-body blockquote {
+  margin: 4px 0;
+  padding: 4px 8px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--fg);
+}
+.task-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.task-card .confirm { max-width: 100%; }
+
+.tasks-chip-wrap { position: relative; flex: none; }
+.tasks-chip {
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 0;
+  background: var(--accent-soft);
+  color: var(--accent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tasks-chip-wait { background: var(--warn-soft); color: var(--warn); }
+.tasks-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - 32px));
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-2);
+}
+.tasks-pop button {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.tasks-pop button:hover { background: var(--bg-surface); }

@@ -312,6 +312,9 @@ class SessionsTools(BuiltinProvider):
         here = current_conversation_id.get()
         if target.id == here:
             return ToolResult.failure("that is this session — say it to Arsen instead")
+        if target.kind is ConversationKind.TASK:
+            # A task works from its brief and hears only Arsen (docs/stories/13_delegated_tasks.md).
+            return ToolResult.failure("that is a delegated task's own conversation; steer it with tasks.steer")
         chain = self._chain()
         if target.id in chain:
             return ToolResult.failure(
@@ -333,7 +336,8 @@ class SessionsTools(BuiltinProvider):
         """Into a working run as a steer, or as a new run that wakes the session."""
         text = f"[{from_name}] {body}"
         working = self._core.engine.working_run_in(target.id)
-        if working and self._core.engine.steer(working, text):
+        # Not his words: a run joined this way may no longer hand work to a task.
+        if working and self._core.engine.steer(working, text, by_owner=False):
             self._remember(working, chain)
             if not wait:
                 return ToolResult.data(f"Said to @{handle_of(target.title)}; it was already working and took it in.")

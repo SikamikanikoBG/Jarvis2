@@ -61,6 +61,8 @@ async def status(request: Request) -> dict[str, Any]:
         "endpoints": list(endpoints),
         "tools": core.registry.provider_health(),
         "runs": {"running": len(core.engine.active_run_ids()), "queued": core.engine.queued_count()},
+        # Open delegated tasks by state (docs/stories/13_delegated_tasks.md).
+        "tasks": {"enabled": core.settings.tasks.enabled, **await core.tasks.counts()},
     }
 
 

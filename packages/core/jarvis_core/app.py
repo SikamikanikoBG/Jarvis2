@@ -21,6 +21,7 @@ from jarvis_core import __version__
 from jarvis_core.api import attachments as attachments_api
 from jarvis_core.api import collab, features, media, openai_compat, rest, ws
 from jarvis_core.api import push as push_api
+from jarvis_core.api import tasks as tasks_api
 from jarvis_core.api.deps import require_token, token_matches
 from jarvis_core.api.office import mount_office
 from jarvis_core.config import CoreConfig
@@ -60,6 +61,7 @@ from jarvis_core.features.sessions import SessionsTools
 from jarvis_core.features.shadow import ShadowRecorder
 from jarvis_core.features.skills import SkillDetector, SkillsTools, SkillStore
 from jarvis_core.features.stt import Transcriber
+from jarvis_core.features.tasks import HealthBlock, TaskBlock, TasksBlock, TaskService, TasksTools
 from jarvis_core.features.titles import Titler
 from jarvis_core.features.triage import TriageJob
 from jarvis_core.features.triage_audit import TriageAudit
@@ -138,6 +140,10 @@ class Core:
             never_rings=self._never_rings,
         )
         self.sessions = SessionsTools(self)
+        # Delegated tasks (docs/stories/13_delegated_tasks.md): tools, context, and the glue on
+        # the bus that keeps each task in step with its run. Behind settings.tasks.enabled.
+        self.tasks = TaskService(self)
+        self.task_tools = TasksTools(self, lambda: self.tasks)
         self.mcp: list[McpProvider] = []
         self.policy = ExposurePolicy(self.settings.tool_exposure, self.settings.facade_threshold)
         self.registry = ToolRegistry([self.builtin], memory=self.store)
@@ -156,6 +162,9 @@ class Core:
                 VoiceBlock(settings),
                 SessionsBlock(self.sessions),
                 TodayBlock(self.journal, settings),
+                TaskBlock(settings),
+                TasksBlock(lambda: self.tasks, settings),
+                HealthBlock(lambda: self.registry, settings),
             ],
             compactor=self.compactor,
             attachments=self.attachments,
@@ -191,6 +200,9 @@ class Core:
             attachments=self.attachments,
         )
         self.engine.on_finished(self._run_finished)
+        self.engine.on_finished(self.tasks.after_run)
+        self.engine.set_task_gate(self.tasks.may_start)
+        self.loop.set_task_gate(self.tasks)
         self.scheduler = Scheduler(self.schedules, self._fire_schedule)
         self.reaper = Reaper(self)
 
@@ -294,7 +306,11 @@ class Core:
         # On the bus before the engine resumes anything, so the office misses no run.
         await self.office.start()
         await self.callme.start()
+        await self.tasks.start()
         await self.engine.start()
+        # After the engine has picked up what was running: a round that ended while the core was
+        # down is finished, a report that was owed is written.
+        await self.tasks.reconcile()
         await self.scheduler.start()
         await self.triage.start()
         await self.triage_audit.start()
@@ -336,6 +352,7 @@ class Core:
         await self.meetings.stop_all()
         await self.scheduler.stop()
         await self.engine.stop()
+        await self.tasks.stop()
         await self.callme.stop()
         await self.office.stop()
         await self.learner.wait()
@@ -372,6 +389,7 @@ class Core:
                 SkillsTools(self.skills),
                 ScheduleTools(self.schedules, tz=lambda: self.settings.timezone),
                 self.sessions,
+                self.task_tools,
                 self.notify,
                 self.web,
                 self.mail,
@@ -419,6 +437,7 @@ def create_app(config: CoreConfig | None = None, *, core: Core | None = None) ->
     app.include_router(media.router)
     app.include_router(attachments_api.router)
     app.include_router(push_api.router)
+    app.include_router(tasks_api.router)
     app.include_router(openai_compat.router)
     app.include_router(ws.router)
 

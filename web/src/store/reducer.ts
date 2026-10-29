@@ -11,6 +11,7 @@ import type {
   RunScopedEvent,
   RunStatus,
   ServerEvent,
+  Task,
 } from '../protocol/types';
 import { isTerminal } from '../protocol/types';
 import { NEW_CONVERSATION_KEY, omit, type ChatState, type LocalMessage, type StreamState } from './state';
@@ -29,6 +30,10 @@ export function applyServerEvent<S extends ChatState>(state: S, event: ServerEve
       return runUpdated(state, event.run, now);
     case 'model.delta':
       return modelDelta(state, event, now);
+    case 'task.changed':
+      return taskChanged(state, event.task);
+    case 'task.removed':
+      return { ...state, tasks: omit(state.tasks, event.task_id) };
     case 'folders.changed':
     case 'board.changed':
     case 'kg.changed':
@@ -70,6 +75,9 @@ function conversationUpdated<S extends ChatState>(state: S, conv: Conversation):
 
 function conversationDeleted<S extends ChatState>(state: S, id: string): S {
   const runIds = state.runsByConversation[id] ?? [];
+  const taskIds = Object.values(state.tasks)
+    .filter((t) => t.origin_conversation_id === id)
+    .map((t) => t.id);
   return {
     ...state,
     conversations: omit(state.conversations, id),
@@ -79,7 +87,18 @@ function conversationDeleted<S extends ChatState>(state: S, id: string): S {
     streams: omit(state.streams, ...runIds),
     runsByConversation: omit(state.runsByConversation, id),
     openConversationId: state.openConversationId === id ? null : state.openConversationId,
+    tasks: omit(state.tasks, ...taskIds),
   };
+}
+
+// ---- delegated tasks -------------------------------------------------------------------
+
+/** Upsert, newest wins: a REST load that raced an event must not put an older state back. The
+ *  same `updated_at` is accepted, because "paused for your call" moves without a save. */
+export function taskChanged<S extends ChatState>(state: S, task: Task): S {
+  const cur = state.tasks[task.id];
+  if (cur && cur.updated_at > task.updated_at) return state;
+  return { ...state, tasks: { ...state.tasks, [task.id]: task } };
 }
 
 // ---- messages --------------------------------------------------------------------------

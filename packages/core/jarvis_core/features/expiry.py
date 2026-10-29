@@ -82,6 +82,10 @@ class Reaper:
 async def delete_conversation(core: Core, conversation_id: str) -> None:
     """The one way a conversation leaves: cancel what is running in it, unlink its attachment
     files (the rows cascade, the files do not), delete the row, tell every client."""
+    # The tasks it handed off go with it: their own conversations would be orphans, reachable
+    # from nowhere (their rows cascade with the chat; the conversations do not).
+    for task_conversation in await core.tasks.removed(conversation_id):
+        await delete_conversation(core, task_conversation)
     for run in await core.store.list_runs(conversation_id):
         if not run.status.terminal:
             await core.engine.cancel(run.id)

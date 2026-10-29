@@ -408,6 +408,7 @@ class Store:
             name=row["name"],
             partial=bool(row["partial"]),
             channel=Channel(row["channel"]) if row["channel"] else Channel.TEXT,
+            task_id=row["task_id"],
             created_at=_dt(row["created_at"]) or datetime.now(UTC),
         )
 
@@ -418,7 +419,7 @@ class Store:
             raise ValueError("message needs a conversation_id")
         await self.db.execute(
             "INSERT INTO messages(id, conversation_id, run_id, role, content, reasoning, tool_calls,"
-            " tool_call_id, name, partial, channel, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            " tool_call_id, name, partial, channel, task_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 message.id,
                 message.conversation_id,
@@ -431,6 +432,7 @@ class Store:
                 message.name,
                 int(message.partial),
                 message.channel.value,
+                message.task_id,
                 message.created_at.isoformat(),
             ),
         )
@@ -505,6 +507,8 @@ class Store:
             call_me=bool(row["call_me"]),
             call_me_default=bool(row["call_me_default"]),
             timezone=row["timezone"],
+            from_owner=bool(row["from_owner"]),
+            call_id=row["call_id"],
             created_at=_dt(row["created_at"]) or datetime.now(UTC),
             started_at=_dt(row["started_at"]),
             finished_at=_dt(row["finished_at"]),
@@ -514,7 +518,8 @@ class Store:
         await self.db.execute(
             "INSERT INTO runs(id, conversation_id, kind, status, input_text, plan, budget, priority,"
             " steps_used, usage, last_seq, error, waiting_reason, channel, call_me, call_me_default, timezone,"
-            " created_at, started_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " from_owner, call_id, created_at, started_at, finished_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 run.id,
                 run.conversation_id,
@@ -533,6 +538,8 @@ class Store:
                 int(run.call_me),
                 int(run.call_me_default),
                 run.timezone,
+                int(run.from_owner),
+                run.call_id,
                 run.created_at.isoformat(),
                 run.started_at.isoformat() if run.started_at else None,
                 run.finished_at.isoformat() if run.finished_at else None,

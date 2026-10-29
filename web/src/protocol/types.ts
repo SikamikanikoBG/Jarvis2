@@ -36,6 +36,8 @@ export interface Message {
   attachments: Attachment[];
   /** Spoken on a call, or typed. Both sides of a call turn carry "voice". */
   channel: Channel;
+  /** A delegated task's report in the chat that asked, and the core's note before it. */
+  task_id?: string | null;
   created_at: string;
 }
 
@@ -55,7 +57,8 @@ export interface ToolResult {
 export type ThinkLevel = 'low' | 'medium' | 'high';
 export const THINK_LEVELS: readonly ThinkLevel[] = ['low', 'medium', 'high'];
 
-export type RunKind = 'chat' | 'scheduled' | 'collab' | 'triage' | 'meeting' | 'system';
+/** `task`: work handed off to the background, in its own conversation (docs/stories/13_delegated_tasks.md). */
+export type RunKind = 'chat' | 'scheduled' | 'collab' | 'triage' | 'meeting' | 'mail' | 'system' | 'task';
 
 export type RunStatus =
   | 'queued'
@@ -125,9 +128,111 @@ export interface Run {
   call_me_default: boolean;
   /** IANA timezone of the device it was sent from; null = settings.timezone. */
   timezone?: string | null;
+  /** Started by Arsen's own message: only such a run may hand work to a task. */
+  from_owner?: boolean;
+  /** The call this voice run is a turn of (the web's id for one call). */
+  call_id?: string | null;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+}
+
+// ---- tasks.py: delegated tasks (docs/stories/13_delegated_tasks.md) ----------------------
+
+export type TaskState =
+  | 'noted'
+  | 'queued'
+  | 'running'
+  | 'waiting'
+  | 'needs_input'
+  | 'done'
+  | 'partial'
+  | 'not_done'
+  | 'failed'
+  | 'cancelled'
+  | 'dropped';
+
+export const TERMINAL_TASK_STATES: ReadonlySet<TaskState> = new Set(['done', 'partial', 'not_done', 'failed', 'cancelled', 'dropped']);
+
+export function isTaskOpen(state: TaskState): boolean {
+  return !TERMINAL_TASK_STATES.has(state);
+}
+
+/** One checkable line of the Definition of Done, as the brief states it. */
+export interface DodItem {
+  item: string;
+  /** Done only by an approved action on someone else's behalf (a mail sent, a booking made). */
+  outward: boolean;
+}
+
+export interface TaskBrief {
+  goal: string;
+  context: string;
+  constraints: string[];
+  dod: DodItem[];
+  approvals: string[];
+  needs: string[];
+  /** What the brief took for granted that he did not say. */
+  assumptions: string[];
+  /** His own words the task came from, as stored. */
+  asked: string[];
+  /** False for a task noted on a call until its first step writes the brief. */
+  written: boolean;
+}
+
+export interface DodResult {
+  item: string;
+  outward: boolean;
+  /** What the task claimed; null = it never said. */
+  met: boolean | null;
+  refs: string[];
+  /** Met, and shown by a call or file of this task that exists and succeeded. */
+  verified: boolean;
+  why: string | null;
+  note: string | null;
+}
+
+export interface TaskOutcome {
+  summary: string;
+  dod: DodResult[];
+  question: string | null;
+  stopped_reason: string | null;
+  finished: boolean;
+}
+
+/** The step that waits for his approval, exactly as the card shows it. */
+export interface TaskWaiting {
+  run_id: string;
+  call_id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+  reason: string;
+  since: string;
+}
+
+export interface Task {
+  id: string;
+  title: string;
+  state: TaskState;
+  brief: TaskBrief;
+  origin_conversation_id: string;
+  origin_run_id: string | null;
+  call_id: string | null;
+  /** The task's own conversation (kind "task"), reached from the card. */
+  conversation_id: string | null;
+  run_id: string | null;
+  depth: number;
+  outcome: TaskOutcome | null;
+  waiting: TaskWaiting | null;
+  report_message_id: string | null;
+  incognito: boolean;
+  note: string | null;
+  /** Held between steps while he is on a call. */
+  paused: boolean;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  updated_at: string;
 }
 
 /** A device Jarvis can ring: one browser's web push subscription (api/push.py). */
@@ -143,7 +248,8 @@ export interface PushState {
   devices: PushDevice[];
 }
 
-export type ConversationKind = 'chat' | 'scheduled' | 'collab' | 'triage' | 'mail' | 'meeting' | 'archive';
+/** `task`: a delegated task's own work - never in the sidebar, reached from its card. */
+export type ConversationKind = 'chat' | 'scheduled' | 'collab' | 'triage' | 'mail' | 'meeting' | 'archive' | 'task';
 
 /**
  * What the sidebar's activity dot says about a conversation. Derived by the server from the
@@ -228,7 +334,7 @@ export const ROLE_NAMES: readonly RoleName[] = ['chat', 'background', 'planner',
 /** The two roles a run can be routed to as a whole. */
 export type Lane = 'chat' | 'background';
 export const LANES: readonly Lane[] = ['chat', 'background'];
-export const RUN_KINDS: readonly RunKind[] = ['chat', 'collab', 'scheduled', 'triage', 'meeting', 'system'];
+export const RUN_KINDS: readonly RunKind[] = ['chat', 'mail', 'collab', 'task', 'scheduled', 'triage', 'meeting', 'system'];
 
 export interface ModelSpec {
   provider: Provider;
@@ -615,6 +721,20 @@ export interface Settings {
   /** SearXNG base URL for web.search; null = no search tool. */
   searxng_url: string | null;
   shadow: ShadowSettings;
+  tasks: TasksSettings;
+}
+
+/** Delegated tasks (docs/stories/13_delegated_tasks.md). Off until the alpha passes. */
+export interface TasksSettings {
+  enabled: boolean;
+  max_running: number;
+  max_depth: number;
+  /** Non-read-only tools a task may use without asking (names or globs). */
+  no_approval: string[];
+  /** Never offered to a task. */
+  deny_tools: string[];
+  approval_ttl_s: number;
+  call_drop_after_s: number;
 }
 
 /** A second opinion from Laya that is recorded, never obeyed (features/shadow.py). */
@@ -1028,6 +1148,17 @@ export interface MeetingChanged extends Base {
   status: string;
 }
 
+/** A delegated task moved; reaches every client (the card, the header chip, the call screen). */
+export interface TaskChanged extends Base {
+  type: 'task.changed';
+  task: Task;
+}
+/** A task is gone: its chat was deleted. */
+export interface TaskRemoved extends Base {
+  type: 'task.removed';
+  task_id: string;
+}
+
 export type FeatureEvent = BoardChanged | KgChanged | SkillsChanged | ScheduleChanged | ToolsChanged | MeetingSegment | MeetingChanged;
 
 export type RunScopedEvent =
@@ -1063,7 +1194,9 @@ export type ServerEvent =
   | MessageCreated
   | RunUpdated
   | Pong
-  | FeatureEvent;
+  | FeatureEvent
+  | TaskChanged
+  | TaskRemoved;
 
 export type ServerEventType = ServerEvent['type'];
 
@@ -1137,6 +1270,18 @@ export interface Presence {
   visible: boolean;
 }
 
+/** Cancel from the card: a working task stops at its next step, a noted one never starts. */
+export interface TaskCancelRequest {
+  type: 'task.cancel';
+  task_id: string;
+}
+/** Words for a task from its card: an answer to its question, or a change of mind. */
+export interface TaskSteerRequest {
+  type: 'task.steer';
+  task_id: string;
+  text: string;
+}
+
 export type ClientMessage =
   | RunCreateRequest
   | RunCancelRequest
@@ -1146,7 +1291,9 @@ export type ClientMessage =
   | Subscribe
   | Unsubscribe
   | Ping
-  | Presence;
+  | Presence
+  | TaskCancelRequest
+  | TaskSteerRequest;
 
 // ---- REST-only shapes (server.py contract, not in jarvis_proto) -----------------------
 
@@ -1181,6 +1328,8 @@ export interface StatusResponse {
   endpoints: EndpointStatus[];
   runs: { running: number; queued: number };
   tools: ToolProviderStatus[];
+  /** Open delegated tasks by state, and whether tasks are on. */
+  tasks?: { enabled: boolean } & Partial<Record<TaskState, number>>;
 }
 
 /** `GET /api/skills/{name}` */

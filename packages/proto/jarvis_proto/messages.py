@@ -82,6 +82,9 @@ class Message(BaseModel):
     # Spoken or typed. Set on the user turn from the request, and on the assistant's reply from
     # the run that produced it, so both sides of a call read as a call in the transcript.
     channel: Channel = Channel.TEXT
+    # A delegated task's report in the chat that asked, and the core's note that comes before it
+    # (docs/stories/13_delegated_tasks.md). None for everything else.
+    task_id: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @classmethod

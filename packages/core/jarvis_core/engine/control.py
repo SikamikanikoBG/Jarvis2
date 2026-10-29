@@ -23,6 +23,10 @@ class RunControl:
     # What Arsen has said to this run while it was already working. The loop reads them at its
     # next step; nothing here interrupts a model call or a tool that is in flight.
     steers: list[str] = field(default_factory=list)
+    # Something other than Arsen joined this run while it worked - another session's message
+    # (sessions.say). From then on it may not hand work to a task: a delegation has to come from
+    # his own words (docs/stories/13_delegated_tasks.md).
+    steered_by_other: bool = False
 
     def resolve_confirmation(self, call_id: str, approved: bool, note: str | None) -> bool:
         fut = self.confirmations.get(call_id)

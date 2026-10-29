@@ -68,6 +68,9 @@ class RunWatch:
     thinking_off_retry: bool = False
     # An answer was cut off at the allowance and the model was asked to carry on. Once per run.
     continued: bool = False
+    # Set when the run has to end now, without wrapping up: a task whose tool's host went down
+    # (docs/stories/13_delegated_tasks.md). The text is the reason the report gives.
+    stop_now: str | None = None
 
     def elapsed_s(self) -> float:
         return time.monotonic() - self.started - self.paused_s

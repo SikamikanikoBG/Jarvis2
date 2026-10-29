@@ -58,7 +58,9 @@ export type TranscriptItem =
   /** A user-role message the core injected (context, plan, supervisor…): a collapsed note, never Arsen's bubble. */
   | { kind: 'injected'; key: string; name: string | null; text: string }
   /** A finished run's work between two things worth reading (tools, thinking, notes), folded into one row. */
-  | { kind: 'work'; key: string; runId: string; items: TranscriptItem[]; steps: number; errors: number };
+  | { kind: 'work'; key: string; runId: string; items: TranscriptItem[]; steps: number; errors: number }
+  /** A delegated task's card, right after the turn that handed it off (docs/stories/13_delegated_tasks.md). */
+  | { kind: 'task'; key: string; taskId: string };
 
 interface Block {
   order: number;
@@ -81,6 +83,9 @@ export interface TranscriptSource {
   summary?: ConversationSummary | null;
   /** Fold each finished run's work into `work` items, so the chat reads as his words and the answers. */
   foldWork?: boolean;
+  /** This chat's tasks, by id and the run that handed each off. Only these two: the card reads the
+   *  task itself, so a task moving never rebuilds the transcript. */
+  tasks?: readonly { id: string; originRunId: string | null }[];
 }
 
 export function transcriptSource(state: ChatState, conversationId: string): TranscriptSource {
@@ -112,9 +117,20 @@ export function buildTranscriptFrom(src: TranscriptSource): TranscriptItem[] {
     if (!blocks.has(rid)) blocks.set(rid, { order: messages.length + i, runId: rid, messages: [] });
   });
   const out: TranscriptItem[] = [];
+  const cards = new Map<string, string[]>();
+  for (const t of src.tasks ?? []) cards.set(t.originRunId ?? '', [...(cards.get(t.originRunId ?? '') ?? []), t.id]);
+  const card = (taskId: string): TranscriptItem => ({ kind: 'task', key: `task:${taskId}`, taskId });
   for (const b of [...blocks.values()].sort((a, z) => a.order - z.order)) {
     out.push(...buildBlock(src, b));
+    // The card goes where the work was handed off: after the turn that called tasks.delegate.
+    const here = b.runId ? cards.get(b.runId) : undefined;
+    if (here && b.runId) {
+      out.push(...here.map(card));
+      cards.delete(b.runId);
+    }
   }
+  // A task whose turn is not loaded still has its card, at the end.
+  for (const ids of cards.values()) out.push(...ids.map(card));
   if (src.summary) {
     // Everything up to (and including) `up_to_message_id` was compacted: divider right after it,
     // or at the very top when that message is not in the loaded list.
@@ -161,6 +177,7 @@ function buildBlock(src: TranscriptSource, block: Block): TranscriptItem[] {
     if (t.msg) {
       const m = t.msg;
       if (m.role === 'tool') continue; // merged into its card
+      if (m.role === 'user' && m.task_id) continue; // the core's note before a task's report: the card says it
       if (m.role === 'user') {
         items.push({ kind: 'injected', key: msgKey(m), name: m.name, text: m.content });
         continue;

@@ -43,7 +43,8 @@ CATCH_UP_MAX = 40
 #: How long one digest may take before the plain fallback is written instead.
 MODEL_TIMEOUT_S = 90.0
 #: The kinds that are the machine's own plumbing, not something Arsen would call "today".
-_SKIPPED_KINDS = frozenset({ConversationKind.TRIAGE, ConversationKind.ARCHIVE})
+# A task's own conversation is not a line of the day: its report in the chat that asked is.
+_SKIPPED_KINDS = frozenset({ConversationKind.TRIAGE, ConversationKind.ARCHIVE, ConversationKind.TASK})
 _KIND_LABEL = {
     ConversationKind.CHAT: "chat",
     ConversationKind.COLLAB: "chat",

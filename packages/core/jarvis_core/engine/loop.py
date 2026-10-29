@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import re
@@ -11,6 +12,7 @@ import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Protocol, cast
+from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
 
@@ -92,8 +94,13 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# A task (RunKind.TASK) is deliberately NOT here: nobody watches it, and that is exactly why every
+# action of it that is not read-only waits for Arsen (settings.tasks, below) - the opposite of what
+# "unattended" means for a schedule, whose prompt is what authorised it.
 _UNATTENDED = {RunKind.SCHEDULED, RunKind.TRIAGE, RunKind.MEETING, RunKind.SYSTEM}
-_CONTEXT_KINDS = {RunKind.CHAT, RunKind.COLLAB, RunKind.SCHEDULED}
+_CONTEXT_KINDS = {RunKind.CHAT, RunKind.COLLAB, RunKind.SCHEDULED, RunKind.TASK}
+# How often a task held between steps looks whether the call is over.
+_CALL_HOLD_POLL_S = 1.0
 # A message this short after a turn that ran on skills is taken as a follow-up to it.
 _FOLLOW_UP_CHARS = 160
 
@@ -121,6 +128,30 @@ class AdapterGetter(Protocol):
         kind: RunKind | None = None,
         exact: bool = False,
     ) -> ModelAdapter: ...
+
+
+class TaskGate(Protocol):
+    """What the loop asks delegated tasks (features/tasks.py) - one place, so the loop knows the
+    rules exist without knowing them."""
+
+    def hidden(self, run: Run, spec: ToolSpec) -> bool:
+        """Not offered to this run at all."""
+        ...
+
+    async def refusal(self, run: Run, name: str, *, steered_by_other: bool) -> str | None:
+        """Why this run may not make this call, or None. A model can name a tool it was not
+        offered, so what ``hidden`` hides is refused here again."""
+        ...
+
+    async def unreachable(self, run: Run, reason: str) -> None:
+        """A task's tool came back from a machine that is down: the task ends on it."""
+        ...
+
+    def call_open(self) -> bool:
+        """Arsen is on a call: a task holds still between its steps."""
+        ...
+
+    async def paused(self, run: Run, on: bool) -> None: ...
 
 
 class AgentLoop:
@@ -164,6 +195,11 @@ class AgentLoop:
         # _voice_confirmation), by conversation and the exact call.
         self._voice_asks: dict[tuple[str, str, str], tuple[datetime, str | None]] = {}
         self._shadow = shadow
+        self._tasks: TaskGate | None = None
+
+    def set_task_gate(self, gate: TaskGate | None) -> None:
+        """Delegated tasks' rules (features/tasks.py), wired after both exist."""
+        self._tasks = gate
 
     def _shadow_preflight(
         self, run: Run, skill_names: list[str], trace: dict[str, object], pre: Preflight | None, pre_ms: float
@@ -194,7 +230,9 @@ class AgentLoop:
         task = asyncio.create_task(go(), name="shadow:preflight")
         task.add_done_callback(lambda t: t.cancelled() or t.exception())
 
-    def _exposed_tools(self, plan_active: bool, *, incognito: bool = False, voice: bool = False) -> list[ToolSpec]:
+    def _exposed_tools(
+        self, plan_active: bool, *, incognito: bool = False, voice: bool = False, run: Run | None = None
+    ) -> list[ToolSpec]:
         s = self._settings()
         self._policy.mode = s.tool_exposure
         self._policy.threshold = s.facade_threshold
@@ -204,6 +242,9 @@ class AgentLoop:
         if voice:
             # On a call he thinks and remembers; he does not act (settings.voice.namespaces).
             specs = [t for t in specs if s.voice.allows(t.namespace)]
+        if run is not None and self._tasks is not None:
+            gate = self._tasks
+            specs = [t for t in specs if not gate.hidden(run, t)]
         tools = self._policy.expose(specs)
         if plan_active:
             tools = [*tools, *PLAN_TOOLS]
@@ -288,7 +329,7 @@ class AgentLoop:
         incognito = await self._is_incognito(run)
         if (wants_skills or wants_tier) and not voice and not incognito:
             self._shadow_preflight(run, skill_names, skill_trace, pre, pre_ms)
-        tools = self._exposed_tools(run.plan is not None, incognito=incognito, voice=voice)
+        tools = self._exposed_tools(run.plan is not None, incognito=incognito, voice=voice, run=run)
         # Built against the lane's window: the tool schemas and the system message are the fixed
         # part of every step's prompt, and what is left after them, the answer and the reserve is
         # what history and this run's results may share.
@@ -317,6 +358,8 @@ class AgentLoop:
 
         while True:
             self._check_cancel(ctl)
+            if run.kind is RunKind.TASK:
+                await self._hold_for_call(run, ctl, watch)
             if reason := self._supervisor.budget_exceeded(run, watch):
                 await self._finish(run, ctl, messages, summary=reason)
                 return
@@ -596,6 +639,11 @@ class AgentLoop:
 
             results = await self._execute_tool_calls(run, assistant, calls, ctl, watch)
             messages.extend(results)
+            if watch.stop_now is not None:
+                # No wrap-up: what is left to say is that it could not go on, and why.
+                stopped = await self._persist(run, Message.assistant(f"I stopped here: {watch.stop_now}."))
+                await self._done(run, ctl, message_id=stopped.id, summary=watch.stop_now)
+                return
             # Something went wrong, or the plan just moved on: the next step has a real decision
             # to make rather than another result to act on.
             fresh = watch.steps[steps_judged:]
@@ -780,6 +828,14 @@ class AgentLoop:
                 f"{call.name} is not available in an incognito chat: nothing from this conversation "
                 "is stored anywhere. Tell Arsen you cannot save it here."
             )
+        refused = (
+            await self._tasks.refusal(run, call.name, steered_by_other=ctl.steered_by_other)
+            if self._tasks is not None
+            else None
+        )
+        error = refused or error
+        if error is not None and run.kind is RunKind.TASK and refused is None:
+            await self._end_if_unreachable(run, call, watch)
         if error is not None:
             result = ToolResult.failure(error)
             await emit(
@@ -829,7 +885,14 @@ class AgentLoop:
             call.name, destructive=bool(spec and spec.destructive), unattended=unattended
         )
         reason = "this action cannot be undone"
-        if not confirm and confirmations.checks_outbound(call.name, unattended=unattended):
+        if run.kind is RunKind.TASK:
+            # Nobody is watching a task, so its own rule replaces the chat's: whatever the
+            # confirmation mode and always_allow say, anything not read-only waits for him, unless
+            # he freed it by name (settings.tasks.no_approval). Not the tool's own `destructive`
+            # flag: the browser marks clicking Send as harmless (docs/stories/13_delegated_tasks.md).
+            confirm = self._settings().tasks.needs_approval(call.name, read_only=read_only)
+            reason = "a delegated task asks before anything that is not read-only"
+        elif not confirm and confirmations.checks_outbound(call.name, unattended=unattended):
             # Whatever the mode: something said or promised to others in his name that he did
             # not ask for waits for him (features/outbound.py).
             outbound = await self._unasked_outbound(run, call)
@@ -888,6 +951,8 @@ class AgentLoop:
         if policy_note and result.kind is not ToolResultKind.ERROR:
             note = f"\n[saved as a draft: {policy_note}]"
             result = result.model_copy(update={"text": result.text + note})
+        if result.kind is ToolResultKind.ERROR and run.kind is RunKind.TASK:
+            await self._end_if_unreachable(run, call, watch)
         duration = int((time.perf_counter() - t0) * 1000)
         # A wait paused the world on purpose: credit the run clock so the time budget measures
         # work, not waiting. (browser.wait is a wait too — recognised by name.)
@@ -900,6 +965,37 @@ class AgentLoop:
         step = step_of(call.name, call.arguments, result)
         shown = _already_in_context(watch, step, result, read_only=read_only)
         return await self._tool_message(run, call, shown or result, duration, emit), step
+
+    async def _end_if_unreachable(self, run: Run, call: ToolCall, watch: RunWatch) -> None:
+        """A task's call failed and the machine behind it is down: the task ends here, honestly,
+        instead of wrapping up around a hole. Decided from the provider's status, never from the
+        wording of the error."""
+        down = self._registry.down(call.name.split(".", 1)[0])
+        if down is None or self._tasks is None or watch.stop_now is not None:
+            return
+        error, since = down
+        tz = ZoneInfo(self._settings().timezone)
+        watch.stop_now = f"{call.name.split('.', 1)[0]} is not reachable (down since {since.astimezone(tz).strftime('%H:%M')}: {error})"
+        await self._tasks.unreachable(run, watch.stop_now)
+
+    async def _hold_for_call(self, run: Run, ctl: RunControl, watch: RunWatch) -> None:
+        """While Arsen is on a call, a task holds still between its steps: the voice comes first
+        on the shared GPU. The held time is not work, so the time budget does not count it, and a
+        cancel still lands at once."""
+        gate = self._tasks
+        if gate is None or not gate.call_open():
+            return
+        t0 = time.perf_counter()
+        await gate.paused(run, True)
+        try:
+            while gate.call_open():
+                self._check_cancel(ctl)
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(ctl.cancel.wait(), timeout=_CALL_HOLD_POLL_S)
+            self._check_cancel(ctl)
+        finally:
+            watch.paused_s += time.perf_counter() - t0
+            await gate.paused(run, False)
 
     async def _with_site_playbook(self, result: ToolResult, watch: RunWatch) -> ToolResult:
         """Arriving on a site Jarvis has a playbook for: the playbook rides on the tool result,

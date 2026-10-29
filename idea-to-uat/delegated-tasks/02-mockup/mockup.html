@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delegated Tasks Mockup</title>
+<style>
+:root{
+  --bg:#0a0e1a;--bg-surface:#121829;--bg-elevated:#1b2440;--bg-inset:#070b15;--border:#232f4d;--border-strong:#34426a;
+  --fg:#eaf0fb;--fg-2:#aab4cc;--fg-muted:#7d88a3;--fg-dim:#5f6b87;--accent:#25d8ff;--accent-soft:rgba(37,216,255,.12);--accent-ink:#06121a;
+  --ok:#3ddc84;--ok-soft:rgba(61,220,132,.13);--warn:#ffb547;--warn-soft:rgba(255,181,71,.14);--danger:#ff5470;--danger-soft:rgba(255,84,112,.14);
+  --msg-user:#1d3a5c;--msg-bot:#121829;--font:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){
+  --bg:#eef1f7;--bg-surface:#fff;--bg-elevated:#e6ecf5;--bg-inset:#e3e8f1;--border:#d4dae6;--border-strong:#b9c2d6;
+  --fg:#141a2b;--fg-2:#485066;--fg-muted:#626b80;--fg-dim:#97a0b5;--accent:#0a7fb0;--accent-soft:rgba(10,147,199,.12);--accent-ink:#fff;
+  --ok:#15803d;--ok-soft:rgba(22,163,74,.12);--warn:#b45309;--warn-soft:rgba(217,119,6,.12);--danger:#dc2626;--danger-soft:rgba(220,38,38,.1);
+  --msg-user:#d6e8fb;--msg-bot:#fff}}
+:root[data-theme="dark"]{--bg:#0a0e1a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 var(--font)}
+header{padding:16px;max-width:1300px;margin:auto}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:var(--fg-muted);margin:0 0 12px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap}
+.tabs button{background:var(--bg-surface);color:var(--fg-2);border:1px solid var(--border);border-radius:999px;padding:7px 14px;cursor:pointer;font:inherit}
+.tabs button.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+main{max-width:1300px;margin:auto;padding:0 16px 40px}
+.opt{display:none}.opt.on{display:block}
+.pros{background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin:10px 0 16px;color:var(--fg-2)}
+.pros b{color:var(--fg)}
+.row{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
+.phone{width:360px;max-width:100%;height:700px;border:1px solid var(--border-strong);border-radius:26px;background:var(--bg);overflow:hidden;display:flex;flex-direction:column;box-shadow:0 16px 44px rgba(0,0,0,.3)}
+.cap{font-size:12px;color:var(--fg-muted);margin:6px 4px}
+.bar{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--border);background:var(--bg-surface)}
+.bar .t{font-weight:600;flex:1}
+.chip{font-size:11px;padding:2px 8px;border-radius:999px;background:var(--accent-soft);color:var(--accent);border:0;cursor:pointer}
+.scroll{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px}
+.msg{max-width:85%;padding:8px 11px;border-radius:12px;border:1px solid var(--border)}
+.u{align-self:flex-end;background:var(--msg-user);border-color:transparent}
+.b{align-self:flex-start;background:var(--msg-bot)}
+.voice::before{content:"🎧 ";opacity:.7}
+.card{border:1px solid var(--border-strong);border-radius:12px;background:var(--bg-surface);padding:10px 12px;align-self:stretch}
+.card h4{margin:0 0 4px;font-size:13px;display:flex;gap:6px;align-items:center}
+.st{font-size:11px;padding:1px 7px;border-radius:999px;font-weight:600}
+.run{background:var(--accent-soft);color:var(--accent)}
+.done{background:var(--ok-soft);color:var(--ok)}
+.wait{background:var(--warn-soft);color:var(--warn)}
+.fail{background:var(--danger-soft);color:var(--danger)}
+.muted{color:var(--fg-muted);font-size:12px}
+.dod{margin:6px 0 0;padding:0;list-style:none;font-size:12.5px}
+.dod li{padding:1px 0}
+.btns{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.btn{font:inherit;font-size:12px;padding:5px 10px;border-radius:8px;border:1px solid var(--border-strong);background:var(--bg-elevated);color:var(--fg);cursor:pointer}
+.btn.p{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.composer{border-top:1px solid var(--border);padding:10px;display:flex;gap:8px;background:var(--bg-surface)}
+.composer div{flex:1;background:var(--bg-inset);border-radius:10px;padding:8px 10px;color:var(--fg-dim)}
+.list{padding:8px;display:flex;flex-direction:column;gap:6px;overflow:auto;flex:1}
+.item{background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;padding:9px 11px;cursor:pointer}
+.item .l1{display:flex;gap:6px;align-items:center;font-weight:600;font-size:13px}
+.item .l2{font-size:12px;color:var(--fg-muted);margin-top:2px}
+.sec{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--fg-dim);padding:6px 4px 0}
+.call{background:linear-gradient(180deg,#0d1730,#0a0e1a);flex:1;display:flex;flex-direction:column;align-items:center;padding:24px 14px;gap:10px;color:#eaf0fb}
+.orb{width:110px;height:110px;border-radius:50%;background:radial-gradient(circle at 40% 35%,#7ff0ff,#0a7fb0 60%,#062a3d);box-shadow:0 0 40px rgba(37,216,255,.35)}
+.notes{width:100%;background:rgba(255,255,255,.05);border:1px solid #232f4d;border-radius:12px;padding:10px 12px}
+.notes h5{margin:0 0 6px;font-size:12px;color:#aab4cc;font-weight:600}
+.notes li{font-size:13px;margin:3px 0}
+.hang{margin-top:auto;width:64px;height:64px;border-radius:50%;background:#ff5470;border:0;color:#fff;font-size:22px;cursor:pointer}
+.flow{background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;padding:10px 14px;max-width:520px;flex:1;min-width:280px}
+.flow ol{margin:6px 0;padding-left:18px}
+.flow li{margin:4px 0}
+.flow h3{margin:4px 0;font-size:14px}
+.side{display:flex}
+.nav{width:120px;border-right:1px solid var(--border);background:var(--bg-surface);padding:8px;font-size:12px;display:flex;flex-direction:column;gap:4px}
+.nav span{padding:5px 7px;border-radius:7px;color:var(--fg-2)}
+.nav span.on{background:var(--accent-soft);color:var(--accent)}
+.hidden{display:none}
+@media (max-width:420px){.phone{width:100%;height:640px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Jarvis — delegated tasks</h1>
+  <p class="sub">Three ways to show tasks Jarvis hands to a sub-agent, plus the call flow (same for all). Dark/light follow the system. Click the buttons — the main flow is clickable.</p>
+  <div class="tabs" id="tabs">
+    <button data-o="a" class="on">A · Task cards in the chat</button>
+    <button data-o="b">B · Tasks page (own chats)</button>
+    <button data-o="c">C · Reports in the Jarvis line</button>
+    <button data-o="call">Call: noted → after-call report</button>
+    <button data-o="honest">Honesty: take / ask / decline</button>
+  </div>
+</header>
+<main>
+
+<!-- OPTION A -->
+<section class="opt on" id="o-a">
+  <div class="pros"><b>A · Task card in the chat that asked.</b> The sub-agent runs as a child of this chat; its card updates in place (running → done/waiting) and the report is a normal Jarvis message under it. A “Tasks 2” chip in the header lists open ones.
+  <br><b>+</b> nothing new to learn, report lands exactly where you asked, works for typed and voice. <b>−</b> tasks from many chats are not in one place (only the chip + push); a long chat gets cards in its history.</div>
+  <div class="row">
+    <div>
+      <div class="phone">
+        <div class="bar"><span class="t">Trip to Vienna</span><button class="chip" onclick="toggle('a-tasks')">Tasks · 2</button></div>
+        <div class="scroll" id="a-scroll">
+          <div class="msg u">Find me a hotel near the Rathaus for 14–16 Nov under €180/night and check the train times from Budapest.</div>
+          <div class="msg b">On it — two tasks, I'll come back with both. You can carry on.</div>
+          <div class="card" id="a-c1">
+            <h4>🏨 Hotels near Rathaus, 14–16 Nov <span class="st run" id="a-s1">running · 3 min</span></h4>
+            <div class="muted">Done when: ≥3 options under €180/night · free cancel noted · links</div>
+            <div class="btns"><button class="btn" onclick="toggle('a-brief')">Brief</button><button class="btn" onclick="aFinish()">▶ simulate finish</button><button class="btn">Cancel</button></div>
+            <div id="a-brief" class="hidden muted" style="margin-top:6px">Goal: shortlist hotels… Context: Arsen + 1, arrives by train 14 Nov evening… Needs approval: any booking.</div>
+          </div>
+          <div class="card">
+            <h4>🚆 Trains Budapest → Vienna, 14 Nov <span class="st done">done</span></h4>
+            <ul class="dod"><li>✅ evening departures listed (16:40, 18:40)</li><li>✅ prices from ÖBB</li></ul>
+          </div>
+          <div class="msg b">Trains: 16:40 and 18:40 Railjet from Keleti, €19–29. Details in the card.</div>
+          <div class="msg b hidden" id="a-rep"><b>Hotels — done (2 of 3).</b><br>✅ 4 options under €180 (list attached)<br>✅ free cancel noted<br>❌ couldn't check breakfast for 2 of them — sites didn't say.<br>📎 hotels.md</div>
+        </div>
+        <div class="composer"><div>Message Jarvis…</div></div>
+      </div>
+      <p class="cap">Chat — task card in place, report under it</p>
+    </div>
+    <div>
+      <div class="phone">
+        <div class="bar"><span class="t">Tasks (this chat)</span></div>
+        <div class="list">
+          <div class="item"><div class="l1">🏨 Hotels near Rathaus <span class="st run">running</span></div><div class="l2">step 6 · booking.com search · started 09:12</div></div>
+          <div class="item"><div class="l1">🚆 Trains Budapest → Vienna <span class="st done">done</span></div><div class="l2">09:14 · 2 of 2 DoD</div></div>
+        </div>
+      </div>
+      <p class="cap">Chip → this chat's tasks</p>
+    </div>
+    <div class="flow"><h3>Flow (US-1/2/3/6)</h3><ol>
+      <li>Ask → Jarvis judges: inline / delegate / decline.</li>
+      <li>Delegate → one-line ack + a card (title, DoD, state). Chat free.</li>
+      <li>Card updates live (step, running time). Brief and Cancel on the card.</li>
+      <li>Finish → report message under the card (DoD ✅/❌), push to phone.</li>
+      <li>Needs approval → card turns “waiting on you” with Approve / Deny.</li>
+      <li>Error/empty: failed card says why; no tasks → chip hidden.</li></ol></div>
+  </div>
+</section>
+
+<!-- OPTION B -->
+<section class="opt" id="o-b">
+  <div class="pros"><b>B · Tasks as their own page.</b> Each task is its own conversation (kind “task”) under a new <i>Tasks</i> sidebar entry, like Schedules. The asking chat gets only a one-line link; the report goes to the asking chat as a short line + push.
+  <br><b>+</b> one place for everything open across chats; you can open a task and talk to the sub-agent directly. <b>−</b> another page; more hops on the phone; two places to look.</div>
+  <div class="row">
+    <div>
+      <div class="phone"><div class="side" style="flex:1">
+        <div class="nav"><span>Chats</span><span class="on">Tasks · 3</span><span>Schedules</span><span>Boards</span><span>Mail</span></div>
+        <div class="list">
+          <div class="sec">Waiting on you</div>
+          <div class="item" onclick="toggle('b-detail')"><div class="l1">✉️ Reply to Gyuzelev <span class="st wait">approve</span></div><div class="l2">draft ready · send needs your OK</div></div>
+          <div class="sec">Running</div>
+          <div class="item"><div class="l1">🏨 Hotels Vienna <span class="st run">running</span></div><div class="l2">from “Trip to Vienna” · 4 min</div></div>
+          <div class="sec">Done today</div>
+          <div class="item"><div class="l1">🚆 Trains <span class="st done">done</span></div><div class="l2">09:14</div></div>
+          <div class="item"><div class="l1">📊 Q3 slides <span class="st fail">not done</span></div><div class="l2">laptop host offline</div></div>
+        </div></div>
+      </div>
+      <p class="cap">Sidebar → Tasks, grouped by state</p>
+    </div>
+    <div>
+      <div class="phone" id="b-detail-p">
+        <div class="bar"><span class="t">✉️ Reply to Gyuzelev</span><span class="st wait">waiting on you</span></div>
+        <div class="scroll">
+          <div class="card"><h4>Brief</h4><div class="muted">From “Jarvis” call 08:50. Goal: answer his mail about the Q4 budget… DoD: draft in BG, his three questions answered, sent only after Arsen OKs.</div></div>
+          <div class="msg b">Draft ready (Bulgarian). Sending needs your OK.</div>
+          <div class="card"><h4>Approve: send mail to NGyuzelev@postbank.bg</h4><div class="btns"><button class="btn p">Approve & send</button><button class="btn">Edit draft</button><button class="btn">Deny</button></div></div>
+        </div>
+        <div class="composer"><div>Talk to this task…</div></div>
+      </div>
+      <p class="cap">A task is a chat: brief, work, approval</p>
+    </div>
+    <div class="flow"><h3>Flow</h3><ol>
+      <li>Ask in any chat → ack + link “→ task: Hotels Vienna”.</li>
+      <li>Tasks page lists all, grouped: waiting on you / running / done / not done.</li>
+      <li>Open one → brief at top, the sub-agent's work, approvals.</li>
+      <li>Finish → one line in the asking chat + push; detail lives in the task.</li>
+      <li>Empty state: “Nothing delegated. Ask Jarvis for anything long.”</li></ol></div>
+  </div>
+</section>
+
+<!-- OPTION C -->
+<section class="opt" id="o-c">
+  <div class="pros"><b>C · Everything reports in the pinned “Jarvis” conversation</b> (the home line from story 12). Wherever you asked, the ack is in that chat, but every report and approval lands in “Jarvis” — your assistant's desk. Tasks themselves are hidden child runs.
+  <br><b>+</b> one inbox for “what got done”, matches the human-assistant feel, after-call reports already go there. <b>−</b> a report is away from the chat where the topic lives; the Jarvis chat grows fast.</div>
+  <div class="row">
+    <div>
+      <div class="phone">
+        <div class="bar"><span class="t">📌 Jarvis</span><span class="chip">open · 1</span></div>
+        <div class="scroll">
+          <div class="msg b"><b>Done — Trains Budapest → Vienna</b> (asked in Trip to Vienna)<br>16:40 and 18:40 Railjet, €19–29.</div>
+          <div class="msg b"><b>Waiting on you — reply to Gyuzelev</b><br>Draft ready. <div class="btns"><button class="btn p">Approve & send</button><button class="btn">Show draft</button></div></div>
+          <div class="msg b"><b>Not done — Q3 slides</b><br>The laptop is off, and the deck is only there. I'll try again when it's back, or tell me where else it is.</div>
+          <div class="msg u">ok, what's still open?</div>
+          <div class="msg b">One: hotels in Vienna, running for 6 minutes.</div>
+        </div>
+        <div class="composer"><div>Message Jarvis…</div></div>
+      </div>
+      <p class="cap">The Jarvis line as the assistant's desk</p>
+    </div>
+    <div class="flow"><h3>Flow</h3><ol>
+      <li>Ask anywhere → ack there (“on it, I'll report in Jarvis”).</li>
+      <li>Reports, approvals and failures arrive in 📌 Jarvis + push.</li>
+      <li>“What's open?” in Jarvis lists running tasks.</li>
+      <li>Asking chat gets a back-link “reported in Jarvis”.</li></ol></div>
+  </div>
+</section>
+
+<!-- CALL -->
+<section class="opt" id="o-call">
+  <div class="pros"><b>Call flow (works with A, B or C).</b> On the call Jarvis notes asks that take work (“noted”), keeps talking, can read the list back; at hang-up it reads back the list in one sentence and starts them; one after-call report lists done / not done.</div>
+  <div class="row">
+    <div>
+      <div class="phone"><div class="call">
+        <div class="orb"></div><div style="font-weight:600">Jarvis · 04:12</div>
+        <div style="font-size:13px;color:#aab4cc;text-align:center">“…and noted: the slides for Thursday. Anything else?”</div>
+        <div class="notes"><h5>Noted for after the call · 3</h5><ol id="c-notes">
+          <li>Reply to Gyuzelev about Q4 budget (draft, you approve)</li>
+          <li>Hotels near Rathaus, 14–16 Nov</li>
+          <li>Q3 slides for Thursday</li></ol></div>
+        <button class="hang" onclick="callEnd()">✆</button>
+      </div></div>
+      <p class="cap">Call screen: noted list grows live</p>
+    </div>
+    <div>
+      <div class="phone">
+        <div class="bar"><span class="t">After the call · 08:56</span></div>
+        <div class="scroll" id="c-after">
+          <div class="msg b voice">Before you go — I have three: Gyuzelev reply, Vienna hotels, Q3 slides. I'll start now and report back.</div>
+          <div class="muted" style="text-align:center">— call ended —</div>
+          <div class="card hidden" id="c-report"><h4>After-call report <span class="st done">2 of 3</span></h4>
+            <ul class="dod"><li>✅ Hotels Vienna — 4 options, hotels.md</li><li>⏸ Gyuzelev reply — draft ready, waiting for your OK <button class="btn p">Approve</button></li><li>❌ Q3 slides — laptop offline, deck only there. Retry when it's on?</li></ul></div>
+        </div>
+      </div>
+      <p class="cap">Hang-up → read-back → report (press ✆)</p>
+    </div>
+    <div class="flow"><h3>Call flow (US-4)</h3><ol>
+      <li>Arsen asks for something that takes work → “noted: X” (one sentence).</li>
+      <li>Quick questions are answered on the call as today.</li>
+      <li>“What have you got?” → reads the list. “Drop the hotel one” → removed.</li>
+      <li>Missing context → asks now, while he's on the line.</li>
+      <li>Hang-up: one-sentence read-back; tasks start; call drop = same, started once.</li>
+      <li>After-call report: one card, per task ✅/⏸/❌ + push.</li></ol></div>
+  </div>
+</section>
+
+<!-- HONEST -->
+<section class="opt" id="o-honest">
+  <div class="pros"><b>Honesty check (US-5), any option.</b> Before taking a task Jarvis checks <b>can</b> (tools + host up), <b>knows enough</b> (context), <b>understands the goal</b>. The ack says which is missing.</div>
+  <div class="row">
+    <div>
+      <div class="phone"><div class="scroll">
+        <div class="msg u">Prepare the slides for Thursday's steering committee.</div>
+        <div class="msg b">I can take it, but I'm missing two things: which deck is the base — last month's “SteerCo Sept” in OneDrive? — and what's new this time. Tell me and I'll start; I'll report back with the draft.</div>
+        <div class="msg u">Book a table at Made in Home for 8 tonight.</div>
+        <div class="msg b">That one I can't do: I have no booking access and can't phone restaurants. I can find their number and opening hours, or draft a message for you to send.</div>
+        <div class="msg u">Summarise today's Postbank mails from the bosses.</div>
+        <div class="msg b">Taking it — all I need is there. Back in a few minutes. <span class="st run">task started</span></div>
+      </div></div>
+      <p class="cap">Take / ask / decline</p>
+    </div>
+  </div>
+</section>
+</main>
+<script>
+document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#tabs button').forEach(x=>x.classList.toggle('on',x===b));
+  document.querySelectorAll('.opt').forEach(s=>s.classList.toggle('on',s.id==='o-'+b.dataset.o));
+});
+function toggle(id){document.getElementById(id).classList.toggle('hidden')}
+function aFinish(){const s=document.getElementById('a-s1');s.className='st done';s.textContent='done · 2 of 3';document.getElementById('a-rep').classList.remove('hidden')}
+function callEnd(){document.getElementById('c-report').classList.remove('hidden')}
+</script>
+</body>
+</html>

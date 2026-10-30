@@ -540,7 +540,7 @@ requires-dist = [
 
 [[package]]
 name = "jarvis-host"
-version = "2.0.0a30"
+version = "2.0.0a31"
 source = { editable = "packages/host" }
 dependencies = [
     { name = "comtypes", marker = "sys_platform == 'win32'" },

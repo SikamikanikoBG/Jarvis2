@@ -1408,9 +1408,11 @@ class OutlookBackend:
             mail.To = semicolons(to)
         if cc:
             mail.CC = semicolons(cc)
-        if not _text(_prop(mail, "To", "")).strip():
+        # A draft waits for a human to address it and press Send; only sending needs a recipient.
+        if not draft and not _text(_prop(mail, "To", "")).strip():
             raise OutlookError(
-                "no recipient: pass `to` (a reply inherits the original sender only when `to` is empty and Reply() filled it)"
+                "no recipient: pass `to` (a reply inherits the original sender only when `to` is empty and Reply() "
+                "filled it; a draft may have none)"
             )
         # A draft saved with unresolved recipients gets a second, resolved copy of each the moment
         # Outlook opens it ("a@x; a@x"); resolving here keeps the draft exactly what was asked.

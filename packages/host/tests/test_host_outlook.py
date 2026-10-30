@@ -325,6 +325,15 @@ def test_send_new_mail_sets_subject_account_and_semicolon_recipients(backend: Ou
         backend.send("", "", "x", "y")
 
 
+def test_a_draft_may_be_saved_without_recipients(backend: OutlookBackend, world: World):
+    # 2026-10-29: asked to save a draft he would address himself, the refusal made Jarvis invent
+    # "to-be-filled@postbank.bg" and ask for his go-ahead a second time. Only sending needs a `to`.
+    res = backend.send("", "", "Strategy Day", "Body text", draft=True)
+    mail = world.app.created[-1]
+    assert mail.saved == 1 and not mail.sent and mail.To == ""
+    assert res["drafted"] is True and res["sent"] is False and res["to"] == ""
+
+
 def test_send_from_a_secondary_account_really_uses_that_account(backend: OutlookBackend, world: World):
     # 2026-09-12: a mail asked from the Gmail store reported sent:true and left through the
     # default Exchange account, because pywin32's plain assignment is a PROPERTYPUT that Outlook

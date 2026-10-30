@@ -330,7 +330,7 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
         draft: bool = False,
         attachments: list[str] | None = None,
     ) -> str:
-        """Send an email from `account`, or save it as a draft with `draft=true`. With `reply_to_entry_id` the message is built with Reply() so it stays in the thread — the inherited 'RE:' subject is kept and the body goes above the quoted original. Recipients may be comma- or semicolon-separated. `attachments` = absolute file paths under the allowed fs roots (see fs_list); each must exist. The reply says whether it was sent or drafted, `sent_via` is the address Outlook actually sends from, and `attachments` lists what was attached."""
+        """Send an email from `account`, or save it as a draft with `draft=true`. With `reply_to_entry_id` the message is built with Reply() so it stays in the thread — the inherited 'RE:' subject is kept and the body goes above the quoted original. Recipients may be comma- or semicolon-separated; a draft may leave `to` empty for him to fill in. `attachments` = absolute file paths under the allowed fs roots (see fs_list); each must exist. The reply says whether it was sent or drafted, `sent_via` is the address Outlook actually sends from, and `attachments` lists what was attached."""
         paths = [str(_attachment_path(p)) for p in (attachments or [])]
         return json_text(
             await _run(

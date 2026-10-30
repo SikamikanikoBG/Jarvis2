@@ -1,7 +1,7 @@
 # 07 — Alpha findings (pass 1, 2026-10-30, alpha core 2.0.0a102 on ardi :9121)
 
 Verdict pass 1: **NO-GO** — 3 critical, 7 high (+1 high pre-existing). Safety holds; the core promise
-(delegate, free the chat, honest "done") does not. Screenshots: `07-alpha/shots/`. Tester notes:
+(delegate, free the chat, honest "done") does not. Screenshots: `C:ProjectsJarvis2-uat-evidencedelegated-tasksshots` (kept outside the repo, 8 MB). Tester notes:
 scratchpad `findings-notes.txt`.
 
 ## Critical
@@ -87,3 +87,11 @@ New:
 Regression sweep clean. TTFT fake-audio: no task p50 3.6 s / p90 23.3 s (cold prefix, likely prod load); task running p50 3.4 / p90 3.8 s.
 Not verifiable headless: Android push, locked-screen heartbeat, real-mic English call, Brave paint, extension tools, mail approvals.
 GO once N-1 is fixed, with F-11, F-16, N-2, N-3, N-4 as known mediums.
+
+# Pass 3 (2026-10-30, alpha 2.0.0a106 / web alpha.86) — verdict GO for UAT
+Fixed: F-16, N-4, F-11, F-14, N-6, N-2 (new writes). Mostly fixed: N-1 (medium remainder: a table sent
+in a step before the last reaches the report only as prose / "the table above"). Not re-verified:
+F-5, N-3 (tests only). Known low: F-7.
+New: N-8 (medium, US-3) DoD items about the output itself ("a table is composed") have no tool ref →
+"claimed, not verified" → correct tasks end "partly done". N-7 (low) at 1366 px the chip squeezes nav
+labels (Settings/Status). Regression sweep clean. Wrong KG entity from pass 2 left on the alpha only.

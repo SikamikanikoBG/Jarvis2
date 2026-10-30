@@ -417,10 +417,17 @@ class RunEngine:
         try:
             await self._loop.run(run, ctl)
         except RunCancelledError as exc:
+            partial = exc.partial_message_id
+            if run.kind is RunKind.TASK:
+                # A cancelled task still reports the work it got to (alpha F-16).
+                try:
+                    partial = await self._loop.wrap_up_cancelled(run, ctl) or partial
+                except Exception as wrap_exc:  # the cancel stands whatever the wrap-up does
+                    log.warning("run %s: no closing answer after the cancel: %s", run.id, wrap_exc)
             run.status = RunStatus.CANCELLED
             run.finished_at = datetime.now(UTC)
             await self._store.save_run(run)
-            await emitter.emit(RunCancelled(run_id="", conversation_id="", partial_message_id=exc.partial_message_id))
+            await emitter.emit(RunCancelled(run_id="", conversation_id="", partial_message_id=partial))
         except asyncio.CancelledError:
             # Shutdown. A parked run stays parked; anything else becomes resumable.
             if run.status is not RunStatus.WAITING_USER:

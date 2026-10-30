@@ -25,7 +25,8 @@ Answer JSON only: {{"tier": {tiers}}}"""
 _DELEGATE_TIER = """
 "delegate" if it is longer work he does not need to watch happen - research across several
 sources, comparing options, a document or a list to put together, anything that takes many
-tool steps or minutes - which a background task can do while he gets on, reporting back here.
+tool steps or minutes - which a background task can do while he gets on, reporting back here;
+and anything he himself asks to have done as a background task, however small.
 Prefer "delegate" over "multi_step" for such work."""
 
 _PLAN = """Write a short execution plan for this request.

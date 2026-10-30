@@ -289,6 +289,9 @@ class _Ledger:
         self.results: dict[str, dict[str, Any]] = {}
         self.approved: set[str] = set()
         self.files: set[str] = set()
+        #: Tools Arsen freed from approval in tasks (settings.tasks.no_approval): for those, the
+        #: freedom he gave is the approval (alpha N-5: files.attach could never verify an item).
+        self.free: Callable[[str], bool] = lambda _name: False
 
     def why_not(self, ref: str, *, outward: bool) -> str | None:
         """None when ``ref`` shows the item; otherwise why not, in a few words."""
@@ -308,7 +311,7 @@ class _Ledger:
         args = call.get("arguments") or {}
         if call.get("read_only", True):
             return f"{ref} ({name}) only read"
-        if ref not in self.approved:
+        if ref not in self.approved and not self.free(name):
             return f"{ref} ({name}) was not approved by Arsen"
         if args.get("draft") or "_policy_note" in args:
             return f"{ref} ({name}) was saved as a draft, it did not go out"
@@ -317,6 +320,7 @@ class _Ledger:
 
 async def ledger_of(core: Core, task: Task) -> _Ledger:
     ledger = _Ledger()
+    ledger.free = lambda name: not core.settings.tasks.needs_approval(name, read_only=False)
     if task.conversation_id is None:
         return ledger
     for run in await core.store.list_runs(task.conversation_id, limit=200):
@@ -383,24 +387,36 @@ def _dod_line(r: DodResult) -> str:
     return f"- ◻️ {r.item} — not reported"
 
 
-def render_report(task: Task, *, answer: str = "") -> str:
-    """The report in the chat that asked, in English, built by code from the task's data: what
-    it says about each DoD item is what the code verified, not what the model wrote."""
+def render_report(task: Task, *, answer: str = "", attached: str | None = None) -> str:
+    """The report in the chat that asked: the RESULT itself - the task's final answer, its table,
+    its list, as written - then what the code verified about each DoD item, in English.
+
+    Pass 2 of the alpha (2026-10-30, N-1): the report carried the task's own summary of its work
+    ("I compiled a table of six rivers") and the table stayed in the hidden task conversation.
+    The final answer is the deliverable; the summary stands in only when there is none. A result
+    too long for a chat message is cut at a paragraph and attached whole (``attached``)."""
     outcome = task.outcome or TaskOutcome()
     head = f"**Task: {task.title} — {_STATE_WORDS[task.state]}**"
     parts = [head]
-    summary = outcome.summary.strip()
-    if not summary and answer.strip():
-        summary = answer.strip()
-        if len(summary) > REPORT_ANSWER_CHARS:
-            summary = summary[:REPORT_ANSWER_CHARS].rsplit(" ", 1)[0] + " … (the rest is in the task's own log)"
-    if summary:
-        parts.append(summary)
+    result = answer.strip() or outcome.summary.strip()
+    if attached:
+        result += f"\n\n(The whole result is attached: {attached}.)"
+    if result:
+        parts.append(result)
     if outcome.dod:
         parts.append("\n".join(_dod_line(r) for r in outcome.dod))
     if outcome.stopped_reason:
         parts.append(f"Stopped: {outcome.stopped_reason}")
     return "\n\n".join(parts)
+
+
+def split_result(text: str, limit: int = REPORT_ANSWER_CHARS) -> tuple[str, str | None]:
+    """(what the report shows, the whole text to attach - or None when it all fits)."""
+    body = text.strip()
+    if len(body) <= limit:
+        return body, None
+    cut = body.rfind("\n\n", 0, limit)
+    return body[: cut if cut > limit // 2 else limit].rstrip(), body
 
 
 def brief_text(task: Task, *, user: str, call: str = "") -> str:
@@ -598,12 +614,14 @@ class TaskService:
             return f"{name} is for a task noted on this call"
         return None
 
-    async def unreachable(self, run: Run, reason: str) -> None:
+    async def unreachable(self, run: Run, namespace: str, reason: str) -> bool:
+        """The task ends on a machine that is down only when its brief needs that machine."""
         task = await self.store.by_run(run.id)
-        if task is None:
-            return
+        if task is None or namespace not in task.brief.needs:
+            return False
         task.outcome = (task.outcome or TaskOutcome()).model_copy(update={"stopped_reason": reason})
         await self.store.save(task)
+        return True
 
     def calls_open(self) -> int:
         return len(self._calls)
@@ -733,7 +751,12 @@ class TaskService:
         task.note = None
         task.waiting = None
         if task.outcome is not None:
-            task.outcome = task.outcome.model_copy(update={"question": None, "stopped_reason": None})
+            # A new round (an answer, a change of mind): what was claimed and shown before stays
+            # claimed; this round's result and its own task.finish are what the next report is
+            # about (N-1: a steer to a finished task reported the old result again).
+            task.outcome = task.outcome.model_copy(
+                update={"question": None, "stopped_reason": None, "finished": False, "summary": ""}
+            )
         await self.store.save(task)
         self.publish(task)
         return task
@@ -959,7 +982,8 @@ class TaskService:
                 await self._settle_call(task)
             return
         ledger = await ledger_of(self.core, task)
-        if outcome.finished:
+        if outcome.finished or any(d.met is not None for d in outcome.dod):
+            # Finished now, or a later round of a task that had already said how it went.
             outcome.dod = judge(task.brief, outcome.dod, ledger)
             state = state_of(outcome.dod)
         else:
@@ -1022,7 +1046,8 @@ class TaskService:
         if task.run_id is None:
             return None
         msgs = await self.core.store.list_run_messages(task.run_id)
-        said = [m for m in msgs if m.role is Role.ASSISTANT and m.content.strip()]
+        # A named answer is the core's own line ("I stopped here: ..."), said by the report already.
+        said = [m for m in msgs if m.role is Role.ASSISTANT and m.content.strip() and m.name is None]
         final = next((m for m in reversed(said) if not m.tool_calls), None)
         # A cancelled or failed round has no final answer: its report shows the work it got to (F-16).
         return final or (said[-1] if said and task.state in (TaskState.CANCELLED, TaskState.FAILED) else None)
@@ -1041,8 +1066,10 @@ class TaskService:
         if task.call_id and await self._call_report(task):
             return
         answer = await self._final_answer(task)
+        shown, whole = split_result(answer.content if answer else "")
+        name = f"{_file_stem(task.title)}.md" if whole else None
         report = Message.assistant(
-            render_report(task, answer=answer.content if answer else ""),
+            render_report(task, answer=shown, attached=name),
             id=new_id("msg"),
             conversation_id=task.origin_conversation_id,
             task_id=task.id,
@@ -1062,10 +1089,11 @@ class TaskService:
             task_id=task.id,
         )
         # The files it attached travel with the report, to where he asked.
-        await self._post(task.origin_conversation_id, note, report, [task])
+        extra = await self._attach_whole(task, whole, name)
+        await self._post(task.origin_conversation_id, note, report, [task], extra=extra)
         self.publish(task)
         outcome = task.outcome or TaskOutcome()
-        body = outcome.summary or (answer.content if answer else "") or outcome.stopped_reason or ""
+        body = (answer.content if answer else "") or outcome.summary or outcome.stopped_reason or ""
         await self._push(task, f"Task {_STATE_WORDS[task.state]} · {task.title}", body)
 
     async def _call_report(self, task: Task) -> bool:
@@ -1093,10 +1121,14 @@ class TaskService:
             if await self.store.claim_report(t.id, report.id):
                 t.report_message_id = report.id
         sections: list[str] = []
+        extra: list[str] = []
         for t in tasks:
             if t.state.terminal:
                 answer = await self._final_answer(t)
-                sections.append(render_report(t, answer=answer.content if answer else ""))
+                shown, whole = split_result(answer.content if answer else "")
+                name = f"{_file_stem(t.title)}.md" if whole else None
+                extra += await self._attach_whole(t, whole, name)
+                sections.append(render_report(t, answer=shown, attached=name))
             else:
                 sections.append(f"**Task: {t.title} — {_STATE_WORDS[t.state]}**\n{_waiting_line(t)}")
         counts: dict[str, int] = {}
@@ -1112,15 +1144,31 @@ class TaskService:
             conversation_id=task.origin_conversation_id,
             task_id=task.id,
         )
-        await self._post(task.origin_conversation_id, note, report, ended)
+        await self._post(task.origin_conversation_id, note, report, ended, extra=extra)
         for t in tasks:
             self.publish(t)
         await self._push(task, f"After the call: {tally}", f"{len(tasks)} task(s) from the call.", raw=True)
         return True
 
-    async def _post(self, origin: str, note: Message, report: Message, tasks: list[Task]) -> None:
-        """The note and the report into the chat that asked, the files the tasks attached moved
-        onto the report, and the chat marked unread when nobody is looking at it."""
+    async def _attach_whole(self, task: Task, whole: str | None, name: str | None) -> list[str]:
+        """A result too long for the report, as a file of its own (in the task's privacy)."""
+        if not whole or not name:
+            return []
+        att = await self.core.attachments.add_text(
+            text=whole,
+            name=name,
+            conversation_id=task.origin_conversation_id,
+            meta={"outgoing": True},
+            incognito=task.incognito,
+        )
+        return [att.id]
+
+    async def _post(
+        self, origin: str, note: Message, report: Message, tasks: list[Task], *, extra: list[str] | None = None
+    ) -> None:
+        """The note and the report into the chat that asked, the files the tasks attached (and a
+        long result's whole text) moved onto the report, and the chat marked unread when nobody
+        is looking at it."""
         assert report.id is not None
         await self.core.store.add_message(note)
         await self.core.store.add_message(report)
@@ -1130,7 +1178,7 @@ class TaskService:
             if t.conversation_id is not None
             for a in await self.core.attachments.for_conversation(t.conversation_id)
             if a.meta.get("outgoing")
-        ]
+        ] + list(extra or [])
         if files:
             report.attachments = await self.core.attachments.bind(files, message_id=report.id, conversation_id=origin)
         self.core.bus.publish(MessageCreated(message=note))
@@ -1689,6 +1737,12 @@ class TasksTools(BuiltinProvider):
         return ToolResult.data("\n".join(lines) or "Nothing was said there yet.")
 
 
+def _file_stem(title: str) -> str:
+    """A file name from a title: its words, nothing a file system minds."""
+    words = "".join(ch if ch.isalnum() else " " for ch in title).split()
+    return "-".join(words)[:60] or "result"
+
+
 #: How long a card's title may be; a longer one is shortened, never refused (L-5).
 TITLE_CHARS = 80
 
@@ -1757,7 +1811,9 @@ class TaskBlock:
             "things. Nobody is watching live: your final reply and task.finish are the report he reads later, "
             "in the chat where he asked.\n"
             "- Work from the brief in the first message: its goal, its context and its Definition of Done. If "
-            "the brief is not written yet (a task noted on a call), write it first with task.brief.\n"
+            "the brief is not written yet, write it first with task.brief: the goal and the Definition of Done "
+            f"come from what {user} asked for. What Jarvis said back to him there was from memory and is not "
+            "checked - never build it into the brief as a fact; check it with a tool if it matters.\n"
             "- Every action that is not read-only - sending, posting, booking, typing into someone's site - "
             "stops for his approval by itself. Call it normally, with exactly the arguments you mean, and the "
             "task waits for his answer. If he turns it down, do not find another way around it.\n"

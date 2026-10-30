@@ -60,11 +60,13 @@ export function TopBar({ desktop, panel = false }: { desktop: boolean; panel?: b
               <>
                 <span className="truncate">{heading}</span>
                 {activeRun && <span className="dot dot-accent dot-pulse" aria-label="Run in progress" />}
-                <TasksChip />
                 <ConversationMenu key={openId ?? 'none'} />
               </>
             )}
           </div>
+          {/* Its own item in the bar, not inside the title: the title clips what does not fit, and
+              at 1024-1366 px the nav left it no room - the chip was there but unseen (alpha F-11). */}
+          {view === 'chat' && <TasksChip />}
         </>
       ) : (
         <>

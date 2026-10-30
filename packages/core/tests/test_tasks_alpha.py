@@ -358,7 +358,9 @@ async def test_a_cancelled_task_reports_the_work_it_got_to(harness: Harness):
         FakeTurn(
             text="Found two hotels so far: Rathauspark and Am Konzerthaus.",
             tool_calls=[ToolCall(id="s1", name="test.slow", arguments={})],
-        )
+        ),
+        # The cancel's wrap-up: what it got to, from the conversation (alpha pass 2, F-16).
+        FakeTurn(text="So far: Rathauspark and Am Konzerthaus, both under 180; the third was not checked."),
     )
     _, conv = await ask(harness, "research")
     task = await the_task(harness, lambda t: t.state is TaskState.RUNNING)
@@ -367,5 +369,7 @@ async def test_a_cancelled_task_reports_the_work_it_got_to(harness: Harness):
     await harness.core.tasks.cancel(task.id)
     task = await reported(harness)
     report = (await harness.core.store.list_messages(conv.id))[-1].content
-    assert task.state is TaskState.CANCELLED and "Rathauspark and Am Konzerthaus" in report
+    assert task.state is TaskState.CANCELLED and "So far: Rathauspark and Am Konzerthaus" in report
+    wrap = split.task.calls[-1][0][-1]
+    assert wrap.name == "supervisor" and "cancelled by Arsen" in wrap.content
     assert task.outcome is not None and [d.item for d in task.outcome.dod] == ["three options"]  # items kept

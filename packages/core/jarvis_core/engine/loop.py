@@ -143,8 +143,9 @@ class TaskGate(Protocol):
         offered, so what ``hidden`` hides is refused here again."""
         ...
 
-    async def unreachable(self, run: Run, reason: str) -> None:
-        """A task's tool came back from a machine that is down: the task ends on it."""
+    async def unreachable(self, run: Run, namespace: str, reason: str) -> bool:
+        """A task's tool came back from a machine that is down. True: the task ends on it (the
+        brief needs that machine); False: an ordinary failed call it works around."""
         ...
 
     def should_hold(self, run: Run) -> bool:
@@ -654,7 +655,11 @@ class AgentLoop:
                     and self._settings().kg_learning
                     and not incognito
                 ):
-                    self._learner.schedule(run.conversation_id, run.input_text, text, assistant.id)
+                    # A spoken reply that no tool result stands behind is Jarvis talking from memory:
+                    # not a source the knowledge graph may learn a fact from - only his words are
+                    # (alpha N-2: a wrong peak said on a call was learned as known context).
+                    sourced = run.channel is not Channel.VOICE or bool(watch.steps)
+                    self._learner.schedule(run.conversation_id, run.input_text, text if sourced else "", assistant.id)
                 # A run that fought a site and won leaves a playbook behind for the next one.
                 if self._reflector is not None and not incognito:
                     self._reflector.schedule(watch.steps, on_learned=self._note_playbook(run))
@@ -664,7 +669,10 @@ class AgentLoop:
             messages.extend(results)
             if watch.stop_now is not None:
                 # No wrap-up: what is left to say is that it could not go on, and why.
-                stopped = await self._persist(run, Message.assistant(f"I stopped here: {watch.stop_now}."))
+                # Named: the core's line, not an answer - a task's report says why it stopped once.
+                stopped = await self._persist(
+                    run, Message.assistant(f"I stopped here: {watch.stop_now}.", name="stopped")
+                )
                 await self._done(run, ctl, message_id=stopped.id, summary=watch.stop_now)
                 return
             if watch.answer_only and run.plan is not None and run.plan.current_index is not None:
@@ -944,6 +952,10 @@ class AgentLoop:
                 return await self._tool_message(run, call, refusal, 0, emit), None
         elif confirm:
             decision = await self._recorded_decision(run, call.id)
+            if decision is None and run.kind is RunKind.TASK and (refused := await self._denied_before(run, call)):
+                # Arsen already said no to exactly this - same tool, same arguments. A task does not
+                # ask him again; the no goes back to it as a decision (alpha N-4).
+                return await self._tool_message(run, call, ToolResult.failure(refused), 0, emit), None
             if decision is None:
                 await self._wait_for_confirmation(run, ctl, call, reason=reason)
                 decision = await self._recorded_decision(run, call.id)
@@ -1015,8 +1027,12 @@ class AgentLoop:
             return
         error, since = down
         tz = ZoneInfo(self._settings().timezone)
-        watch.stop_now = f"{call.name.split('.', 1)[0]} is not reachable (down since {since.astimezone(tz).strftime('%H:%M')}: {error})"
-        await self._tasks.unreachable(run, watch.stop_now)
+        namespace = call.name.split(".", 1)[0]
+        reason = f"{namespace} is not reachable (down since {since.astimezone(tz).strftime('%H:%M')}: {error})"
+        # Only what the brief needs ends the task: a search engine that is out while fetch can
+        # still read the pages is a failed call to work around, not the end (alpha N-3).
+        if await self._tasks.unreachable(run, namespace, reason):
+            watch.stop_now = reason
 
     async def _hold(self, run: Run, ctl: RunControl, watch: RunWatch) -> None:
         """A task holds still between its steps while Arsen is on a call (the voice comes first on
@@ -1192,6 +1208,28 @@ class AgentLoop:
             run_messages=await self._store.list_run_messages(run.id),
         )
 
+    async def _denied_before(self, run: Run, call: ToolCall) -> str | None:
+        """Why this exact call (tool and arguments) was already turned down in this conversation,
+        or None. Compared as data: the same name and the same arguments, nothing interpreted."""
+        wanted = (call.name, json.dumps(call.arguments, sort_keys=True, default=str))
+        asked: dict[str, tuple[str, str]] = {}
+        for earlier in await self._store.list_runs(run.conversation_id, limit=50):
+            for ev in await self._store.list_events(earlier.id):
+                cid = str(ev.get("call_id") or "")
+                if ev.get("type") == "tool.confirm_requested" and cid != call.id:
+                    asked[cid] = (
+                        str(ev.get("name")),
+                        json.dumps(ev.get("arguments") or {}, sort_keys=True, default=str),
+                    )
+                elif ev.get("type") == "tool.confirm_resolved" and not ev.get("approved") and asked.get(cid) == wanted:
+                    note = f" ({ev['note']})" if ev.get("note") else ""
+                    return (
+                        f"Arsen already turned down exactly this {call.name} call in this task{note}. Do not ask for "
+                        "it again: do it another way if there is one, or say in your report that it was not done "
+                        "because he declined."
+                    )
+        return None
+
     async def _recorded_decision(
         self, run: Run, call_id: str, *, after_dispatch: bool = False
     ) -> tuple[bool, str | None] | None:
@@ -1302,10 +1340,29 @@ class AgentLoop:
             last = next((m for m in reversed(messages) if m.role is Role.ASSISTANT and m.content.strip()), None)
             if last is not None:
                 text += f"\n\nLast progress: {last.content.strip()[:400]}"
-        msg = await self._persist(run, Message.assistant(text))
+        # A task's line of its own when nothing was written is the core's, not an answer: named,
+        # so its report says why it stopped once, not twice (alpha F-5).
+        named = "stopped" if run.kind is RunKind.TASK and not answer else None
+        msg = await self._persist(run, Message.assistant(text, name=named))
         await self._done(run, ctl, message_id=msg.id, summary=summary)
 
-    async def _wrap_up(self, run: Run, ctl: RunControl, messages: list[Message], *, summary: str) -> str:
+    async def wrap_up_cancelled(self, run: Run, ctl: RunControl) -> str | None:
+        """A delegated task cancelled while working still says what it got to: the same wrap-up a
+        budget stop gets, with the cancel as the reason, on a fresh control so the cancel that
+        ended the work does not end the answer too (alpha F-16). The id of the answer, or None."""
+        if run.kind is not RunKind.TASK:
+            return None
+        view = await self._context.assemble_view(run)
+        text = await self._wrap_up(
+            run, RunControl(emitter=ctl.emitter), view.messages, summary="cancelled by Arsen", finish=False
+        )
+        if not text:
+            return None
+        return (await self._persist(run, Message.assistant(text))).id
+
+    async def _wrap_up(
+        self, run: Run, ctl: RunControl, messages: list[Message], *, summary: str, finish: bool = True
+    ) -> str:
         """One tool-less, thinking-off pass that turns what the run gathered into an answer."""
         ask = Message.user(
             f"[supervisor] This run is over: {summary}. You get no more tool calls. Write the answer "
@@ -1314,8 +1371,8 @@ class AgentLoop:
             "failed, say which and why in one line. Do not promise to continue.",
             name="supervisor",
         )
-        finish = self._registry.get("task.finish") if run.kind is RunKind.TASK else None
-        if finish is not None:
+        finish_spec = self._registry.get("task.finish") if run.kind is RunKind.TASK and finish else None
+        if finish_spec is not None:
             # A delegated task ends with its outcome, not only with prose: what the log shows for
             # each DoD item is what the report verifies (F-5: a complete answer was "not done"
             # with every item "not reported" because the budget ended it before task.finish).
@@ -1328,11 +1385,11 @@ class AgentLoop:
             )
         try:
             adapter = self._adapters(self._settings().lane_for(run.kind), think=False, think_level=None)
-            offered = [finish] if finish is not None else []
+            offered = [finish_spec] if finish_spec is not None else []
             text, _reasoning, calls, usage, _finish = await self._stream(adapter, [*messages, ask], offered, run, ctl)
             run.usage = run.usage.add(usage)
             await self._store.save_run(run)
-            ends = [c for c in calls if finish is not None and c.name == finish.name][:1]
+            ends = [c for c in calls if finish_spec is not None and c.name == finish_spec.name][:1]
             if ends:
                 call = ends[0]
                 messages.append(await self._persist(run, Message.assistant(text, tool_calls=[call])))
@@ -1422,7 +1479,8 @@ HAND_OFF_NOTE = (
 #: The trailer once the work is handed off: the turn's last step is the answer.
 HANDED_OFF_NOTE = (
     "[core note] The work is with the task now. Answer Arsen in one short line: that you took it and "
-    "what will come back. It has not been done yet - do not say it is done. No more tools in this turn."
+    'what will come back. It has not been done yet - do not say or begin with "done". No more tools in '
+    "this turn."
 )
 #: How long a question asked aloud on a call ("shall I send it?") waits for its answer.
 _VOICE_ASK_TTL = timedelta(minutes=15)

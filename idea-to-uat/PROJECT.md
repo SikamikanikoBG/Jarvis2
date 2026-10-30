@@ -44,24 +44,28 @@ ssh ardi@100.97.120.53 "for i in \$(seq 1 30); do curl -fsS -m 3 http://127.0.0.
 ## 3. Settings: the real models and voice, nothing that leaves the house
 
 Copy only `roles`, `voice` and the `stt_*` keys from production (read-only GET), switch off every
-outside connection, and switch tasks on:
+outside connection, and switch tasks on. The JSON is reshaped on the laptop (ssh in this setup
+does not pass stdin through, and Git Bash's `/tmp` is not Windows Python's `/tmp`, so use a
+Windows path for the files):
 
 ```bash
 export MSYS_NO_PATHCONV=1
-TOK=$(grep -i "Access token" /c/Users/arsen/Desktop/jarvis-tokens.txt | head -1 | sed -E 's/.*[:=][[:space:]]*//' | tr -d '\r ')
-curl -s -m 10 -H "Authorization: Bearer $TOK" http://100.97.120.53:9020/api/settings > /tmp/live-settings.json
-uv run python - <<'EOF' > /tmp/alpha-patch.json
-import json
-live = json.load(open("/tmp/live-settings.json"))
+W="$LOCALAPPDATA/Temp/jarvis-alpha"; mkdir -p "$W"
+cat > "$W/alpha_patch.py" <<'EOF'
+import json, sys
+live = json.load(open(sys.argv[1], encoding="utf-8"))
 patch = {k: live[k] for k in ("roles", "voice", "stt_url", "stt_kind", "stt_model", "stt_languages", "stt_no_speech_max")}
-patch.update(mcp_servers=[], mail_accounts=[], discord_webhook_url=None, triage={**live["triage"], "enabled": False},
-             rsvp={**live["rsvp"], "enabled": False}, tasks={**live["tasks"], "enabled": True})
-print(json.dumps(patch))
+patch.update(mcp_servers=[], mail_accounts=[], discord_webhook_url=None,
+             triage={**live["triage"], "enabled": False}, rsvp={**live["rsvp"], "enabled": False},
+             tasks={**live["tasks"], "enabled": True})
+json.dump(patch, open(sys.argv[2], "w", encoding="utf-8"))
 EOF
-scp /tmp/alpha-patch.json ardi@100.97.120.53:/tmp/alpha-patch.json
-ssh ardi@100.97.120.53 "curl -s -X PATCH -H 'Authorization: Bearer alphatest' -H 'Content-Type: application/json' \
-  --data @/tmp/alpha-patch.json http://127.0.0.1:9121/api/settings >/dev/null && \
-  curl -s -H 'Authorization: Bearer alphatest' http://127.0.0.1:9121/api/tasks/status"
+TOK=$(grep -i "Access token" /c/Users/arsen/Desktop/jarvis-tokens.txt | head -1 | sed -E 's/.*[:=][[:space:]]*//' | tr -d '\r ')
+curl -s -m 10 -H "Authorization: Bearer $TOK" http://100.97.120.53:9020/api/settings > "$W/live.json"
+(cd /c/Projects/Jarvis2-tasks && uv run python "$(cygpath -w "$W/alpha_patch.py")" "$(cygpath -w "$W/live.json")" "$(cygpath -w "$W/patch.json")")
+rm -f "$W/live.json"
+scp -q "$W/patch.json" ardi@100.97.120.53:/tmp/alpha-patch.json && rm -f "$W/patch.json"
+ssh ardi@100.97.120.53 'curl -s -o /dev/null -w "patch %{http_code}\n" -X PATCH -H "Authorization: Bearer alphatest" -H "Content-Type: application/json" --data @/tmp/alpha-patch.json http://127.0.0.1:9121/api/settings; rm -f /tmp/alpha-patch.json; curl -s -H "Authorization: Bearer alphatest" http://127.0.0.1:9121/api/tasks/status'
 ```
 
 Expect `{"enabled":true,"calls_open":0,"voice_style_note":null,...}`.

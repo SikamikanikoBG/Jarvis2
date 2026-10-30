@@ -1413,9 +1413,11 @@ class AgentLoop:
 _PLAN_TOOLS = {spec.name for spec in PLAN_TOOLS}
 #: Said where a plan would be, on the first step of a turn the pre-flight judged as work for a task.
 HAND_OFF_NOTE = (
-    "[core note] This request is longer work that a background task can do while Arsen gets on with "
-    "his day: hand it off with tasks.delegate - a short title is enough, his words and this chat go "
-    "with it - and answer him in one line. Do it yourself only if it really takes one or two quick steps."
+    "[core note] This request was judged as longer work for a background task, whatever language it is "
+    "in: call tasks.delegate now - a short English title is enough, his words and this chat go with it - "
+    "then answer him in one line. Do not start the work yourself in this turn: no searching, no reading "
+    "pages. Answer instead only if something it needs is not connected (say so), or a fact only he knows "
+    "is missing (ask the one question)."
 )
 #: The trailer once the work is handed off: the turn's last step is the answer.
 HANDED_OFF_NOTE = (

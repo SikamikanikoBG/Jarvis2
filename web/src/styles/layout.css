@@ -697,6 +697,13 @@
   }
   .nav-desktop {
     display: inline-flex;
+    /* The bar must never be wider than the window: at 1024-1366 px the full nav pushed the page
+       sideways and what sits right of the title (the Tasks chip, the connection dot) off screen
+       (alpha 2026-10-30, F-11). The nav gives way - it scrolls - instead. */
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
   .topbar {
     padding: 0 var(--s-3) 0 var(--s-2);
@@ -708,4 +715,14 @@
    are in — they are how a chat is picked at phone width, and the panel is phone width. */
 :root[data-mode='panel'] .bottomnav {
   display: none !important;
+}
+@media (min-width: 900px) {
+  .nav-desktop .nav-link {
+    flex: none;
+    white-space: nowrap;
+  }
+  .topbar .brand,
+  .topbar .conn {
+    flex: none;
+  }
 }

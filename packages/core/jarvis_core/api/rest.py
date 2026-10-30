@@ -382,10 +382,31 @@ async def get_settings(request: Request) -> Settings:
     return core_of(request).settings
 
 
+def merge_settings(model: type[BaseModel], current: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+    """PATCH semantics for one settings document: a key that is a settings SECTION (a sub-model,
+    e.g. `tasks`, `voice`) merges field by field - `{"tasks": {"max_running": 2}}` leaves `enabled`
+    as it is (alpha F-13 found it reset to the default). Everything else - a list, a dict keyed by
+    name like `account_rules`, a scalar - is replaced whole, so an entry can still be removed."""
+    out = dict(current)
+    for key, value in body.items():
+        field = model.model_fields.get(key)
+        sub = field.annotation if field is not None else None
+        if (
+            isinstance(sub, type)
+            and issubclass(sub, BaseModel)
+            and isinstance(value, dict)
+            and isinstance(out.get(key), dict)
+        ):
+            out[key] = merge_settings(sub, out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
 @router.patch("/settings", response_model=Settings)
 async def patch_settings(request: Request, body: dict[str, Any]) -> Settings:
     core = core_of(request)
-    merged = core.settings.model_dump(mode="json") | body
+    merged = merge_settings(Settings, core.settings.model_dump(mode="json"), body)
     try:
         new = Settings.model_validate(merged)
     except ValidationError as exc:

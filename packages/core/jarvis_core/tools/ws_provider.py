@@ -97,6 +97,8 @@ _OPENED_TAB = re.compile(r"work tab(?: for this chat)? \[tab (\d+)\]")
 
 class WsProvider:
     name = "browser"
+    #: Outside the core: listed in "What you can reach now" (features/tasks.py).
+    external = True
 
     def __init__(
         self, namer: Callable[[str | None], str | None] | None = None, fetch_file: FileFetcher | None = None

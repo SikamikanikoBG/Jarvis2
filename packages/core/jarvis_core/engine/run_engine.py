@@ -443,10 +443,16 @@ class RunEngine:
         return sum(1 for _t, c in self._active.values() if c.emitter.run.status is not RunStatus.WAITING_USER)
 
     def _running_tasks(self) -> int:
+        return self.running_tasks()
+
+    def running_tasks(self, *, exclude: str | None = None) -> int:
+        """TASK runs working now (not parked on a question), ``exclude`` aside."""
         return sum(
             1
-            for _t, c in self._active.values()
-            if c.emitter.run.kind is RunKind.TASK and c.emitter.run.status is not RunStatus.WAITING_USER
+            for run_id, (_t, c) in self._active.items()
+            if run_id != exclude
+            and c.emitter.run.kind is RunKind.TASK
+            and c.emitter.run.status is not RunStatus.WAITING_USER
         )
 
     async def _fail(self, run: Run, emitter: RunEmitter, error: str) -> None:

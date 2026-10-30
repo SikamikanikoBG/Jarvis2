@@ -52,6 +52,7 @@ export function ChatScreen() {
   const stopping = useStore((s) => (activeRun ? s.cancelRequested[activeRun.id] === true : false));
   const loading = useStore((s) => s.loadingMessagesFor === convKey && !s.messages[convKey]);
   const connection = useStore((s) => s.connection);
+  const tasksOn = useStore((s) => s.tasksEnabled);
   // Incognito is said out loud, on the chat itself: the chip in the composer is small, and this
   // is the one thing Arsen must be sure of before he types.
   const incognito = useStore((s) => (s.openConversationId ? (s.conversations[s.openConversationId]?.incognito ?? false) : s.draftPrivacy.incognito));
@@ -79,6 +80,9 @@ export function ChatScreen() {
                   {convKey === NEW_CONVERSATION_KEY ? (incognito ? `Talk to ${assistantName}, off the record` : `Talk to ${assistantName}`) : 'Nothing here yet'}
                 </strong>
                 <span>{connection === 'open' ? 'Type below. Replies stream in as they are written.' : 'Waiting for the connection to the core.'}</span>
+                {tasksOn && (
+                  <span className="muted">Longer work - research, a comparison, a document - he can take as a task and come back with; on a call he notes it for after.</span>
+                )}
               </>
             )}
           </div>

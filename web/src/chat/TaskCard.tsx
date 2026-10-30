@@ -49,9 +49,9 @@ function TaskCardBody({ task, approvalTtlS }: { task: Task; approvalTtlS: number
     <article className={`task-card task-${taskTone(task.state)}`} id={`task-${task.id}`} aria-label={`Task: ${task.title}`}>
       <header className="task-head">
         <Icon name="list" size={15} />
-        <span className="task-title truncate">{task.title}</span>
+        <span className="task-title">{task.title}</span>
         <span className={`task-pill pill-${taskTone(task.state)}`}>{TASK_STATE_LABEL[task.state]}</span>
-        {task.paused && <span className="task-pill pill-muted">paused for your call</span>}
+        {task.paused && <span className="task-pill pill-muted">paused - a call or another task goes first</span>}
       </header>
       <div className="task-meta muted">
         {task.started_at ? `started ${clock(task.started_at)}` : `asked ${clock(task.created_at)}`}

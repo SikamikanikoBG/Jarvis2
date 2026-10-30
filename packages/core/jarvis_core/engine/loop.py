@@ -147,8 +147,8 @@ class TaskGate(Protocol):
         """A task's tool came back from a machine that is down: the task ends on it."""
         ...
 
-    def call_open(self) -> bool:
-        """Arsen is on a call: a task holds still between its steps."""
+    def should_hold(self, run: Run) -> bool:
+        """This task waits before its next step: a call is open, or enough other tasks are working."""
         ...
 
     async def paused(self, run: Run, on: bool) -> None: ...
@@ -291,11 +291,19 @@ class AgentLoop:
         skill_names: list[str] = []
         pre: Preflight | None = None
         skill_trace: dict[str, object] = {}  # how the detector decided, for the shadow record
+        # Handing the work to a background task is one of the shapes a turn can take, decided
+        # with the others BEFORE a plan exists - a plan written first was a plan to do the work
+        # here and then to wait for the task (alpha 2026-10-30, F-1/F-2).
+        delegate_spec = self._registry.get("tasks.delegate")
+        can_delegate = (
+            self._tasks is not None and delegate_spec is not None and not self._tasks.hidden(run, delegate_spec)
+        )
         t_pre = time.perf_counter()
         if wants_skills and wants_tier:
             assert self._skills is not None and self._planner is not None
             skill_names, pre = await asyncio.gather(
-                self._skills.detect(run.input_text, trace=skill_trace), self._planner.preflight(run.input_text)
+                self._skills.detect(run.input_text, trace=skill_trace),
+                self._planner.preflight(run.input_text, can_delegate=can_delegate),
             )
         elif wants_skills:
             assert self._skills is not None
@@ -304,7 +312,8 @@ class AgentLoop:
             skill_names = await self._skills.detect(run.input_text, allow_model=not voice, trace=skill_trace)
         elif wants_tier:
             assert self._planner is not None
-            pre = await self._planner.preflight(run.input_text)
+            pre = await self._planner.preflight(run.input_text, can_delegate=can_delegate)
+        hand_off = can_delegate and pre is not None and pre.tier == "delegate"
         pre_ms = (time.perf_counter() - t_pre) * 1000
         if wants_skills:
             skill_names = await self._follow_up_skills(run, skill_names, skill_trace)
@@ -345,7 +354,10 @@ class AgentLoop:
         # Adaptive thinking: the first step of a run always reasons, and after that only a step
         # with something new to work out does. Set by the tail of the previous step, consumed at
         # the top of the next one.
-        think_next = True
+        # Handing off is a tool call, not a problem to reason through: the first step of a turn
+        # the pre-flight sent to a task does not think (the alpha's acks took 30-150 s, F-8).
+        think_next = not hand_off
+        hand_off_note: Message | None = Message.user(HAND_OFF_NOTE, name="plan") if hand_off else None
         steps_judged = 0  # how many of watch.steps this loop has already looked at
 
         # Resume: an assistant message with tool calls that never got their results.
@@ -359,7 +371,7 @@ class AgentLoop:
         while True:
             self._check_cancel(ctl)
             if run.kind is RunKind.TASK:
-                await self._hold_for_call(run, ctl, watch)
+                await self._hold(run, ctl, watch)
             if reason := self._supervisor.budget_exceeded(run, watch):
                 await self._finish(run, ctl, messages, summary=reason)
                 return
@@ -383,6 +395,11 @@ class AgentLoop:
             if plan_trailer is not None:
                 messages[:] = [m for m in messages if m is not plan_trailer]
             plan_trailer = self._context.plan_message(run.plan) if run.plan is not None else None
+            if hand_off_note is not None and not watch.steps and not watch.answer_only:
+                # The pre-flight judged this work for a task: said where a plan would be, once.
+                plan_trailer = hand_off_note
+            if watch.answer_only:
+                plan_trailer = Message.user(HANDED_OFF_NOTE, name="plan")
             # Tool results from earlier steps have been acted on; keep their head only. The DB
             # keeps the full text. Without this a 49-event calendar_list rode along in every one
             # of 8 model calls and a single scheduled run cost 217k prompt tokens (2026-09-05).
@@ -465,6 +482,12 @@ class AgentLoop:
                 text, reasoning, raw_calls, usage, finish = await self._stream(adapter, messages, tools, run, ctl)
             self._context.observe(sent_chars, usage.prompt_tokens)
             calls = [self._policy.resolve(c) for c in raw_calls]  # facade op → canonical namespace.op
+            if watch.answer_only and calls:
+                # The work went to a task: this turn's only job left is the one-line answer. The
+                # tools stay in the request (dropping them would re-read the whole prompt), and a
+                # call made anyway is not run - the task does the work, not this turn.
+                log.info("run %s: %d call(s) after handing off were not run", run.id, len(calls))
+                calls = []
             run.usage = run.usage.add(usage)
             await emit(
                 ModelDone(run_id="", conversation_id="", usage=usage, finish_reason=finish, tool_call_count=len(calls))
@@ -644,6 +667,12 @@ class AgentLoop:
                 stopped = await self._persist(run, Message.assistant(f"I stopped here: {watch.stop_now}."))
                 await self._done(run, ctl, message_id=stopped.id, summary=watch.stop_now)
                 return
+            if watch.answer_only and run.plan is not None and run.plan.current_index is not None:
+                # A plan made before the hand-off is not this turn's work any more: the task's.
+                for s in run.plan.steps:
+                    if s.status in (PlanStepStatus.PENDING, PlanStepStatus.IN_PROGRESS):
+                        s.status = PlanStepStatus.SKIPPED
+                await self._store.save_run(run)
             # Something went wrong, or the plan just moved on: the next step has a real decision
             # to make rather than another result to act on.
             fresh = watch.steps[steps_judged:]
@@ -652,7 +681,7 @@ class AgentLoop:
                 think_next
                 or any(s.kind is ToolResultKind.ERROR for s in fresh)
                 or any(c.name in _PLAN_TOOLS for c in calls)
-            )
+            ) and not watch.answer_only  # a one-line answer needs no reasoning
 
             verdict = await self._supervisor.review(run, watch, messages, emit, ctl.cancel)
             if verdict is None:
@@ -701,7 +730,12 @@ class AgentLoop:
                 else:
                     usage = chunk.usage
                     finish = chunk.finish_reason
-        except (ModelCancelled, asyncio.CancelledError):
+        except (ModelCancelled, asyncio.CancelledError) as exc:
+            if isinstance(exc, asyncio.CancelledError) and not ctl.cancel.is_set():
+                # The core is shutting down, nobody cancelled the run: it is interrupted and
+                # resumes after the restart. Turned into a cancel here, a redeploy in the middle
+                # of a step read as "cancelled by Arsen" (alpha 2026-10-30, F-6).
+                raise
             partial_id: str | None = None
             partial_text = "".join(text_parts)
             if partial_text.strip():
@@ -965,6 +999,9 @@ class AgentLoop:
             await self._store.record_idempotent_result(key, result.model_dump_json())
         if call.name.startswith("browser."):
             result = await self._with_site_playbook(result, watch)
+        if result.ends_turn and result.kind is not ToolResultKind.ERROR:
+            # The work went to a task: what is left of this turn is the one-line answer.
+            watch.answer_only = True
         step = step_of(call.name, call.arguments, result)
         shown = _already_in_context(watch, step, result, read_only=read_only)
         return await self._tool_message(run, call, shown or result, duration, emit), step
@@ -981,17 +1018,18 @@ class AgentLoop:
         watch.stop_now = f"{call.name.split('.', 1)[0]} is not reachable (down since {since.astimezone(tz).strftime('%H:%M')}: {error})"
         await self._tasks.unreachable(run, watch.stop_now)
 
-    async def _hold_for_call(self, run: Run, ctl: RunControl, watch: RunWatch) -> None:
-        """While Arsen is on a call, a task holds still between its steps: the voice comes first
-        on the shared GPU. The held time is not work, so the time budget does not count it, and a
-        cancel still lands at once."""
+    async def _hold(self, run: Run, ctl: RunControl, watch: RunWatch) -> None:
+        """A task holds still between its steps while Arsen is on a call (the voice comes first on
+        the shared GPU), and while as many other tasks are working as may at once - a task let go
+        by an approval does not run beside the one that took its place (F-7). The held time is not
+        work, so the time budget does not count it, and a cancel still lands at once."""
         gate = self._tasks
-        if gate is None or not gate.call_open():
+        if gate is None or not gate.should_hold(run):
             return
         t0 = time.perf_counter()
         await gate.paused(run, True)
         try:
-            while gate.call_open():
+            while gate.should_hold(run):
                 self._check_cancel(ctl)
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(ctl.cancel.wait(), timeout=_CALL_HOLD_POLL_S)
@@ -1046,7 +1084,12 @@ class AgentLoop:
                 run_id="", conversation_id="", call_id=call.id, name=call.name, result=result, duration_ms=duration_ms
             )
         )
-        message = await self._persist(run, Message.tool(call.id, call.name, result.to_model_text()))
+        text = result.to_model_text()
+        if run.kind is RunKind.TASK:
+            # The id task.finish cites as evidence, where the model reads the result (F-4: it
+            # cited file names and object ids because the call's own id was nowhere to be seen).
+            text = f"[ref {call.id}] {text}"
+        message = await self._persist(run, Message.tool(call.id, call.name, text))
         if result.images and self._attachments is not None and message.id:
             # The picture becomes an attachment of the tool message: hydrated into the request
             # like any image Arsen sends, shown in the transcript, and gone with the conversation.
@@ -1248,7 +1291,11 @@ class AgentLoop:
         """
         note = f"[stopped: {summary}]"
         answer = await self._wrap_up(run, ctl, messages, summary=summary)
-        if answer:
+        if run.kind is RunKind.TASK:
+            # A task's report says why it stopped on its own; its answer is the substance only,
+            # never the supervisor's words or the model's "now let me fetch..." (F-5).
+            text = answer or f"I stopped here: {summary}."
+        elif answer:
             text = f"{answer}\n\n{note}"
         else:
             text = f"I stopped here: {summary}."
@@ -1267,11 +1314,31 @@ class AgentLoop:
             "failed, say which and why in one line. Do not promise to continue.",
             name="supervisor",
         )
+        finish = self._registry.get("task.finish") if run.kind is RunKind.TASK else None
+        if finish is not None:
+            # A delegated task ends with its outcome, not only with prose: what the log shows for
+            # each DoD item is what the report verifies (F-5: a complete answer was "not done"
+            # with every item "not reported" because the budget ended it before task.finish).
+            ask = Message.user(
+                f"[supervisor] This task's run is over: {summary}. Call task.finish now: a summary of "
+                "what you found and did (the substance, for Arsen, in English) and every DoD item by "
+                "number - met or not, with the [ref ...] ids of the tool results that show it. No "
+                "other tool. Do not promise to continue.",
+                name="supervisor",
+            )
         try:
             adapter = self._adapters(self._settings().lane_for(run.kind), think=False, think_level=None)
-            text, _reasoning, _calls, usage, _finish = await self._stream(adapter, [*messages, ask], [], run, ctl)
+            offered = [finish] if finish is not None else []
+            text, _reasoning, calls, usage, _finish = await self._stream(adapter, [*messages, ask], offered, run, ctl)
             run.usage = run.usage.add(usage)
             await self._store.save_run(run)
+            ends = [c for c in calls if finish is not None and c.name == finish.name][:1]
+            if ends:
+                call = ends[0]
+                messages.append(await self._persist(run, Message.assistant(text, tool_calls=[call])))
+                result, _step = await self._execute_one(run, call, ctl, RunWatch(budget=run.budget), resumed=False)
+                messages.append(result)
+                return str(call.arguments.get("summary") or text).strip()
             return text.strip()
         except RunCancelledError:
             raise
@@ -1344,6 +1411,17 @@ class AgentLoop:
 
 
 _PLAN_TOOLS = {spec.name for spec in PLAN_TOOLS}
+#: Said where a plan would be, on the first step of a turn the pre-flight judged as work for a task.
+HAND_OFF_NOTE = (
+    "[core note] This request is longer work that a background task can do while Arsen gets on with "
+    "his day: hand it off with tasks.delegate - a short title is enough, his words and this chat go "
+    "with it - and answer him in one line. Do it yourself only if it really takes one or two quick steps."
+)
+#: The trailer once the work is handed off: the turn's last step is the answer.
+HANDED_OFF_NOTE = (
+    "[core note] The work is with the task now. Answer Arsen in one short line: that you took it and "
+    "what will come back. It has not been done yet - do not say it is done. No more tools in this turn."
+)
 #: How long a question asked aloud on a call ("shall I send it?") waits for its answer.
 _VOICE_ASK_TTL = timedelta(minutes=15)
 # Two identical failures are a pattern; a third is a waste of a tool call and of the run.

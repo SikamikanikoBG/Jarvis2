@@ -352,6 +352,7 @@ class FakeHost(BuiltinProvider):
     """A machine with a shell, file writes and a read - and a connection that can drop."""
 
     name = "hosty"
+    external = True  # a machine outside the core, as an MCP host is
 
     def __init__(self) -> None:
         super().__init__()
@@ -525,7 +526,7 @@ async def test_a_machine_going_down_mid_task_ends_it_not_done_at_once(harness: H
     assert "not done" in report and "Stopped: hosty is not reachable" in report
 
 
-async def test_health_block_names_what_is_down_and_is_absent_when_all_is_up(harness: Harness):
+async def test_the_chat_knows_what_it_can_reach_and_what_is_down(harness: Harness):
     split = await tasks_on(harness)
     host = await _host(harness)
     split.push(FakeTurn(text="all good"))
@@ -533,13 +534,15 @@ async def test_health_block_names_what_is_down_and_is_absent_when_all_is_up(harn
     sub = harness.subscribe(conv.id)
     await harness.wait_for(sub, "run.done")
     first = "\n".join(m.content for m in split.calls[0][0])
-    assert "- hosty:" not in first
+    assert "## What you can reach now" in first and "hosty" in first.split("Connected:")[1].split(".")[0]
+    # Not connected is said too: a browser that was never there is not something to offer (F-10).
+    assert "- browser: not available" in first and "No other machine, host or service is connected" in first
     harness.core.registry.mark_unavailable(host, "ConnectError: refused")
     split.push(FakeTurn(text="hosty is down"))
     await ask(harness, "is hosty up?", conv.id)
     await harness.wait_for(sub, "run.done")
     second = "\n".join(m.content for m in split.calls[1][0])
-    assert "## Not reachable now" in second and "- hosty: down since" in second and "ConnectError" in second
+    assert "- hosty: not available since" in second and "ConnectError" in second
 
 
 # --- questions, steering, cancelling, budgets -------------------------------------------------------
@@ -912,7 +915,7 @@ async def test_with_everything_up_the_health_block_costs_nothing(harness: Harnes
     harness.enable(tasks=TasksSettings(enabled=True))
 
     class AllUp:
-        def failing(self) -> list[tuple[str, str, datetime]]:
+        def connections(self) -> list[tuple[str, str | None, datetime | None]]:
             return []
 
     block = HealthBlock(AllUp, lambda: harness.core.settings)

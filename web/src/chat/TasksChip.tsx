@@ -11,6 +11,9 @@ import { TASK_STATE_LABEL } from '../lib/tasks';
 export function TasksChip() {
   const tasks = useStore(useShallow((s) => selectOpenTasks(s.tasks, s.openConversationId)));
   const [open, setOpen] = useState(false);
+  // Where the list opens, from the chip's own place on screen: fixed to the viewport, so neither
+  // the desktop nav beside the title nor the phone's left edge can hide it (alpha F-11).
+  const [at, setAt] = useState<{ top: number; left: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -38,19 +41,24 @@ export function TasksChip() {
       <button
         type="button"
         className={`tasks-chip${waiting ? ' tasks-chip-wait' : ''}`}
-        onClick={() => setOpen((o) => !o)}
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          const width = Math.min(320, window.innerWidth - 32);
+          setAt({ top: r.bottom + 6, left: Math.max(16, Math.min(r.left, window.innerWidth - width - 16)) });
+          setOpen((o) => !o);
+        }}
         aria-expanded={open}
         aria-label={`${tasks.length} open task${tasks.length === 1 ? '' : 's'}`}
       >
         Tasks · {tasks.length}
       </button>
       {open && (
-        <ul className="tasks-pop" role="menu">
+        <ul className="tasks-pop" role="menu" style={at ? { top: at.top, left: at.left } : undefined}>
           {tasks.map((t) => (
             <li key={t.id} role="none">
               <button type="button" role="menuitem" onClick={() => show(t.id)}>
                 <span className="truncate">{t.title}</span>
-                <span className="muted">{t.paused ? 'paused for your call' : TASK_STATE_LABEL[t.state]}</span>
+                <span className="muted">{t.paused ? 'paused' : TASK_STATE_LABEL[t.state]}</span>
               </button>
             </li>
           ))}

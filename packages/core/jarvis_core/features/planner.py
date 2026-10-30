@@ -17,14 +17,23 @@ _PREFLIGHT = """Classify this request for an AI assistant with tools.
 Request: {message}
 
 tier: "simple" if it can be answered or done in one or two tool calls; "multi_step" if it needs
-several dependent steps (research then write, check several sources, multi-part deliverable).
-Answer JSON only: {{"tier": "simple" | "multi_step"}}"""
+several dependent steps (research then write, check several sources, multi-part deliverable).{delegate}
+Answer JSON only: {{"tier": {tiers}}}"""
+
+# Offered only when the run may hand work to a background task (docs/stories/13_delegated_tasks.md).
+# The judgement is the model's: what the work is like, not which words he used.
+_DELEGATE_TIER = """
+"delegate" if it is longer work he does not need to watch happen - research across several
+sources, comparing options, a document or a list to put together, anything that takes many
+tool steps or minutes - which a background task can do while he gets on, reporting back here.
+Prefer "delegate" over "multi_step" for such work."""
 
 _PLAN = """Write a short execution plan for this request.
 The ONLY tools that exist: {tools}
 Request: {message}
 
-Rules: 2 to 6 concrete steps, each one action with a verifiable outcome; every step must be
+Rules: 2 to 6 concrete steps, each one action with a verifiable outcome; never a step that waits
+for, checks on or polls a background task (one that was handed off reports back by itself); every step must be
 doable with the tools listed above - do not plan a step no tool can perform, and never plan to
 work around a missing tool with a shell command; no step for "reply". When the request changes
 existing data (calendar, mail, files), the first step reads what is already there so nothing is
@@ -43,14 +52,23 @@ class Planner:
         self._classifier = classifier  # Callable[[], ModelAdapter]
         self._planner = planner
 
-    async def preflight(self, message: str) -> Preflight:
+    async def preflight(self, message: str, *, can_delegate: bool = False) -> Preflight:
+        """``can_delegate``: this run may hand work to a background task, so "delegate" is one of
+        the shapes the turn can take - decided here, before any plan exists (alpha 2026-10-30:
+        a plan written first did the work inline and then waited for the task it had started)."""
         if len(message.strip()) < 25:
             return Preflight("simple")
+        tiers = ["simple", "multi_step", *(["delegate"] if can_delegate else [])]
+        prompt = _PREFLIGHT.format(
+            message=message[:2000],
+            delegate=_DELEGATE_TIER if can_delegate else "",
+            tiers=" | ".join(f'"{t}"' for t in tiers),
+        )
         try:
-            text, usage = await _ask(self._classifier(), _PREFLIGHT.format(message=message[:2000]))
+            text, usage = await _ask(self._classifier(), prompt)
             data = _json(text)
             tier = str(data.get("tier", "simple")).strip().lower() if data else "simple"
-            return Preflight(tier if tier in {"simple", "multi_step"} else "simple", usage)
+            return Preflight(tier if tier in tiers else "simple", usage)
         except Exception as exc:
             log.warning("preflight skipped: %s", exc)
             return Preflight("simple")

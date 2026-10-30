@@ -43,7 +43,7 @@ ssh ardi@100.97.120.53 "for i in \$(seq 1 30); do curl -fsS -m 3 http://127.0.0.
 
 ## 3. Settings: the real models and voice, nothing that leaves the house
 
-Copy only `roles`, `voice` and the `stt_*` keys from production (read-only GET), switch off every
+Copy only `roles`, `voice`, `language_hint` (the "answer Arsen in English" rule) and the `stt_*` keys from production (read-only GET), switch off every
 outside connection, and switch tasks on. The JSON is reshaped on the laptop (ssh in this setup
 does not pass stdin through, and Git Bash's `/tmp` is not Windows Python's `/tmp`, so use a
 Windows path for the files):
@@ -54,7 +54,7 @@ W="$LOCALAPPDATA/Temp/jarvis-alpha"; mkdir -p "$W"
 cat > "$W/alpha_patch.py" <<'EOF'
 import json, sys
 live = json.load(open(sys.argv[1], encoding="utf-8"))
-patch = {k: live[k] for k in ("roles", "voice", "stt_url", "stt_kind", "stt_model", "stt_languages", "stt_no_speech_max")}
+patch = {k: live[k] for k in ("roles", "voice", "language_hint", "stt_url", "stt_kind", "stt_model", "stt_languages", "stt_no_speech_max")}
 patch.update(mcp_servers=[], mail_accounts=[], discord_webhook_url=None,
              triage={**live["triage"], "enabled": False}, rsvp={**live["rsvp"], "enabled": False},
              tasks={**live["tasks"], "enabled": True})

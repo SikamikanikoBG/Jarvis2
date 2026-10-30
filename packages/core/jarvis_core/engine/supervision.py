@@ -71,6 +71,9 @@ class RunWatch:
     # Set when the run has to end now, without wrapping up: a task whose tool's host went down
     # (docs/stories/13_delegated_tasks.md). The text is the reason the report gives.
     stop_now: str | None = None
+    # A tool handed the turn's work off (tasks.delegate, tasks.note): the next step is the answer
+    # and nothing else - no further tool runs in this turn.
+    answer_only: bool = False
 
     def elapsed_s(self) -> float:
         return time.monotonic() - self.started - self.paused_s

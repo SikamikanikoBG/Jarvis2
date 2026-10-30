@@ -97,7 +97,7 @@ log = logging.getLogger(__name__)
 #: How often the sweeper looks at approvals nobody answered.
 SWEEP_S = 30.0
 #: What a report quotes of a final answer when the task never wrote its own summary.
-REPORT_ANSWER_CHARS = 1_200
+REPORT_ANSWER_CHARS = 6_000
 #: The tools that write a task down from a chat; only Arsen's own message may call them.
 _DELEGATING = frozenset({"tasks.delegate", "tasks.note"})
 #: Never offered to a task: it does not message other chats, and it does not ring Arsen - its
@@ -344,7 +344,7 @@ def judge(brief: TaskBrief, claimed: list[DodResult], ledger: _Ledger) -> list[D
         said = claimed[i] if i < len(claimed) else None
         result = DodResult(item=item.item, outward=item.outward)
         if said is not None:
-            result.met, result.refs, result.note = said.met, list(said.refs), said.note
+            result.met, result.refs, result.note = said.met, [_ref_id(r) for r in said.refs], said.note
         if result.met is True:
             reasons = [why for ref in result.refs if (why := ledger.why_not(ref, outward=item.outward))]
             good = [ref for ref in result.refs if ledger.why_not(ref, outward=item.outward) is None]
@@ -353,6 +353,12 @@ def judge(brief: TaskBrief, claimed: list[DodResult], ledger: _Ledger) -> list[D
                 result.why = "; ".join(reasons) if reasons else "no evidence given"
         out.append(result)
     return out
+
+
+def _ref_id(ref: str) -> str:
+    """A ref as the model may copy it from a result's header: "[ref c1]" or "ref c1" is c1."""
+    bare = ref.strip().strip("[]").strip()
+    return bare[4:].strip() if bare.lower().startswith("ref ") else bare
 
 
 def state_of(results: list[DodResult]) -> TaskState:
@@ -404,8 +410,8 @@ def brief_text(task: Task, *, user: str, call: str = "") -> str:
     lines = [f"# Task: {task.title}"]
     if not b.written:
         lines.append(
-            "This task was noted on a call. Its brief is not written yet: write it first, with task.brief, "
-            "from his words and the call below."
+            "Its brief is not written yet: write it first, with task.brief - goal, context, a checkable "
+            "Definition of Done - from his words and where he asked it, below."
         )
     if b.goal:
         lines.append(f"## Goal\n{b.goal}")
@@ -427,7 +433,7 @@ def brief_text(task: Task, *, user: str, call: str = "") -> str:
     if b.assumptions:
         lines.append("## Assumed (he did not say)\n" + "\n".join(f"- {a}" for a in b.assumptions))
     if call:
-        lines.append(f"## The call it was noted on\n{call}")
+        lines.append(f"## Where he asked it (as it was said)\n{call}")
     return "\n\n".join(lines)
 
 
@@ -454,6 +460,10 @@ class TaskService:
         self._deferred: set[str] = set()
         #: Task ids held between steps while a call is open (shown on the card, never stored).
         self._paused: set[str] = set()
+        #: The task runs holding a working slot (see should_hold).
+        self._slots: set[str] = set()
+        #: Words steered into a task's working run, until the run is seen to have read them.
+        self._steered: dict[str, list[str]] = {}
         #: (task id, tool call id) already pushed as "needs your approval".
         self._asked: set[tuple[str, str]] = set()
         self._lock = asyncio.Lock()
@@ -559,8 +569,9 @@ class TaskService:
         refuses it when named anyway."""
         s = self.settings.tasks
         namespace = name.split(".", 1)[0]
-        mine = namespace in ("tasks", "task")
-        if mine and not s.enabled:
+        # Switched off, no new task is made - but a task already working finishes properly: its
+        # own task.* tools stay (alpha F-13: flag off mid-flight turned a finished task "not done").
+        if namespace == "tasks" and not s.enabled:
             return "delegated tasks are switched off (settings.tasks.enabled)"
         if run.kind is RunKind.TASK:
             if namespace == "tasks":
@@ -608,6 +619,21 @@ class TaskService:
             return
         (self._paused.add if on else self._paused.discard)(task.id)
         self.publish(task)
+
+    def should_hold(self, run: Run) -> bool:
+        """A task waits before its next step: Arsen is on a call, or the working slots
+        (``tasks.max_running``) are taken. A task parked on an approval gives its slot up and takes
+        one again before its next step - so one let go by an approval queues behind the task that
+        started meanwhile, instead of running beside it (alpha F-7)."""
+        if self.call_open():
+            return True
+        self._slots &= set(self.core.engine.active_run_ids())
+        if run.id in self._slots:
+            return False
+        if len(self._slots) < self.settings.tasks.max_running:
+            self._slots.add(run.id)
+            return False
+        return True
 
     def may_start(self, running: int) -> bool:
         """The engine's question for a queued task run (``RunEngine.set_task_gate``)."""
@@ -688,8 +714,12 @@ class TaskService:
             self.core.bus.publish(ConversationUpdated(conversation=conv))
         user = self.settings.user_name
         if text is None:
-            call = await self.call_transcript(task) if task.call_id and not task.brief.written else ""
-            text = brief_text(task, user=user, call=call)
+            source = ""
+            if not task.brief.written:
+                # The task writes its own brief, from the call it was noted on or the chat it was
+                # handed off in: the asking turn only names it, and the chat is free in seconds (F-8).
+                source = await self.call_transcript(task) if task.call_id else await self.origin_transcript(task)
+            text = brief_text(task, user=user, call=source)
         run, _ = await self.core.engine.create_run(
             text=text,
             conversation_id=task.conversation_id,
@@ -698,7 +728,6 @@ class TaskService:
         )
         task.run_id = run.id
         task.state = TaskState.QUEUED
-        task.started_at = task.started_at or _now()
         task.finished_at = None
         task.report_message_id = None
         task.note = None
@@ -725,6 +754,23 @@ class TaskService:
                 elif m.role is Role.ASSISTANT and not m.tool_calls:
                     lines.append(f"Jarvis: {m.content.strip()}")
         return "\n".join(lines)
+
+    async def origin_transcript(self, task: Task, *, limit: int = 20) -> str:
+        """The chat a task was handed off in, up to the turn that handed it off: what its first
+        step writes the brief from - copied by the code, never retold by a model."""
+        user = self.settings.user_name
+        said: list[str] = []
+        upto: int | None = None  # what was said up to the handing-off turn's own words
+        for m in await self.core.store.list_messages(task.origin_conversation_id, limit=400):
+            if m.task_id is not None or not m.content.strip() or m.name is not None:
+                continue
+            if m.role is Role.USER:
+                said.append(f"{user}: {m.content.strip()}")
+                if m.run_id == task.origin_run_id:
+                    upto = len(said)
+            elif m.role is Role.ASSISTANT and not m.tool_calls and m.run_id != task.origin_run_id:
+                said.append(f"Jarvis: {m.content.strip()[:1500]}")
+        return "\n".join(said[: upto if upto is not None else len(said)][-limit:])
 
     # --- calls ---------------------------------------------------------------------------------
 
@@ -807,6 +853,9 @@ class TaskService:
             self.publish(task)
             return task
         if task.run_id and self.core.engine.steer(task.run_id, words):
+            # Taken by a working run - unless it ends before its next step: then the words carry
+            # on into a new round when it does, instead of being lost (F-12).
+            self._steered.setdefault(task.id, []).append(words)
             return task
         return await self.begin(task, text=words)
 
@@ -841,6 +890,7 @@ class TaskService:
             if isinstance(event, RunStarted | RunResumed):
                 if task.state in (TaskState.QUEUED, TaskState.RUNNING):
                     task.state = TaskState.RUNNING
+                    task.started_at = task.started_at or _now()  # queued is not started (L-4)
                     if isinstance(event, RunResumed):
                         task.note = "resumed after a restart of the core"
                     await self.store.save(task)
@@ -855,6 +905,7 @@ class TaskService:
                 )
                 await self.store.save(task)
             elif isinstance(event, RunWaitingUser):
+                self._slots.discard(event.run_id)  # parked on him: the slot is free for another task
                 task.state = TaskState.WAITING
                 await self.store.save(task)
                 self.publish(task)
@@ -881,10 +932,17 @@ class TaskService:
         outcome = task.outcome or TaskOutcome()
         task.waiting = None
         self._paused.discard(task.id)
+        unread = await self._unread_steers(task, run)
         if run.status is RunStatus.CANCELLED:
             outcome.stopped_reason = outcome.stopped_reason or "cancelled by Arsen"
+            # What it had claimed stays on the card: a cancel does not undo what was done.
+            outcome.dod = judge(task.brief, outcome.dod if outcome.finished else [], await ledger_of(self.core, task))
             task.outcome = outcome
             await self._end(task, TaskState.CANCELLED)
+            return
+        if unread and run.status is RunStatus.DONE and not outcome.finished:
+            # He said something it never got to read: it carries on with that, not a report yet.
+            await self._start(task, "\n\n".join(unread))
             return
         if run.status is RunStatus.FAILED:
             outcome.stopped_reason = run.error or "the run failed"
@@ -912,6 +970,13 @@ class TaskService:
             state = TaskState.NOT_DONE
         task.outcome = outcome
         await self._end(task, state)
+
+    async def _unread_steers(self, task: Task, run: Run) -> list[str]:
+        pending = self._steered.pop(task.id, [])
+        if not pending:
+            return []
+        read = {m.content.strip() for m in await self.core.store.list_run_messages(run.id) if m.role is Role.USER}
+        return [w for w in pending if w not in read]
 
     async def _end(self, task: Task, state: TaskState) -> None:
         task.state = state
@@ -957,9 +1022,10 @@ class TaskService:
         if task.run_id is None:
             return None
         msgs = await self.core.store.list_run_messages(task.run_id)
-        return next(
-            (m for m in reversed(msgs) if m.role is Role.ASSISTANT and not m.tool_calls and m.content.strip()), None
-        )
+        said = [m for m in msgs if m.role is Role.ASSISTANT and m.content.strip()]
+        final = next((m for m in reversed(said) if not m.tool_calls), None)
+        # A cancelled or failed round has no final answer: its report shows the work it got to (F-16).
+        return final or (said[-1] if said and task.state in (TaskState.CANCELLED, TaskState.FAILED) else None)
 
     async def _report(self, task: Task) -> None:
         """Into the chat that asked, once per round, and only while no run is working there - a
@@ -1188,12 +1254,34 @@ class _BriefArgs(BaseModel):
     assumptions: list[str] = Field(default_factory=list, description="What you assumed that he did not say")
 
 
-class _DelegateArgs(_BriefArgs):
-    title: str = Field(max_length=80, description="A few words for the card, in English")
+class _DelegateArgs(BaseModel):
+    # A title is all the asking turn has to write: the task writes its own brief, from his words
+    # and this chat, as its first step. The alpha's acks took 30-150 s writing briefs (F-8).
+    title: str = Field(description="A few words for the card, in English (a long one is shortened)")
+    context: str = Field(
+        default="",
+        description=(
+            "Only what the task cannot find in his words or in this chat's recent messages: something from "
+            "much earlier, an id, a file. Usually empty."
+        ),
+    )
+    needs: list[str] = Field(
+        default_factory=list,
+        description="The tool namespaces it needs, e.g. browser, web, fetch, workocholic - checked against what is up",
+    )
+    goal: str = Field(default="", description="Optional: what it delivers. Without it the task writes its own brief.")
+    dod: list[_DodArg] = Field(
+        default_factory=list,
+        max_length=8,
+        description="Optional: the Definition of Done. Without it the task writes it.",
+    )
+    constraints: list[str] = Field(default_factory=list)
+    approvals: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
 
 
 class _NoteArgs(BaseModel):
-    title: str = Field(max_length=80, description="A few words for the noted list, in English")
+    title: str = Field(description="A few words for the noted list, in English (a long one is shortened)")
     needs: list[str] = Field(default_factory=list, description="Tool namespaces it will need, if you know them")
 
 
@@ -1219,7 +1307,8 @@ class _FinishDod(BaseModel):
     index: int = Field(ge=1, description="The DoD item's number in the brief")
     met: bool
     refs: list[str] = Field(
-        default_factory=list, description="Ids of this task's tool calls (or attached files) that show it"
+        default_factory=list,
+        description="The [ref ...] ids at the top of this task's tool results that show it, e.g. ['c3', 'c7']",
     )
     note: str = Field(default="", description="For an item not met: why, in a line")
 
@@ -1259,12 +1348,12 @@ class TasksTools(BuiltinProvider):
         description=(
             "Hand longer work to a background task and tell Arsen at once, so he does not wait: work that needs "
             "many tool steps or minutes (research across sites, a document, a comparison). A quick lookup or a "
-            "short answer you do yourself, now. Before you hand anything off, be honest about it: if a tool it "
-            "needs is down (see 'Not reachable now'), say you cannot do it now and why, and make no task; if a "
-            "fact only he knows is missing (which document, which person, how much), ask him that one question "
-            "instead; if what 'done' means is unclear, ask. The brief is all the task sees of this chat. After "
-            "the call, tell him in one sentence that you started it and what you will deliver - do not do the "
-            "work yourself. Two separate asks are two tasks."
+            "short answer you do yourself, now. A short title is enough: his words and this chat go with it, "
+            "and the task writes its own brief and Definition of Done. Before you hand anything off, be honest: "
+            "if what it needs is not connected or is down (see 'What you can reach now'), say you cannot do it "
+            "and why, and make no task; if a fact only he knows is missing (which document, which person, how "
+            "much), ask him that one question instead. Two separate asks are two tasks - hand both off in the "
+            "same reply. After it, your turn is the one-line answer: you took it, what will come back."
         ),
         args=_DelegateArgs,
     )
@@ -1292,29 +1381,42 @@ class TasksTools(BuiltinProvider):
                 f"{namespace} is not reachable (down since {service.clock(since)}: {error}). No task was made. "
                 "Tell Arsen you cannot do this now and why, or ask whether he wants it once it is back."
             )
+        asked = await service.asked_words(run.id)
+        # The same words in the same chat while that task is still open: the same ask, not a new
+        # task (a double send, or the ask repeated) - F-9. Compared as stored, not interpreted.
+        for open_task in await service.store.list(origin=run.conversation_id, open_only=True):
+            if asked and open_task.brief.asked == asked and open_task.origin_run_id != run.id:
+                result = ToolResult.data(
+                    f'Already on it: "{open_task.title}" is {_STATE_WORDS[open_task.state]} - no second task. '
+                    "Tell Arsen so in one line."
+                )
+                return result.model_copy(update={"ends_turn": True})
+        items = [DodItem.model_validate(d) for d in dod]
         brief = TaskBrief(
             goal=goal,
             context=context,
             constraints=constraints,
-            dod=[DodItem.model_validate(d) for d in dod],
+            dod=items,
             approvals=approvals,
             needs=needs,
             assumptions=assumptions,
-            asked=await service.asked_words(run.id),
+            asked=asked,
+            written=bool(items),  # no DoD given: the task writes its brief as its first step
         )
         task, made = await service.create(
-            run=run, origin_key=_origin_key(idempotency_key, run), title=title, brief=brief, state=TaskState.QUEUED
+            run=run,
+            origin_key=_origin_key(idempotency_key, run),
+            title=_short_title(title),
+            brief=brief,
+            state=TaskState.QUEUED,
         )
         if made:
             task = await service.begin(task)
         if task.state.terminal:
             reason = task.outcome.stopped_reason if task.outcome else ""
             return ToolResult.failure(f"the task could not start: {reason}. Tell Arsen.")
-        ahead = service.queued_ahead(task, await service.store.list(open_only=True))
-        queue = f"; {ahead} other task(s) go first" if ahead else ""
-        return ToolResult.data(
-            f'Task {task.id} "{task.title}" started{queue}. A card in this chat shows it, and the report comes '
-            "here when it ends. Tell Arsen in one sentence that you took it and what you will deliver."
+        return ToolResult.data(_ack(task, await service.store.list(open_only=True), service)).model_copy(
+            update={"ends_turn": True}
         )
 
     def _unknown(self, needs: list[str]) -> str | None:
@@ -1395,13 +1497,18 @@ class TasksTools(BuiltinProvider):
         await service.call_seen(run.call_id, run.conversation_id)
         brief = TaskBrief(needs=needs, asked=await service.asked_words(run.id), written=False)
         task, _ = await service.create(
-            run=run, origin_key=_origin_key(idempotency_key, run), title=title, brief=brief, state=TaskState.NOTED
+            run=run,
+            origin_key=_origin_key(idempotency_key, run),
+            title=_short_title(title),
+            brief=brief,
+            state=TaskState.NOTED,
         )
         noted = await service.store.list(call_id=run.call_id, states=(TaskState.NOTED,))
-        return ToolResult.data(
-            f'Noted: "{task.title}" ({task.id}; {len(noted)} noted on this call). Say "noted" in a few words. '
-            "It starts when the call ends."
+        result = ToolResult.data(
+            f'Noted: "{task.title}" ({len(noted)} noted on this call). Say "noted" in a few words and stay in the '
+            "conversation; it starts when the call ends."
         )
+        return result.model_copy(update={"ends_turn": True})
 
     @tool(
         "tasks.drop",
@@ -1448,10 +1555,11 @@ class TasksTools(BuiltinProvider):
     @tool(
         "task.finish",
         description=(
-            "End the task: a short summary for Arsen in English and, for EVERY DoD item by its number, whether it "
-            "is met and the ids of the tool calls (or attached files) in this task that show it. The code checks "
-            "each id: an item without one that exists here and succeeded is shown as 'claimed, not verified'. "
-            "After this, write your final reply."
+            "End the task: the result for Arsen in English (the substance - what you found or did, not a status "
+            "line) and, for EVERY DoD item by its number, whether it is met and its refs: the id at the top of "
+            "each tool result that shows it, as in [ref c3] (or the ref files.attach gave for a file). The code "
+            "checks each ref: one that is not a successful result of this task leaves the item 'claimed, not "
+            "verified'. After this, write your final reply."
         ),
         args=_FinishArgs,
         read_only=True,
@@ -1581,6 +1689,29 @@ class TasksTools(BuiltinProvider):
         return ToolResult.data("\n".join(lines) or "Nothing was said there yet.")
 
 
+#: How long a card's title may be; a longer one is shortened, never refused (L-5).
+TITLE_CHARS = 80
+
+
+def _short_title(title: str) -> str:
+    return clip(" ".join(title.split()), TITLE_CHARS) or "Task"
+
+
+def _ack(task: Task, open_tasks: list[Task], service: TaskService) -> str:
+    """What the asking turn is told it may say: started or queued, as it is - never "done" (F-14)."""
+    ahead = service.queued_ahead(task, open_tasks)
+    if service.call_open():
+        when = "It is queued: it starts once the call is over."
+    elif ahead >= service.settings.tasks.max_running:
+        when = f"It is queued behind {ahead} other task(s) and starts when they are through."
+    else:
+        when = "It starts now."
+    return (
+        f'Handed off: "{task.title}". {when} The card in this chat shows it; the report comes here when it ends. '
+        "Now answer Arsen in one short line - that you took it and what will come back. It is not done yet."
+    )
+
+
 def _origin_key(idempotency_key: str, run: Run) -> str:
     """One task per tool call: a resumed run re-running the same call gets the same key."""
     return idempotency_key.removesuffix(":retry") or f"{run.id}:{new_id('call')}"
@@ -1687,17 +1818,23 @@ def _call_policy(run: Run, settings: Settings) -> str:
         if run.call_id
         else "hand it off with tasks.delegate and say in one sentence that you took it"
     )
+    # The default on the line is to note: the alpha's call searched and fetched for minutes while
+    # he held on, because "quick things now" left every judgement call on the side of doing (F-3).
     return (
-        f"On this call: quick things - a lookup, an answer, one action - you do now. Work that needs many "
-        f"steps or minutes, {how}. This takes precedence over any line in the call style that says to do "
-        f"everything during the call. When {user} asks what you have, or is wrapping up, read the noted ones "
-        "back in one sentence with the key details (who, when, how much) as he said them."
+        f"On this call, answer from what you know, and do at most one quick lookup. Anything that needs "
+        f"more - searching, reading pages, comparing, writing something, booking, sending - {how}, unless "
+        f"{user} says he wants it done now, during the call. This takes precedence over any line in the "
+        f"call style that says to do everything during the call. When he asks what you have, or is wrapping "
+        "up, read the noted ones back in one sentence with the key details (who, when, how much) as he said them."
     )
 
 
 class HealthBlock:
-    """What cannot be reached right now, so "can I do this?" is answered from the real status and
-    not by failing a call. Empty - no block, no tokens - when everything is up."""
+    """What Jarvis can reach right now, outside the core, so "can I do this?" is answered from the
+    real status and not by failing a call: what is connected, what is down and since when, and that
+    nothing else is. The alpha (2026-10-30, F-10) had no laptop host at all and Jarvis still offered
+    to read a file from the laptop - a block that listed only what was DOWN said nothing about a
+    machine that was never there. Changes rarely, so the context dedup sends it once."""
 
     def __init__(self, registry: Callable[[], Any], settings: Callable[[], Settings]) -> None:
         self._registry = registry
@@ -1707,19 +1844,26 @@ class HealthBlock:
         s = self._settings()
         if run.kind is not RunKind.CHAT or not s.tasks.enabled:
             return None
-        failing = self._registry().failing()
-        if not failing:
+        links = self._registry().connections()
+        if not links:
             return None
         tz = ZoneInfo(s.timezone)
-        lines = "\n".join(
-            f"- {name}: down since {since.astimezone(tz).strftime('%H:%M')} ({_one_line(error, 160)})"
-            for name, error, since in failing
+        up = [name for name, error, _since in links if error is None]
+        down = [
+            f"- {name}: not available"
+            + (f" since {since.astimezone(tz).strftime('%H:%M')}" if since else "")
+            + f" ({_one_line(error, 160)})"
+            for name, error, since in links
+            if error is not None
+        ]
+        lines = [f"Connected: {', '.join(up) if up else 'nothing'}."]
+        if down:
+            lines.append("Not available:\n" + "\n".join(down))
+        lines.append(
+            "No other machine, host or service is connected. Work that needs one that is not connected here "
+            "cannot be done now: say so, and why, before you start - and do not hand it to a task."
         )
-        return (
-            "## Not reachable now\n"
-            f"{lines}\n"
-            "Their tools fail until they are back: do not promise work that needs them - say so, and why."
-        )
+        return "## What you can reach now\n" + "\n".join(lines)
 
 
 def voice_style_upgrade(settings: Settings) -> tuple[Settings | None, str | None]:

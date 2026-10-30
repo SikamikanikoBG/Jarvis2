@@ -531,11 +531,20 @@ class MailTools(BuiltinProvider):
     """``mail.*``: the IMAP/SMTP accounts of ``Settings.mail_accounts``."""
 
     name = PROVIDER
+    #: The mailboxes are outside the core: listed in "What you can reach now" (features/tasks.py).
+    external = True
 
     def __init__(self, settings: Callable[[], Settings], connect: Callable[[MailAccount], Any] | None = None) -> None:
         self._settings = settings
         self._connect = connect
         super().__init__()
+
+    @property
+    def error(self) -> str | None:
+        """Why there is no mailbox to reach, or None."""
+        if not any(a.enabled for a in self._settings().mail_accounts):
+            return "no mail account is configured"
+        return None
 
     def mailbox(self, account: str = "") -> Mailbox:
         accounts = [a for a in self._settings().mail_accounts if a.enabled]

@@ -137,6 +137,9 @@ class ToolResult(BaseModel):
     # What the tool SAW. Until 13 Sep 2026 browser.screenshot's image was dropped on the way in
     # and the model was told "attached for a vision model" — blind, and believing it had eyes.
     images: list[ToolImage] = Field(default_factory=list, exclude=True)
+    # The call handed the turn's work to someone else (a delegated task): the run's next step is
+    # its answer and no further tool runs in this turn (engine/loop.py). Never serialised.
+    ends_turn: bool = Field(default=False, exclude=True)
 
     @classmethod
     def data(cls, text: str, *, count: int | None = None, total: int | None = None) -> ToolResult:

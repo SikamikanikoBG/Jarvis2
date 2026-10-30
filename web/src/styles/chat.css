@@ -824,7 +824,7 @@
   min-width: 0;
   flex-wrap: wrap;
 }
-.task-title { flex: 1; min-width: 0; }
+.task-title { flex: 1; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .task-pill {
   font-size: var(--fs-xs);
   font-weight: 600;
@@ -879,7 +879,7 @@
 .task-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .task-card .confirm { max-width: 100%; }
 
-.tasks-chip-wrap { position: relative; flex: none; }
+.tasks-chip-wrap { position: relative; flex: none; z-index: 5; }
 .tasks-chip {
   font: inherit;
   font-size: var(--fs-xs);
@@ -894,10 +894,8 @@
 }
 .tasks-chip-wait { background: var(--warn-soft); color: var(--warn); }
 .tasks-pop {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 30;
+  position: fixed;
+  z-index: 1000;
   min-width: 220px;
   max-width: min(320px, calc(100vw - 32px));
   margin: 0;

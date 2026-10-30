@@ -108,6 +108,8 @@ export interface UiState {
   callMeDefault: boolean;
   /** settings.tasks.approval_ttl_s, for "expires at" on a task's approval; null = not known. */
   approvalTtlS: number | null;
+  /** settings.tasks.enabled: the new-chat hint says Jarvis can take work as a task. */
+  tasksEnabled: boolean;
   /** Sidebar multi-select: the chosen conversation ids. Empty means not selecting anything. */
   selection: string[];
   /** The row a shift-click measures its range from. */
@@ -317,6 +319,7 @@ export const useStore = create<AppState>()((set, get) => ({
   callMeNext: {},
   callMeDefault: true,
   approvalTtlS: null,
+  tasksEnabled: false,
   thinkChoice: {},
   draftPrivacy: DRAFT_NORMAL,
   freshChat: false,
@@ -411,7 +414,7 @@ export const useStore = create<AppState>()((set, get) => ({
     void refreshPush().catch(() => undefined);
     api.settings
       .get()
-      .then((st) => set({ callMeDefault: st.call_me_default.includes('chat'), approvalTtlS: st.tasks?.approval_ttl_s ?? null }))
+      .then((st) => set({ callMeDefault: st.call_me_default.includes('chat'), approvalTtlS: st.tasks?.approval_ttl_s ?? null, tasksEnabled: st.tasks?.enabled ?? false }))
       .catch(() => undefined);
 
     window.addEventListener('popstate', () => {

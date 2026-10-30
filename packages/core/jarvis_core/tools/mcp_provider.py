@@ -34,6 +34,9 @@ CONNECT_TIMEOUT_S = 15.0
 
 
 class McpProvider:
+    #: A machine or service outside the core: listed in "What you can reach now" (features/tasks.py).
+    external = True
+
     def __init__(self, spec: McpServerSpec) -> None:
         self.spec = spec
         self.name = spec.name

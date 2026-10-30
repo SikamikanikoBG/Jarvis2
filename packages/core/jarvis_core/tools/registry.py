@@ -17,7 +17,7 @@ from typing import Any, Protocol
 
 import jsonschema
 
-from jarvis_proto import ToolResult, ToolSpec
+from jarvis_proto import ToolResult, ToolResultKind, ToolSpec
 
 log = logging.getLogger(__name__)
 
@@ -223,6 +223,18 @@ class ToolRegistry:
         """Every provider that cannot be reached now: (name, error, since), by name."""
         return [(name, error, self._since.get(name, datetime.now(UTC))) for name, error in sorted(self._errors.items())]
 
+    def connections(self) -> list[tuple[str, str | None, datetime | None]]:
+        """Every machine or service outside the core (a provider marked ``external``): (name, why
+        it cannot be reached or None, since when). What "can I do this?" is answered from."""
+        out: list[tuple[str, str | None, datetime | None]] = []
+        for provider in self._providers:
+            if not getattr(provider, "external", False):
+                continue
+            error = self._errors.get(provider.name) or getattr(provider, "error", None)
+            since = self._since.get(provider.name) if error else None
+            out.append((provider.name, str(error) if error else None, since))
+        return sorted(out)
+
     def specs(self) -> list[ToolSpec]:
         """Sorted by name, always.
 
@@ -307,10 +319,19 @@ class ToolRegistry:
             return ToolResult.failure(self.cannot_route(name))
         provider, _spec = entry
         try:
-            return await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 provider.call(name, arguments, cancel=cancel, idempotency_key=idempotency_key, timeout_s=timeout_s),
                 timeout=timeout_s,
             )
+            # A provider that says what is wrong with it (an MCP server that lost its session, a
+            # search backend whose engines are suspended) is marked down - or up again - by the call
+            # that found out, not 30 s later by the next listing.
+            said = getattr(provider, "error", None)
+            if result.kind is ToolResultKind.ERROR and said:
+                self._set_error(provider.name, str(said))
+            elif result.kind is not ToolResultKind.ERROR and said is None and provider.name in self._errors:
+                self._set_error(provider.name, None)
+            return result
         except TimeoutError:
             return ToolResult.failure(f"{name} timed out after {timeout_s:.0f}s")
         except asyncio.CancelledError:

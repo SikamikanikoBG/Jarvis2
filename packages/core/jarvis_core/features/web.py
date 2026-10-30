@@ -34,11 +34,23 @@ class _SearchArgs(BaseModel):
 
 class WebTools(BuiltinProvider):
     name = "web"
+    #: The search backend is outside the core: listed in "What you can reach now" (features/tasks.py).
+    external = True
 
     def __init__(self, settings: Callable[[], Settings], client: httpx.AsyncClient | None = None) -> None:
         self._settings = settings
         self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(25.0))
+        # Why search cannot answer right now, from SearXNG's own report - None while it does. The
+        # registry reads it after each call, so "web search is not working" is a status, not a
+        # string of empty results the model searches through for two minutes (alpha F-10).
+        self._error: str | None = None
         super().__init__()
+
+    @property
+    def error(self) -> str | None:
+        if not (self._settings().searxng_url or "").strip():
+            return "no search engine is configured (settings.searxng_url)"
+        return self._error
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -75,14 +87,21 @@ class WebTools(BuiltinProvider):
         try:
             resp = await self._client.get(f"{base}/search", params=params)
         except httpx.HTTPError as exc:
-            return ToolResult.failure(f"search backend unreachable: {type(exc).__name__}: {exc}")
+            return self._down(f"search backend unreachable: {type(exc).__name__}: {exc}")
         if resp.status_code >= 400:
-            return ToolResult.failure(f"search backend HTTP {resp.status_code}: {resp.text[:200]}")
+            return self._down(f"search backend HTTP {resp.status_code}: {resp.text[:200]}")
         try:
             data = resp.json()
         except ValueError:
-            return ToolResult.failure("search backend returned non-JSON")
+            return self._down("search backend returned non-JSON")
         results = [r for r in data.get("results", []) if isinstance(r, dict) and r.get("url")][:max_results]
+        silent: list[list[Any]] = [list(e) for e in data.get("unresponsive_engines", []) if isinstance(e, list) and e]
+        if not results and silent:
+            # Nothing found because the engines behind SearXNG did not answer (suspended, rate
+            # limited) - not because nothing exists. Said as such, and marked as down.
+            why = ", ".join(" ".join(str(x) for x in e[:2]) for e in silent[:5])
+            return self._down(f"the search engines are not answering: {why}")
+        self._error = None
         if not results:
             hint = "; ".join(str(s) for s in data.get("suggestions", [])[:3])
             return ToolResult.empty(f"No results for {query!r}." + (f" Suggestions: {hint}" if hint else ""))
@@ -98,3 +117,7 @@ class WebTools(BuiltinProvider):
         return ToolResult.data(
             "\n".join(lines), count=len(results), total=int(data.get("number_of_results") or 0) or None
         )
+
+    def _down(self, why: str) -> ToolResult:
+        self._error = why
+        return ToolResult.failure(why)

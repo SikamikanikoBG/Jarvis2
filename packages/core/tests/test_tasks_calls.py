@@ -214,7 +214,9 @@ async def test_a_noted_task_writes_its_brief_first_from_the_call_and_his_words(h
     first = split.task.calls[0][0]
     opening = next(m.content for m in first if m.role is Role.USER and m.name is None)
     assert "Its brief is not written yet" in opening
-    assert "Arsen: and hotels please" in opening and "Jarvis: Noted." in opening  # the call, copied by code
+    assert (
+        "## Where he asked it" in opening and "Arsen: and hotels please" in opening and "Jarvis: Noted." in opening
+    )  # the call, copied by code
     refused = next(
         m for m in await harness.core.store.list_messages(task.conversation_id or "") if m.tool_call_id == "c0"
     )
@@ -246,6 +248,7 @@ async def test_one_after_call_report_for_everything_noted_on_the_call(harness: H
         and "Task: Hotels — done" in text
         and "Task: Trains — done" in text
     )
+    await until(lambda: any(p["title"].startswith("After the call") for p in sent))  # the notice follows the message
     assert [p["title"] for p in sent if p["title"].startswith("After the call")] == ["After the call: 2 done"]
     assert not any(p["title"].startswith("Task done") for p in sent)  # no push per task on top
 

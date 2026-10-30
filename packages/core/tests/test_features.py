@@ -848,3 +848,22 @@ async def test_notify_discord_attaches_files():
         _json.loads(body.split(b'name="payload_json"')[1].split(b"\r\n\r\n", 1)[1].split(b"\r\n--")[0])["content"]
         == "**World news — 28.09**"
     )
+
+
+async def test_a_one_off_in_local_time_fires_on_time_not_two_hours_late(harness: Harness):
+    """2026-10-30: a one-off `at` kept its "+02:00" offset in next_fire, the due check compared it as
+    text against UTC, and production's "Messenger РД" reminder fired two hours late - or never."""
+    from zoneinfo import ZoneInfo
+
+    core = harness.core
+    sofia = ZoneInfo("Europe/Sofia")
+    soon = datetime.now(sofia) - timedelta(minutes=1)  # a minute ago, written in Sofia time
+    sched = await core.schedules.create(name="Messenger", prompt="remind me", at=soon, tz="Europe/Sofia")
+    assert sched.next_fire is not None and sched.next_fire.utcoffset() == timedelta(0)
+    assert [s.id for s in await core.schedules.due(datetime.now(UTC))] == [sched.id]
+    # A row stored before the fix, still carrying its offset, is due by the instant too.
+    await core.db.execute("UPDATE schedules SET next_fire = ? WHERE id = ?", (soon.isoformat(), sched.id))
+    assert [s.id for s in await core.schedules.due(datetime.now(UTC))] == [sched.id]
+    later = datetime.now(sofia) + timedelta(minutes=30)
+    await core.db.execute("UPDATE schedules SET next_fire = ? WHERE id = ?", (later.isoformat(), sched.id))
+    assert await core.schedules.due(datetime.now(UTC)) == []

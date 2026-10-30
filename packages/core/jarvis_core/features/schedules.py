@@ -46,7 +46,10 @@ def compute_next(cron: str | None, at: datetime | None, tz: str, after: datetime
     if at is not None:
         # A one-shot keeps its slot even if it is already in the past: the ticker's catch-up
         # policy decides whether a late slot still fires; ``advance`` disables it afterwards.
-        return at
+        # Stored as UTC like every other next_fire: kept in its own offset ("+02:00"), the due
+        # check compared it as text against UTC and a one-off fired two hours late, or never
+        # (2026-10-30, production's "Messenger РД"). A naive time is the schedule's wall clock.
+        return (at if at.tzinfo else at.replace(tzinfo=ZoneInfo(tz))).astimezone(UTC)
     if cron:
         zone = ZoneInfo(tz)
         it = croniter(cron, after.astimezone(zone))
@@ -265,11 +268,12 @@ class ScheduleStore:
         self._changed(schedule.id)
 
     async def due(self, now: datetime) -> list[Schedule]:
-        rows = await self.db.fetchall(
-            "SELECT * FROM schedules WHERE enabled = 1 AND next_fire IS NOT NULL AND next_fire <= ? ORDER BY next_fire",
-            (now.isoformat(),),
-        )
-        return [await self._row_to_schedule(r) for r in rows]
+        """Compared as instants, not as text: a next_fire stored before 2026-10-30 may carry its own
+        offset, and "10:00+02:00" sorts after "09:30+00:00" although it is earlier."""
+        rows = await self.db.fetchall("SELECT * FROM schedules WHERE enabled = 1 AND next_fire IS NOT NULL")
+        due = [r for r in rows if (_dt(r["next_fire"]) or now) <= now]
+        due.sort(key=lambda r: _dt(r["next_fire"]) or now)
+        return [await self._row_to_schedule(r) for r in due]
 
 
 class Scheduler:

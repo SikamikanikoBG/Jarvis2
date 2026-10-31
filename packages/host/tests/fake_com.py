@@ -598,6 +598,78 @@ class Account:
         self.DeliveryStore = store
 
 
+class DirectoryRecipient:
+    """``Namespace.CreateRecipient`` / ``CurrentUser``: resolves against ``Namespace.directory``
+    and answers ``FreeBusy`` with the person's code string (or raises the person's error)."""
+
+    def __init__(self, ns: Namespace, text: str) -> None:
+        self._ns = ns
+        self._text = text
+        self.Name = text
+        self.Address = text
+        self.Resolved = False
+        self.AddressEntry = AddressEntry(text)
+        self.free_busy_calls: list[tuple[Any, int, bool]] = []
+
+    def _person(self) -> DirectoryPerson | None:
+        wanted = self._text.lower()
+        hits = [p for p in self._ns.directory if wanted in (p.name.lower(), p.smtp.lower())]
+        if not hits:
+            hits = [p for p in self._ns.directory if wanted in p.name.lower()]
+        return hits[0] if len(hits) == 1 else None  # ambiguous or unknown → unresolved
+
+    def Resolve(self) -> bool:
+        person = self._person()
+        if person is not None:
+            self.Name, self.Resolved = person.name, True
+            self.AddressEntry = AddressEntry("x500:" + person.smtp)
+            self.Address = self.AddressEntry.Address
+        return self.Resolved
+
+    @property
+    def PropertyAccessor(self) -> PropertyAccessor:
+        return PropertyAccessor({})
+
+    def FreeBusy(self, start: Any, minutes: int, complete: bool) -> str:
+        self.free_busy_calls.append((start, minutes, complete))
+        self._ns.free_busy_calls.append((self.Name, start, minutes, complete))
+        person = self._person()
+        if person is None:
+            raise FakeComError(-2147467259, "The operation failed.")
+        if isinstance(person.codes, Exception):
+            raise person.codes
+        return (
+            person.codes
+            if minutes == person.minutes
+            else "".join(c * (person.minutes // minutes) for c in person.codes)
+        )
+
+
+class DirectoryPerson:
+    def __init__(self, name: str, smtp: str, codes: str | Exception, minutes: int = 30) -> None:
+        self.name, self.smtp, self.codes, self.minutes = name, smtp, codes, minutes
+
+
+class GalEntries:
+    def __init__(self, ns: Namespace) -> None:
+        self._ns = ns
+
+    def Item(self, text: str) -> Any:
+        # Outlook answers a name with the nearest entry; alphabetically next is close enough here.
+        names = sorted(self._ns.directory, key=lambda p: p.name.lower())
+        for p in names:
+            if p.name.lower() >= text.lower():
+                entry = AddressEntry("x500:" + p.smtp)
+                entry.Name = p.name  # type: ignore[attr-defined]
+                return entry
+        raise FakeComError(NOT_FOUND, "not found")
+
+
+class Gal:
+    def __init__(self, ns: Namespace) -> None:
+        self.AddressEntries = GalEntries(ns)
+
+
 class Namespace:
     def __init__(self, stores: list[Store], accounts: list[Account], default: Store) -> None:
         self._stores = stores
@@ -606,6 +678,24 @@ class Namespace:
         self.DefaultStore = default
         self.get_item_calls: list[tuple[str, str | None]] = []
         self.fail_next: list[Exception] = []
+        # The address book with each person's free/busy (empty: nobody resolves).
+        self.directory: list[DirectoryPerson] = []
+        self.current_user_name = ""
+        self.free_busy_calls: list[tuple[str, Any, int, bool]] = []
+
+    def CreateRecipient(self, text: str) -> DirectoryRecipient:
+        return DirectoryRecipient(self, text)
+
+    @property
+    def CurrentUser(self) -> DirectoryRecipient | None:
+        if not self.current_user_name:
+            return None
+        me = DirectoryRecipient(self, self.current_user_name)
+        me.Resolve()
+        return me
+
+    def GetGlobalAddressList(self) -> Gal:
+        return Gal(self)
 
     def _stores_for(self, store_id: str | None) -> list[Store]:
         if store_id is None:

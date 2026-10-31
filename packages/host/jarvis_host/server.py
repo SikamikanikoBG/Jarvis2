@@ -357,7 +357,7 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
         all_day: bool = False,
         allow_overlap: bool = False,
     ) -> str:
-        """Create an appointment (`start`/`end` ISO-8601 local; `end` defaults to +1h). REFUSES a slot that already holds a busy appointment - read calendar_list first and pick a free slot; pass allow_overlap=true only when overlapping is the intent. Attendees (comma-separated addresses) make it a meeting; invites go out only when send_invites is true."""
+        """Create an appointment (`start`/`end` ISO-8601 local; `end` defaults to +1h). REFUSES a slot that already holds a busy appointment - read calendar_list first and pick a free slot; pass allow_overlap=true only when overlapping is the intent. Attendees (comma-separated addresses) make it a meeting; invites go out only when send_invites is true. `body` is the text of the invite (the agenda). For a meeting with colleagues find the time with calendar_free_busy first and send only the slot Arsen picked."""
         return json_text(
             await _run(
                 "calendar_create",
@@ -412,6 +412,39 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
                 "calendar_free_slots",
                 lambda: outlook().call(
                     "calendar_free_slots", account, start, days, duration_min, work_start_hour, work_end_hour, limit
+                ),
+            )
+        )
+
+    @tool("calendar_free_busy", READ)
+    async def calendar_free_busy(
+        attendees: str,
+        start: str | None = None,
+        days: int = 5,
+        duration_min: int = 30,
+        work_start_hour: int = 9,
+        work_end_hour: int = 18,
+        limit: int = 3,
+        include_me: bool = True,
+        tentative_busy: bool = True,
+        spread_min: int = 120,
+    ) -> str:
+        """Find times when several people are free, from Exchange free/busy - use it to propose a meeting with colleagues. `attendees` = comma-separated addresses or names (resolved through the address book); Arsen is included unless include_me=false. Returns up to `limit` common slots of `duration_min` minutes on weekdays inside the work hours, from `start` (ISO; default now) for `days` days (max 28), earliest first and at least `spread_min` minutes apart. Busy and out-of-office block; tentative blocks unless tentative_busy=false; 'working elsewhere' does not block and is named on the slot. `people` lists each person's busy blocks; anyone without data (unknown or ambiguous name, no access, error) has `no_data` with the reason and is left out of the slots - say so, and for an ambiguous name ask which person (`nearest_in_address_book` is only a guess to confirm). When fewer slots than asked are free, `near_misses` gives the best other times with who blocks them. Flow: propose 2-3 slots in the chat and stop; only after Arsen picks one and gives the agenda, book it with calendar_create(attendees = the addresses from `people`, start/end of the chosen slot, subject, body = the agenda, send_invites=true)."""
+        return json_text(
+            await _run(
+                "calendar_free_busy",
+                lambda: outlook().call(
+                    "calendar_free_busy",
+                    attendees,
+                    start,
+                    days,
+                    duration_min,
+                    work_start_hour,
+                    work_end_hour,
+                    limit,
+                    include_me,
+                    tentative_busy,
+                    spread_min,
                 ),
             )
         )

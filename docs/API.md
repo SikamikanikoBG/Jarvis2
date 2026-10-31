@@ -363,6 +363,18 @@ Host tools behind it: `calendar_invites(account, days)`, `calendar_respond(entry
 comment, account)`, `calendar_free_slots(account, start, days, duration_min, work_start_hour,
 work_end_hour, limit)`, `calendar_remove_canceled(account, days_back, days_ahead)`.
 
+## Meeting slots (issue #11, host 2.0.0a32)
+
+Chat-only, no screen: `calendar_free_busy(attendees, start, days ≤ 28, duration_min, work_start_hour,
+work_end_hour, limit, include_me, tentative_busy, spread_min)` reads Exchange free/busy through
+`Recipient.FreeBusy(date, 30|15, True)` for Arsen (`CurrentUser`) and each attendee (address or name,
+resolved in the address book) → `{from, to, duration_min, work_hours, people: [{who, address, me?, busy:
+[{start, end, status}], data_until?} | {who, no_data, nearest_in_address_book?}], slots: [{start, end,
+working_elsewhere?}], near_misses: [{start, end, blocked_by: [{who, status}]}], note?}`. People without
+data are named and left out of the intersection; an unresolved or ambiguous name is never guessed.
+Arsen picks a slot and gives the agenda → `calendar_create(attendees, start, end, subject, body=agenda,
+send_invites=true)`.
+
 ## Mail desk (core 2.0.0a67 → a69, host 2.0.0a21 → a23, web alpha.39 → alpha.40)
 
 The Mail screen: unread threads of EVERY mail folder (triage files mail into subfolders), an

@@ -2,6 +2,20 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-10-31 — host 2.0.0a32
+
+### Added
+- **Meeting slots** ([#11](https://github.com/SikamikanikoBG/Jarvis2/issues/11)): new read-only host tool
+  `calendar_free_busy`. Name colleagues (addresses or names) and a window in the chat; Jarvis reads their
+  Exchange free/busy plus Arsen's own and proposes 2–3 common slots on weekdays in work hours, earliest first.
+  - Tentative counts as busy unless asked otherwise; out of office blocks; "working elsewhere" does not block
+    and is named on the slot.
+  - Anyone without data (unknown or ambiguous name, no access, error) is named with the reason, never silently
+    dropped; for an ambiguous name Jarvis asks which person.
+  - Nobody free → the nearest near-misses, each with who blocks it.
+  - Arsen picks a slot and gives the agenda; Jarvis books it with `calendar_create` (attendees, invites sent,
+    agenda in the body). Chat and voice only, no new screen.
+
 ## 2026-10-30 — core 2.0.0a106, proto 2.0.0a37, web 2.0.0-alpha.86
 
 ### Added

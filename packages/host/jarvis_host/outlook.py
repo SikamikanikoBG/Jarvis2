@@ -577,6 +577,158 @@ def received_filter(lower: datetime | None, upper: datetime | None, extra: str |
     return "@SQL=" + " AND ".join(parts) if parts else None
 
 
+# --- free/busy of several people (meeting slots, issue #11) -------------------------------------
+#
+# ``Recipient.FreeBusy(date, minutes, True)`` reads Exchange's published free/busy headless - no
+# Scheduling Assistant, no screen (spike on jarvisvm 2026-10-31: 29 days x 48 half-hours for
+# colleagues). The functions below are pure so the parsing and the intersection are testable
+# without COM; ``OutlookBackend.calendar_free_busy`` only resolves people and fetches the strings.
+
+FREE_BUSY_CODES = {"0": "free", "1": "tentative", "2": "busy", "3": "out_of_office", "4": "working_elsewhere"}
+# Exchange publishes about a month ahead; past that every slot would read "no data".
+FREE_BUSY_MAX_DAYS = 28
+FREE_BUSY_MAX_PEOPLE = 20
+FREE_BUSY_MAX_LISTED = 40  # busy blocks shown per person; the slots use them all
+
+
+@dataclass
+class BusyBlock:
+    start: datetime
+    end: datetime
+    status: str
+
+
+@dataclass
+class FreeBusyPerson:
+    who: str
+    address: str
+    blocks: list[BusyBlock]
+    data_until: datetime  # nothing is known after this instant
+
+
+def local_wall(naive: datetime, tz: Any = None) -> datetime:
+    """A local wall-clock time made aware with ITS OWN offset (``tz`` for tests, else the system zone).
+
+    Each bound is converted separately so a DST change inside the window cannot shift the work
+    hours on its far side (the calendar_free_slots bug of 2026-10-23)."""
+    return naive.replace(tzinfo=tz) if tz is not None else naive.astimezone()
+
+
+def parse_free_busy(codes: str, origin: datetime, minutes: int, tz: Any = None) -> tuple[list[BusyBlock], datetime]:
+    """A ``Recipient.FreeBusy`` string → its non-free runs as blocks, and where the data ends.
+
+    Character i covers ``[origin + i*minutes, origin + (i+1)*minutes)``, ``origin`` being local
+    midnight of the requested date. The step is ELAPSED time: Exchange keeps free/busy as UTC
+    minutes, so a DST day has 46 or 50 half-hours rather than a shifted clock (assumed from that
+    model; the spike's window had no DST change). The steps are taken in UTC and each instant is
+    shown with its own local offset - aware arithmetic on a local time would add wall-clock hours
+    or keep Friday's offset on Monday. An unknown character counts as busy: a slot is never
+    offered on data that could not be read.
+    """
+    base = origin.astimezone(UTC)
+    step = timedelta(minutes=minutes)
+
+    def instant(k: int) -> datetime:
+        return (base + step * k).astimezone(tz)
+
+    blocks: list[BusyBlock] = []
+    i, n = 0, len(codes)
+    while i < n:
+        j = i
+        while j < n and codes[j] == codes[i]:
+            j += 1
+        if codes[i] != "0":
+            blocks.append(BusyBlock(instant(i), instant(j), FREE_BUSY_CODES.get(codes[i], "busy")))
+        i = j
+    return blocks, instant(n)
+
+
+def work_windows(
+    start: datetime, end: datetime, work_start_hour: int, work_end_hour: int, tz: Any = None
+) -> list[tuple[datetime, datetime]]:
+    """The weekday work hours between ``start`` and ``end``, walked on the local wall clock."""
+    out: list[tuple[datetime, datetime]] = []
+    day = start.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+    while local_wall(day, tz) < end:
+        if day.weekday() < 5:
+            ws = max(local_wall(day + timedelta(hours=work_start_hour), tz), start)
+            we = min(local_wall(day + timedelta(hours=work_end_hour), tz), end)
+            if ws < we:
+                out.append((ws, we))
+        day += timedelta(days=1)
+    return out
+
+
+def ceil_to_grid(dt: datetime, minutes: int) -> datetime:
+    """``dt`` rounded UP to the next whole ``minutes`` of the hour (15 / 30): slots start on the grid."""
+    if dt.second or dt.microsecond:
+        dt = dt.replace(second=0, microsecond=0) + timedelta(minutes=1)
+    rem = dt.minute % minutes
+    return dt + timedelta(minutes=minutes - rem) if rem else dt
+
+
+def _slot_blockers(
+    people: Sequence[FreeBusyPerson], s: datetime, e: datetime, blocking: set[str]
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Who cannot make ``[s, e)`` (and why), and who is free but working elsewhere."""
+    blockers: list[dict[str, str]] = []
+    elsewhere: list[str] = []
+    for p in people:
+        if e > p.data_until:
+            blockers.append({"who": p.who, "status": "no_data_this_far_ahead"})
+            continue
+        statuses = [b.status for b in p.blocks if b.start < e and b.end > s]
+        hit = next((st for st in statuses if st in blocking), None)
+        if hit is not None:
+            blockers.append({"who": p.who, "status": hit})
+        elif "working_elsewhere" in statuses:
+            elsewhere.append(p.who)
+    return blockers, elsewhere
+
+
+def find_common_slots(
+    people: Sequence[FreeBusyPerson],
+    windows: Sequence[tuple[datetime, datetime]],
+    duration: timedelta,
+    step_min: int,
+    limit: int,
+    spread: timedelta,
+    blocking: set[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Earliest-first slots free for everyone, each at least ``spread`` after the previous one,
+    up to ``limit``. When fewer are found, also the near misses: the times blocked by the fewest
+    people (earliest first among equals), each naming who blocks it - so "nobody is free" still
+    gives Arsen something to decide on."""
+    spread = max(spread, duration)  # proposals never overlap each other
+    slots: list[dict[str, Any]] = []
+    misses: list[tuple[int, datetime, dict[str, Any]]] = []
+    for ws, we in windows:
+        cursor = ceil_to_grid(ws, step_min)
+        while cursor + duration <= we:
+            end = cursor + duration
+            blockers, elsewhere = _slot_blockers(people, cursor, end, blocking)
+            entry: dict[str, Any] = {"start": iso_local(cursor), "end": iso_local(end)}
+            if elsewhere:
+                entry["working_elsewhere"] = elsewhere
+            if blockers:
+                misses.append((len(blockers), cursor, {**entry, "blocked_by": blockers}))
+            elif len(slots) < limit and (not slots or cursor >= slots[-1]["_at"] + spread):
+                slots.append({**entry, "_at": cursor})
+            cursor += timedelta(minutes=step_min)
+    near: list[dict[str, Any]] = []
+    picked: list[datetime] = []
+    if len(slots) < limit:
+        for _, at, entry in sorted(misses, key=lambda m: (m[0], m[1])):
+            if len(near) >= limit:
+                break
+            if all(abs(at - p) >= spread for p in picked):
+                near.append(entry)
+                picked.append(at)
+    for s in slots:
+        del s["_at"]
+    return slots, near
+
+
 def outlook_dispatch() -> Any:
     """Dispatch a live ``Outlook.Application``. Must run on the COM thread."""
     if sys.platform != "win32":
@@ -1791,6 +1943,158 @@ class OutlookBackend:
             "busy_considered": len(busy),
         }
 
+    def _nearest_address_entry(self, ns: Any, text: str) -> dict[str, str] | None:
+        """The address book's closest entry to an unresolved name, offered as a guess to confirm."""
+        try:
+            entry = ns.GetGlobalAddressList().AddressEntries.Item(text)
+        except Exception:
+            return None
+        if entry is None:
+            return None
+        address = ""
+        try:
+            user = entry.GetExchangeUser()
+            address = _text(_prop(user, "PrimarySmtpAddress", "")) if user is not None else ""
+        except Exception:
+            address = ""
+        name = _text(_prop(entry, "Name", ""))
+        return {"name": name, "address": address.lower()} if name else None
+
+    def _resolve_attendee(self, ns: Any, text: str) -> tuple[Any, dict[str, Any]]:
+        """(recipient or None, the person's entry). An unknown or ambiguous name is not guessed:
+        it comes back as ``no_data`` so the model asks Arsen which person he means."""
+        try:
+            recipient = ns.CreateRecipient(text)
+            resolved = bool(recipient.Resolve())
+        except Exception as exc:
+            return None, {"who": text, "no_data": f"address book lookup failed: {describe_com_error(exc)}"}
+        if not resolved:
+            out: dict[str, Any] = {
+                "who": text,
+                "no_data": "not resolved: unknown or ambiguous in the address book - ask which person (or the address)",
+            }
+            nearest = self._nearest_address_entry(ns, text)
+            if nearest is not None:
+                out["nearest_in_address_book"] = nearest
+            return None, out
+        return recipient, {
+            "who": _text(_prop(recipient, "Name", "")) or text,
+            "address": self._recipient_smtp(recipient),
+        }
+
+    def calendar_free_busy(
+        self,
+        attendees: str,
+        start: str | None = None,
+        days: int = 5,
+        duration_min: int = 30,
+        work_start_hour: int = 9,
+        work_end_hour: int = 18,
+        limit: int = 3,
+        include_me: bool = True,
+        tentative_busy: bool = True,
+        spread_min: int = 120,
+    ) -> dict[str, Any]:
+        """Common free slots of several people from Exchange free/busy (see ``parse_free_busy``).
+
+        Arsen is ``Namespace.CurrentUser``; colleagues resolve by address or by name through the
+        address book. Anyone whose free/busy cannot be read is reported with a reason and left out
+        of the intersection - never silently dropped and never assumed free."""
+        ns = self._session()
+        s0 = (parse_when(start) if start else datetime.now().astimezone()).replace(second=0, microsecond=0)
+        window_end = s0 + timedelta(days=max(1, min(int(days or 5), FREE_BUSY_MAX_DAYS)))
+        dur = timedelta(minutes=max(15, min(int(duration_min or 30), 8 * 60)))
+        # 30-minute characters unless the duration needs quarter hours (a 45-min meeting).
+        minutes = 30 if int(dur.total_seconds() // 60) % 30 == 0 else 15
+        wsh = max(0, min(int(work_start_hour), 23))
+        weh = max(wsh + 1, min(int(work_end_hour), 24))
+        names = split_addresses(attendees)
+        if not names and not include_me:
+            raise OutlookError("no attendees given")
+        if len(names) > FREE_BUSY_MAX_PEOPLE:
+            raise OutlookError(f"at most {FREE_BUSY_MAX_PEOPLE} attendees per call, got {len(names)}")
+        origin = local_wall(datetime(s0.year, s0.month, s0.day))
+        # FreeBusy uses only the date. It goes in as local noon: pywin32 shifts a datetime by the
+        # UTC offset (V1), which at midnight would ask for the day before and misalign every block.
+        asked_date = datetime(s0.year, s0.month, s0.day, 12)
+
+        targets: list[tuple[Any, dict[str, Any]]] = []
+        seen: set[str] = set()
+        if include_me:
+            me = _prop(ns, "CurrentUser")
+            if me is None:
+                targets.append((None, {"who": "me", "me": True, "no_data": "Outlook has no current user"}))
+            else:
+                address = self._recipient_smtp(me)
+                targets.append((me, {"who": _text(_prop(me, "Name", "")) or "me", "address": address, "me": True}))
+                seen.add(address.lower())
+        for text in names:
+            recipient, entry = self._resolve_attendee(ns, text)
+            key = str(entry.get("address", "")).lower()
+            if key and key in seen:
+                continue
+            seen.add(key)
+            targets.append((recipient, entry))
+
+        people: list[dict[str, Any]] = []
+        with_data: list[FreeBusyPerson] = []
+        windows = work_windows(s0, window_end, wsh, weh)
+        for recipient, entry in targets:
+            if recipient is None:
+                people.append(entry)
+                continue
+            try:
+                codes = _text(retry_transient(lambda r=recipient: r.FreeBusy(asked_date, minutes, True)))
+            except Exception as exc:
+                people.append({**entry, "no_data": f"free/busy not available: {describe_com_error(exc)}"})
+                continue
+            if not codes:
+                people.append({**entry, "no_data": "free/busy is empty (not published or no access)"})
+                continue
+            blocks, data_until = parse_free_busy(codes, origin, minutes)
+            with_data.append(FreeBusyPerson(entry["who"], entry.get("address", ""), blocks, data_until))
+            shown = [
+                {"start": iso_local(max(b.start, ws)), "end": iso_local(min(b.end, we)), "status": b.status}
+                for ws, we in windows
+                for b in blocks
+                if b.start < we and b.end > ws
+            ]
+            person = {**entry, "busy": shown[:FREE_BUSY_MAX_LISTED]}
+            if len(shown) > FREE_BUSY_MAX_LISTED:
+                person["busy_more"] = len(shown) - FREE_BUSY_MAX_LISTED
+            if data_until < window_end:
+                person["data_until"] = iso_local(data_until)
+            people.append(person)
+
+        blocking = {"busy", "out_of_office"} | ({"tentative"} if tentative_busy else set())
+        slots, near = (
+            find_common_slots(
+                with_data,
+                windows,
+                dur,
+                minutes,
+                max(1, min(int(limit or 3), 20)),
+                timedelta(minutes=max(0, int(spread_min))),
+                blocking,
+            )
+            if with_data
+            else ([], [])
+        )
+        out: dict[str, Any] = {
+            "from": iso_local(s0),
+            "to": iso_local(window_end),
+            "duration_min": int(dur.total_seconds() // 60),
+            "work_hours": f"{wsh:02d}:00-{weh:02d}:00 weekdays",
+            "tentative_counts_as_busy": bool(tentative_busy),
+            "people": people,
+            "slots": slots,
+            "near_misses": near,
+        }
+        missing = [p["who"] for p in people if "no_data" in p]
+        if missing:
+            out["note"] = "slots ignore people without free/busy data: " + ", ".join(missing)
+        return out
+
     def calendar_remove_canceled(self, account: str = "", days_back: int = 1, days_ahead: int = 60) -> dict[str, Any]:
         """Delete meetings the organizer has cancelled (MeetingStatus canceled / received-and-
         cancelled). Local only, nothing is sent. Ids are collected first, then deleted:
@@ -1993,6 +2297,8 @@ class OutlookService:
         "calendar_invites": 90,
         "calendar_respond": 45,
         "calendar_free_slots": 60,
+        # One Exchange free/busy query per person (up to FREE_BUSY_MAX_PEOPLE).
+        "calendar_free_busy": 90,
         "calendar_remove_canceled": 120,
     }
     READ_ONLY = {
@@ -2009,6 +2315,7 @@ class OutlookService:
         "calendar_list",
         "calendar_invites",
         "calendar_free_slots",
+        "calendar_free_busy",
     }
 
     # After a restart that did not connect, further restarts are refused for this long: each one

@@ -154,6 +154,8 @@ export interface Actions {
   cancelTask: (taskId: string) => void;
   /** An answer to what the task asked, or a change of mind: into it, or a new round of it. */
   steerTask: (taskId: string, text: string) => boolean;
+  /** Approve the call a task waits on and never ask for that tool in tasks again. */
+  allowToolInTasks: (taskId: string, callId: string) => void;
   /** The task's own conversation: its brief, every step, the full result. */
   openTaskWork: (task: Task) => void;
   renameConversation: (id: string, title: string) => Promise<void>;
@@ -891,6 +893,12 @@ export const useStore = create<AppState>()((set, get) => ({
       return false;
     }
     return true;
+  },
+
+  allowToolInTasks: (taskId, callId) => {
+    if (!ws?.send({ type: 'task.allow_tool', task_id: taskId, call_id: callId })) {
+      get().notify('Not connected — could not send the decision.', 'error');
+    }
   },
 
   openTaskWork: (task) => {

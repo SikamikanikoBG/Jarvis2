@@ -199,6 +199,8 @@ class ToolRegistry:
         for provider in self._providers:
             count = sum(1 for p, _ in self._index.values() if p is provider)
             error = errors.get(provider.name) or (getattr(provider, "error", None) if count == 0 else None)
+            if not _set_up(provider):
+                error = "not set up"
             out.append({"name": provider.name, "tools": count, "ok": error is None, "error": error})
         return out
 
@@ -214,9 +216,9 @@ class ToolRegistry:
         return None
 
     def serves(self, namespace: str) -> bool:
-        """Some provider offers (or offered, before it went down) tools in ``namespace``."""
-        return any(s.namespace == namespace for _, s in self._index.values()) or any(
-            p.name == namespace for p in self._providers
+        """Some set-up provider offers (or offered, before it went down) tools in ``namespace``."""
+        return any(s.namespace == namespace for p, s in self._index.values() if _set_up(p)) or any(
+            p.name == namespace and _set_up(p) for p in self._providers
         )
 
     def failing(self) -> list[tuple[str, str, datetime]]:
@@ -228,7 +230,7 @@ class ToolRegistry:
         it cannot be reached or None, since when). What "can I do this?" is answered from."""
         out: list[tuple[str, str | None, datetime | None]] = []
         for provider in self._providers:
-            if not getattr(provider, "external", False):
+            if not getattr(provider, "external", False) or not _set_up(provider):
                 continue
             error = self._errors.get(provider.name) or getattr(provider, "error", None)
             since = self._since.get(provider.name) if error else None
@@ -244,11 +246,11 @@ class ToolRegistry:
         reconnect alone reordered the prompt and cost a full re-prefill. Sorting makes the
         rendering a function of the set and nothing else.
         """
-        return sorted((spec for _, spec in self._index.values()), key=lambda s: s.name)
+        return sorted((spec for p, spec in self._index.values() if _set_up(p)), key=lambda s: s.name)
 
     def get(self, name: str) -> ToolSpec | None:
         entry = self._index.get(name)
-        return entry[1] if entry else None
+        return entry[1] if entry and _set_up(entry[0]) else None
 
     def cannot_route(self, name: str) -> str:
         """Why a call cannot be routed. An unreachable machine is not a missing capability.
@@ -315,7 +317,7 @@ class ToolRegistry:
         timeout_s: float = 60.0,
     ) -> ToolResult:
         entry = self._index.get(name)
-        if entry is None:
+        if entry is None or not _set_up(entry[0]):
             return ToolResult.failure(self.cannot_route(name))
         provider, _spec = entry
         try:
@@ -339,6 +341,15 @@ class ToolRegistry:
         except Exception as exc:
             log.exception("tool %s raised", name)
             return ToolResult.failure(f"{type(exc).__name__}: {exc}")
+
+
+def _set_up(provider: ToolProvider) -> bool:
+    """A provider that says it is not set up at all (``configured`` False: no mail account, no
+    search engine) offers no tools. Listed anyway, its tools were what a task named as a need - the
+    core's IMAP ``mail`` for a Gmail that lives in Outlook on a host - and the task was declined as
+    "mail is down" although another provider held the mail (UAT 2026-10-31). Not set up is not
+    down: it is not there, and the model picks from what is."""
+    return getattr(provider, "configured", True) is not False
 
 
 def _decode_stringified(arguments: dict[str, Any], schema: dict[str, Any]) -> None:

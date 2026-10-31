@@ -482,6 +482,8 @@ GET  /api/tasks/status                      → {enabled, calls_open, voice_styl
 GET  /api/tasks/{id}                        → Task     (404 unknown)
 POST /api/tasks/{id}/cancel                 → Task     (a working task stops at its next step; a noted one is dropped)
 POST /api/tasks/{id}/steer   {text}         → Task     (into the working run, or a new round of the task)
+POST /api/tasks/{id}/allow-tool {call_id}   → Task     ("Always allow in tasks": approve the call the task waits on,
+                                                        add its tool to tasks.no_approval; 409 if not that call or a deny_tools tool)
 POST /api/calls/{call_id}/end                          204 (hang-up from a page going away: fetch keepalive)
 GET  /api/status                            → … tasks: {enabled, <state>: n}
 ```
@@ -509,7 +511,7 @@ chat; files the task attached move onto it. Tasks noted on one call report toget
 WS server events (to every client): `task.changed {task}`, `task.removed {task_id}`.
 WS client messages: `task.cancel {task_id}`, `task.steer {task_id, text}`,
 `call.alive {call_id, conversation_id}` (every 20 s while a call's page is there),
-`call.ended {call_id}` (hang-up); `run.create` and `run.steer` take `call_id` on a call. A call
+`call.ended {call_id}` (hang-up), `task.allow_tool {task_id, call_id}` (the same as `allow-tool`); `run.create` and `run.steer` take `call_id` on a call. A call
 whose page said nothing for `tasks.call_drop_after_s` (240) is ended as dropped by the sweeper;
 noted tasks start exactly once whichever end comes first.
 

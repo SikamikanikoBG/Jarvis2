@@ -286,7 +286,7 @@ async def test_a_task_still_waiting_after_the_call_is_listed_and_reports_on_its_
     pushes(harness)
     conv = await noted_on_a_call(harness, "Write it")
     split.task.push(
-        FakeTurn(tool_calls=[brief()]), FakeTurn(tool_calls=[ToolCall(id="w1", name="test.write", arguments={})])
+        FakeTurn(tool_calls=[brief()]), FakeTurn(tool_calls=[ToolCall(id="w1", name="test.send", arguments={})])
     )
     await harness.core.tasks.call_ended(CALL, how="hangup")
     task = await the_task(harness, lambda t: t.state is TaskState.WAITING)
@@ -296,12 +296,12 @@ async def test_a_task_still_waiting_after_the_call_is_listed_and_reports_on_its_
 
     await until(summary_written)
     after = next(m for m in await harness.core.store.list_messages(conv) if m.content.startswith("**After the call"))
-    assert "Task: Write it — waiting for your approval" in after.content and "OK on test.write" in after.content
+    assert "Task: Write it — waiting for your approval" in after.content and "OK on test.send" in after.content
     split.task.push(FakeTurn(tool_calls=[finish("f1", (1, True, ["w1"]))]), FakeTurn(text="written"))
     assert task.waiting is not None
     await harness.core.engine.confirm(task.waiting.run_id, task.waiting.call_id, True)
     task = await reported(harness)
-    assert task.state is TaskState.DONE and tools.calls == ["write"]
+    assert task.state is TaskState.DONE and tools.calls == ["send"]
     reports = [m for m in await harness.core.store.list_messages(conv) if m.task_id and m.role is Role.ASSISTANT]
     assert len(reports) == 2 and reports[-1].content.startswith("**Task: Write it — done**")
 

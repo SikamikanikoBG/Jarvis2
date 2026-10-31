@@ -289,9 +289,6 @@ class _Ledger:
         self.results: dict[str, dict[str, Any]] = {}
         self.approved: set[str] = set()
         self.files: set[str] = set()
-        #: Tools Arsen freed from approval in tasks (settings.tasks.no_approval): for those, the
-        #: freedom he gave is the approval (alpha N-5: files.attach could never verify an item).
-        self.free: Callable[[str], bool] = lambda _name: False
 
     def why_not(self, ref: str, *, outward: bool) -> str | None:
         """None when ``ref`` shows the item; otherwise why not, in a few words."""
@@ -311,8 +308,6 @@ class _Ledger:
         args = call.get("arguments") or {}
         if call.get("read_only", True):
             return f"{ref} ({name}) only read"
-        if ref not in self.approved and not self.free(name):
-            return f"{ref} ({name}) was not approved by Arsen"
         if args.get("draft") or "_policy_note" in args:
             return f"{ref} ({name}) was saved as a draft, it did not go out"
         return None
@@ -320,7 +315,6 @@ class _Ledger:
 
 async def ledger_of(core: Core, task: Task) -> _Ledger:
     ledger = _Ledger()
-    ledger.free = lambda name: not core.settings.tasks.needs_approval(name, read_only=False)
     if task.conversation_id is None:
         return ledger
     for run in await core.store.list_runs(task.conversation_id, limit=200):
@@ -440,7 +434,7 @@ def brief_text(task: Task, *, user: str, call: str = "") -> str:
         lines.append("## Constraints\n" + "\n".join(f"- {c}" for c in b.constraints))
     if b.dod:
         dod = "\n".join(
-            f"{i}. {d.item}" + (" (outward: done only by an approved action)" if d.outward else "")
+            f"{i}. {d.item}" + (" (outward: done only by an action that went out as itself)" if d.outward else "")
             for i, d in enumerate(b.dod, 1)
         )
         lines.append("## Definition of Done\n" + dod)
@@ -862,6 +856,29 @@ class TaskService:
         task.outcome = (task.outcome or TaskOutcome()).model_copy(update={"stopped_reason": "cancelled by Arsen"})
         await self._end(task, TaskState.CANCELLED)
         return task
+
+    async def allow_tool(self, task_id: str, call_id: str) -> str | None:
+        """ "Always allow this tool in tasks": the call the task waits on goes ahead, and its tool joins
+        ``settings.tasks.no_approval`` - visible and removable in Settings -> Tasks. None when done,
+        otherwise why not. Only the tool of the approval he is looking at, and never one of
+        ``deny_tools`` (shell, file writes stay out of tasks whatever he clicks)."""
+        task = await self.store.get(task_id)
+        if task is None:
+            return "no such task"
+        w = task.waiting
+        if task.state is not TaskState.WAITING or w is None or w.call_id != call_id:
+            return "the task is not waiting on that call"
+        s = self.settings
+        if s.tasks.denies(w.name):
+            return f"{w.name} is never offered to a task (settings.tasks.deny_tools)"
+        if not s.tasks.frees(w.name):
+            updated = s.model_copy(deep=True)
+            updated.tasks.no_approval = [*s.tasks.no_approval, w.name]
+            await self.core.store.save_settings(updated, only_keys={"tasks"})
+            self.core.apply_settings(updated)
+            log.info("task %s: %s is now allowed in tasks without asking", task.id, w.name)
+        await self.core.engine.confirm(w.run_id, w.call_id, True, "always allowed in tasks from now on")
+        return None
 
     async def steer(self, task_id: str, text: str) -> Task | None:
         """His words for a task: into the working run, or a new round of it when it has stopped

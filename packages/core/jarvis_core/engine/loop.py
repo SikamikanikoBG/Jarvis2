@@ -931,13 +931,24 @@ class AgentLoop:
         )
         reason = "this action cannot be undone"
         if run.kind is RunKind.TASK:
-            # Nobody is watching a task, so its own rule replaces the chat's: whatever the
-            # confirmation mode and always_allow say, anything not read-only waits for him, unless
-            # he freed it by name (settings.tasks.no_approval). Not the tool's own `destructive`
-            # flag: the browser marks clicking Send as harmless (docs/stories/13_delegated_tasks.md).
-            confirm = self._settings().tasks.needs_approval(call.name, read_only=read_only)
-            reason = "a delegated task asks before anything that is not read-only"
-        elif not confirm and confirmations.checks_outbound(call.name, unattended=unattended):
+            # A task asks what an attended chat would - his own confirmation settings - plus one
+            # floor, because nobody watches it: a tool annotated destructive asks even with the mode
+            # off. Names he freed for tasks never ask (settings.tasks.no_approval; UAT 2026-10-31).
+            destructive = bool(spec and spec.destructive)
+            confirm = self._settings().tasks.needs_approval(
+                call.name, destructive=destructive, confirmations=confirmations
+            )
+            if (
+                confirm
+                and destructive
+                and not confirmations.needs_confirmation(call.name, destructive=True, unattended=False)
+            ):
+                reason = "a delegated task asks before anything destructive, whatever the confirmation mode"
+        if (
+            not confirm
+            and confirmations.checks_outbound(call.name, unattended=unattended)
+            and not (run.kind is RunKind.TASK and self._settings().tasks.frees(call.name))
+        ):
             # Whatever the mode: something said or promised to others in his name that he did
             # not ask for waits for him (features/outbound.py).
             outbound = await self._unasked_outbound(run, call)

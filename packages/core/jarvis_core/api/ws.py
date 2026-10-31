@@ -26,6 +26,7 @@ from jarvis_proto import (
     RunCreateRequest,
     RunSteerRequest,
     Subscribe,
+    TaskAllowToolRequest,
     TaskCancelRequest,
     TaskSteerRequest,
     ToolConfirmRequest,
@@ -145,6 +146,8 @@ async def _ui_leg(ws: WebSocket) -> None:
                 await core.tasks.cancel(msg.task_id)
             elif isinstance(msg, TaskSteerRequest):
                 await core.tasks.steer(msg.task_id, msg.text)
+            elif isinstance(msg, TaskAllowToolRequest):
+                await core.tasks.allow_tool(msg.task_id, msg.call_id)
             elif isinstance(msg, CallAlive):
                 await core.tasks.call_seen(msg.call_id, msg.conversation_id)
             elif isinstance(msg, CallEnded):

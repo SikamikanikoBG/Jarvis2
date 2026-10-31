@@ -540,11 +540,10 @@ class MailTools(BuiltinProvider):
         super().__init__()
 
     @property
-    def error(self) -> str | None:
-        """Why there is no mailbox to reach, or None."""
-        if not any(a.enabled for a in self._settings().mail_accounts):
-            return "no mail account is configured"
-        return None
+    def configured(self) -> bool:
+        """At least one mailbox to reach. Without one, ``mail.*`` is not offered at all
+        (tools/registry.py: not set up is not down)."""
+        return any(a.enabled for a in self._settings().mail_accounts)
 
     def mailbox(self, account: str = "") -> Mailbox:
         accounts = [a for a in self._settings().mail_accounts if a.enabled]

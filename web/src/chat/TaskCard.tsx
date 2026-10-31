@@ -27,6 +27,7 @@ function TaskCardBody({ task, approvalTtlS }: { task: Task; approvalTtlS: number
   const cancelTask = useStore((s) => s.cancelTask);
   const steerTask = useStore((s) => s.steerTask);
   const openTaskWork = useStore((s) => s.openTaskWork);
+  const allowToolInTasks = useStore((s) => s.allowToolInTasks);
   const [words, setWords] = useState('');
   const [sent, setSent] = useState(false);
   const open = isTaskOpen(task.state);
@@ -89,6 +90,18 @@ function TaskCardBody({ task, approvalTtlS }: { task: Task; approvalTtlS: number
             name={task.waiting.name}
             arguments={task.waiting.arguments}
             reason={task.waiting.reason}
+            extra={
+              // Approve this one and never ask for this tool in a task again (Settings -> Tasks lists it).
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => task.waiting && allowToolInTasks(task.id, task.waiting.call_id)}
+                title={`Approve, and let tasks use ${task.waiting.name} without asking from now on`}
+              >
+                <Icon name="check" size={16} />
+                Always allow in tasks
+              </button>
+            }
           />
           {approvalTtlS !== null && (
             <div className="task-meta muted">Unanswered, it expires at {clock(new Date(Date.parse(task.waiting.since) + approvalTtlS * 1000).toISOString())}.</div>

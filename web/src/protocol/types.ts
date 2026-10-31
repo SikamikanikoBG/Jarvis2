@@ -731,7 +731,8 @@ export interface TasksSettings {
   enabled: boolean;
   max_running: number;
   max_depth: number;
-  /** Non-read-only tools a task may use without asking (names or globs). */
+  /** Tools a task may use without asking, whatever the confirmations and the destructive floor
+   *  say (names or globs); "Always allow this tool in tasks" adds to it. */
   no_approval: string[];
   /** Never offered to a task. */
   deny_tools: string[];
@@ -1299,6 +1300,14 @@ export interface CallEnded {
   call_id: string;
 }
 
+/** "Always allow this tool in tasks" on a task's approval card: this call goes ahead, and the tool
+ *  joins settings.tasks.no_approval. `call_id` is the call the task waits on. */
+export interface TaskAllowToolRequest {
+  type: 'task.allow_tool';
+  task_id: string;
+  call_id: string;
+}
+
 export type ClientMessage =
   | RunCreateRequest
   | RunCancelRequest
@@ -1312,7 +1321,8 @@ export type ClientMessage =
   | TaskCancelRequest
   | TaskSteerRequest
   | CallAlive
-  | CallEnded;
+  | CallEnded
+  | TaskAllowToolRequest;
 
 // ---- REST-only shapes (server.py contract, not in jarvis_proto) -----------------------
 

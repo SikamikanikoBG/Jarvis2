@@ -23,6 +23,7 @@ from jarvis_core.tools import BuiltinProvider, tool
 from jarvis_proto import (
     Confirmations,
     ConversationKind,
+    EmailPolicy,
     Message,
     Role,
     RoleName,
@@ -245,7 +246,7 @@ async def test_bookkeeping_is_not_evidence_and_an_outward_item_needs_an_approved
         FakeTurn(text="ok"),
     )
     split.task.push(
-        FakeTurn(tool_calls=[ToolCall(id="w1", name="test.write", arguments={})]),
+        FakeTurn(tool_calls=[ToolCall(id="w1", name="test.send", arguments={})]),
         FakeTurn(tool_calls=[echo("r1")]),
         # Item 1 cites the approved write; item 2 cites the task's own finish call.
         FakeTurn(tool_calls=[finish("f1", (1, True, ["w1"]), (2, True, ["f1"]))]),
@@ -302,30 +303,129 @@ class FakeBrowser(BuiltinProvider):
         return ToolResult.data("typed")
 
 
-async def test_browser_type_with_submit_in_a_task_waits_for_approval_even_with_confirmations_off(harness: Harness):
+async def test_with_confirmations_off_a_task_clicks_and_types_without_asking(harness: Harness):
+    """US-7 as agreed in UAT (2026-10-31, "inherit + small floor"): a task asks what an attended
+    chat would under his confirmations. Live is mode "off", and he was approving browser clicks
+    all day - browser.type, which the browser does not annotate destructive, now goes ahead."""
     split = await tasks_on(harness)
     browser = FakeBrowser()
     harness.core.registry.add(browser)
     await harness.core.registry.refresh()
-    sent = pushes(harness)
-    # Live-shaped: nothing asks in a chat, and he has even freed the browser by name.
-    harness.enable(confirmations=Confirmations(mode="off", always_allow=["browser.*"], outbound_check=[]))
+    pushes(harness)
+    harness.enable(confirmations=Confirmations(mode="off", always_ask=["*.outlook_send"], outbound_check=[]))
     split.push(FakeTurn(tool_calls=[delegate(title="Post the review")]), FakeTurn(text="ok"))
     typed = ToolCall(id="t1", name="browser.type", arguments={"text": "Five stars", "submit": True})
     split.task.push(
-        FakeTurn(tool_calls=[typed]), FakeTurn(tool_calls=[finish("f1", (1, False, []))]), FakeTurn(text=".")
+        FakeTurn(tool_calls=[typed]), FakeTurn(tool_calls=[finish("f1", (1, True, ["t1"]))]), FakeTurn(text=".")
     )
     await ask(harness, "post my review")
+    task = await reported(harness)
+    assert browser.typed == [{"text": "Five stars", "submit": True}]
+    events = await harness.core.store.list_events(task.run_id or "")
+    assert not any(e["type"] == "tool.confirm_requested" for e in events)
+
+
+async def test_a_tool_annotated_destructive_still_asks_in_a_task_with_confirmations_off(harness: Harness):
+    """The floor: nobody watches a task, so its own annotation decides - not a list of names."""
+    split = await tasks_on(harness)
+    tools = await with_tools(harness)
+    sent = pushes(harness)
+    harness.enable(confirmations=Confirmations(mode="off", always_allow=["test.*"], outbound_check=[]))
+    split.push(FakeTurn(tool_calls=[delegate()]), FakeTurn(text="ok"))
+    split.task.push(
+        FakeTurn(tool_calls=[ToolCall(id="s1", name="test.send", arguments={})]),
+        FakeTurn(tool_calls=[finish("f1", (1, True, ["s1"]))]),
+        FakeTurn(text="sent"),
+    )
+    await ask(harness, "send it")
     task = await the_task(harness, lambda t: t.state is TaskState.WAITING)
-    assert browser.typed == []
-    assert task.waiting is not None and task.waiting.name == "browser.type"
-    assert task.waiting.arguments == {"text": "Five stars", "submit": True}  # the card shows exactly this
-    assert (await harness.core.store.get_run(task.waiting.run_id)).status is RunStatus.WAITING_USER
+    assert tools.calls == [] and task.waiting is not None and task.waiting.name == "test.send"
+    assert "whatever the confirmation mode" in task.waiting.reason
+    assert task.waiting.arguments == {}  # the card shows exactly what will run
     await until(lambda: any("approval" in p["title"] for p in sent))
     assert sent[-1]["type"] == "notice" and sent[-1]["path"].endswith(f"?task={task.id}")  # opens the card
     await harness.core.engine.confirm(task.waiting.run_id, task.waiting.call_id, True)
-    await the_task(harness, lambda t: t.state.terminal)
-    assert browser.typed == [{"text": "Five stars", "submit": True}]
+    await reported(harness)
+    assert tools.calls == ["send"]
+
+
+class _MailArgs(BaseModel):
+    to: str = ""
+
+
+class FakeOutlook(BuiltinProvider):
+    """outlook_send as a host sends it: no destructive annotation - always_ask is what stops it."""
+
+    name = "outlooky"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sent: list[str] = []
+
+    @tool("outlooky.outlook_send", description="send a mail", args=_MailArgs)
+    async def _send(self, to: str = "") -> ToolResult:
+        self.sent.append(to)
+        return ToolResult.data("sent")
+
+
+async def test_always_ask_still_asks_in_a_task(harness: Harness):
+    split = await tasks_on(harness)
+    outlook = FakeOutlook()
+    harness.core.registry.add(outlook)
+    await harness.core.registry.refresh()
+    pushes(harness)
+    harness.enable(
+        confirmations=Confirmations(mode="off", always_ask=["*.outlook_send"], outbound_check=[]),
+        email=EmailPolicy(allow_any_recipient=True),
+    )
+    split.push(FakeTurn(tool_calls=[delegate()]), FakeTurn(text="ok"))
+    split.task.push(FakeTurn(tool_calls=[ToolCall(id="m1", name="outlooky.outlook_send", arguments={"to": "a@b.c"})]))
+    await ask(harness, "mail him")
+    task = await the_task(harness, lambda t: t.state is TaskState.WAITING)
+    assert outlook.sent == [] and task.waiting is not None and task.waiting.name == "outlooky.outlook_send"
+
+
+async def test_always_allow_in_tasks_from_the_card_approves_and_frees_the_tool(harness: Harness):
+    split = await tasks_on(harness)
+    tools = await with_tools(harness)
+    pushes(harness)
+    split.push(FakeTurn(tool_calls=[delegate()]), FakeTurn(text="ok"))
+    split.task.push(
+        FakeTurn(tool_calls=[ToolCall(id="s1", name="test.send", arguments={})]),
+        FakeTurn(tool_calls=[ToolCall(id="s2", name="test.send", arguments={})]),  # the next one: no ask
+        FakeTurn(tool_calls=[finish("f1", (1, True, ["s1"]))]),
+        FakeTurn(text="sent twice"),
+    )
+    await ask(harness, "send them")
+    task = await the_task(harness, lambda t: t.state is TaskState.WAITING)
+    assert task.waiting is not None
+    # Only for the call this card is about.
+    assert await harness.core.tasks.allow_tool(task.id, "not-this-call") is not None
+    assert await harness.core.tasks.allow_tool(task.id, task.waiting.call_id) is None
+    task = await reported(harness)
+    assert tools.calls == ["send", "send"]
+    assert "test.send" in harness.core.settings.tasks.no_approval
+    assert "test.send" in (await harness.core.store.load_settings()).tasks.no_approval  # kept
+    asked = [
+        e for e in await harness.core.store.list_events(task.run_id or "") if e["type"] == "tool.confirm_requested"
+    ]
+    assert [e["call_id"] for e in asked] == ["s1"]
+
+
+async def test_always_allow_never_frees_a_tool_tasks_are_denied(harness: Harness):
+    split = await tasks_on(harness)
+    await with_tools(harness)
+    pushes(harness)
+    # A task waits on a call; the tool is then put on deny_tools - the button must not free it.
+    split.push(FakeTurn(tool_calls=[delegate()]), FakeTurn(text="ok"))
+    split.task.push(FakeTurn(tool_calls=[ToolCall(id="s1", name="test.send", arguments={})]))
+    await ask(harness, "send")
+    task = await the_task(harness, lambda t: t.state is TaskState.WAITING)
+    assert task.waiting is not None
+    harness.enable(tasks=TasksSettings(enabled=True, deny_tools=["test.send"]))
+    why = await harness.core.tasks.allow_tool(task.id, task.waiting.call_id)
+    assert why is not None and "deny_tools" in why
+    assert "test.send" not in harness.core.settings.tasks.no_approval
 
 
 async def test_the_same_browser_type_in_a_chat_is_unchanged_by_tasks(harness: Harness):
@@ -780,7 +880,7 @@ async def test_a_restart_while_a_task_waits_for_approval_loses_nothing(harness: 
     tools = await with_tools(harness)
     pushes(harness)
     split.push(FakeTurn(tool_calls=[delegate(dod=("it is written",))]), FakeTurn(text="ok"))
-    split.task.push(FakeTurn(tool_calls=[ToolCall(id="w1", name="test.write", arguments={})]))
+    split.task.push(FakeTurn(tool_calls=[ToolCall(id="w1", name="test.send", arguments={})]))
     _, conv = await ask(harness, "write it")
     task = await the_task(harness, lambda t: t.state is TaskState.WAITING)
     await harness.restart()
@@ -793,7 +893,7 @@ async def test_a_restart_while_a_task_waits_for_approval_loses_nothing(harness: 
     split.task.push(FakeTurn(tool_calls=[finish("f1", (1, True, ["w1"]))]), FakeTurn(text="written"))
     await harness.core.engine.confirm(waiting.waiting.run_id, waiting.waiting.call_id, True)
     task = await reported(harness)
-    assert task.state is TaskState.DONE and tools.calls == ["write"]
+    assert task.state is TaskState.DONE and tools.calls == ["send"]
     await asyncio.sleep(0.2)
     assert (
         sum(1 for m in await harness.core.store.list_messages(conv.id) if m.task_id and m.role is Role.ASSISTANT) == 1
@@ -831,7 +931,7 @@ async def test_an_approval_nobody_answers_expires_with_a_re_read_note(harness: H
     tools = await with_tools(harness)
     pushes(harness)
     split.push(FakeTurn(tool_calls=[delegate()]), FakeTurn(text="ok"))
-    split.task.push(FakeTurn(tool_calls=[ToolCall(id="w1", name="test.write", arguments={})]))
+    split.task.push(FakeTurn(tool_calls=[ToolCall(id="w1", name="test.send", arguments={})]))
     await ask(harness, "write")
     task = await the_task(harness, lambda t: t.state is TaskState.WAITING)
     split.task.push(FakeTurn(tool_calls=[finish("f1", (1, False, []))]), FakeTurn(text="It expired."))
@@ -934,9 +1034,9 @@ async def test_a_restart_in_the_middle_of_an_approved_action_asks_on_the_card_wh
         await asyncio.sleep(30)
         return ToolResult.data("never")
 
-    tools._entries["test.write"].fn = slow_write  # pyright: ignore[reportPrivateUsage]
+    tools._entries["test.send"].fn = slow_write  # pyright: ignore[reportPrivateUsage]
     split.push(FakeTurn(tool_calls=[delegate(dod=("it is written",))]), FakeTurn(text="ok"))
-    split.task.push(FakeTurn(tool_calls=[ToolCall(id="w1", name="test.write", arguments={})]))
+    split.task.push(FakeTurn(tool_calls=[ToolCall(id="w1", name="test.send", arguments={})]))
     await ask(harness, "write it")
     task = await the_task(harness, lambda t: t.state is TaskState.WAITING)
     assert task.waiting is not None
@@ -962,4 +1062,36 @@ async def test_a_restart_in_the_middle_of_an_approved_action_asks_on_the_card_wh
     split.task.push(FakeTurn(tool_calls=[finish("f1", (1, True, ["w1"]))]), FakeTurn(text="written"))
     await harness.core.engine.confirm(task.waiting.run_id, task.waiting.call_id, True)
     task = await reported(harness)
-    assert tools.calls == ["write"] and task.state is TaskState.DONE
+    assert tools.calls == ["send"] and task.state is TaskState.DONE
+
+
+async def test_a_need_for_a_provider_that_is_not_set_up_is_not_down_mail_lives_elsewhere(harness: Harness):
+    """UAT 2026-10-31: "Clean up Gmail storage" ended "not started: mail is down (no mail account
+    is configured)" - the core's IMAP `mail` was not set up, and his Gmail lives in Outlook on a
+    host. A provider that is not set up offers no tools, is not listed as down, and a need naming
+    it is answered with the namespaces that are there - so the task goes to the host's tools."""
+    split = await tasks_on(harness)
+    outlook = FakeOutlook()
+    harness.core.registry.add(outlook)
+    await harness.core.registry.refresh()
+    pushes(harness)
+    assert not harness.core.settings.mail_accounts  # the core's own mail is not set up
+    split.push(
+        FakeTurn(tool_calls=[delegate("d1", title="Clean up Gmail", needs=("mail",))]),
+        FakeTurn(tool_calls=[delegate("d2", title="Clean up Gmail", needs=("outlooky",))]),
+        FakeTurn(text="On it."),
+    )
+    _, conv = await ask(harness, "clean up my Gmail storage")
+    await until(lambda: _task_count(harness, 1))
+    tools = offered(split)
+    assert not any(n.startswith("mail.") for n in tools) and "outlooky.outlook_send" in tools
+    first = next(m for m in await harness.core.store.list_messages(conv.id) if m.tool_call_id == "d1")
+    assert "no tools in mail" in first.content and "outlooky" in first.content and "down" not in first.content
+    task = await the_task(harness)
+    assert task.brief.needs == ["outlooky"] and task.state is not TaskState.NOT_DONE
+    context = "\n".join(m.content for m in split.calls[0][0])
+    assert "- mail:" not in context  # not set up is not "not available"
+
+
+async def _task_count(h: Harness, n: int) -> bool:
+    return len(await h.core.tasks.store.list()) == n

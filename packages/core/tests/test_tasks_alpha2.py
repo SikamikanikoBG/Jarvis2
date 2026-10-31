@@ -106,10 +106,10 @@ async def test_after_a_deny_the_same_call_is_refused_not_asked_again(harness: Ha
     tools = await with_tools(harness)
     pushes(harness)
     split.push(FakeTurn(tool_calls=[delegate()]), FakeTurn(text="ok"))
-    write = ToolCall(id="w1", name="test.write", arguments={})
+    write = ToolCall(id="w1", name="test.send", arguments={})
     split.task.push(
         FakeTurn(tool_calls=[write]),
-        FakeTurn(tool_calls=[ToolCall(id="w2", name="test.write", arguments={})]),  # the same call again
+        FakeTurn(tool_calls=[ToolCall(id="w2", name="test.send", arguments={})]),  # the same call again
         FakeTurn(tool_calls=[finish("f1", (1, False, []))]),
         FakeTurn(text="He declined; not done."),
     )
@@ -122,7 +122,7 @@ async def test_after_a_deny_the_same_call_is_refused_not_asked_again(harness: Ha
     events = await harness.core.store.list_events(task.run_id or "")
     assert [e["call_id"] for e in events if e["type"] == "tool.confirm_requested"] == ["w1"]  # asked once
     refused = next(m for m in await harness.core.store.list_run_messages(task.run_id or "") if m.tool_call_id == "w2")
-    assert "already turned down exactly this test.write call" in refused.content
+    assert "already turned down exactly this test.send call" in refused.content
 
 
 # --- N-3: one failed call from a machine the brief does not need is a normal error ------------------------
@@ -152,18 +152,18 @@ async def test_a_failed_call_to_a_machine_the_brief_does_not_need_does_not_end_t
 
 
 async def test_an_outward_item_done_by_a_tool_freed_from_approval_verifies(harness: Harness):
-    split = await tasks_on(harness, no_approval=["test.write"])
+    split = await tasks_on(harness, no_approval=["test.send"])
     tools = await with_tools(harness)
     pushes(harness)
     split.push(FakeTurn(tool_calls=[delegate(dod=("it is written",), outward=(1,))]), FakeTurn(text="ok"))
     split.task.push(
-        FakeTurn(tool_calls=[ToolCall(id="w1", name="test.write", arguments={})]),
+        FakeTurn(tool_calls=[ToolCall(id="w1", name="test.send", arguments={})]),
         FakeTurn(tool_calls=[finish("f1", (1, True, ["w1"]))]),
         FakeTurn(text="Written."),
     )
     await ask(harness, "write it")
     task = await reported(harness)
-    assert tools.calls == ["write"] and task.state is TaskState.DONE
+    assert tools.calls == ["send"] and task.state is TaskState.DONE
 
 
 # --- N-2: a spoken answer from memory is not learned as a fact ------------------------------------------------

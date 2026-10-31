@@ -923,3 +923,7 @@
 }
 .tasks-pop button:hover { background: var(--bg-surface); }
 .field-warn { color: var(--warn); }
+
+/* Settings -> Tasks: the tools tasks may use without asking, each removable. */
+.freed-list { list-style: none; margin: 0 0 6px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.freed-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; overflow-wrap: anywhere; }

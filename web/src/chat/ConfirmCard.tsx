@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Icon } from '../components/Icon';
 import { prettyJson } from '../lib/format';
 import { useStore } from '../store/store';
@@ -9,10 +9,12 @@ interface Props {
   name: string;
   arguments: Record<string, unknown>;
   reason: string;
+  /** More ways to answer, beside Approve / Reject (a task's "Always allow this tool in tasks"). */
+  extra?: ReactNode;
 }
 
 /** Approve / reject a tool call the engine paused on. Disappears when `tool.confirm_resolved` arrives. */
-export function ConfirmCard({ runId, callId, name, arguments: args, reason }: Props) {
+export function ConfirmCard({ runId, callId, name, arguments: args, reason, extra }: Props) {
   const confirmTool = useStore((s) => s.confirmTool);
   const [note, setNote] = useState('');
   const [sent, setSent] = useState<boolean | null>(null);
@@ -49,6 +51,7 @@ export function ConfirmCard({ runId, callId, name, arguments: args, reason }: Pr
           <Icon name="x" size={16} />
           {sent === false ? 'Rejecting…' : 'Reject'}
         </button>
+        {sent === null && extra}
       </div>
     </div>
   );

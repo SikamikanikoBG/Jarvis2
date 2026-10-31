@@ -228,7 +228,7 @@ async def test_an_approved_task_waits_for_the_running_one_before_its_next_step(h
     pushes(harness)
     split.push(FakeTurn(tool_calls=[delegate("d1", title="A"), delegate("d2", title="B")]), FakeTurn(text="two"))
     split.task.push(
-        FakeTurn(tool_calls=[ToolCall(id="w1", name="test.write", arguments={})]),  # A asks
+        FakeTurn(tool_calls=[ToolCall(id="w1", name="test.send", arguments={})]),  # A asks
         FakeTurn(tool_calls=[ToolCall(id="g1", name="test.gate", arguments={})]),  # B takes the slot
         FakeTurn(tool_calls=[finish("fb", (1, True, ["g1"]))]),
         FakeTurn(text="B done"),
@@ -240,7 +240,7 @@ async def test_an_approved_task_waits_for_the_running_one_before_its_next_step(h
     await until(lambda: "gate" in tools.calls)
     assert a.waiting is not None
     await harness.core.engine.confirm(a.waiting.run_id, a.waiting.call_id, True)
-    await until(lambda: "write" in tools.calls)
+    await until(lambda: "send" in tools.calls)
     await asyncio.sleep(0.3)
     assert len(split.task.calls) == 2  # A holds before its next model step while B works
     tools.gate.set()
@@ -272,7 +272,7 @@ async def test_search_engines_that_do_not_answer_mark_the_search_down(harness: H
     await web.call("web.search", {"query": "x"}, cancel=asyncio.Event(), idempotency_key="k", timeout_s=5)
     assert web.error is None
     harness.core.settings.searxng_url = None
-    assert web.error is not None and "no search engine is configured" in web.error
+    assert not web.configured  # not set up: web.search is not offered at all
 
 
 # --- F-12: words for a task that ends before it reads them ---------------------------------------------------

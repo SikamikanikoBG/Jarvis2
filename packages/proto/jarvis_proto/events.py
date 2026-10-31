@@ -487,6 +487,15 @@ class CallEnded(BaseModel):
     call_id: str
 
 
+class TaskAllowToolRequest(BaseModel):
+    """ "Always allow this tool in tasks" on a task's approval card: this call goes ahead and the
+    tool joins settings.tasks.no_approval. ``call_id`` must be the call the task waits on."""
+
+    type: Literal["task.allow_tool"] = "task.allow_tool"
+    task_id: str
+    call_id: str
+
+
 ClientMessage = Annotated[
     RunCreateRequest
     | RunCancelRequest
@@ -500,7 +509,8 @@ ClientMessage = Annotated[
     | TaskCancelRequest
     | TaskSteerRequest
     | CallAlive
-    | CallEnded,
+    | CallEnded
+    | TaskAllowToolRequest,
     Field(discriminator="type"),
 ]
 

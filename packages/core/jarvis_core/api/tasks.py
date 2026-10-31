@@ -19,6 +19,10 @@ class SteerBody(BaseModel):
     text: str = Field(min_length=1, max_length=8_000)
 
 
+class AllowToolBody(BaseModel):
+    call_id: str
+
+
 @router.get("/status")
 async def tasks_status(request: Request) -> dict[str, Any]:
     """Whether tasks are on, how many calls are open, and what Settings → Voice should say about a
@@ -62,6 +66,22 @@ async def end_call(request: Request, call_id: str) -> None:
     """Hang-up from a page that is going away (pagehide): the WebSocket may already be closed, a
     keepalive request still goes out. The same exactly-once end as ``call.ended``."""
     await core_of(request).tasks.call_ended(call_id, how="hangup")
+
+
+@router.post("/{task_id}/allow-tool", response_model=Task)
+async def allow_tool(request: Request, task_id: str, body: AllowToolBody) -> Task:
+    """ "Always allow this tool in tasks": approve the call the task waits on and add its tool to
+    settings.tasks.no_approval. 409 when the task is not waiting on that call or the tool is one
+    tasks are never offered."""
+    core = core_of(request)
+    why = await core.tasks.allow_tool(task_id, body.call_id)
+    if why == "no such task":
+        raise HTTPException(404, why)
+    if why is not None:
+        raise HTTPException(409, why)
+    task = await core.tasks.store.get(task_id)
+    assert task is not None
+    return task
 
 
 @router.post("/{task_id}/steer", response_model=Task)

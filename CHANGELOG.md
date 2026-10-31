@@ -2,6 +2,22 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-10-31 — core 2.0.0a108, proto 2.0.0a38, web 2.0.0-alpha.87
+
+### Changed
+- **Task approvals follow your confirmations** (UAT, "inherit + small floor"): a task asks what a chat
+  would under Confirmations (mode, always allow, always ask), plus one floor - a tool annotated
+  destructive still asks in a task when the mode is off. Browser clicks no longer ask with the mode off.
+- **"Always allow in tasks"** on a task's approval card: approves the call and adds the tool to
+  `tasks.no_approval`, listed (and removable) in Settings → Tasks. Never for a `deny_tools` tool.
+- A tool provider that is not set up at all (no mail account, no search engine) offers no tools, is not
+  listed as "not available", and shows "not set up" on Status.
+
+### Fixed
+- A Gmail clean-up task was declined as "mail is down (no mail account is configured)" although the
+  mail is reachable through Outlook on a host: the core's own unconfigured IMAP `mail` was offered and
+  named as the need. A need now has to name a namespace that is set up.
+
 ## 2026-10-31 — host 2.0.0a32
 
 ### Added

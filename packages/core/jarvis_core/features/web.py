@@ -48,9 +48,12 @@ class WebTools(BuiltinProvider):
 
     @property
     def error(self) -> str | None:
-        if not (self._settings().searxng_url or "").strip():
-            return "no search engine is configured (settings.searxng_url)"
         return self._error
+
+    @property
+    def configured(self) -> bool:
+        """A search engine to ask. Without one, ``web.search`` is not offered (tools/registry.py)."""
+        return bool((self._settings().searxng_url or "").strip())
 
     async def aclose(self) -> None:
         await self._client.aclose()

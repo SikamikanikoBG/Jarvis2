@@ -65,12 +65,20 @@ rule - Jarvis does not strike up conversations with itself - holds for everythin
 ### Nothing outward without him
 
 A task is not "unattended" the way a schedule is - a schedule's prompt authorised its run; nobody
-authorised a task's next click. In a task every non-read-only call waits for his approval
-regardless of `confirmations.mode` and `always_allow` (live is `mode: off`), except the names on
-`tasks.no_approval` (moving around a page, Jarvis's own memory). Not the tool's own `destructive`
-flag: the browser marks clicking Send as harmless. `shell_run`, `fs_write`, `fs_edit` are not
-offered to a task at all (`tasks.deny_tools`). An approval nobody answers in 4 h is turned down
-with "re-read the source before you ask again".
+authorised a task's next click. Until UAT a task asked before every call that was not read-only,
+whatever `confirmations.mode` said, and Arsen spent his day approving browser clicks ("it keeps
+asking me", 2026-10-31). Agreed with him then: **inherit + a small floor**.
+
+- A task asks what an attended chat would under his `confirmations` (mode, `always_allow`,
+  `always_ask`, the outbound check).
+- The floor, tasks only: a tool whose own annotation says destructive asks even with the mode off -
+  nobody watches a task. Decided from the annotation, not from names.
+- `tasks.no_approval` never asks. The approval card has **Always allow in tasks**: it approves this
+  call and adds the tool to the list (Settings -> Tasks shows it, each name removable). Only the tool
+  of that approval, and never one of `tasks.deny_tools`.
+- `shell_run`, `fs_write`, `fs_edit` are still not offered to a task at all (`tasks.deny_tools`). An
+  approval nobody answers in 4 h is turned down with "re-read the source before you ask again"; a
+  call he denied is not asked again; the card shows the exact arguments.
 
 Found on the way: an approval given before a call went out was taken as the answer to "did it
 complete?" after a restart, and an approved mail could go out twice. The resumed path now counts

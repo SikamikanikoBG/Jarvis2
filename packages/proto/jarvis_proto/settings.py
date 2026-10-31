@@ -674,9 +674,9 @@ class TasksSettings(BaseModel):
     max_running: int = Field(default=1, ge=1, le=4)
     #: 1 = a task cannot hand work on to another task.
     max_depth: int = Field(default=1, ge=1, le=3)
-    #: Non-read-only tools a task may use without asking: reading a page (the fetch server sends no
-    #: read-only hint, but a GET is all it does), moving around a page and Jarvis's own memory -
-    #: nothing that reaches anyone else. An exact name or a `namespace.*` / `*.tool` glob.
+    #: Tools a task may use without asking, whatever ``confirmations`` and the destructive floor
+    #: say: his explicit trust, added in Settings or with "Always allow this tool in tasks" on an
+    #: approval card. An exact name or a `namespace.*` / `*.tool` glob. Never a ``deny_tools`` one.
     no_approval: list[str] = Field(
         default_factory=lambda: [
             "files.attach",
@@ -698,9 +698,21 @@ class TasksSettings(BaseModel):
     #: noted tasks start. Above Chrome's throttled timers on a locked phone (one wake a minute).
     call_drop_after_s: int = Field(default=240, ge=30)
 
-    def needs_approval(self, name: str, *, read_only: bool) -> bool:
-        """In a task: anything that is not read-only asks, unless Arsen freed it by name."""
-        return not read_only and not any(tool_matches(name, p) for p in self.no_approval)
+    def needs_approval(self, name: str, *, destructive: bool, confirmations: Confirmations) -> bool:
+        """Whether a task's call waits for Arsen (UAT 2026-10-31, "inherit + small floor").
+
+        A task asks what an attended chat would ask under his ``confirmations`` (mode, always_allow,
+        always_ask) - the rule that every non-read-only step asked made him approve browser clicks
+        all day. One floor on top, because nobody watches a task: a tool whose own annotation says
+        destructive asks even with the mode off. A name on ``no_approval`` (he freed it, often with
+        the card's "Always allow" button) never asks."""
+        if any(tool_matches(name, p) for p in self.no_approval):
+            return False
+        return destructive or confirmations.needs_confirmation(name, destructive=destructive, unattended=False)
+
+    def frees(self, name: str) -> bool:
+        """He freed this tool for tasks (``no_approval``)."""
+        return any(tool_matches(name, p) for p in self.no_approval)
 
     def denies(self, name: str) -> bool:
         return any(tool_matches(name, p) for p in self.deny_tools)

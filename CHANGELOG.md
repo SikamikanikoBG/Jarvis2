@@ -2,6 +2,35 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-10-31 — host 2.0.0a33, core 2.0.0a109
+
+Arsen asked Jarvis for a four-week options table for eight meetings (him + Gyuzelev + six colleagues,
+Karova optional). Jarvis did not deliver it; these are the general causes.
+
+### Added
+- **`calendar_plan_meetings`** (read-only host tool): several meetings in one call - `meetings` =
+  `[{"with": ..., "count": n}]`, `always` (in every meeting), `optional` (never block). Returns one
+  non-overlapping slot per meeting (scarcest first, repeats `min_gap_days` apart, preferring times the
+  optional people can make), every common window per meeting, each person's unavailable days, and what
+  could not be planned and why. Computed in code; the model only presents it.
+- `calendar_free_busy`: `optional` people (invited, never block) and `all_windows` - every stretch where
+  the meeting fits, with who of the optional people can come.
+
+### Changed
+- Free/busy now gives each person's busy time **complete**, as `busy_by_day` lines. The list used to stop
+  at 40 blocks, so over four weeks the later weeks read as free.
+- Arsen's own busy lines name the meeting holding them (his tentative webinars by subject).
+- A bare alias ("nstoyanov") that the address book cannot place is tried as an address on Arsen's own
+  domain; "nstoyanov" and "spetkov" had come back "not resolved".
+- Everyone is read in one Outlook pass; ten parallel per-person calls had timed Outlook out.
+- Placeholder blocks Arsen marks **Free** in Outlook never count (they already did not; this is the agreed
+  way to mark them).
+
+### Fixed
+- A step that spends its whole output allowance on reasoning is followed by a thinking-off step **every
+  time**, not once per run. The slot task burned the allowance a second time, fell through to the plain
+  empty-reply nudge with thinking still on, and failed with nothing.
+
 ## 2026-10-31 — core 2.0.0a108, proto 2.0.0a38, web 2.0.0-alpha.87
 
 ### Changed

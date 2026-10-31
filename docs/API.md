@@ -363,17 +363,29 @@ Host tools behind it: `calendar_invites(account, days)`, `calendar_respond(entry
 comment, account)`, `calendar_free_slots(account, start, days, duration_min, work_start_hour,
 work_end_hour, limit)`, `calendar_remove_canceled(account, days_back, days_ahead)`.
 
-## Meeting slots (issue #11, host 2.0.0a32)
+## Meeting slots (issue #11, host 2.0.0a32 → a33)
 
-Chat-only, no screen: `calendar_free_busy(attendees, start, days ≤ 28, duration_min, work_start_hour,
-work_end_hour, limit, include_me, tentative_busy, spread_min)` reads Exchange free/busy through
-`Recipient.FreeBusy(date, 30|15, True)` for Arsen (`CurrentUser`) and each attendee (address or name,
-resolved in the address book) → `{from, to, duration_min, work_hours, people: [{who, address, me?, busy:
-[{start, end, status}], data_until?} | {who, no_data, nearest_in_address_book?}], slots: [{start, end,
-working_elsewhere?}], near_misses: [{start, end, blocked_by: [{who, status}]}], note?}`. People without
-data are named and left out of the intersection; an unresolved or ambiguous name is never guessed.
-Arsen picks a slot and gives the agenda → `calendar_create(attendees, start, end, subject, body=agenda,
-send_invites=true)`.
+Chat-only, no screen. Both tools read Exchange free/busy through `Recipient.FreeBusy(date, 30|15, True)`
+for Arsen (`CurrentUser`) and every person (address, name, or alias - an alias is also tried on Arsen's
+own domain), once each, in one Outlook pass. Arsen's own blocks are labelled with the subjects from his
+calendar. People without data are named and left out; an unresolved or ambiguous name is never guessed.
+
+`calendar_free_busy(attendees, start, days ≤ 28, duration_min, work_start_hour, work_end_hour, limit,
+include_me, tentative_busy, spread_min, optional)` → `{from, to, duration_min, work_hours, people: [{who,
+address, me?, optional?, busy_by_day: {"Mon 2026-11-02": ["09:00-13:00 busy (subject)"]}, data_until?} |
+{who, no_data, nearest_in_address_book?}], slots: [{start, end, working_elsewhere?}], all_windows: [{start,
+end, optional_free?}], near_misses: [{start, end, blocked_by: [{who, status}]}], note?}`. `busy_by_day` is
+complete (it was cut at 40 blocks before host a33).
+
+`calendar_plan_meetings(meetings: [{with, count}], always, optional, start, days ≤ 28, duration_min,
+work_start_hour, work_end_hour, min_gap_days, tentative_busy)` → `{…window, in_every_meeting, optional,
+proposal: [{with, meeting: "1 of 2", start, end, attendees, optional_busy?}], all_windows: {with: [window]},
+people: [{…, unavailable_days}], not_planned?: [{with, meeting?, why}], note?}`. The proposal never
+overlaps itself, places the meeting with the least common time first, spaces repeats `min_gap_days`
+apart and, within a day, prefers a time the optional people can make.
+
+Arsen picks and gives the agenda → `calendar_create(attendees, start, end, subject, body=agenda,
+send_invites=true)` per meeting.
 
 ## Mail desk (core 2.0.0a67 → a69, host 2.0.0a21 → a23, web alpha.39 → alpha.40)
 

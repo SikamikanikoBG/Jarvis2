@@ -63,9 +63,11 @@ class RunWatch:
     empty_replies: int = 0
     nudges: int = 0
     plan_nudged: bool = False
-    # The output allowance ran out before the model wrote anything, so thinking was switched off
-    # for one step to give the answer the whole budget. Once per run.
-    thinking_off_retry: bool = False
+    # Steps whose output allowance ran out before the model wrote anything; each time, thinking is
+    # switched off for the next step so the answer gets the whole budget. It used to be once per
+    # run: on 2026-10-31 a delegated slot search burned the allowance a second time, fell through
+    # to the plain empty-reply nudge with thinking still on, burned it again and died with nothing.
+    thinking_off_retries: int = 0
     # An answer was cut off at the allowance and the model was asked to carry on. Once per run.
     continued: bool = False
     # Set when the run has to end now, without wrapping up: a task whose tool's host went down

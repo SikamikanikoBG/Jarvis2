@@ -428,8 +428,9 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
         include_me: bool = True,
         tentative_busy: bool = True,
         spread_min: int = 120,
+        optional: str = "",
     ) -> str:
-        """Find times when several people are free, from Exchange free/busy - use it to propose a meeting with colleagues. `attendees` = comma-separated addresses or names (resolved through the address book); Arsen is included unless include_me=false. Returns up to `limit` common slots of `duration_min` minutes on weekdays inside the work hours, from `start` (ISO; default now) for `days` days (max 28), earliest first and at least `spread_min` minutes apart. Busy and out-of-office block; tentative blocks unless tentative_busy=false; 'working elsewhere' does not block and is named on the slot. `people` lists each person's busy blocks; anyone without data (unknown or ambiguous name, no access, error) has `no_data` with the reason and is left out of the slots - say so, and for an ambiguous name ask which person (`nearest_in_address_book` is only a guess to confirm). When fewer slots than asked are free, `near_misses` gives the best other times with who blocks them. Flow: propose 2-3 slots in the chat and stop; only after Arsen picks one and gives the agenda, book it with calendar_create(attendees = the addresses from `people`, start/end of the chosen slot, subject, body = the agenda, send_invites=true)."""
+        """Find times when people are free for ONE meeting, from Exchange free/busy. Put EVERYONE in one call - never one call per person. `attendees` = comma-separated addresses, names or aliases (an alias like 'nstoyanov' is tried on Arsen's own domain); `optional` = people who should be invited but never block. Arsen is included unless include_me=false. Window: from `start` (ISO; default now) for `days` days (max 28), weekdays inside the work hours. Returns `slots` (up to `limit` proposals, at least `spread_min` minutes apart), `all_windows` (EVERY stretch where a `duration_min` meeting fits for everyone required, complete, each with `optional_free`) and `near_misses` (who blocks the best other times). Busy and out-of-office block; tentative blocks unless tentative_busy=false; 'working elsewhere' does not block. Arsen's placeholder blocks that he marked Free in Outlook never count. `people[].busy_by_day` is each person's busy time, complete; Arsen's own lines name the meeting holding the slot - use that when HE is the conflict. Anyone without data has `no_data` with the reason and is left out - say so, and for an ambiguous name ask which person. Compute nothing by hand: the slots and windows are already computed. For SEVERAL different meetings use calendar_plan_meetings. Flow: propose in the chat and stop; only after Arsen picks a slot and gives the agenda, book it with calendar_create(attendees = the addresses from `people`, start/end of the chosen slot, subject, body = the agenda, send_invites=true)."""
         return json_text(
             await _run(
                 "calendar_free_busy",
@@ -445,6 +446,40 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
                     include_me,
                     tentative_busy,
                     spread_min,
+                    optional,
+                ),
+            )
+        )
+
+    @tool("calendar_plan_meetings", READ)
+    async def calendar_plan_meetings(
+        meetings: list[dict[str, Any]],
+        always: str = "",
+        optional: str = "",
+        start: str | None = None,
+        days: int = 14,
+        duration_min: int = 60,
+        work_start_hour: int = 9,
+        work_end_hour: int = 17,
+        min_gap_days: int = 7,
+        tentative_busy: bool = True,
+    ) -> str:
+        """Plan SEVERAL meetings at once from Exchange free/busy - e.g. "me and Gyuzelev with each of these six people over the next 4 weeks, Belchev twice". `meetings` = [{"with": "bbelchev", "count": 2}, {"with": "ggerdzhikova"}, ...] ('with' may hold several comma-separated people for one meeting); `always` = people in EVERY meeting besides Arsen (e.g. "ngyuzelev"); `optional` = people invited to every meeting who never block. Window: from `start` for `days` days (max 28), weekdays inside the work hours, meetings of `duration_min`; a repeat with the same people is at least `min_gap_days` after the previous one. Returns `proposal` (one slot per meeting, none overlapping, scarcest meeting placed first, `optional_busy` per slot, `attendees` addresses to book with), `all_windows` (per meeting EVERY common window, so Arsen can pick another time), `people` (complete `busy_by_day`, `unavailable_days`, `no_data` with reasons) and `not_planned` with why. One call reads everyone once; do not compute slots yourself. Present the proposal as a table and stop; book only the meetings Arsen confirms, each with calendar_create(send_invites=true, body = his agenda)."""
+        return json_text(
+            await _run(
+                "calendar_plan_meetings",
+                lambda: outlook().call(
+                    "calendar_plan_meetings",
+                    meetings,
+                    always,
+                    optional,
+                    start,
+                    days,
+                    duration_min,
+                    work_start_hour,
+                    work_end_hour,
+                    min_gap_days,
+                    tentative_busy,
                 ),
             )
         )

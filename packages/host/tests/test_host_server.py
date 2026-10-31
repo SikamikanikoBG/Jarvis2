@@ -46,6 +46,7 @@ EXPECTED_ANNOTATIONS = {
     "calendar_respond": ("mutating", False),
     "calendar_free_slots": ("read", True),
     "calendar_free_busy": ("read", True),
+    "calendar_plan_meetings": ("read", True),
     "calendar_remove_canceled": ("destructive", False),
     "onenote_tree": ("read", True),
     "onenote_read": ("read", True),

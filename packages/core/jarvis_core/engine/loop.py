@@ -513,8 +513,8 @@ class AgentLoop:
             # minutes and 382k tokens — a diagnosis that was simply untrue.
             if finish == "length" and not calls:
                 spent = f"{usage.completion_tokens:,} output tokens"
-                if not text.strip() and reasoning.strip() and not watch.thinking_off_retry:
-                    watch.thinking_off_retry = True
+                if not text.strip() and reasoning.strip() and watch.thinking_off_retries < _THINKING_OFF_RETRIES:
+                    watch.thinking_off_retries += 1
                     think_off_once = True
                     await emit(
                         GuardArmed(
@@ -1570,6 +1570,9 @@ _CHARS_PER_TOKEN = 3.2
 _COMPRESS_TO = 0.5
 # What vLLM applies when a request names no max_tokens (the model's generation_config).
 _DEFAULT_MAX_TOKENS = 16_384
+# A step that spends its whole output allowance on reasoning is followed by one with thinking off;
+# that step cannot run out on reasoning, so this only bounds a model that keeps switching back.
+_THINKING_OFF_RETRIES = 5
 
 
 def _fit_to_window(messages: list[Message], run_id: str, limit_chars: int) -> None:

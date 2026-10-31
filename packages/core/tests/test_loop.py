@@ -220,6 +220,31 @@ async def test_reasoning_that_eats_the_whole_allowance_retries_with_thinking_off
     assert not any(e.type == "guard.armed" and e.guard == "empty_reply" for e in seen)
 
 
+async def test_a_second_reasoning_blowup_in_the_same_run_also_gets_thinking_off(harness: Harness):
+    """2026-10-31, the delegated "2-week slots" task: the first blowup got its thinking-off step,
+    the run went on calling tools, the second blowup fell through to the empty-reply nudge with
+    thinking still on, burned the allowance again and the task failed with nothing to show."""
+    blowup = FakeTurn(text="", reasoning="slots " * 400, completion_tokens=16_384, finish_reason="length")
+    harness.chat.push(
+        blowup,
+        FakeTurn(tool_calls=[ToolCall(id="c1", name="jarvis.time", arguments={})]),
+        FakeTurn(text="", reasoning="slots " * 400, completion_tokens=16_384, finish_reason="length"),
+        FakeTurn(text="Here are the slots."),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    await harness.core.engine.create_run(text="find slots", conversation_id=conv.id, think=True)
+    seen = await harness.wait_for(sub, "run.done", timeout=15)
+
+    armed = [e.guard for e in seen if e.type == "guard.armed"]
+    assert armed == ["reasoning_used_the_allowance", "reasoning_used_the_allowance"]
+    calls = [e for e in seen if e.type == "model.call"]
+    # The step after each blowup runs with thinking off; nothing is mistaken for an empty reply.
+    assert len(calls) == 4 and calls[1].think is False and calls[3].think is False
+    assert not any(e.type == "guard.armed" and e.guard == "empty_reply" for e in seen)
+    assert (await harness.core.store.list_messages(conv.id))[-1].content == "Here are the slots."
+
+
 async def test_an_answer_cut_off_at_the_allowance_is_continued_not_reported_as_finished(harness: Harness):
     """A truncated answer used to be persisted and the run reported `done`.
 

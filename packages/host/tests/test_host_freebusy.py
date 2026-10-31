@@ -5,17 +5,22 @@ from __future__ import annotations
 from datetime import datetime, timedelta, tzinfo
 
 import pytest
-from fake_com import DirectoryPerson, FakeComError, World
+from fake_com import Appointment, DirectoryPerson, FakeComError, World
 
 from jarvis_host.outlook import (
     BusyBlock,
     FreeBusyPerson,
+    MeetingRequest,
     OutlookBackend,
     OutlookError,
     OutlookService,
     ceil_to_grid,
+    common_windows,
+    day_lines,
     find_common_slots,
     parse_free_busy,
+    plan_meetings,
+    unavailable_days,
     work_windows,
 )
 
@@ -212,9 +217,7 @@ def test_backend_intersects_everyone_including_me_and_reports_who_has_no_data(ba
     )
     by_who = {p["who"]: p for p in res["people"]}
     assert by_who["Arsen Apostolov"]["me"] is True and by_who["Arsen Apostolov"]["address"] == "aapostolov@postbank.bg"
-    assert by_who["Vesela Chuleva"]["busy"] == [
-        {"start": iso("2026-11-02T10:00"), "end": iso("2026-11-02T10:30"), "status": "tentative"}
-    ]
+    assert by_who["Vesela Chuleva"]["busy_by_day"] == {"Mon 2026-11-02": ["10:00-10:30 tentative"]}
     assert by_who["Petrov"]["no_data"].startswith("not resolved")  # two Petrovs: ask, never guess
     assert by_who["Petrov"]["nearest_in_address_book"]["address"].endswith("@postbank.bg")
     assert by_who["Nobody Here"]["no_data"].startswith("not resolved")
@@ -252,3 +255,108 @@ def test_service_marks_free_busy_read_only_with_its_own_deadline():
 
 def iso(local: str) -> str:
     return datetime.fromisoformat(local).astimezone().isoformat(timespec="seconds")
+
+
+# --- complete answers, aliases, optional people, several meetings (2026-10-31) -------------------
+
+
+def test_day_lines_are_complete_however_many_blocks_there_are():
+    """The busy list used to stop at 40 blocks: over four weeks Gyuzelev's last two weeks read as
+    free, and the model planned on that."""
+    windows = work_windows(at(2, 0), at(23, 0), 9, 18, TZ)
+    blocks = [
+        BusyBlock(ws + timedelta(hours=h), ws + timedelta(hours=h, minutes=30), "busy")
+        for ws, _ in windows
+        for h in (0, 2, 4, 6)
+    ]
+    assert len(blocks) == 60
+    lines = day_lines(blocks, windows)
+    assert len(lines) == 15 and sum(len(v) for v in lines.values()) == 60
+    assert lines["Fri 2026-11-20"] == ["09:00-09:30 busy", "11:00-11:30 busy", "13:00-13:30 busy", "15:00-15:30 busy"]
+    named = day_lines(blocks[:1], windows[:1], lambda s, e: "Board review")
+    assert named == {"Mon 2026-11-02": ["09:00-09:30 busy (Board review)"]}
+
+
+def test_common_windows_lists_every_stretch_merged_with_who_optional_can_come():
+    ana = person("Ana", (at(2, 9), at(2, 10), "busy"))
+    bo = person("Bo", (at(2, 12), at(2, 13), "tentative"))
+    karo = person("Karo", (at(2, 10), at(2, 12), "busy"))
+    wins = common_windows(
+        [ana, bo], work_windows(at(2, 0), at(3, 0), 9, 18, TZ), timedelta(minutes=30), 30, BLOCKING, [karo]
+    )
+    assert [(w["start"][11:16], w["end"][11:16], w["optional_free"]) for w in wins] == [
+        ("10:00", "12:00", []),
+        ("13:00", "18:00", ["Karo"]),
+    ]
+
+
+def test_unavailable_days_are_the_days_without_room_for_one_meeting():
+    ana = person("Ana", (at(3, 9), at(3, 17, 30), "busy"))
+    days = unavailable_days(ana, work_windows(at(2, 0), at(5, 0), 9, 18, TZ), timedelta(hours=1), 30, BLOCKING)
+    assert days == ["Tue 2026-11-03"]
+
+
+def test_plan_places_the_scarcest_first_never_overlaps_spaces_repeats_and_prefers_optional_free():
+    week = work_windows(at(2, 0), at(7, 0), 9, 18, TZ)
+    rare = person("Rare", *[(at(d, 9 if d > 2 else 10), at(d, 18), "busy") for d in range(2, 7)])  # only Mon 9-10
+    easy = person("Easy")
+    never = person("Never", *[(at(d, 9), at(d, 18), "busy") for d in range(2, 7)])
+    opt = person("Opt", (at(2, 10), at(2, 11), "busy"))
+    proposal, unplaced = plan_meetings(
+        [person("Me")],
+        [MeetingRequest("easy", [easy], 2), MeetingRequest("rare", [rare], 1), MeetingRequest("never", [never], 1)],
+        week,
+        timedelta(hours=1),
+        30,
+        BLOCKING,
+        timedelta(days=2),
+        [opt],
+    )
+    assert [(p["with"], p["meeting"], p["start"][5:16], p["optional_busy"]) for p in proposal] == [
+        ("rare", "1 of 1", "11-02T09:00", []),
+        ("easy", "1 of 2", "11-02T11:00", []),  # 10:00 is free but Opt is not; same day, so wait for Opt
+        ("easy", "2 of 2", "11-04T11:00", []),
+    ]
+    assert proposal[0]["attendees"] == ["rare@x.bg"]
+    assert unplaced == [{"with": "never", "meeting": "1 of 1", "why": "no common time left in the window"}]
+
+
+def test_backend_resolves_a_bare_alias_on_my_domain_names_my_meetings_and_lets_optional_not_block(
+    backend: OutlookBackend, world: World
+):
+    nine = datetime(2026, 11, 2, 9).astimezone()
+    world.calendar.add(Appointment("Board review", nine, nine + timedelta(hours=1)))
+    res = backend.calendar_free_busy("vchuleva", "2026-11-02", 1, 30, 9, 18, 3, True, True, 60, "pkarova")
+    by_who = {p["who"]: p for p in res["people"]}
+    assert by_who["Vesela Chuleva"]["address"] == "vchuleva@postbank.bg"  # "vchuleva" alone is not a name
+    assert by_who["Arsen Apostolov"]["busy_by_day"] == {"Mon 2026-11-02": ["09:00-10:00 busy (Board review)"]}
+    assert by_who["Petya Karova"]["optional"] is True
+    # Karova's 12:00-13:30 does not block: the proposals run straight through it.
+    assert [s["start"][11:16] for s in res["slots"]] == ["10:30", "11:30", "12:30"]
+    assert [(w["start"][11:16], w["end"][11:16], w["optional_free"]) for w in res["all_windows"]] == [
+        ("10:30", "18:00", ["Petya Karova"])
+    ]
+
+
+def test_backend_plans_several_meetings_reading_everyone_once(backend: OutlookBackend, world: World):
+    res = backend.calendar_plan_meetings(
+        [{"with": "vchuleva", "count": 2}, {"with": "Nikolay Petrov"}], "", "pkarova", "2026-11-02", 5, 60, 9, 18, 1
+    )
+    asked = [c[0] for c in world.ns.free_busy_calls]
+    assert sorted(asked) == sorted(set(asked)) and len(asked) == 4  # me, Chuleva, Petrov, Karova - once each
+    assert [(p["with"], p["meeting"], p["start"][5:16], p["optional_busy"]) for p in res["proposal"]] == [
+        ("vchuleva", "1 of 2", "11-02T10:30", []),
+        ("Nikolay Petrov", "1 of 1", "11-02T13:30", []),  # 11:30 would clash with Karova; Mon 13:30 does not
+        ("vchuleva", "2 of 2", "11-03T10:30", []),
+    ]
+    assert res["proposal"][0]["attendees"] == ["vchuleva@postbank.bg"]
+    assert set(res["all_windows"]) == {"vchuleva", "Nikolay Petrov"}
+    assert all("unavailable_days" in p for p in res["people"] if "no_data" not in p)
+    assert "not_planned" not in res
+    with pytest.raises(OutlookError, match="no meetings"):
+        backend.calendar_plan_meetings([], "", "", "2026-11-02")
+
+
+def test_service_marks_plan_meetings_read_only_with_its_own_deadline():
+    assert "calendar_plan_meetings" in OutlookService.READ_ONLY
+    assert OutlookService.TIMEOUTS["calendar_plan_meetings"] >= OutlookService.TIMEOUTS["calendar_free_busy"]

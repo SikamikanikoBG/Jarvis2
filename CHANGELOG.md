@@ -2,6 +2,13 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-10-31 — core 2.0.0a110
+
+### Fixed
+- A task's report now carries the result written beside its first `task.finish`. On the live core the
+  eight-meeting plan wrote its table there, re-finished to fix an evidence ref, and ended with "the full
+  proposal is in my message above" - the report showed only that line, so Arsen never saw the table.
+
 ## 2026-10-31 — host 2.0.0a33, core 2.0.0a109
 
 Arsen asked Jarvis for a four-week options table for eight meetings (him + Gyuzelev + six colleagues,

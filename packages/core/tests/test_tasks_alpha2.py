@@ -37,6 +37,30 @@ async def test_the_report_carries_the_result_itself_not_a_description_of_it(harn
     assert "I compiled a table" not in report  # not the task's description of its work
 
 
+async def test_a_result_written_beside_task_finish_reaches_the_report_when_the_last_reply_points_at_it(
+    harness: Harness,
+):
+    """2026-10-31, the eight-meeting plan on the live core: the table came with the first task.finish,
+    a re-finish fixed an evidence ref, and the final reply said "the full proposal is in my message
+    above". The report carried only that last line, so Arsen never saw the table."""
+    split = await tasks_on(harness)
+    await with_tools(harness)
+    pushes(harness)
+    split.push(FakeTurn(tool_calls=[delegate(dod=("a table of rivers",))]), FakeTurn(text="ok"))
+    split.task.push(
+        FakeTurn(tool_calls=[echo("c1")]),
+        FakeTurn(text=f"Here are the rivers:\n\n{TABLE}", tool_calls=[finish("f1", (1, True, ["nope"]))]),
+        FakeTurn(text="The ref was wrong; recording it again.", tool_calls=[finish("f2", (1, True, ["c1"]))]),
+        FakeTurn(text="All done - the full table is in my message above."),
+    )
+    _, conv = await ask(harness, "a table of Bulgarian rivers")
+    await reported(harness)
+    report = await _report(harness, conv.id)
+    assert TABLE in report and "in my message above" in report
+    assert report.index(TABLE) < report.index("in my message above")  # "above" is true in the report too
+    assert "recording it again" not in report  # the evidence fix is not the result
+
+
 async def test_a_result_too_long_for_a_message_is_cut_at_a_paragraph_and_attached_whole(harness: Harness):
     split = await tasks_on(harness)
     await with_tools(harness)

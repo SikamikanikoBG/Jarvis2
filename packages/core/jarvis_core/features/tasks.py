@@ -98,6 +98,8 @@ log = logging.getLogger(__name__)
 SWEEP_S = 30.0
 #: What a report quotes of a final answer when the task never wrote its own summary.
 REPORT_ANSWER_CHARS = 6_000
+#: The task-side tool that ends a round; the report reads the text written beside it.
+FINISH_TOOL = "task.finish"
 #: The tools that write a task down from a chat; only Arsen's own message may call them.
 _DELEGATING = frozenset({"tasks.delegate", "tasks.note"})
 #: Never offered to a task: it does not message other chats, and it does not ring Arsen - its
@@ -1066,6 +1068,14 @@ class TaskService:
         # A named answer is the core's own line ("I stopped here: ..."), said by the report already.
         said = [m for m in msgs if m.role is Role.ASSISTANT and m.content.strip() and m.name is None]
         final = next((m for m in reversed(said) if not m.tool_calls), None)
+        # The result is often written beside the first task.finish, and the last reply only points
+        # at it. 2026-10-31, the eight-meeting plan: the table came with task.finish, a re-finish
+        # fixed an evidence ref, and the final reply said "the full proposal is in my message
+        # above" - which was all Arsen got. So the report carries that first finishing text too;
+        # the re-finish steps between are about evidence, not the result.
+        finishing = next((m for m in said if m.tool_calls and any(c.name == FINISH_TOOL for c in m.tool_calls)), None)
+        if final is not None and finishing is not None and finishing.content.strip() not in final.content:
+            return final.model_copy(update={"content": f"{finishing.content.strip()}\n\n{final.content.strip()}"})
         # A cancelled or failed round has no final answer: its report shows the work it got to (F-16).
         return final or (said[-1] if said and task.state in (TaskState.CANCELLED, TaskState.FAILED) else None)
 
@@ -1626,7 +1636,7 @@ class TasksTools(BuiltinProvider):
     # --- the task's own run -------------------------------------------------------------------
 
     @tool(
-        "task.finish",
+        FINISH_TOOL,
         description=(
             "End the task: the result for Arsen in English (the substance - what you found or did, not a status "
             "line) and, for EVERY DoD item by its number, whether it is met and its refs: the id at the top of "

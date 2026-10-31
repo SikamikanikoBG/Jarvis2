@@ -1087,8 +1087,10 @@ async def test_a_need_for_a_provider_that_is_not_set_up_is_not_down_mail_lives_e
     assert not any(n.startswith("mail.") for n in tools) and "outlooky.outlook_send" in tools
     first = next(m for m in await harness.core.store.list_messages(conv.id) if m.tool_call_id == "d1")
     assert "no tools in mail" in first.content and "outlooky" in first.content and "down" not in first.content
-    task = await the_task(harness)
-    assert task.brief.needs == ["outlooky"] and task.state is not TaskState.NOT_DONE
+    # It starts and runs - whatever this scripted run then does, it is not declined as "down".
+    task = await the_task(harness, lambda t: t.run_id is not None)
+    assert task.brief.needs == ["outlooky"]
+    assert not (task.outcome and (task.outcome.stopped_reason or "").startswith("not started"))
     context = "\n".join(m.content for m in split.calls[0][0])
     assert "- mail:" not in context  # not set up is not "not available"
 

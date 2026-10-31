@@ -1542,6 +1542,14 @@ class TasksTools(BuiltinProvider):
         service = self._service()
         if (bad := self._unknown(needs)) is not None:
             return ToolResult.failure(bad)
+        # Checked when it is noted too, not only when it starts: on a call he is still listening,
+        # so he hears "can't, X is down" now instead of a promise that ends "not started".
+        if (down := service.down_for(needs)) is not None:
+            namespace, error, since = down
+            return ToolResult.failure(
+                f"{namespace} is not reachable (down since {service.clock(since)}: {error}). Nothing was noted. "
+                "Tell him now that you cannot do this and why, or do it another way with what is connected."
+            )
         await service.call_seen(run.call_id, run.conversation_id)
         brief = TaskBrief(needs=needs, asked=await service.asked_words(run.id), written=False)
         task, _ = await service.create(

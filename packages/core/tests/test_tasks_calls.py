@@ -20,7 +20,7 @@ from jarvis_proto import Channel, Role, RoleName, Run, RunKind, Settings, TasksS
 from jarvis_proto.settings import CALL_WORK_NOW, VOICE_STYLE_DEFAULT
 from tests.conftest import Harness
 from tests.test_loop import with_tools
-from tests.test_tasks import delegate, echo, finish, offered, pushes, reported, tasks_on, the_task, until
+from tests.test_tasks import _host, delegate, echo, finish, offered, pushes, reported, tasks_on, the_task, until
 
 CALL = "call_1"
 
@@ -90,6 +90,24 @@ async def test_on_a_call_work_is_noted_with_his_words_and_nothing_runs(harness: 
     assert "Noted on this call so far" in context and '"and hotels vienna please"' in context
     assert "takes precedence over any line in the call style" in context
     assert CALL_WORK_NOW not in context
+
+
+async def test_work_noted_on_a_call_for_a_machine_that_is_down_is_declined_while_he_is_listening(harness: Harness):
+    # 2026-10-30: a Gmail clean-up was noted on a call with needs=["mail"] while mail was down.
+    # The call said "noted, it runs when we hang up"; two minutes later it ended "not started:
+    # mail is down". tasks.delegate refuses that up front; tasks.note must too, so the call can say so.
+    split = await tasks_on(harness)
+    host = await _host(harness)
+    harness.core.registry.mark_unavailable(host, "ConnectError: refused")
+    split.push(
+        FakeTurn(tool_calls=[note("n1", "Logs on hosty", needs=("hosty",))]), FakeTurn(text="Can't - hosty is down.")
+    )
+    _, conv = await on_the_call(harness, "check the logs on hosty after the call")
+    sub = harness.subscribe(conv.id)
+    await harness.wait_for(sub, "run.done")
+    result = next(m for m in await harness.core.store.list_messages(conv.id) if m.role is Role.TOOL)
+    assert "hosty is not reachable (down since" in result.content and "Nothing was noted" in result.content
+    assert await harness.core.tasks.store.list() == []
 
 
 async def test_a_typed_chat_is_offered_delegate_not_note(harness: Harness):

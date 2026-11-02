@@ -86,6 +86,10 @@ _START_OUTLOOK = re.compile(
 )
 
 
+#: Where one shell statement ends: a line break, `;`, `&&` or `||` (a `|` pipeline stays one statement).
+_STATEMENT = re.compile(r"\r?\n|;|&&|\|\|")
+
+
 def refusal(command: str, own_pids: Sequence[int] = ()) -> str | None:
     """Why `command` must not run, or None. It would kill this daemon: python/uv by name, or one of `own_pids`."""
     if any(p.search(command) for p in _KILL_BY_NAME):
@@ -102,10 +106,15 @@ def refusal(command: str, own_pids: Sequence[int] = ()) -> str | None:
             "with the right profile in this host's own session, which is the only instance the Outlook tools can "
             "reach; a hand-started one (guessed /profile, other privilege level) cannot be attached to."
         )
-    if re.search(rf"\b{_KILL}\b", command, re.IGNORECASE):
-        for pid in own_pids:
-            if re.search(rf"(?<![\w.]){pid}(?![\w.])", command):
-                return f"refused: PID {pid} is the host daemon (or its launcher); stopping it would cut you off from this machine."
+    # The kill and the PID must sit in the same statement: in a container the daemon is PID 1, a digit
+    # found in almost any script next to an unrelated `kill` word elsewhere. PID 0 (a container's
+    # parent) is no process at all.
+    pids = [pid for pid in own_pids if pid > 0]
+    for statement in _STATEMENT.split(command):
+        if pids and re.search(rf"\b{_KILL}\b", statement, re.IGNORECASE):
+            for pid in pids:
+                if re.search(rf"(?<![\w.]){pid}(?![\w.])", statement):
+                    return f"refused: PID {pid} is the host daemon (or its launcher); stopping it would cut you off from this machine."
     return None
 
 

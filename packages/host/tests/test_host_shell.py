@@ -179,6 +179,28 @@ def test_refuses_the_daemons_own_pid(tmp_path: Path):
         shell.run(f"import os; os.kill({__import__('os').getpid()}, 9)  # taskkill")
 
 
+# In the Linux workspace container the daemon is PID 1 and its parent is 0: digits that turn up in
+# almost any script. A kill word in one statement and such a digit in another is not a kill of the
+# daemon (2026-11-01: the portfolio run's `kill=` price level next to `rows[1]` was refused, 14 times since 10-10).
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python3 - <<'EOF'\nprev = rows[-2][1]\nprint(f\"watch={w['watch']} kill={w['kill']}\")\nEOF",
+        "sleep 1; kill $SRV 2>/dev/null",
+        "kill -0 $p && echo alive",
+    ],
+)
+def test_a_kill_word_and_the_pid_in_different_statements_is_not_a_kill_of_the_daemon(command: str):
+    assert refusal(command, own_pids=(1, 0)) is None
+
+
+@pytest.mark.parametrize(
+    "command", ["kill -9 1", "kill 1", "python3 -c 'import os; os.kill(1, 9)'", "sleep 2 && kill -TERM 1"]
+)
+def test_pid_1_is_still_refused_when_it_is_what_gets_killed(command: str):
+    assert refusal(command, own_pids=(1, 0)) is not None
+
+
 @pytest.mark.parametrize(
     "command",
     [

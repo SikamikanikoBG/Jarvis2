@@ -30,6 +30,9 @@ log = logging.getLogger(__name__)
 _URL = re.compile(r"https?://[^\s\"'<>)\]]+")
 _MIN_FAILURES = 2
 _MAX_STEPS = 40
+# An update replaces the whole playbook, so the model must see all of it. One longer than this
+# is left alone: rewriting a cut copy silently drops its tail (dev.to playbook, 2 Nov 2026).
+_MAX_EXISTING_CHARS = 12_000
 
 _PROMPT = """You are writing a PLAYBOOK for an AI assistant that drives web pages through browser tools.
 Below are the browser steps of a run it just finished on {host}: what failed, what worked afterwards.
@@ -91,9 +94,13 @@ class PlaybookReflector:
             existing_block = ""
             if existing:
                 name, body = existing[0]
+                if len(body) > _MAX_EXISTING_CHARS:
+                    log.info("playbook reflection for %s skipped: %s is too long to update whole", host, name)
+                    return
                 existing_block = (
                     f"There is already a playbook `{name}` for this site; UPDATE it (keep its name, keep what "
-                    f"still holds, correct what this run contradicted):\n{body[:2500]}\n\n"
+                    f"still holds, correct what this run contradicted). Your body REPLACES it whole, so carry "
+                    f"over every section that still holds, even past the usual length:\n{body}\n\n"
                 )
             browser = [s for s in steps if s.tool.startswith("browser.")][-_MAX_STEPS:]
             prompt = _PROMPT.format(host=host, existing=existing_block, steps=render_steps(browser, width=260))

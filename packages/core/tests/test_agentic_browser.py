@@ -369,6 +369,61 @@ def test_reflector_only_fires_on_struggle_then_success_and_writes_a_site_playboo
     asyncio.run(go())
 
 
+def test_reflector_update_sees_the_whole_existing_playbook_and_never_rewrites_one_it_cannot_show(tmp_path: Path):
+    """2 Nov 2026: the update prompt showed only the first 2,500 chars of the playbook, cut mid-word,
+    and the model's rewrite replaced the whole file - so every update chopped the tail. The dev.to
+    playbook lost Arsen's voice rules and ended at "Vary the op"; the next run hunted the disks for
+    the rest. An update must see all of what it replaces, and skip when that is too long to show."""
+    from jarvis_core.db import Database
+    from jarvis_core.features import reflection
+
+    fought = _steps(
+        ("browser.open", "data", "Opened https://dev.to/x"),
+        ("browser.click", "error", "No element matched"),
+        ("browser.click", "error", "No element matched"),
+        ("browser.type", "data", "typed"),
+        ("browser.click", "data", "ok"),
+    )
+    fake = FakeAdapter()
+    fake.default_turn = FakeTurn(
+        text=json.dumps({"name": "devto", "description": "dev.to", "sites": ["dev.to"], "body": "rewritten"})
+    )
+    tail = "### Voice\n- **Vary the opening** and the closing. LAST-LINE-MARKER"
+    body = ("- a line of the working recipe that still holds\n" * 70) + tail
+
+    async def go():
+        db = Database(tmp_path / "t.db")
+        await db.open()
+        try:
+            store = SkillStore(tmp_path / "skills", db)
+            await store.put(
+                "devto",
+                skill_document(description="dev.to", triggers=[], sites=["dev.to"], body=body, extra={"learned": True}),
+            )
+            r = PlaybookReflector(store, lambda: fake)
+            r.schedule(fought)
+            await asyncio.gather(*r._tasks)
+            prompt = fake.calls[-1][0][0].content
+            assert "LAST-LINE-MARKER" in prompt  # the whole playbook, not its first 2,500 chars
+
+            # too long to show whole: leave it alone rather than rewrite a cut copy
+            huge = body + "\n" + ("x" * (reflection._MAX_EXISTING_CHARS + 1))
+            await store.put(
+                "devto",
+                skill_document(description="dev.to", triggers=[], sites=["dev.to"], body=huge, extra={"learned": True}),
+            )
+            calls = len(fake.calls)
+            r.schedule(fought)
+            await asyncio.gather(*r._tasks)
+            assert len(fake.calls) == calls
+            _, kept = SkillStore.parse(await store.get("devto") or "")
+            assert kept.strip() == huge.strip()
+        finally:
+            await db.close()
+
+    asyncio.run(go())
+
+
 # --- 5. the supervisor names the door --------------------------------------------------------
 
 

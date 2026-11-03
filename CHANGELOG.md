@@ -2,6 +2,15 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-03 — core 2.0.0a111
+
+### Fixed
+- A playbook update now shows the model the WHOLE existing playbook (it saw only the first 2,500 chars,
+  cut mid-word) and tells it the body replaces the file, so sections past the usual length are carried
+  over. One too long to show whole (over 12,000 chars) is left alone instead of rewritten from a cut copy.
+  Every update had been chopping the tail: the dev.to playbook lost Arsen's voice rules and ended at
+  "Vary the op", and the 2 Nov dev.to run spent ten minutes searching disks and the network for the rest.
+
 ## 2026-10-31 — core 2.0.0a110
 
 ### Fixed

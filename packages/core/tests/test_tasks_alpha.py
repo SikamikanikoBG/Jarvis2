@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from jarvis_core.app import Core, create_app
 from jarvis_core.config import CoreConfig
 from jarvis_core.engine.loop import HAND_OFF_NOTE, HANDED_OFF_NOTE
+from jarvis_core.features import web as web_feature
 from jarvis_core.features.web import WebTools
 from jarvis_core.models.base import reset_endpoint_semaphores
 from jarvis_core.models.fake import FakeAdapter, FakeTurn
@@ -255,24 +256,51 @@ async def _both_done(h: Harness) -> bool:
 # --- F-10: a search backend that does not answer is down, said as such -------------------------------------
 
 
-async def test_search_engines_that_do_not_answer_mark_the_search_down(harness: Harness):
+async def test_a_search_backend_that_does_not_answer_is_down_and_asked_again_later(harness: Harness, monkeypatch):
+    def unreachable(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    harness.core.settings.searxng_url = "http://searx"
+    web = WebTools(lambda: harness.core.settings, client=httpx.AsyncClient(transport=httpx.MockTransport(unreachable)))
+    result = await web.call("web.search", {"query": "x"}, cancel=asyncio.Event(), idempotency_key="k", timeout_s=5)
+    assert result.error is not None and "unreachable" in result.error
+    assert web.error is not None
+    # Down is not forever: the model is told not to search while it is, so no call would ever
+    # find out that it is back (2026-11-04).
+    monkeypatch.setattr(web_feature, "DOWN_RECHECK_S", 0.0)
+    assert web.error is None
+    harness.core.settings.searxng_url = None
+    assert not web.configured  # not set up: web.search is not offered at all
+
+
+async def test_suspended_engines_make_an_empty_answer_not_a_search_that_is_down(harness: Harness):
+    """2026-11-04: Brave rate limited and DuckDuckGo behind a CAPTCHA, one niche query found
+    nothing, and every chat was told web search was "not available" for the rest of the day,
+    while Google and Wikipedia answered the next query fine."""
     payload = {"results": [], "unresponsive_engines": [["brave", "too many requests"], ["duckduckgo", "CAPTCHA"]]}
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=payload)))
     harness.core.settings.searxng_url = "http://searx"
     web = WebTools(lambda: harness.core.settings, client=client)
     result = await web.call("web.search", {"query": "x"}, cancel=asyncio.Event(), idempotency_key="k", timeout_s=5)
-    assert result.error is not None and "brave too many requests" in result.error
-    assert web.error is not None
-    ok = httpx.AsyncClient(
-        transport=httpx.MockTransport(
-            lambda r: httpx.Response(200, json={"results": [{"url": "https://a.b", "title": "t"}]})
-        )
-    )
-    web._client = ok  # pyright: ignore[reportPrivateUsage]
-    await web.call("web.search", {"query": "x"}, cancel=asyncio.Event(), idempotency_key="k", timeout_s=5)
+    assert result.kind.value == "empty" and "brave too many requests" in result.text
     assert web.error is None
-    harness.core.settings.searxng_url = None
-    assert not web.configured  # not set up: web.search is not offered at all
+
+
+async def test_the_registry_reads_a_search_status_that_cleared_itself(harness: Harness, monkeypatch):
+    def unreachable(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    harness.core.settings.searxng_url = "http://searx"
+    web = harness.core.web
+    web._client = httpx.AsyncClient(transport=httpx.MockTransport(unreachable))  # pyright: ignore[reportPrivateUsage]
+    await harness.core.registry.call(
+        "web.search", {"query": "x"}, cancel=asyncio.Event(), idempotency_key="k", timeout_s=5
+    )
+    assert harness.core.registry.down("web") is not None
+    assert any(name == "web" and error for name, error, _ in harness.core.registry.connections())
+    monkeypatch.setattr(web_feature, "DOWN_RECHECK_S", 0.0)
+    assert harness.core.registry.down("web") is None
+    assert all(not (name == "web" and error) for name, error, _ in harness.core.registry.connections())
 
 
 # --- F-12: words for a task that ends before it reads them ---------------------------------------------------

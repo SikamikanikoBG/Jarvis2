@@ -2,6 +2,17 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-04 — core 2.0.0a113
+
+### Fixed
+- Web search is no longer stuck "not available". One empty search while some SearXNG engines were
+  suspended (Brave rate limited, DuckDuckGo CAPTCHA) marked search as down, and only a successful
+  search cleared that mark. Meanwhile every chat told the model not to search, so nothing ever cleared
+  it. Jarvis answered "web search is not working" for the rest of the day, while SearXNG kept answering
+  normally. Now an answer from SearXNG always means search is up. An empty answer names the engines
+  that were silent. Only an unreachable or broken backend marks search as down, the mark expires after
+  5 minutes, and the registry reads web's status live instead of keeping the copy from its last call.
+
 ## 2026-11-04 — core 2.0.0a112
 
 ### Fixed

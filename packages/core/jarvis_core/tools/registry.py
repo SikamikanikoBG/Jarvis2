@@ -192,8 +192,17 @@ class ToolRegistry:
         for name in {*self._errors, *failing}:
             self._set_error(name, failing.get(name))
 
+    def _read_live_status(self) -> None:
+        """A provider whose ``error`` is its live status (``reports_status``) is read now, not
+        remembered from its last call: a search backend marked down that the model is told not to
+        use would otherwise never be marked up again."""
+        for provider in self._providers:
+            if getattr(provider, "reports_status", False):
+                self._set_error(provider.name, getattr(provider, "error", None))
+
     def provider_health(self) -> list[dict[str, Any]]:
         """Per provider: how many tools it contributes and why it failed, if it did."""
+        self._read_live_status()
         errors = self._errors
         out: list[dict[str, Any]] = []
         for provider in self._providers:
@@ -208,6 +217,7 @@ class ToolRegistry:
         """Why the machine behind ``namespace`` cannot be reached right now, and since when;
         None when it can, or when nothing serves that namespace. A status, not a guess: it is
         the provider's own error from its last listing or its dropped connection."""
+        self._read_live_status()
         names = {p.name for p, s in self._index.values() if s.namespace == namespace}
         names |= {p.name for p in self._providers if p.name == namespace}
         for name in sorted(names):
@@ -223,11 +233,13 @@ class ToolRegistry:
 
     def failing(self) -> list[tuple[str, str, datetime]]:
         """Every provider that cannot be reached now: (name, error, since), by name."""
+        self._read_live_status()
         return [(name, error, self._since.get(name, datetime.now(UTC))) for name, error in sorted(self._errors.items())]
 
     def connections(self) -> list[tuple[str, str | None, datetime | None]]:
         """Every machine or service outside the core (a provider marked ``external``): (name, why
         it cannot be reached or None, since when). What "can I do this?" is answered from."""
+        self._read_live_status()
         out: list[tuple[str, str | None, datetime | None]] = []
         for provider in self._providers:
             if not getattr(provider, "external", False) or not _set_up(provider):

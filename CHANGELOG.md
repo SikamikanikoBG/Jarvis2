@@ -2,6 +2,14 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-04 — core 2.0.0a112
+
+### Fixed
+- `tasks.list` now also shows the tasks that ended in the last day, with how they ended, beside the
+  open ones, and says `tasks.steer` starts one again. It listed open tasks only, so on 3 Nov, when a
+  candidate-research task had stopped half-way (its model host was down), Arsen's "finish this
+  morning's task" on a call got "No open tasks" and Jarvis said it had no such task.
+
 ## 2026-11-03 — core 2.0.0a111
 
 ### Fixed

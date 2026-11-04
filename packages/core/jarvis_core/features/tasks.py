@@ -126,6 +126,10 @@ _STATE_WORDS = {
 }
 
 
+#: How far back tasks.list shows the tasks that ended, beside the open ones.
+RECENTLY_ENDED = timedelta(days=1)
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -1505,7 +1509,9 @@ class TasksTools(BuiltinProvider):
         "tasks.list",
         description=(
             "The delegated tasks that are open - working, queued, waiting for Arsen's approval or his answer, "
-            "noted on a call - with their state. Use it for 'what are you working on?'."
+            "noted on a call - with their state, and the ones that ended in the last day with how they ended "
+            "(done, partly done, not done, failed, cancelled). Use it for 'what are you working on?' and to find "
+            "a task he asks you to finish or redo: tasks.steer starts a task that stopped again."
         ),
         args=_ListArgs,
         read_only=True,
@@ -1514,15 +1520,31 @@ class TasksTools(BuiltinProvider):
     async def _list(self, everywhere: bool = True) -> ToolResult:
         here = current_conversation_id.get()
         service = self._service()
-        tasks = await service.store.list(open_only=True, origin=None if everywhere else here)
+        origin = None if everywhere else here
+        tasks = await service.store.list(open_only=True, origin=origin)
+        # A task that stopped is still his to finish: "finish this morning's task" must find it.
+        since = _now() - RECENTLY_ENDED
+        ended = [
+            t
+            for t in await service.store.list(states=tuple(s for s in TaskState if s.terminal), origin=origin)
+            if t.finished_at and t.finished_at > since
+        ]
         # Another chat's private task is not this chat's business.
         tasks = [t for t in tasks if not t.incognito or t.origin_conversation_id == here]
-        if not tasks:
-            return ToolResult.data("No open tasks.")
+        ended = [t for t in ended if not t.incognito or t.origin_conversation_id == here]
+        if not tasks and not ended:
+            return ToolResult.data("No open tasks, and none ended in the last day.")
         lines = []
         for t in tasks:
             where = "" if t.origin_conversation_id == here else " (from another chat)"
             lines.append(f"{t.id} · {t.title} — {_detail(t)}{where}")
+        if not tasks:
+            lines.append("No open tasks.")
+        if ended:
+            lines.append("Ended in the last day (tasks.steer starts one again):")
+            for t in ended:
+                where = "" if t.origin_conversation_id == here else " (from another chat)"
+                lines.append(f"{t.id} · {t.title} — {_detail(t)}{where}")
         return ToolResult.data("\n".join(lines))
 
     @tool(

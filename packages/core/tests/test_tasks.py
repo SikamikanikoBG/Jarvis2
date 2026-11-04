@@ -1097,3 +1097,40 @@ async def test_a_need_for_a_provider_that_is_not_set_up_is_not_down_mail_lives_e
 
 async def _task_count(h: Harness, n: int) -> bool:
     return len(await h.core.tasks.store.list()) == n
+
+
+async def test_tasks_list_shows_a_task_that_ended_today_so_he_can_have_it_finished(harness: Harness):
+    """2026-11-03: a task stopped half-way (its model host went down); asked on a call an hour
+    later to "finish this morning's task", the chat's tasks.list said "No open tasks" and Jarvis
+    answered that it had no such task. A recently ended task is listed, with how it ended, so
+    tasks.steer can start it again; one that ended days ago is not."""
+    split = await tasks_on(harness)
+    await with_tools(harness)
+    pushes(harness)
+    split.push(FakeTurn(tool_calls=[delegate(title="Candidate research")]), FakeTurn(text="ok"))
+    split.task.push(
+        FakeTurn(tool_calls=[finish("f1", (1, False, []), summary="Search was down.")]),
+        FakeTurn(text="."),
+    )
+    await ask(harness, "check the two candidates")
+    task = await reported(harness, lambda t: t.state.terminal)
+    assert task.state is not TaskState.DONE
+
+    store = harness.core.tasks.store
+    old = task.model_copy(update={"id": "task_old", "title": "Old trip", "conversation_id": None, "run_id": None})
+    old = await store.create(old, origin_key="old:k")
+    old.state = TaskState.NOT_DONE
+    old.finished_at = datetime.now(UTC) - timedelta(days=3)
+    await store.save(old)
+
+    other = await harness.core.store.create_conversation(title="A call later")
+    token = current_conversation_id.set(other.id)
+    try:
+        listed = await harness.core.task_tools.call(
+            "tasks.list", {}, cancel=asyncio.Event(), idempotency_key="k", timeout_s=5
+        )
+    finally:
+        current_conversation_id.reset(token)
+    assert "Ended in the last day" in listed.text
+    assert task.id in listed.text and "Candidate research" in listed.text
+    assert "Old trip" not in listed.text

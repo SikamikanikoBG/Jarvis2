@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
+import pytest
 from pydantic import BaseModel
 
 from jarvis_core.features.stt import SttResult
@@ -523,6 +524,47 @@ async def test_the_audit_flags_gate_violations_and_reports_the_judges_disagreeme
     assert len(convs) == 1
     text = (await core.store.list_messages(convs[0].id))[-1].content
     assert "2 rule violation(s)" in text and "judge agrees 50% of 2 sampled" in text
+
+
+async def test_the_daily_audit_waits_for_the_judge_when_no_sampled_mail_could_be_judged(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+):
+    """Review 2026-11-04: the model host was down at 19:00, every judge call failed, and the one
+    audit of the day was posted as "judge agrees n/a of 0 sampled · 30 judge errors". An audit in
+    which not a single sampled mail could be judged is tried again later, and only then posted."""
+    from jarvis_core.features import triage_audit
+
+    monkeypatch.setattr(triage_audit, "AUDIT_RETRY_S", 0)
+    core = harness.core
+    harness.enable(triage=TriageSettings(host="laptop", accounts=["Work"]))
+    now = datetime.now(UTC).isoformat()
+    rows = [
+        {
+            "id": n, "point": "mail", "source": "live", "at": now,
+            "input": {"from": f"X <x{n}@bank.bg>", "to": "", "cc": "", "subject": f"s{n}", "preview": "", "_account": "Work"},
+            "prod": {"category": "", "folder": ""},
+        }
+        for n in (1, 2)
+    ]  # fmt: skip
+
+    async def fake_rows(*, since_id: int = 0, limit: int = 1000) -> list[dict]:
+        return [r for r in rows if r["id"] > since_id][:limit]
+
+    core.shadow.rows = fake_rows  # type: ignore[method-assign]
+    ok = '{"verdict": "ok", "better": "", "why": ""}'
+    harness.judge.push(
+        FakeTurn(fail_before_first_byte=True),  # the lane is down: both samples fail
+        FakeTurn(fail_before_first_byte=True),
+        FakeTurn(text=ok),  # it is back for the next attempt
+        FakeTurn(text=ok),
+    )
+    report = await core.triage_audit.daily()
+    a = report["accounts"]["Work"]
+    assert a["judged"] == 2 and a["judge_errors"] == 0 and a["agreement"] == 1.0
+    convs = [c for c in await core.store.list_conversations() if c.folder_key == "triage-audit"]
+    assert len(convs) == 1
+    msgs = await core.store.list_messages(convs[0].id)
+    assert len(msgs) == 1 and "judge agrees 100% of 2 sampled" in msgs[0].content
 
 
 async def test_the_audit_judge_can_reason_before_its_verdict(harness: Harness):

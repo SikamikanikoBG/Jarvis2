@@ -39,6 +39,10 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 AUDIT_FOLDER_KEY = "triage-audit"
+# A daily audit in which not one sampled mail could be judged (the model host was down: review
+# 2026-11-04) is run again after AUDIT_RETRY_S, up to AUDIT_RETRIES times, before it is posted.
+AUDIT_RETRY_S = 1800.0
+AUDIT_RETRIES = 4
 LEFT = "(left in Inbox)"
 
 _JUDGE = """You are auditing an email filing decision made by an automatic sorter.
@@ -116,9 +120,31 @@ class TriageAudit:
             await asyncio.sleep(self._seconds_to_next(hour))
             if self.core.settings.triage.enabled and self.core.settings.triage.audit_hour == hour:
                 try:
-                    await self.run(post=True)
+                    await self.daily()
                 except Exception:
                     log.exception("triage audit failed")
+
+    async def daily(self) -> dict[str, Any]:
+        """The scheduled audit: run, and while the judge could not judge a single sampled mail,
+        wait and run again (a bounded number of times), then post what there is."""
+        report = await self.run()
+        for attempt in range(1, AUDIT_RETRIES + 1):
+            if not self._judge_was_down(report):
+                break
+            log.warning(
+                "triage audit: no sampled mail could be judged; trying again in %.0f s (%d/%d)",
+                AUDIT_RETRY_S,
+                attempt,
+                AUDIT_RETRIES,
+            )
+            await asyncio.sleep(AUDIT_RETRY_S)
+            report = await self.run()
+        await self._post(report)
+        return report
+
+    @staticmethod
+    def _judge_was_down(report: dict[str, Any]) -> bool:
+        return any(a["judge_errors"] and not a["judged"] for a in report["accounts"].values())
 
     # --- the audit ---------------------------------------------------------------------
 

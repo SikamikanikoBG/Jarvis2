@@ -101,3 +101,61 @@ async def test_on_a_call_he_is_asked_aloud(harness: Harness):
     seen = await harness.wait_for(sub, "run.done")
     result = next(e for e in seen if e.type == "tool.result")
     assert "go-ahead" in result.result.text and tools.calls == []
+
+
+async def test_a_call_he_turned_down_waits_for_him_again_whatever_the_checker_says_next(harness: Harness):
+    # Review 2026-11-05 (run_1a1a9e3fbca_228aa745): he declined a Gmail compose to a third party,
+    # the model typed the identical call again, the checker judged it differently the second time,
+    # and it went through without him.
+    tools = await with_tools(harness)
+    _autonomous(harness)
+    _checker(
+        harness,
+        '{"outbound": true, "asked": false, "what": "e-mails a correction to a friend"}',
+        '{"outbound": true, "asked": true, "what": "types the recipient"}',
+    )
+    harness.chat.push(
+        FakeTurn(tool_calls=[ToolCall(id="c1", name="test.write", arguments={"to": "friend@example.org"})]),
+        FakeTurn(tool_calls=[ToolCall(id="c2", name="test.write", arguments={"to": "friend@example.org"})]),
+        FakeTurn(text="left it"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    run, _ = await harness.core.engine.create_run(text="fix the report", conversation_id=conv.id)
+    seen = await harness.wait_for(sub, "run.waiting_user")
+    first = next(e for e in seen if e.type == "tool.confirm_requested")
+    await harness.core.engine.confirm(run.id, first.call_id, False)
+    seen = await harness.wait_for(sub, "run.waiting_user", timeout=10)
+    again = [e for e in seen if e.type == "tool.confirm_requested"]
+    assert again and again[-1].call_id == "c2" and tools.calls == []
+    # What the model was told the first time says plainly that he said no.
+    declined = next(m for m in await harness.core.store.list_run_messages(run.id) if m.tool_call_id == "c1")
+    assert "declined" in declined.content
+    await harness.core.engine.confirm(run.id, "c2", False)
+    await harness.wait_for(sub, "run.done")
+    assert tools.calls == []
+
+
+async def test_waiting_for_his_answer_is_not_work_time_for_the_progress_check(harness: Harness):
+    # Same run: 20 min waiting for his answer counted as "30 min of work", so the judge was
+    # summoned the moment he said no and told the model to retry.
+    import asyncio
+
+    tools = await with_tools(harness)
+    _autonomous(harness)
+    harness.enable(progress_review_s=1)
+    _checker(harness, '{"outbound": true, "asked": false, "what": "sends a mail to a stranger"}')
+    harness.chat.push(
+        FakeTurn(tool_calls=[ToolCall(id="c0", name="test.echo", arguments={"text": "report ready"})]),
+        FakeTurn(tool_calls=[ToolCall(id="c1", name="test.write", arguments={})]),
+        FakeTurn(text="ok"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    run, _ = await harness.core.engine.create_run(text="go", conversation_id=conv.id)
+    seen = await harness.wait_for(sub, "run.waiting_user")
+    req = next(e for e in seen if e.type == "tool.confirm_requested")
+    await asyncio.sleep(1.5)
+    await harness.core.engine.confirm(run.id, req.call_id, False)
+    seen = await harness.wait_for(sub, "run.done")
+    assert not any(e.type == "guard.armed" for e in seen) and "write" not in tools.calls

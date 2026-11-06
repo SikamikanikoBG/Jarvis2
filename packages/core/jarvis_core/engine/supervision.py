@@ -60,6 +60,8 @@ class RunWatch:
     steps: list[StepRecord] = field(default_factory=list)
     # Site playbooks already shown in this run (skill names): once per run, not per click.
     playbooks_shown: set[str] = field(default_factory=set)
+    # Calls (args_hash) he turned down in this run: the same call again always waits for him.
+    declined: set[str] = field(default_factory=set)
     empty_replies: int = 0
     nudges: int = 0
     plan_nudged: bool = False

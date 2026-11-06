@@ -850,6 +850,7 @@ class AgentLoop:
                     ctl,
                     call,
                     reason="interrupted during this action — did it complete? Approve to run it again, reject to skip.",
+                    watch=watch,
                 )
                 decision = await self._recorded_decision(run, call.id, after_dispatch=True)
             if decision is not None and not decision[0]:
@@ -944,6 +945,13 @@ class AgentLoop:
                 and not confirmations.needs_confirmation(call.name, destructive=True, unattended=False)
             ):
                 reason = "a delegated task asks before anything destructive, whatever the confirmation mode"
+        if not confirm and args_hash(call.name, call.arguments) in watch.declined:
+            # He already said no to exactly this call in this run. It waits for him again rather
+            # than going out because a check judged the second attempt differently: on 2026-11-05
+            # (run_1a1a9e3fbca_228aa745) the outbound checker flagged a Gmail compose to a third
+            # party, he declined, the model typed the identical call again and the checker let it
+            # through. A no is his decision, not a classifier's - only he can lift it.
+            confirm, reason = True, f"you turned down exactly this {call.name} call earlier in this run"
         if (
             not confirm
             and confirmations.checks_outbound(call.name, unattended=unattended)
@@ -968,11 +976,24 @@ class AgentLoop:
                 # ask him again; the no goes back to it as a decision (alpha N-4).
                 return await self._tool_message(run, call, ToolResult.failure(refused), 0, emit), None
             if decision is None:
-                await self._wait_for_confirmation(run, ctl, call, reason=reason)
+                await self._wait_for_confirmation(run, ctl, call, reason=reason, watch=watch)
                 decision = await self._recorded_decision(run, call.id)
             if decision is not None and not decision[0]:
+                watch.declined.add(args_hash(call.name, call.arguments))
                 note = f" ({decision[1]})" if decision[1] else ""
-                message = await self._tool_message(run, call, ToolResult.failure(f"rejected by user{note}"), 0, emit)
+                # Said as his decision, not as a failure: "rejected by user" read like a tool error,
+                # and the progress judge told the model to work around it (2026-11-05).
+                message = await self._tool_message(
+                    run,
+                    call,
+                    ToolResult.failure(
+                        f"rejected by user{note}: {self._settings().user_name or 'the user'} declined this "
+                        f"{call.name} call, so it was not done. This is his decision, not a tool error: do not "
+                        "retry it or reach the same result another way unless he asks for it."
+                    ),
+                    0,
+                    emit,
+                )
                 return message, None
 
         if not read_only and not await self._store.claim_idempotency(key, run.id, call.name):
@@ -1148,7 +1169,21 @@ class AgentLoop:
         # the marker with the ref. The DB has the whole text; the view is what costs tokens.
         return admit(message, self._admit_chars)
 
-    async def _wait_for_confirmation(self, run: Run, ctl: RunControl, call: ToolCall, *, reason: str) -> None:
+    async def _wait_for_confirmation(
+        self, run: Run, ctl: RunControl, call: ToolCall, *, reason: str, watch: RunWatch | None = None
+    ) -> None:
+        """Ask him and wait. The wait is his time, not the run's work: it is credited to the run
+        clock like any deliberate wait, or the progress check counts it - on 2026-11-05 twenty
+        minutes waiting for his answer read as "30 min of work" and summoned the judge the
+        moment he said no."""
+        t0 = time.perf_counter()
+        try:
+            await self._ask_and_wait(run, ctl, call, reason=reason)
+        finally:
+            if watch is not None:
+                watch.paused_s += time.perf_counter() - t0
+
+    async def _ask_and_wait(self, run: Run, ctl: RunControl, call: ToolCall, *, reason: str) -> None:
         emit = ctl.emitter.emit
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[tuple[bool, str | None]] = loop.create_future()

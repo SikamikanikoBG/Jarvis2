@@ -2,6 +2,29 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-07 — core 2.0.0a116 / web alpha.88
+
+### Added
+- **Context screen** (header meter, and More → Context on mobile): how much of the model's context
+  window is in use, by whom, now and over time. Every model call (main loop, planner, classifier, judge,
+  journal, compaction, knowledge) is booked by the adapters into a new `model_calls` table, attributed to
+  its source: Chat, Voice calls, each scheduled prompt by name, Tasks, Triage, Mail desk, Meetings, and
+  Housekeeping by purpose.
+  - **Now**: one bar per endpoint (GPU box) against its window, a segment per call in flight, calls
+    queued for the endpoint, and the last 15 minutes' peak and busy time. The header meter shows the
+    fullest endpoint and turns red when anything was refused in the last 24 h.
+  - **Overflows**, each kind on its own: *Refused* (the server said the prompt does not fit; vLLM and
+    llama.cpp messages), *Answer room cut* (fitted only after a smaller `max_tokens` retry), *History
+    trimmed* (older conversation dropped before the call, with how much), *Answer cut off* (stopped at the
+    output limit). Each links to its conversation.
+  - **Over time**: Hour / 6 h / Day / Week / Month / 90 d, as peak context per call against the window
+    (dashed), busy share of time (with each endpoint's total), or tokens processed; overflow dots; a
+    per-source table (calls, typical, p95, peak and % of window, busy, overflows); and a "typical day"
+    of busy minutes per hour over the last 7 days with the quietest hours, for moving schedules.
+    Buckets follow the browser's clock; days are local midnights (DST days are 23/25 h).
+- `GET /api/context/live`, `GET /api/context/usage?range=&tz=`; setting `context_usage_retention_days`
+  (default 90, pruned every 6 h).
+
 ## 2026-11-04 — core 2.0.0a113
 
 ### Fixed

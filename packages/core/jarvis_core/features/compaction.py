@@ -21,6 +21,7 @@ from typing import Any
 
 from jarvis_core.db import Database
 from jarvis_core.models.base import BACKGROUND, ModelAdapter, ModelTextChunk, call_urgency
+from jarvis_core.models.ledger import call_purpose
 from jarvis_proto import Message, Role, new_id
 
 log = logging.getLogger(__name__)
@@ -105,6 +106,7 @@ class Compactor:
 
     async def _passes(self, conversation_id: str, view: View, early: bool) -> None:
         call_urgency.set(BACKGROUND)  # not the urgency of the turn that asked for it
+        call_purpose.set("compaction")  # booked as housekeeping on the Context screen, not to the run
         while True:
             await self._compact(conversation_id, view, early)
             if conversation_id not in self._again:

@@ -7,6 +7,7 @@ live only here: ``options.num_ctx`` (VRAM), ``think`` (per-role), ``keep_alive``
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -24,6 +25,7 @@ from jarvis_core.models.base import (
     endpoint_semaphore,
 )
 from jarvis_core.models.http import Stopwatch, make_client, stream_lines
+from jarvis_core.models.ledger import CallRecord, ContextLedger
 from jarvis_proto import Message, ModelSpec, ModelUsage, Role, ToolCall, ToolSpec, new_id
 
 log = logging.getLogger(__name__)
@@ -58,8 +60,12 @@ def to_ollama_tools(tools: list[ToolSpec]) -> list[dict[str, Any]]:
 
 
 class OllamaAdapter:
-    def __init__(self, spec: ModelSpec, *, concurrency: int = 1) -> None:
+    def __init__(
+        self, spec: ModelSpec, *, concurrency: int = 1, role: str | None = None, ledger: ContextLedger | None = None
+    ) -> None:
         self.spec = spec
+        self.role = role
+        self._ledger = ledger
         self._sem = endpoint_semaphore(spec, concurrency)
         self._client = make_client(spec.timeout_s)
 
@@ -94,7 +100,22 @@ class OllamaAdapter:
     ) -> AsyncIterator[ModelEvent]:
         payload = self._payload(messages, tools)
         url = self.spec.base_url.rstrip("/") + "/api/chat"
+        ledger = self._ledger
+        rec = await ledger.begin(self.spec, self.role, messages, tools) if ledger else None
+        try:
+            async with contextlib.aclosing(self._stream(url, payload, rec, cancel)) as events:
+                async for event in events:
+                    yield event
+        except BaseException as exc:
+            if ledger:
+                ledger.fail(rec, exc)
+            raise
+
+    async def _stream(
+        self, url: str, payload: dict[str, Any], rec: CallRecord | None, cancel: asyncio.Event
+    ) -> AsyncIterator[ModelEvent]:
         async with self._sem:
+            ContextLedger.started(rec)
             watch = Stopwatch()
             usage = ModelUsage(calls=1)
             finish: str | None = None
@@ -107,10 +128,12 @@ class OllamaAdapter:
                     thinking = msg.get("thinking")
                     if thinking:
                         watch.mark_first()
+                        ContextLedger.saw(rec, thinking)
                         yield ModelReasoningChunk(thinking)
                     content = msg.get("content")
                     if content:
                         watch.mark_first()
+                        ContextLedger.saw(rec, content)
                         yield ModelTextChunk(content)
                     raw_calls = msg.get("tool_calls")
                     if raw_calls:
@@ -132,6 +155,8 @@ class OllamaAdapter:
                 raise
             usage.ttft_ms = watch.ttft_ms
             usage.duration_ms = watch.elapsed_ms
+            if self._ledger:
+                self._ledger.finish(rec, usage, finish, self.spec.max_tokens)
             yield ModelDoneChunk(usage=usage, finish_reason=finish)
 
     async def probe(self) -> ProbeResult:

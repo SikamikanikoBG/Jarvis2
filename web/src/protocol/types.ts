@@ -1418,3 +1418,113 @@ export interface Whoami {
   owner: boolean;
   key_name?: string;
 }
+
+// ---- context usage (core api/context.py, features/context_usage.py) -------------------
+
+export type OverflowKind = 'rejected' | 'shrunk' | 'trimmed' | 'cut';
+export type OverflowCounts = Record<OverflowKind, number>;
+
+export interface ContextEndpoint {
+  endpoint: string;
+  model: string;
+  roles: string[];
+  window: number | null;
+}
+
+export interface LiveCall {
+  id: string;
+  key: string;
+  endpoint: string;
+  model: string;
+  role: string | null;
+  source: string;
+  label: string | null;
+  run_id: string | null;
+  conversation_id: string | null;
+  state: 'waiting' | 'running';
+  queued_at: number;
+  started_at: number | null;
+  tokens: number;
+  window: number | null;
+  trimmed_tokens: number;
+}
+
+export interface LiveEndpoint extends ContextEndpoint {
+  calls: LiveCall[];
+  used: number;
+  waiting: number;
+  recent_peak: number;
+  recent_busy_ms: number;
+  recent_by_source: Record<string, { peak: number; calls: number }>;
+}
+
+export interface OverflowItem {
+  at: number;
+  key: string;
+  source: string;
+  label: string | null;
+  role: string | null;
+  endpoint: string;
+  model: string;
+  kinds: OverflowKind[];
+  tokens: number;
+  window: number | null;
+  trimmed_tokens: number;
+  run_id: string | null;
+  conversation_id: string | null;
+  error: string | null;
+}
+
+export interface ContextLive {
+  now: number;
+  recent_s: number;
+  endpoints: LiveEndpoint[];
+  overflows_24h: OverflowCounts;
+  last_overflows: OverflowItem[];
+}
+
+export type ContextRange = '1h' | '6h' | '24h' | '7d' | '30d' | '90d';
+
+export interface UsageSeries {
+  source: string;
+  label: string | null;
+  peak: number[];
+  calls: number[];
+  tokens: number[];
+  busy_ms: number[];
+  overflows: number[];
+}
+
+export interface UsageRow {
+  key: string;
+  source: string;
+  label: string | null;
+  calls: number;
+  failed: number;
+  tokens: number;
+  busy_ms: number;
+  overflows: OverflowCounts;
+  endpoints: string[];
+  last_at: number;
+  max_window: number | null;
+  peak: number;
+  p50: number;
+  p95: number;
+}
+
+export interface ContextUsage {
+  range: ContextRange;
+  tz: string;
+  now: number;
+  bucket_s: number;
+  buckets: number[];
+  lengths: number[];
+  series: Record<string, UsageSeries>;
+  windows: Record<string, (number | null)[]>;
+  endpoint_busy: Record<string, number[]>;
+  overflows: OverflowItem[];
+  overflow_count: number;
+  table: UsageRow[];
+  hour_profile: { days: number; busy_min_per_day: Record<string, number[]> };
+  endpoints: ContextEndpoint[];
+}

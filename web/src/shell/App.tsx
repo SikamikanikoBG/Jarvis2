@@ -15,6 +15,7 @@ import { SettingsScreen } from '../settings/SettingsScreen';
 import { Sidebar } from '../sidebar/Sidebar';
 import { SkillsScreen } from '../skills/SkillsScreen';
 import { StatusScreen } from '../status/StatusScreen';
+import { ContextScreen } from '../context/ContextScreen';
 import { useStore } from '../store/store';
 import { TriageScreen } from '../triage/TriageScreen';
 import { CallScreen } from '../voice/CallScreen';
@@ -37,6 +38,7 @@ const SCREENS = {
   meetings: MeetingsScreen,
   triage: TriageScreen,
   office: OfficeScreen,
+  context: ContextScreen,
 } as const;
 
 /** Screens with a search box of their own, so Ctrl/⌘+K focuses that instead of leaving. */

@@ -8,6 +8,7 @@ on older servers). Tool-call deltas are accumulated by index and parsed once at 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -26,6 +27,7 @@ from jarvis_core.models.base import (
     endpoint_semaphore,
 )
 from jarvis_core.models.http import Stopwatch, make_client, stream_lines
+from jarvis_core.models.ledger import CallRecord, ContextLedger
 from jarvis_proto import AttachmentKind, Message, ModelSpec, ModelUsage, Role, ToolCall, ToolSpec, new_id
 
 log = logging.getLogger(__name__)
@@ -153,8 +155,18 @@ def _smaller_max_tokens(error: str, requested: int) -> int | None:
 
 
 class OpenAICompatAdapter:
-    def __init__(self, spec: ModelSpec, *, concurrency: int = 1, api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        spec: ModelSpec,
+        *,
+        concurrency: int = 1,
+        api_key: str | None = None,
+        role: str | None = None,
+        ledger: ContextLedger | None = None,
+    ) -> None:
         self.spec = spec
+        self.role = role
+        self._ledger = ledger
         self._sem = endpoint_semaphore(spec, concurrency)
         self._client = make_client(spec.timeout_s)
         self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
@@ -184,12 +196,29 @@ class OpenAICompatAdapter:
     ) -> AsyncIterator[ModelEvent]:
         payload = self._payload(messages, tools)
         url = self.spec.base_url.rstrip("/") + "/chat/completions"
+        ledger = self._ledger
+        rec = await ledger.begin(self.spec, self.role, messages, tools) if ledger else None
+        try:
+            # aclosing: when the caller stops early, the inner stream must release the endpoint's
+            # slot now, not whenever the garbage collector finalises it.
+            async with contextlib.aclosing(self._stream(url, payload, rec, cancel)) as events:
+                async for event in events:
+                    yield event
+        except BaseException as exc:
+            if ledger:
+                ledger.fail(rec, exc)
+            raise
+
+    async def _stream(
+        self, url: str, payload: dict[str, Any], rec: CallRecord | None, cancel: asyncio.Event
+    ) -> AsyncIterator[ModelEvent]:
         async with self._sem:
+            ContextLedger.started(rec)
             watch = Stopwatch()
             usage = ModelUsage(calls=1)
             finish: str | None = None
             pending: dict[int, dict[str, Any]] = {}
-            async for line in self._lines(url, payload, cancel=cancel):
+            async for line in self._lines(url, payload, cancel=cancel, rec=rec):
                 if not line.startswith("data:"):
                     continue
                 data = line[5:].strip()
@@ -212,10 +241,12 @@ class OpenAICompatAdapter:
                     reasoning = delta.get("reasoning") or delta.get("reasoning_content")
                     if reasoning:
                         watch.mark_first()
+                        ContextLedger.saw(rec, reasoning)
                         yield ModelReasoningChunk(reasoning)
                     content = delta.get("content")
                     if content:
                         watch.mark_first()
+                        ContextLedger.saw(rec, content)
                         yield ModelTextChunk(content)
                     for tc in delta.get("tool_calls") or []:
                         watch.mark_first()
@@ -228,15 +259,20 @@ class OpenAICompatAdapter:
                             slot["name"] += fn["name"]
                         if fn.get("arguments"):
                             slot["args"] += fn["arguments"]
+                            ContextLedger.saw(rec, fn["arguments"])
                     if choice.get("finish_reason"):
                         finish = choice["finish_reason"]
             if pending:
                 yield ModelToolCallsChunk(_finalize_tool_calls(pending))
             usage.ttft_ms = watch.ttft_ms
             usage.duration_ms = watch.elapsed_ms
+            if self._ledger:
+                self._ledger.finish(rec, usage, finish, self.spec.max_tokens)
             yield ModelDoneChunk(usage=usage, finish_reason=finish)
 
-    async def _lines(self, url: str, payload: dict[str, Any], *, cancel: asyncio.Event) -> AsyncIterator[str]:
+    async def _lines(
+        self, url: str, payload: dict[str, Any], *, cancel: asyncio.Event, rec: CallRecord | None = None
+    ) -> AsyncIterator[str]:
         """`stream_lines`, retried with a smaller `max_tokens` while the server refuses the request
         for not fitting its context. A 400 arrives before any byte of the answer, so nothing has
         been yielded yet and a retry cannot duplicate events; each one costs a round trip, not a
@@ -255,6 +291,8 @@ class OpenAICompatAdapter:
             log.warning(
                 "model %s: prompt too long for max_tokens=%d, retrying with %d", self.spec.model, requested, smaller
             )
+            if rec is not None:
+                rec.shrunk = True
             payload = {**payload, "max_tokens": smaller}
 
     async def probe(self) -> ProbeResult:

@@ -586,3 +586,21 @@ DELETE /api/collab/keys/{id}
 imports boards + notes, KG (entities/aliases/edges/mentions), skills files, schedules
 (V1 `scheduler_jobs` → cron), and conversations as `kind=archive` (read-only folder
 "Archive"). Idempotent (V1 ids kept in an `import_map` table).
+
+## Context usage
+
+Every model call is booked by its adapter (`models/ledger.py`) and kept in `model_calls` for
+`context_usage_retention_days` (default 90). Sources: `chat`, `voice`, `scheduled` (label = schedule
+name), `task`, `triage`, `mail`, `meeting`, `collab`, `system`, `housekeeping` (label = journal /
+compaction / knowledge, or the role). Source key = `source` or `source:label`.
+
+- `GET /api/context/live` → `{now, recent_s, endpoints: [{endpoint, model, roles, window, calls: [{id, key,
+  role, state: waiting|running, tokens, window, trimmed_tokens, ...}], used, waiting, recent_peak,
+  recent_busy_ms, recent_by_source}], overflows_24h: {rejected, shrunk, trimmed, cut}, last_overflows}`
+- `GET /api/context/usage?range=1h|6h|24h|7d|30d|90d&tz=<IANA>` → `{buckets (epoch ms), lengths, bucket_s,
+  series: {key: {peak, calls, tokens, busy_ms, overflows}[]}, windows: {endpoint: []}, endpoint_busy,
+  overflows, table, hour_profile: {days, busy_min_per_day: {key: number[24]}}, endpoints}`. 400 on an
+  unknown range or timezone.
+
+Overflow kinds: `rejected` (server refused the prompt as too long), `shrunk` (fitted after a smaller
+`max_tokens` retry), `trimmed` (history dropped before the call), `cut` (answer stopped at the output limit).

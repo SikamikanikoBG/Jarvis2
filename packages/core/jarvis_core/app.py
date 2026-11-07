@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from jarvis_core import __version__
 from jarvis_core.api import attachments as attachments_api
 from jarvis_core.api import collab, features, media, openai_compat, rest, ws
+from jarvis_core.api import context as context_api
 from jarvis_core.api import push as push_api
 from jarvis_core.api import tasks as tasks_api
 from jarvis_core.api.deps import require_token, token_matches
@@ -43,6 +44,7 @@ from jarvis_core.features.boards import BoardStore, NotesTools
 from jarvis_core.features.callme import CallMe
 from jarvis_core.features.collab import CollabAuthMiddleware, CollabKeys, build_mcp_server
 from jarvis_core.features.compaction import Compactor
+from jarvis_core.features.context_usage import ContextUsage
 from jarvis_core.features.expiry import Reaper, delete_conversation
 from jarvis_core.features.files import FilesTools, fetch_host_file
 from jarvis_core.features.journal import DayJournal, TodayBlock
@@ -212,6 +214,9 @@ class Core:
         self.loop.set_task_gate(self.tasks)
         self.scheduler = Scheduler(self.schedules, self._fire_schedule)
         self.reaper = Reaper(self)
+        # Every model call, live and over time, for the Context screen (features/context_usage.py).
+        self.context_usage = ContextUsage(self.db, settings, self.adapters)
+        self.adapters.ledger.chars_per_token = lambda: self.context.chars_per_token
 
     def _housekeeping_model(self) -> Any:
         return self.adapters.on_lane(RoleName.CLASSIFIER, self.settings.assistant.housekeeping_lane)
@@ -324,6 +329,7 @@ class Core:
         await self.triage_audit.start()
         await self.rsvp.start()
         await self.reaper.start()
+        await self.context_usage.start()
         # The end-of-turn model, fetched and loaded now rather than on a call's first pause.
         self.turns.warm()
         # Today's lines the journal does not have yet (runs before a restart), written in the background.
@@ -363,6 +369,7 @@ class Core:
             with contextlib.suppress(asyncio.CancelledError):
                 await watch
         await self.reaper.stop()
+        await self.context_usage.stop()
         await self.triage.stop()
         await self.triage_audit.stop()
         await self.rsvp.stop()
@@ -455,6 +462,7 @@ def create_app(config: CoreConfig | None = None, *, core: Core | None = None) ->
     app.include_router(attachments_api.router)
     app.include_router(push_api.router)
     app.include_router(tasks_api.router)
+    app.include_router(context_api.router)
     app.include_router(tasks_api.calls)
     app.include_router(openai_compat.router)
     app.include_router(ws.router)

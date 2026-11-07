@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo
 
 from jarvis_core.features.knowledge import parse_json
 from jarvis_core.models.base import BACKGROUND, ModelAdapter, ModelTextChunk, call_urgency
+from jarvis_core.models.ledger import call_purpose
 from jarvis_proto import Channel, Conversation, ConversationKind, Message, Role, Run, RunKind, RunStatus
 
 if TYPE_CHECKING:
@@ -145,6 +146,7 @@ class DayJournal:
 
     async def _write(self, conversation_id: str) -> None:
         call_urgency.set(BACKGROUND)  # not the urgency of the run whose ending scheduled it
+        call_purpose.set("journal")  # booked as housekeeping on the Context screen, not to the run
         try:
             async with self._sem:
                 await self._digest(conversation_id)

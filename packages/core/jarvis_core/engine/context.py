@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 from jarvis_core.db import Store
 from jarvis_core.engine.views import admit, aged, is_view, short_ref
 from jarvis_core.features.personality import personality_block
+from jarvis_core.models.ledger import pending_trim
 from jarvis_proto import (
     Attachment,
     AttachmentKind,
@@ -427,7 +428,15 @@ class ContextAssembler:
             if self._compactor.cost(history) > budget_chars:  # type: ignore[attr-defined]
                 self._compactor.schedule(run.conversation_id, self.compaction_view)  # type: ignore[attr-defined]
         # ... and again once trimmed: a reference whose full copy fell off is written out in place.
-        kept = await self._hydrate(render_context(self.trim(history, budget_chars), blocks, run.id))
+        trimmed = self.trim(history, budget_chars)
+        if len(trimmed) < len(history):
+            # History dropped to fit: the next model call of this task reports it (Context screen).
+            ids = {id(m) for m in trimmed}
+            dropped = sum(
+                len(m.content) + sum(len(str(c.arguments)) for c in m.tool_calls) for m in history if id(m) not in ids
+            )
+            pending_trim.set(self.tokens(dropped))
+        kept = await self._hydrate(render_context(trimmed, blocks, run.id))
         if ledger is not None:
             # Right before this run's own messages, not at the top: it grows by a turn each turn,
             # and up there it would invalidate the cached prefix of the whole history every time.

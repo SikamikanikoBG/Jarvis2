@@ -13,6 +13,7 @@ from contextvars import ContextVar
 
 from jarvis_core.models.base import ModelAdapter
 from jarvis_core.models.fake import FakeAdapter
+from jarvis_core.models.ledger import ContextLedger
 from jarvis_core.models.ollama import OllamaAdapter
 from jarvis_core.models.openai_compat import OpenAICompatAdapter
 from jarvis_proto import LANES, ModelSpec, Provider, RoleName, RunKind, Settings, ThinkLevel
@@ -28,6 +29,8 @@ class AdapterFactory:
         self._settings = settings
         self._cache: dict[str, ModelAdapter] = {}
         self._windows: dict[str, int | None] = {}  # endpoint_key → probed context window
+        # Every real adapter reports its calls here (models/ledger.py; the Context screen).
+        self.ledger = ContextLedger(window_of=self.window_for_spec)
         self.fakes: dict[RoleName, FakeAdapter] = {}  # tests inject per-role scripted adapters
 
     def update_settings(self, settings: Settings) -> None:
@@ -51,6 +54,22 @@ class AdapterFactory:
                 self._windows[key] = probe.context_window
             except Exception:
                 self._windows[key] = None
+        return self._windows[key]
+
+    async def window_for_spec(self, spec: ModelSpec) -> int | None:
+        """The context window of the endpoint ``spec`` points at: its ``num_ctx``, else what the
+        endpoint said when asked (kept until settings change). For the context ledger."""
+        if spec.num_ctx:
+            return spec.num_ctx
+        key = spec.endpoint_key
+        if key not in self._windows:
+            asker = OllamaAdapter(spec) if spec.provider is Provider.OLLAMA else OpenAICompatAdapter(spec)
+            try:
+                self._windows[key] = (await asker.probe()).context_window
+            except Exception:
+                self._windows[key] = None
+            finally:
+                await asker.aclose()
         return self._windows[key]
 
     def lane_for(self, kind: RunKind | None = None) -> RoleName | None:
@@ -91,9 +110,9 @@ class AdapterFactory:
             if role in self.fakes:
                 self.fakes[role].spec = spec
                 return self.fakes[role]
-            key = spec.model_dump_json()
+            key = f"{role.value}|{spec.model_dump_json()}"
             if key not in self._cache:
-                self._cache[key] = self._build(spec)
+                self._cache[key] = self._build(spec, role)
             return self._cache[key]
         if role in LANES and (lane := self.lane_for(kind)) is not None:
             role = lane
@@ -106,10 +125,10 @@ class AdapterFactory:
             fake.spec = self.spec_for(role, kind=kind).with_thinking(think, think_level)
             return fake
         spec = self.spec_for(role, kind=kind).with_thinking(think, think_level)
-        key = spec.model_dump_json()
+        key = f"{role.value}|{spec.model_dump_json()}"
         adapter = self._cache.get(key)
         if adapter is None:
-            adapter = self._build(spec)
+            adapter = self._build(spec, role)
             self._cache[key] = adapter
         return adapter
 
@@ -123,17 +142,18 @@ class AdapterFactory:
         if role in self.fakes:
             self.fakes[role].spec = spec
             return self.fakes[role]
-        key = spec.model_dump_json()
+        key = f"{role.value}|{spec.model_dump_json()}"
         if key not in self._cache:
-            self._cache[key] = self._build(spec)
+            self._cache[key] = self._build(spec, role)
         return self._cache[key]
 
-    def _build(self, spec: ModelSpec) -> ModelAdapter:
+    def _build(self, spec: ModelSpec, role: RoleName | None = None) -> ModelAdapter:
         limit = self._settings.max_concurrent_runs_per_endpoint
+        name = role.value if role is not None else None
         if spec.provider is Provider.OLLAMA:
-            return OllamaAdapter(spec, concurrency=limit)
+            return OllamaAdapter(spec, concurrency=limit, role=name, ledger=self.ledger)
         if spec.provider is Provider.VLLM:
-            return OpenAICompatAdapter(spec, concurrency=limit)
+            return OpenAICompatAdapter(spec, concurrency=limit, role=name, ledger=self.ledger)
         return FakeAdapter(spec=spec)
 
     def all_specs(self) -> dict[RoleName, ModelSpec]:

@@ -25,9 +25,12 @@ export const NAV_MORE: NavItem[] = [
   { view: 'meetings', label: 'Meetings', icon: 'headphones' },
   { view: 'triage', label: 'Triage', icon: 'inbox' },
   { view: 'office', label: 'Office', icon: 'users' },
+  { view: 'context', label: 'Context', icon: 'gauge' },
 ];
 
-/** Desktop header order: Chat, then the feature screens, then the instrument screens. */
-export const NAV_DESKTOP: NavItem[] = [...NAV_PRIMARY.slice(0, 1), ...NAV_MORE, ...NAV_PRIMARY.slice(1)];
+/** Desktop header order: Chat, then the feature screens, then the instrument screens. Context
+ *  is left out on purpose: the header is full at 1366 px, and the context meter beside it is the
+ *  way in (it opens the Context screen). */
+export const NAV_DESKTOP: NavItem[] = [...NAV_PRIMARY.slice(0, 1), ...NAV_MORE.filter((n) => n.view !== 'context'), ...NAV_PRIMARY.slice(1)];
 
 export const NAV_ALL: NavItem[] = [...NAV_PRIMARY, ...NAV_MORE];

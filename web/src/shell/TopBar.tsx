@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { TasksChip } from '../chat/TasksChip';
+import { ContextMeter } from '../context/ContextMeter';
 import { Icon } from '../components/Icon';
 import { Drawer, IconButton } from '../components/primitives';
 import { effectiveTheme } from '../lib/theme';
@@ -79,6 +80,7 @@ export function TopBar({ desktop, panel = false }: { desktop: boolean; panel?: b
           {view === 'chat' && <ConversationMenu key={openId ?? 'none'} />}
         </>
       )}
+      {!panel && <ContextMeter />}
       <div className="conn" title={`Event stream: ${connection}`}>
         <span className={`dot ${connection === 'open' ? 'dot-ok' : connection === 'closed' ? 'dot-danger' : 'dot-warn dot-pulse'}`} />
         {desktop && <span>{connection === 'open' ? 'live' : connection}</span>}

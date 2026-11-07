@@ -785,6 +785,8 @@ class Settings(BaseModel):
     # tokens against a 305k-token KV cache, so they start evicting each other's cached prefixes —
     # which is the expensive thing this whole exercise removed. Raise it if the box grows.
     max_concurrent_runs_per_endpoint: int = 2
+    # How long the Context screen's per-call history (model_calls) is kept, in days.
+    context_usage_retention_days: int = Field(default=90, ge=1, le=730)
     repeated_call_threshold: int = 3
     # Every this many seconds of work the judge looks at a run even when no structural signal
     # fired (engine/supervision.py). A loop that renames its script or rewords its query never

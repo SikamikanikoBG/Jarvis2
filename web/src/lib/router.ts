@@ -1,6 +1,6 @@
-export type View = 'chat' | 'mail' | 'runs' | 'settings' | 'status' | 'boards' | 'knowledge' | 'skills' | 'schedules' | 'meetings' | 'triage' | 'office';
+export type View = 'chat' | 'mail' | 'runs' | 'settings' | 'status' | 'boards' | 'knowledge' | 'skills' | 'schedules' | 'meetings' | 'triage' | 'office' | 'context';
 
-export const VIEWS: readonly View[] = ['chat', 'mail', 'runs', 'settings', 'status', 'boards', 'knowledge', 'skills', 'schedules', 'meetings', 'triage', 'office'];
+export const VIEWS: readonly View[] = ['chat', 'mail', 'runs', 'settings', 'status', 'boards', 'knowledge', 'skills', 'schedules', 'meetings', 'triage', 'office', 'context'];
 
 export interface Route {
   view: View;

@@ -1,5 +1,8 @@
 import type {
   Attachment,
+  ContextLive,
+  ContextRange,
+  ContextUsage,
   Board,
   BulkConversationAction,
   MailAccount,
@@ -147,6 +150,12 @@ export function fieldErrors(body: unknown): Record<string, string> {
 export const api = {
   health: () => request<HealthResponse>('GET', '/api/health'),
   status: () => request<StatusResponse>('GET', '/api/status'),
+  /** The Context screen: model calls against their context windows, now and over time. */
+  context: {
+    live: () => request<ContextLive>('GET', '/api/context/live'),
+    usage: (range: ContextRange, tz: string) =>
+      request<ContextUsage>('GET', `/api/context/usage?range=${range}&tz=${encodeURIComponent(tz)}`),
+  },
   conversations: {
     list: (archived: boolean) => request<Conversation[]>('GET', `/api/conversations?archived=${archived ? 1 : 0}`),
     create: (body: { kind?: string; title?: string; incognito?: boolean; ttl_seconds?: number | null }) =>

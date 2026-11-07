@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from jarvis_core.db import Database
 from jarvis_core.engine.bus import EventBus
 from jarvis_core.models.base import BACKGROUND, ModelAdapter, ModelTextChunk, call_urgency
+from jarvis_core.models.ledger import call_purpose
 from jarvis_core.tools.builtin import BuiltinProvider, tool
 from jarvis_proto import Edge, Entity, EntityDetail, Graph, Message, ToolResult, new_id
 from jarvis_proto.events import KgChanged
@@ -346,6 +347,7 @@ class KnowledgeLearner:
 
     async def _learn(self, conversation_id: str, user_text: str, assistant_text: str, message_id: str | None) -> None:
         call_urgency.set(BACKGROUND)  # learning after a call's reply does not jump the queue
+        call_purpose.set("knowledge")  # booked as housekeeping on the Context screen, not to the run
         try:
             adapter: ModelAdapter = self._classifier()
             prompt = _EXTRACT_PROMPT.format(

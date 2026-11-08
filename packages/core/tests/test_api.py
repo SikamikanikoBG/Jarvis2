@@ -159,6 +159,18 @@ def test_status_reports_endpoints(client: TestClient):
     assert body["runs"] == {"running": 0, "queued": 0}
 
 
+def test_status_probes_real_adapters_not_only_injected_fakes(client: TestClient):
+    """/api/status builds each role's adapter through the factory's normal path (no injected
+    fake for that role); a role passed as a plain string broke the adapter cache key (500)."""
+    fake_roles = fake_settings().model_dump(mode="json")["roles"]
+    client.patch("/api/settings", json={"roles": fake_roles}, headers=_h())
+    client.core.adapters.fakes = {}  # type: ignore[attr-defined]
+    r = client.get("/api/status", headers=_h())
+    assert r.status_code == 200
+    roles = [e["role"] for e in r.json()["endpoints"]]
+    assert sorted(roles) == sorted(x.value for x in RoleName)
+
+
 def test_settings_stored_before_the_background_role_still_load():
     """A roles map saved by an older core has no 'background' row; it comes back as a copy of
     chat (same endpoint), never as the built-in localhost default. run_routing likewise gets

@@ -18,6 +18,7 @@ from jarvis_proto import (
     Conversation,
     ConversationKind,
     Message,
+    RoleName,
     Run,
     SearchHit,
     Settings,
@@ -40,11 +41,11 @@ async def status(request: Request) -> dict[str, Any]:
     core = core_of(request)
     specs = core.adapters.all_specs()
 
-    async def probe(role: str, spec: Any) -> dict[str, Any]:
-        adapter = core.adapters.for_role(role)  # type: ignore[arg-type]
+    async def probe(role: RoleName, spec: Any) -> dict[str, Any]:
+        adapter = core.adapters.for_role(role)
         res = await adapter.probe()
         return {
-            "role": role,
+            "role": role.value,
             "provider": spec.provider.value,
             "base_url": spec.base_url,
             "model": spec.model,
@@ -55,7 +56,7 @@ async def status(request: Request) -> dict[str, Any]:
             "models": res.models[:50],
         }
 
-    endpoints = await asyncio.gather(*(probe(r.value, s) for r, s in specs.items()))
+    endpoints = await asyncio.gather(*(probe(r, s) for r, s in specs.items()))
     return {
         "version": __version__,
         "endpoints": list(endpoints),

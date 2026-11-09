@@ -156,3 +156,35 @@ def test_render_steps_does_not_fold_when_the_head_is_short():
     rendered = render_steps(steps)
     assert "every result below begins" not in rendered
     assert "07:20" in rendered and "07:21" in rendered
+
+
+async def test_a_nudge_after_the_run_recovered_is_a_first_nudge_not_a_stop():
+    """The nudges that end a run are the ones that did not help. On 2026-11-08 the FX nightly
+    run was nudged twice over the MT5 terminal, got past it (the judge's next check said
+    "continue"), and the first, fixable files.attach error after that was turned into a stop
+    "(nudged 2 times already)", so the report was never attached."""
+    answers = iter(["nudge", "nudge", "continue", "nudge", "nudge", "nudge"])
+
+    class Judge:
+        async def stream(self, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+            from jarvis_core.models.base import ModelTextChunk
+
+            yield ModelTextChunk(text='{"verdict": "%s", "reason": "r"}' % next(answers))
+
+    async def emit(_event: object) -> None:
+        return None
+
+    supervisor = Supervisor(Settings, Judge)  # type: ignore[arg-type]
+    watch = watch_of(step_of("workspace.shell_run", {"command": "make"}, ToolResult.data("building")))
+    run = Run(id="r", conversation_id="c", kind=RunKind.SCHEDULED, input_text="build")
+
+    async def check() -> str:
+        watch.started -= 601
+        verdict = await supervisor.review(run, watch, [], emit, asyncio.Event())  # type: ignore[arg-type]
+        assert verdict is not None
+        return verdict.verdict
+
+    assert [await check() for _ in range(3)] == ["nudge", "nudge", "continue"]
+    assert await check() == "nudge", "the earlier nudges worked; this is a new problem"
+    assert await check() == "nudge"
+    assert await check() == "stop", "two nudges in a row that did not help still end the run"

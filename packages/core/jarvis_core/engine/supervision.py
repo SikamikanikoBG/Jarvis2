@@ -210,6 +210,11 @@ class Supervisor:
         await emit(GuardConsumed(run_id="", conversation_id="", guard="progress", detail=verdict.verdict))
         if verdict.verdict == "nudge":
             watch.nudges += 1
+        elif verdict.verdict == "continue":
+            # The nudges so far worked: the run is moving again. Only nudges in a row that did
+            # not help end a run, or the first fixable error after a recovery is a stop (the FX
+            # nightly run of 2026-11-08 lost its report that way).
+            watch.nudges = 0
         return verdict
 
     async def _ask_judge(

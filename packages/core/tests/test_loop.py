@@ -1168,3 +1168,40 @@ async def test_a_read_that_returns_the_same_as_before_is_not_repeated_into_the_c
     tools = [m for m in await harness.core.store.list_messages(conv.id) if m.role.value == "tool"]
     assert tools[0].content.startswith("Patzer discussions") and len(tools[0].content) > 2000
     assert len(tools[1].content) < 400 and "identical" in tools[1].content
+
+
+def test_a_long_run_whose_aged_results_alone_overflow_the_window_still_fits():
+    """A 114-step task (Milan invitation, 2026-11-10) read 175 results. Each had already aged to
+    its ~1.2k-char view, so cutting only down to that view could not shrink the prompt any more:
+    it crept to 97.9k tokens on a 98.3k window and the server refused it (HTTP 400), killing the
+    run after 85 minutes. The window is a wall: earlier results give way, oldest first, to their
+    smallest view (the ref stays, the DB keeps every byte), and the current step stays readable."""
+    from jarvis_core.engine.loop import _fit_to_window
+    from jarvis_core.engine.views import AGED_VIEW_CHARS, aged
+    from jarvis_proto import Message
+
+    run = "run_long"
+    doc = "\n".join(f"## Section {i}\n" + "a line of a long mail body. " * 60 for i in range(12))
+    messages: list[Message] = [Message.system("sys"), Message.user("find the invitation", run_id=run)]
+    for i in range(120):
+        call = ToolCall(id=f"chatcmpl-tool-{i:016x}", name="test.echo", arguments={"q": str(i)})
+        messages.append(Message.assistant("", tool_calls=[call], run_id=run))
+        messages.append(aged(Message.tool(call.id, "test.echo", doc, run_id=run)))
+    last = ToolCall(id="chatcmpl-tool-ffffffffffffffff", name="test.echo", arguments={"q": "now"})
+    messages.append(Message.assistant("", tool_calls=[last], run_id=run))
+    fresh = Message.tool(last.id, "test.echo", "the answer the model needs now", run_id=run)
+    messages.append(fresh)
+
+    def size(ms: list[Message]) -> int:
+        return sum(len(m.content) + sum(len(str(c.arguments)) for c in m.tool_calls) for m in ms)
+
+    floor = size(messages)
+    assert floor > 120 * (AGED_VIEW_CHARS // 2), "every old result already sits at its aged view"
+    limit = floor * 6 // 10  # what the run needed: ~20% under where it was refused
+    _fit_to_window(messages, run, limit)
+
+    assert size(messages) <= limit, "the prompt fits the window instead of reaching the server's 400"
+    assert messages[-1].content == fresh.content, "the current step's result is untouched"
+    tools = [m for m in messages if m.role.value == "tool"][:-1]
+    assert len(tools[0].content) < len(tools[-1].content), "the oldest results gave way first"
+    assert all("@" in m.content for m in tools), "every shrunk result still names its ref"

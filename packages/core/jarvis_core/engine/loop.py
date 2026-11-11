@@ -1603,6 +1603,9 @@ _CHARS_PER_TOKEN = 3.2
 # rest of that request; so when it has to happen it goes deep, to half the budget, and then not
 # again for a long while — every-step ageing was the 2026-09-17 newsletter's undoing.
 _COMPRESS_TO = 0.5
+# The smallest view an earlier result can be cut to when nothing else is left to cut: its ref and
+# first line, enough to read it back.
+_WALL_VIEW_CHARS = 240
 # What vLLM applies when a request names no max_tokens (the model's generation_config).
 _DEFAULT_MAX_TOKENS = 16_384
 # A step that spends its whole output allowance on reasoning is followed by one with thinking off;
@@ -1611,8 +1614,8 @@ _THINKING_OFF_RETRIES = 5
 
 
 def _fit_to_window(messages: list[Message], run_id: str, limit_chars: int) -> None:
-    """Cut this step's fresh tool results, largest first and only by the overflow, so the whole
-    prompt fits the lane's window. Ageing (above) is a budget the run lives within; this is the
+    """Cut this run's tool results, largest first and only by the overflow, so the whole prompt
+    fits the lane's window; if that is not enough, earlier steps' results shrink, oldest first. Ageing (above) is a budget the run lives within; this is the
     wall it must not hit. The DB keeps every byte; each cut result becomes a view naming its refs."""
     total = sum(len(m.content) + sum(len(str(c.arguments)) for c in m.tool_calls) for m in messages)
     overflow = total - limit_chars
@@ -1631,6 +1634,21 @@ def _fit_to_window(messages: list[Message], run_id: str, limit_chars: int) -> No
             continue
         cut = min(room, overflow)
         shrunk = view_of(m, len(m.content) - cut)
+        overflow -= len(m.content) - len(shrunk.content)
+        messages[i] = shrunk
+    if overflow <= 0:
+        return
+    # Still over: the results that are already down to their aged view are what fills the window
+    # now - a long run carries one per step (175 of them by step 114, 2026-11-10, and the server
+    # refused the prompt). Earlier steps' results give way, oldest first, to their smallest view:
+    # the ref stays, so the model can read any of them back. The current step's are left alone.
+    last_assistant = max((i for i, m in enumerate(messages) if m.role is Role.ASSISTANT), default=-1)
+    for i, m in enumerate(messages):
+        if overflow <= 0 or i >= last_assistant:
+            break
+        if m.role is not Role.TOOL:
+            continue
+        shrunk = view_of(m, _WALL_VIEW_CHARS)
         overflow -= len(m.content) - len(shrunk.content)
         messages[i] = shrunk
 

@@ -509,6 +509,39 @@ async def test_shell_and_file_writes_are_not_offered_to_a_task_and_refused_if_na
     assert "hosty.shell_run" in offered(split)
 
 
+async def test_a_task_cannot_reach_a_denied_tool_through_wait_until(harness: Harness):
+    # 2026-11-11: a task denied `*.shell_run` ran jarvisvm.shell_run through jarvis.wait_until
+    # (the shell was on wait_until_pollable for chats) and planned its code edits that way. A tool
+    # polled by a wait is gated as if the run had called it itself.
+    split = await tasks_on(harness)
+    harness.enable(wait_until_pollable=["hosty.shell_run"])
+    host = await _host(harness)
+    pushes(harness)
+    split.push(FakeTurn(tool_calls=[delegate()]), FakeTurn(text="ok"))
+    split.task.push(
+        FakeTurn(
+            tool_calls=[
+                ToolCall(
+                    id="w1",
+                    name="jarvis.wait_until",
+                    arguments={"tool": "hosty.shell_run", "args": {"command": "git push"}, "timeout_s": 5},
+                )
+            ]
+        ),
+        FakeTurn(tool_calls=[finish("f1", (1, False, []))]),
+        FakeTurn(text="Could not."),
+    )
+    await ask(harness, "fix the box")
+    await the_task(harness, lambda t: t.state.terminal)
+    assert host.ran == []
+    refused = next(
+        m
+        for m in await harness.core.store.list_messages((await the_task(harness)).conversation_id or "")
+        if m.role is Role.TOOL and m.tool_call_id == "w1"
+    )
+    assert "not available to a delegated task" in refused.content
+
+
 # --- who may delegate -----------------------------------------------------------------------------
 
 

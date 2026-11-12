@@ -874,11 +874,15 @@ class AgentLoop:
                 f"{call.name} is not available in an incognito chat: nothing from this conversation "
                 "is stored anywhere. Tell Arsen you cannot save it here."
             )
-        refused = (
-            await self._tasks.refusal(run, call.name, steered_by_other=ctl.steered_by_other)
-            if self._tasks is not None
-            else None
-        )
+        refused = None
+        if self._tasks is not None:
+            # jarvis.wait_until calls another tool for the run, so that tool is gated as if the run
+            # had named it: on 2026-11-11 a task denied `*.shell_run` reached the shell through a
+            # wait (run_1a1cc7b957b_23902246) and planned its code edits that way.
+            for name in (call.name, *_polled_tool(call)):
+                refused = await self._tasks.refusal(run, name, steered_by_other=ctl.steered_by_other)
+                if refused is not None:
+                    break
         error = refused or error
         if error is not None and run.kind is RunKind.TASK and refused is None:
             await self._end_if_unreachable(run, call, watch)
@@ -1577,6 +1581,14 @@ def _already_in_context(watch: RunWatch, step: StepRecord, result: ToolResult, *
                 "waiting for a change, act first or use jarvis.wait_until.]"
             )
     return None
+
+
+def _polled_tool(call: ToolCall) -> tuple[str, ...]:
+    """The tool a jarvis.wait_until call would call on the run's behalf, if any."""
+    if call.name != "jarvis.wait_until":
+        return ()
+    inner = call.arguments.get("tool")
+    return (inner.strip(),) if isinstance(inner, str) and inner.strip() else ()
 
 
 def _repeated_failure(watch: RunWatch, call: ToolCall) -> str | None:

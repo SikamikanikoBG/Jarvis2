@@ -13,7 +13,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import Any
 
 from jarvis_core.models.base import (
@@ -211,7 +211,7 @@ class OpenAICompatAdapter:
 
     async def _stream(
         self, url: str, payload: dict[str, Any], rec: CallRecord | None, cancel: asyncio.Event
-    ) -> AsyncIterator[ModelEvent]:
+    ) -> AsyncGenerator[ModelEvent, None]:
         async with self._sem:
             ContextLedger.started(rec)
             watch = Stopwatch()

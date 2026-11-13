@@ -169,7 +169,7 @@ async def test_a_nudge_after_the_run_recovered_is_a_first_nudge_not_a_stop():
         async def stream(self, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
             from jarvis_core.models.base import ModelTextChunk
 
-            yield ModelTextChunk(text='{"verdict": "%s", "reason": "r"}' % next(answers))
+            yield ModelTextChunk(text=f'{{"verdict": "{next(answers)}", "reason": "r"}}')
 
     async def emit(_event: object) -> None:
         return None

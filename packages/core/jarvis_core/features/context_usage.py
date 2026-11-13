@@ -255,7 +255,13 @@ class ContextUsage:
         for rec in list(self.ledger.live.values()):
             e = by_url.get(rec.endpoint)
             if e is None:  # a call to an endpoint the settings no longer name (settings just changed)
-                e = {"endpoint": rec.endpoint, "model": rec.model, "roles": [], "window": rec.window}
+                fresh: dict[str, Any] = {
+                    "endpoint": rec.endpoint,
+                    "model": rec.model,
+                    "roles": [],
+                    "window": rec.window,
+                }
+                e = fresh
                 e.update(calls=[], used=0, waiting=0, recent_peak=0, recent_busy_ms=0, recent_by_source={})
                 by_url[rec.endpoint] = e
                 endpoints.append(e)
@@ -282,7 +288,7 @@ class ContextUsage:
         for url, iv in busy.items():
             by_url[url]["recent_busy_ms"] = _union_ms([i for i in iv if i[1] > i[0]])
         day = await self._rows(now - DAY * 1000, now + 1)
-        counts = dict.fromkeys(OVERFLOW_KINDS, 0)
+        counts: dict[str, int] = dict.fromkeys(OVERFLOW_KINDS, 0)
         last: list[dict[str, Any]] = []
         for r in day:
             kinds = overflow_kinds(r)
@@ -424,7 +430,7 @@ class ContextUsage:
                 else:
                     w[i] = last
         endpoint_busy = {url: [_union_ms(iv) for iv in per] for url, per in ep_busy.items()}
-        rows_table = []
+        rows_table: list[dict[str, Any]] = []
         for t in table.values():
             sizes = t.pop("sizes")
             t["peak"] = max(sizes) if sizes else 0

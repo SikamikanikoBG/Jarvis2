@@ -193,25 +193,28 @@ class RsvpJob:
         # before a LATER invite is accepted; without the pre-seed that decline offers a slot
         # the later accept then fills, and the organizer is pointed at a time that is no longer
         # free. The accept test mirrors _decide exactly: allowed and (no clash or VIP).
+        #
+        # The host reports each invite's clashes against the calendar as it stands, so two
+        # pending invites for the same hour both look free. An invite accepted earlier in the
+        # pass is a committed meeting for every later one (_with_pass_clashes), exactly as it
+        # would be had the later invite arrived in the next pass; the pre-seed simulates that.
         reserved: list[tuple[datetime, datetime]] = []
+        planned: list[dict[str, Any]] = []
         for inv in invites:
             address = str(inv.get("organizer_address") or "")
             if not cfg.is_allowed(address):
                 continue  # left for Arsen: commits nothing
-            conflicts = [c for c in inv.get("conflicts", []) if isinstance(c, dict)]
-            if conflicts and not cfg.is_vip(address):
+            seen = _with_pass_clashes(inv, planned)
+            if seen["conflicts"] and not cfg.is_vip(address):
                 continue  # will be declined: commits nothing
-            try:
-                rs, re_ = (
-                    datetime.fromisoformat(str(inv["start"])),
-                    datetime.fromisoformat(str(inv["end"])),
-                )
-            except (KeyError, ValueError, TypeError):
-                continue
-            if rs < re_:
-                reserved.append((rs, re_))
+            span = _span(inv)
+            if span is not None:
+                reserved.append(span)
+                planned.append(inv)
+        accepted: list[dict[str, Any]] = []  # what this pass has actually accepted so far
         lines: list[str] = []
-        for inv in invites:
+        for pending in invites:
+            inv = _with_pass_clashes(pending, accepted)
             key = ledger_key(
                 str(inv.get("organizer_address") or inv.get("organizer") or ""),
                 str(inv.get("subject") or ""),
@@ -221,6 +224,8 @@ class RsvpJob:
                 continue
             decision = await self._decide(cfg, inv, reserved, key=key, dry_run=dry_run)
             report.decisions.append(decision)
+            if decision.decision in ("accept", "accept_vip_conflict") and _span(inv) is not None:
+                accepted.append(inv)
             if dry_run:
                 continue
             if decision.decision == "failed":
@@ -434,6 +439,30 @@ class RsvpJob:
         conv = await store.get_conversation(conv.id)
         if conv:
             self.core.bus.publish(ConversationUpdated(conversation=conv))
+
+
+def _span(inv: dict[str, Any]) -> tuple[datetime, datetime] | None:
+    try:
+        start, end = datetime.fromisoformat(str(inv["start"])), datetime.fromisoformat(str(inv["end"]))
+    except (KeyError, ValueError, TypeError):
+        return None
+    return (start, end) if start < end else None
+
+
+def _with_pass_clashes(inv: dict[str, Any], accepted: list[dict[str, Any]]) -> dict[str, Any]:
+    """``inv`` with the invites accepted earlier in this pass that overlap it added to its
+    ``conflicts``, in the host's shape (subject, start, end)."""
+    span = _span(inv)
+    if span is None:
+        return inv
+    extra = [
+        {"subject": str(a.get("subject") or ""), "start": str(a["start"]), "end": str(a["end"])}
+        for a in accepted
+        if a is not inv and (other := _span(a)) is not None and other[0] < span[1] and span[0] < other[1]
+    ]
+    if not extra:
+        return inv
+    return {**inv, "conflicts": [*(c for c in inv.get("conflicts", []) if isinstance(c, dict)), *extra]}
 
 
 def _data(text: str) -> Any:

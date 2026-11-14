@@ -1584,3 +1584,64 @@ async def test_a_phone_meeting_needs_no_host_and_a_retried_piece_is_heard_once(h
         while (await core.meetings.get(meeting.id)).status.value == "summarising":  # type: ignore[union-attr]
             await asyncio.sleep(0.05)
     assert (await core.meetings.get(meeting.id)).status.value == "done"  # type: ignore[union-attr]
+
+
+async def test_invites_that_overlap_each_other_in_one_pass_are_not_all_accepted(harness: Harness):
+    """An invite accepted earlier in a pass is a committed meeting for every later invite.
+
+    The host reports each invite's clashes against the calendar AS IT WAS, so two pending
+    invites for the same hour both looked free and both were accepted. On 2026-11-13 one
+    pass accepted three meetings at 18.11 13:00 and then declined a fourth at 13:30 for
+    clashing with all three. The outcome must not depend on whether the invites arrive in
+    one pass or in two: the later overlapping invite is declined (a VIP's is accepted with
+    the clash named), and its proposals skip the hour the earlier accept took.
+    """
+    core = harness.core
+    host = await _with_host(harness)
+
+    def _inv(eid: str, subject: str, address: str, start: str, end: str) -> dict[str, Any]:
+        return {
+            "entry_id": eid,
+            "subject": subject,
+            "organizer": subject,
+            "organizer_address": address,
+            "start": f"2026-09-07T{start}:00+03:00",
+            "end": f"2026-09-07T{end}:00+03:00",
+            "conflicts": [],
+        }
+
+    host.invites = [
+        _inv("a", "Planning", "ivan@bank.bg", "13:00", "14:00"),
+        _inv("b", "Kick-off", "vera@bank.bg", "13:00", "14:00"),
+        _inv("c", "Board prep", "boss@bank.bg", "13:30", "14:30"),
+        _inv("d", "Later sync", "maria@bank.bg", "14:30", "15:00"),
+    ]
+    host.slots_override = [
+        {"start": "2026-09-07T13:00:00+03:00", "end": "2026-09-07T14:00:00+03:00"},
+        {"start": "2026-09-08T10:00:00+03:00", "end": "2026-09-08T11:00:00+03:00"},
+    ]
+    harness.enable(
+        rsvp=MeetingRsvpSettings(
+            host="laptop", account="Work", allowed_domains=["bank.bg"], vip=["boss@bank.bg"], propose_slots=2
+        )
+    )
+
+    dry = await core.rsvp.run_once(dry_run=True)
+    assert [(d.subject, d.decision) for d in dry.decisions] == [
+        ("Planning", "accept"),
+        ("Kick-off", "decline"),
+        ("Board prep", "accept_vip_conflict"),
+        ("Later sync", "accept"),
+    ]
+    assert dry.decisions[1].conflicts == ["Planning 13:00-14:00"]
+    assert dry.decisions[1].proposals == ["вт 08.09 10:00-11:00"], "the hour Planning took is not offered"
+    assert dry.decisions[2].conflicts == ["Planning 13:00-14:00"], "a decline commits nothing"
+
+    live = await core.rsvp.run_once()
+    assert live.errors == []
+    assert [(r[0], r[1]) for r in host.responses] == [
+        ("a", "accept"),
+        ("b", "decline"),
+        ("c", "accept"),
+        ("d", "accept"),
+    ]

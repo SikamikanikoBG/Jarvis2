@@ -11,19 +11,36 @@
  * the core turns into a new voice turn, so the session never has to guess.
  *
  * The end of a turn (docs/stories/12_assistant.md): every pause is recognised at once and scored
- * by the turn model. When it is sure he has finished, the utterance closes there and is sent with
- * no join window — about half a second sooner than the clock alone. When it is not sure, the clock
- * decides as before; words said after an early send join the run as a steer.
+ * by the turn model, and the model decides both ways. When it is sure he has finished, the
+ * utterance closes there and is sent at once. When it is not, the turn is held and waits for him:
+ * the less finished he sounds, the longer, up to the patience (`voice.turn_patience_s`). What he
+ * says inside the wait joins the same turn, however many utterances and pieces it takes; a sound
+ * with no words in it does not. Words said after a send still join the run as a steer.
  */
 
+import { PATIENCE_DEFAULT_MS } from './patience';
 import { SentenceSplitter, scriptLanguage, speakable } from './sentences';
 import { callTrace } from './trace';
 import type { Cues } from './tones';
 
 export type CallPhase = 'idle' | 'connecting' | 'listening' | 'transcribing' | 'thinking' | 'speaking' | 'ended';
 
-/** However he pauses, what was recognised is sent no later than this after its first words. */
-const JOIN_DEADLINE_MS = 1500;
+/** The least silence a turn waits when the model is unsure, or cannot say: the 500 ms release and
+ *  the 600 ms join window of before 2026-11-14, which a quick question must not wait longer than. */
+const MIN_WAIT_MS = 1100;
+
+/** However long he talks, a turn is sent after this: Whisper can find words in a television, and
+ *  a turn it holds open must still end. What he says after it reaches the run as a steer. */
+const TURN_CEILING_MS = 5 * 60_000;
+
+/** Hung up mid-turn: how long the pieces still with Whisper are waited for before it is sent. */
+const HANG_UP_WAIT_MS = 5000;
+
+/** How much of the held turn goes to Whisper as the prompt of what follows it. */
+const PROMPT_HELD_CHARS = 200;
+
+/** Why a turn was sent, for the call's trace. */
+type SendWhy = 'sure' | 'patience' | 'ceiling' | 'mute';
 
 /** The longest sentence before a tool step that is read out as where he has got to. */
 const PROGRESS_MAX_CHARS = 120;
@@ -63,6 +80,9 @@ export interface CallState {
   /** False while the socket to Jarvis is down: nothing said now will reach him. */
   online: boolean;
   startedAt: number;
+  /** Waiting for him to go on (a pause the turn model heard as unfinished): until when, on the
+   *  session's clock, and the whole wait, so the ring can show how much of it is left. */
+  goOn: { until: number; ms: number } | null;
 }
 
 export interface Listener {
@@ -70,6 +90,8 @@ export interface Listener {
   /** Close the utterance at the pause `at` now (the turn model is sure he finished); false when
    *  he has spoken since. Absent: the release closes it, as always. */
   finish?(at: number): boolean;
+  /** His turn was sent: the turn model's context for the next one starts here. */
+  turnSent?(): void;
   stop(): void;
   /** Jarvis started or stopped speaking: the listener gates the microphone against his voice.
    *  `echoCancelled` says his voice is the page's
@@ -91,8 +113,9 @@ export interface ListenerHandlers {
    *  true when its words are on their way (recognised from that pause), so the rest is sent
    *  without it; false and it stays part of the rest. */
   onPiece?(at: number): boolean;
-  /** An utterance has ended and its audio is on its way to be recognised. */
-  onUtterance(audio: Blob, at?: number, offsetMs?: number): void;
+  /** An utterance has ended and its audio is on its way to be recognised. `silentMs`: how long he
+   *  has been quiet already (the release, or the pause the turn model closed it at). */
+  onUtterance(audio: Blob, at?: number, offsetMs?: number, silentMs?: number): void;
   /** Something stopped him and came to nothing: a cough, a chair, a word too short to hear. */
   onSpeechDropped(): void;
   onError(message: string): void;
@@ -156,11 +179,18 @@ export interface SessionOptions {
   conversationId: string | null;
   /** The route the call opens on; the screen's toggle changes it live. */
   route?: CallRoute;
-  /** How long a recognised utterance waits for him to go on before it is sent. A pause for
-   *  breath inside a sentence closes an utterance (2026-09-16: "да може в крайна сметка" and
-   *  the rest of the sentence became two turns, answered twice, spoken over each other); this
-   *  is the window in which the rest joins it. Latency he pays on every turn, so short. */
-  joinMs?: number;
+  /** The least silence a turn waits when the turn model is unsure or cannot say (MIN_WAIT_MS). A
+   *  pause for breath inside a sentence closes an utterance (2026-09-16: "да може в крайна сметка"
+   *  and the rest of the sentence became two turns, answered twice, spoken over each other); this
+   *  is the least time in which the rest joins it. */
+  minWaitMs?: number;
+  /** The most silence a turn waits for him at a pause that sounds unfinished, and every pause's
+   *  wait with the turn model switched off (`voice.turn_patience_s`, patience.ts). 2026-11-14:
+   *  a thinking pause was sent after at most 1.5 s, whatever the model heard - "при малка пауза
+   *  мисли че съм готов"; 31 of 368 voice turns since 25 Oct got more of his words within 20 s. */
+  patienceMs?: number;
+  /** TURN_CEILING_MS and HANG_UP_WAIT_MS, shorter for a test. */
+  limits?: { ceilingMs?: number; hangUpMs?: number };
   /** The languages the recogniser may hear (the settings' `stt_languages`); the first is the
    *  call's language until he is heard speaking another of them. */
   languages?: string[];
@@ -185,6 +215,7 @@ const INITIAL: CallState = {
   route: 'earpiece',
   online: true,
   startedAt: 0,
+  goOn: null,
 };
 
 export class CallSession {
@@ -209,13 +240,32 @@ export class CallSession {
   private paused = false;
   /** How much of the answer he had actually heard when he cut in. */
   private cutAfter = 0;
-  /** Recognised words waiting for him to finish (the join window), and the timer that sends them. */
+  /** The turn being held for him to finish: the words recognised so far, in the order he said
+   *  them, and since when (for the ceiling). */
   private held = '';
   private heldSince = 0;
-  private joinTimer: ReturnType<typeof setTimeout> | null = null;
-  /** When the last utterance ended: the join window counts from there, not from when the
+  /** Utterances of the turn still with Whisper. They join `held` through `chain`, one after the
+   *  other in the order they ended, whichever comes back first. */
+  private pending = 0;
+  private chain: Promise<void> = Promise.resolve();
+  /** The turn's clock: how much more silence it waits (`remaining`, kept while the clock stands
+   *  still), the whole wait last decided, and why. Measured from the silence, not from when the
    *  recogniser answered, so recognition time is not paid twice. */
-  private quietSince = 0;
+  private remaining = 0;
+  private waitMs = 0;
+  private sure = false;
+  private clock: ReturnType<typeof setTimeout> | null = null;
+  private clockUntil = 0;
+  private ceiling: ReturnType<typeof setTimeout> | null = null;
+  /** He is making a sound now, and whether Whisper has found words in it yet (null: not asked).
+   *  `sound` names it, so a late recognition of the one before cannot decide for it. */
+  private talking = false;
+  private sound = 0;
+  private soundWords: boolean | null = null;
+  /** The last send, for `turn.more`: words that followed it are the split this is all about. */
+  private lastSend: { at: number; why: SendWhy } | null = null;
+  /** A run's failure to be said once his turn is sent: nothing is said over his pause. */
+  private problemDue = false;
   /** A recognition started at a pause, before the utterance was known to have ended. */
   private speculative: { at: number; result: Promise<Recognised | Error> } | null = null;
   /** The pieces of a long utterance recognised while he was still talking, in order, and the
@@ -268,8 +318,12 @@ export class CallSession {
         onSpeechStart: () => this.onSpeechStart(),
         onPause: (audio, at, offsetMs) => this.onPause(audio, at, offsetMs),
         onPiece: (at) => this.onPiece(at),
-        onUtterance: (audio, at, offsetMs) => void this.onUtterance(audio, at, offsetMs),
-        onSpeechDropped: () => this.onSpeechDropped(),
+        onUtterance: (audio, at, offsetMs, silentMs) => this.onUtterance(audio, at, offsetMs, silentMs),
+        onSpeechDropped: () => {
+          this.talking = false;
+          this.onSpeechDropped();
+          this.reclock();
+        },
         onError: (message) => this.fail(message),
       });
     } catch (e) {
@@ -282,8 +336,17 @@ export class CallSession {
   }
 
   end(): void {
+    // Hung up in the middle of a turn - the usual end of a briefing: what he said is sent all the
+    // same, once Whisper has it, and the answer lands in the chat (Gate B, 2026-11-14). Until
+    // then the words of a held turn were dropped with the call.
+    const unheard = [...this.pieces, ...(this.speculative ? [this.speculative.result] : [])];
+    const unsent = this.held !== '' || this.pending > 0 || unheard.length > 0;
+    const chain = this.chain;
+    const runId = this.state.runId;
     this.paused = false;
-    this.clearJoin();
+    this.stopClock();
+    this.stopCeiling();
+    this.steerWhenKnown = '';
     this.o.listener.stop();
     this.o.speaker.cancel();
     // A run still working is left to finish: its words land in the chat, only the reading
@@ -291,17 +354,44 @@ export class CallSession {
     this.queue = [];
     this.suspended = [];
     this.dropPieces();
-    this.set({ phase: 'ended', level: 0 });
+    this.set({ phase: 'ended', level: 0, goOn: null });
     this.o.cues?.close();
+    if (unsent) void this.sendAfterHangUp(chain, unheard, runId);
+  }
+
+  /** The words of a turn he hung up in: what is held, then what Whisper still had, in order - as
+   *  far as it is back within HANG_UP_WAIT_MS. Nothing is spoken; the call is over. */
+  private async sendAfterHangUp(chain: Promise<void>, unheard: Promise<Recognised | Error>[], runId: string | null): Promise<void> {
+    const back = (async () => {
+      await chain;
+      return Promise.all(unheard);
+    })();
+    const limit = new Promise<null>((r) => setTimeout(() => r(null), this.o.limits?.hangUpMs ?? HANG_UP_WAIT_MS));
+    const rest = await Promise.race([back, limit]);
+    const said = [this.held, ...(rest ?? []).map((r) => (r instanceof Error ? '' : r.text.trim()))];
+    this.held = '';
+    const text = said.filter(Boolean).join(' ');
+    callTrace.mark('turn.send', { why: 'hangup', chars: text.length, complete: rest !== null });
+    if (!text) return;
+    // A run still working takes them as a steer; one that has finished, the core makes a new turn of.
+    if (runId) this.o.transport.steer(runId, text);
+    else this.o.transport.create(text, this.conversationId);
   }
 
   setMuted(muted: boolean): void {
     callTrace.mark('mute', { muted });
+    // The listener closes what he was saying as an utterance first (listener.ts), so its pieces
+    // go with it; one that cannot leaves them with no utterance to join, and they are dropped.
     this.o.listener.setMuted(muted);
-    if (muted) this.dropPieces();
+    if (muted) {
+      this.dropPieces();
+      this.talking = false;
+    }
     // Muted mid-sound: nothing more will come of it.
     if (muted && this.paused) this.onSpeechDropped();
     this.set({ muted });
+    // Nothing more can be heard: a held turn is sent now rather than after the patience.
+    if (muted) this.reclock();
   }
 
   /** What was being recognised of an utterance that will not be finished. */
@@ -324,9 +414,10 @@ export class CallSession {
     }
     this.set({ route });
     this.rerouting += 1;
-    // The microphone is reopened: an utterance he was in the middle of is gone with it, and its
-    // pieces must not be glued to the front of the next one.
-    this.dropPieces();
+    // The microphone is reopened. What he was in the middle of saying is closed as an utterance
+    // first (listener.ts) - it was dropped until 2026-11-14 - and the turn's clock stands still
+    // until he can be heard again.
+    this.reclock();
     this.o.cues?.thinking(false);
     let unsaid: string[] = [];
     if (this.speaking) {
@@ -342,6 +433,7 @@ export class CallSession {
     } finally {
       this.rerouting -= 1;
     }
+    this.reclock();
     if ((this.state.phase as CallPhase) === 'ended') return; // hung up while the audio was rebuilt
     this.queue = [...unsaid, ...this.queue];
     if (this.rerouting > 0) return; // switched again meanwhile: the last switch resumes
@@ -359,6 +451,12 @@ export class CallSession {
   // --- from the listener -------------------------------------------------------------------
 
   private onSpeechStart(): void {
+    // A new sound: while a turn is held, its clock stands still until the sound turns out to be
+    // words (it holds the turn) or not (the clock goes on from where it stood).
+    this.talking = true;
+    this.sound += 1;
+    this.soundWords = null;
+    this.reclock();
     callTrace.mark('speech', { phase: this.state.phase, then: this.state.phase !== 'speaking' ? 'listen' : this.o.speaker.pause && this.o.speaker.resume ? 'pause' : 'cut', spokenUpTo: this.state.spokenUpTo });
     if (this.state.phase === 'speaking' && this.o.speaker.pause && this.o.speaker.resume) {
       // A sound is not yet a cut-in: a cheek on the glass, a breath, a chair (2026-10-16, "като
@@ -421,8 +519,15 @@ export class CallSession {
     if (this.state.phase === 'ended' || this.state.muted) return;
     const result = this.recognise(audio, offsetMs);
     this.speculative = { at, result };
-    // Sure he has finished: close the utterance at this pause rather than wait out the release.
+    const sound = this.sound;
+    const said = this.piecesSaid;
     void result.then((r) => {
+      // The first words of a sound settle whether it holds a turn that was waiting for him.
+      if (sound === this.sound && this.talking && !(r instanceof Error)) {
+        this.soundWords = this.soundWords === true || r.text.trim() !== '' || said.length > 0;
+        this.reclock();
+      }
+      // Sure he has finished: close the utterance at this pause rather than wait out the release.
       if (r instanceof Error || !this.confident(r)) return;
       if (this.speculative?.at !== at || this.state.phase === 'ended' || this.state.muted) return;
       this.o.listener.finish?.(at);
@@ -435,18 +540,24 @@ export class CallSession {
     const piece = this.speculative.result;
     this.speculative = null;
     this.pieces.push(piece);
+    const said = this.piecesSaid;
     void piece.then((r) => {
-      if (!(r instanceof Error) && r.text.trim()) this.piecesSaid.push(r.text.trim());
+      if (r instanceof Error || !r.text.trim()) return;
+      said.push(r.text.trim());
+      // What he has said so far stays on the screen while he goes on: a briefing is minutes long.
+      if (said === this.piecesSaid && this.state.phase !== 'ended') this.set({ heard: [this.held, ...said].filter(Boolean).join(' ') });
     });
     return true;
   }
 
   private recognise(audio: Blob, offsetMs?: number): Promise<Recognised | Error> {
-    // His own words so far in this utterance, and nothing else. What Jarvis last said was tried
-    // (2026-10-13) and dropped: it is English while he speaks Bulgarian, it fixed nothing measurable,
-    // and recognition was worse that evening - a prompt in another language is a known way to
-    // make Whisper invent words.
-    const prompt = this.piecesSaid.join(' ');
+    // His own words so far in this turn, and nothing else: the end of what is held (an utterance
+    // after a thinking pause goes on from it) and this utterance's pieces. What Jarvis last said
+    // was tried (2026-10-13) and dropped: it is English while he speaks Bulgarian, it fixed
+    // nothing measurable, and recognition was worse that evening - a prompt in another language
+    // is a known way to make Whisper invent words.
+    const before = this.held.length > PROMPT_HELD_CHARS ? this.held.slice(this.held.indexOf(' ', this.held.length - PROMPT_HELD_CHARS) + 1) : this.held;
+    const prompt = [before, ...this.piecesSaid].filter(Boolean).join(' ');
     const opts: TranscribeOptions = { turn: this.o.turnThreshold != null };
     if (prompt) opts.prompt = prompt;
     if (offsetMs) opts.offsetMs = offsetMs;
@@ -461,10 +572,13 @@ export class CallSession {
     return bar != null && r.turnComplete != null && r.turnComplete >= bar && r.text.trim() !== '';
   }
 
-  private async onUtterance(audio: Blob, at?: number, offsetMs?: number): Promise<void> {
-    callTrace.mark('utt', { at: at === undefined ? null : Math.round(at), bytes: audio.size, offsetMs: offsetMs ?? 0, phase: this.state.phase });
+  private onUtterance(audio: Blob, at?: number, offsetMs?: number, silentMs = 0): void {
+    callTrace.mark('utt', { at: at === undefined ? null : Math.round(at), bytes: audio.size, offsetMs: offsetMs ?? 0, silentMs: Math.round(silentMs), phase: this.state.phase });
     if (this.state.phase === 'ended' || this.state.muted) return;
-    this.quietSince = this.now();
+    this.talking = false;
+    // The silence began before the listener said so: the release (or the pause it was closed at)
+    // is part of the wait already.
+    const quietSince = this.now() - silentMs;
     this.set({ phase: 'transcribing', problem: null });
     // The utterance ended at the pause already being recognised: that answer is this answer.
     // Otherwise the rest is recognised now - asked before the pieces are let go, since their
@@ -476,61 +590,154 @@ export class CallSession {
     const pieces = this.pieces;
     this.pieces = [];
     this.piecesSaid = [];
-    let text = '';
-    let finished = false;
-    try {
-      const res = await rest;
-      if (res instanceof Error) throw res;
-      const said: string[] = [];
-      for (const piece of await Promise.all(pieces)) {
-        if (piece instanceof Error) throw piece;
-        if (piece.text.trim()) said.push(piece.text.trim());
-      }
-      text = [...said, res.text.trim()].filter(Boolean).join(' ');
-      finished = this.confident(res);
-      // He may switch to another of the call's languages — believed only when the words are
-      // written in that language's script too. Whisper labels a noise "en" as readily as
-      // anything, and a hint of "en" on Bulgarian speech comes back as an English translation.
-      if (res.language && this.o.languages?.includes(res.language) && text && scriptLanguage(text, res.language) === res.language) {
-        this.heardLang = res.language;
-      }
-    } catch (e) {
-      if ((this.state.phase as CallPhase) === 'ended') return;
-      this.fail(`I can't hear you right now — the speech service is not answering (${e instanceof Error ? e.message : 'error'}).`);
-      if (this.paused) {
-        this.onSpeechDropped();
-        return;
-      }
-      this.set({ phase: 'listening' });
+    this.pending += 1;
+    this.reclock();
+    // Joined in the order he said them: a short second utterance is back from Whisper before a
+    // long first one, and "every piece, in order" is the point of holding the turn.
+    const heard = Promise.all([rest, Promise.all(pieces)]);
+    this.chain = this.chain.then(() => heard).then(([res, said]) => this.joinTurn(res, said, quietSince));
+  }
+
+  /** An utterance is back from Whisper, its turn's earlier ones before it: its words join the
+   *  turn, and the turn model's score of its ending decides how long the turn waits now. */
+  private joinTurn(res: Recognised | Error, pieces: (Recognised | Error)[], quietSince: number): void {
+    this.pending -= 1;
+    const parts = [...pieces, res];
+    const failed = parts.find((r): r is Error => r instanceof Error) ?? null;
+    const text = parts.flatMap((r) => (r instanceof Error || !r.text.trim() ? [] : [r.text.trim()])).join(' ');
+    if (this.state.phase === 'ended') {
+      // Hung up while Whisper worked: nothing more happens on this call. The words are kept for
+      // the send that hanging up makes (sendAfterHangUp).
+      if (text) this.held = this.held ? `${this.held} ${text}` : text;
       return;
     }
-    // Hung up while Whisper worked: nothing more happens on this call, nothing is sent.
-    if ((this.state.phase as CallPhase) === 'ended') return;
+    // He may switch to another of the call's languages — believed only when the words are
+    // written in that language's script too. Whisper labels a noise "en" as readily as
+    // anything, and a hint of "en" on Bulgarian speech comes back as an English translation.
+    if (!(res instanceof Error) && res.language && this.o.languages?.includes(res.language) && text && scriptLanguage(text, res.language) === res.language) {
+      this.heardLang = res.language;
+    }
+    if (failed) {
+      // Said once, and what did come back is kept: one failed piece used to throw away a whole
+      // utterance, and an utterance can now be minutes long.
+      const message = `I can't hear you right now — the speech service is not answering (${failed.message}).`;
+      if (this.state.problem !== message) this.fail(message);
+      if (!text && !this.held) {
+        if (this.paused) this.onSpeechDropped();
+        else this.set({ phase: 'listening' });
+        return;
+      }
+    }
     if (!text) {
-      this.set({ phase: this.held ? 'transcribing' : 'listening' });
+      // Nothing in it - a cough, a chair, the room: it does not hold the turn, whose clock goes on
+      // from where it stood rather than starting again. Only words extend the wait (2026-09-16:
+      // "it catches every sound but not me").
+      this.set({ phase: this.pending > 0 ? 'transcribing' : 'listening' });
       this.onSpeechDropped();
+      this.reclock();
       return;
     }
     // Words: the paused voice was talked over after all.
     this.commitCut();
     const first = !this.held;
-    this.held = this.held ? `${this.held} ${text}` : text;
-    this.set({ heard: this.held });
-    if (first) this.heldSince = this.now();
-    // Sent when no more words have arrived for a moment. Only recognised words extend the wait
-    // — not the microphone hearing something, or a noisy room would hold his question for ever
-    // (2026-09-16: "it catches every sound but not me") — and never past the hard deadline.
-    if (this.joinTimer) clearTimeout(this.joinTimer);
-    const join = this.o.joinMs ?? 600;
-    // The window is measured from the end of speech: the silence already spent while the
-    // recogniser worked counts toward it. None at all when the turn model is sure he is done.
-    const wait = finished
-      ? 0
-      : Math.max(0, Math.min(join - (this.now() - this.quietSince), this.heldSince + JOIN_DEADLINE_MS - this.now()));
-    this.joinTimer = setTimeout(() => {
-      this.joinTimer = null;
-      this.send();
-    }, wait);
+    this.held = first ? text : `${this.held} ${text}`;
+    this.set({ heard: this.held, phase: this.pending > 0 ? 'transcribing' : 'listening' });
+    if (first) {
+      this.heldSince = this.now();
+      this.stopCeiling();
+      this.ceiling = setTimeout(() => {
+        this.ceiling = null;
+        this.send('ceiling');
+      }, this.o.limits?.ceilingMs ?? TURN_CEILING_MS);
+    }
+    const { waitMs, reason } = this.decide(failed ? null : (res as Recognised), failed !== null);
+    this.waitMs = waitMs;
+    this.sure = reason === 'sure';
+    this.remaining = waitMs - (this.now() - quietSince);
+    callTrace.mark('turn.decide', {
+      s: res instanceof Error ? null : (res.turnComplete ?? null),
+      th: this.o.turnThreshold ?? null,
+      patienceMs: this.patience(),
+      waitMs: Math.round(waitMs),
+      silentMs: Math.round(this.now() - quietSince),
+      reason,
+    });
+    this.reclock();
+  }
+
+  private patience(): number {
+    return this.o.patienceMs ?? PATIENCE_DEFAULT_MS;
+  }
+
+  /**
+   * How much silence the turn waits after this utterance (Gate A, 2026-11-14): none when the turn
+   * model is sure he has finished; when it is not, the less finished he sounds the longer, from
+   * today's MIN_WAIT_MS up to the patience - a cut-off sentence (0.06-0.17) waits nearly all of
+   * it, a finished one scored just under the bar (0.87 at 0.9) no longer than before. With the
+   * model switched off the patience is the whole rule; while it cannot say (loading after a
+   * deploy, one failed scoring) the wait is as before, so a deploy never makes a call slow.
+   */
+  private decide(res: Recognised | null, failed: boolean): { waitMs: number; reason: 'sure' | 'unsure' | 'no-score' | 'off' | 'failed' } {
+    const p = this.patience();
+    const floor = Math.min(p, this.o.minWaitMs ?? MIN_WAIT_MS);
+    const th = this.o.turnThreshold;
+    // Part of it was not heard: he may well say it again, and that joins the turn.
+    if (failed || !res) return { waitMs: p, reason: 'failed' };
+    if (th == null) return { waitMs: p, reason: 'off' };
+    const s = res.turnComplete;
+    if (s == null) return { waitMs: floor, reason: 'no-score' };
+    if (this.confident(res)) return { waitMs: 0, reason: 'sure' };
+    return { waitMs: Math.min(p, Math.max(floor, (p * (th - s)) / th)), reason: 'unsure' };
+  }
+
+  /**
+   * The turn's clock runs only while a turn is held, none of it is still with Whisper, the audio
+   * is not being rebuilt, and he is not making a sound that is (or may yet be) words. Stopped, it
+   * keeps what was left; run out, the turn is sent. Called whenever any of that changes.
+   */
+  private reclock(): void {
+    if (!this.held || this.state.phase === 'ended') {
+      this.stopClock();
+      return;
+    }
+    if (this.state.muted && this.pending === 0) {
+      this.send('mute');
+      return;
+    }
+    const runs = this.pending === 0 && this.rerouting === 0 && !(this.talking && this.soundWords !== false);
+    if (!runs) {
+      if (this.clock) {
+        this.remaining = Math.max(0, this.clockUntil - this.now());
+        this.stopClock();
+        callTrace.mark('turn.hold', { remainingMs: Math.round(this.remaining) });
+      }
+      if (this.state.goOn) this.set({ goOn: null });
+      return;
+    }
+    if (this.clock) return;
+    if (this.remaining <= 0) {
+      this.send(this.sure ? 'sure' : 'patience');
+      return;
+    }
+    this.clockUntil = this.now() + this.remaining;
+    this.clock = setTimeout(() => {
+      this.clock = null;
+      this.remaining = 0;
+      this.send('patience');
+    }, this.remaining);
+    callTrace.mark('turn.wait', { remainingMs: Math.round(this.remaining), waitMs: Math.round(this.waitMs) });
+    // Waiting for him, not thinking: "Listening — go on" and the ring running down (CallScreen).
+    this.set({ goOn: { until: this.clockUntil, ms: Math.max(this.waitMs, this.remaining) }, phase: this.state.phase === 'speaking' ? 'speaking' : 'listening' });
+  }
+
+  private stopClock(): void {
+    if (this.clock) clearTimeout(this.clock);
+    this.clock = null;
+  }
+
+  private stopCeiling(): void {
+    if (this.ceiling) clearTimeout(this.ceiling);
+    this.ceiling = null;
   }
 
   /** A paused voice is cut for good, exactly as a cut-in without a pause would have cut it. */
@@ -546,21 +753,25 @@ export class CallSession {
     this.o.speaker.cancel();
   }
 
-  private clearJoin(): void {
-    if (this.joinTimer) clearTimeout(this.joinTimer);
-    this.joinTimer = null;
-    this.held = '';
-    this.steerWhenKnown = '';
-  }
-
-  private send(): void {
+  private send(why: SendWhy): void {
+    this.stopClock();
+    this.stopCeiling();
     const text = this.held;
     this.held = '';
+    this.remaining = 0;
     if (!text || this.state.phase === 'ended') return;
+    callTrace.mark('turn.send', { why, chars: text.length, heldMs: Math.round(this.now() - this.heldSince) });
+    this.o.listener.turnSent?.();
+    if (this.state.runId && this.suspended.length === 0) {
+      // Words that reach a run already answering him: the split this patience is there to prevent.
+      callTrace.mark('turn.more', { afterMs: this.lastSend ? Math.round(this.now() - this.lastSend.at) : null, after: this.lastSend?.why ?? null });
+    }
+    this.lastSend = { at: this.now(), why };
     if (this.pendingCreate) {
       // The run we asked for has no id yet: these words follow it as a steer the moment it does.
       this.steerWhenKnown = this.steerWhenKnown ? `${this.steerWhenKnown} ${text}` : text;
-      this.set({ heard: text, phase: 'thinking' });
+      this.set({ heard: text, phase: 'thinking', goOn: null });
+      this.released();
       return;
     }
     // His words won: the rest of the answer he talked over is not said after all.
@@ -568,7 +779,7 @@ export class CallSession {
     const heardOf = this.cutAfter;
     const ofTotal = this.cutAfter + this.suspended.length;
     this.suspended = [];
-    this.set({ heard: text, phase: 'thinking', saying: [], spokenUpTo: 0 });
+    this.set({ heard: text, phase: 'thinking', saying: [...this.queue], spokenUpTo: 0, goOn: null });
     this.o.cues?.accepted();
     // A run still working gets the words; otherwise a new voice turn. If the run finished
     // between the two, the core turns the steer into a new turn itself.
@@ -582,6 +793,16 @@ export class CallSession {
     if (!sent) {
       this.fail('The connection to Jarvis is down; try again in a moment.');
       this.set({ phase: 'listening' });
+    }
+    this.released();
+  }
+
+  /** His turn has gone: what waited not to be said over his pause is said now. */
+  private released(): void {
+    if (this.queue.length > 0) this.startDrain();
+    if (this.problemDue) {
+      this.problemDue = false;
+      void this.sayProblem();
     }
   }
 
@@ -675,7 +896,8 @@ export class CallSession {
       return;
     }
     if (!text) return;
-    if (this.steeredMidStep) {
+    // He is in the middle of a turn: whatever this answers, it answers only part of it.
+    if (this.steeredMidStep || this.held) {
       // An answer to what he said before he went on: held back, not read out.
       this.steeredMidStep = false;
       this.supersededText = text;
@@ -777,9 +999,11 @@ export class CallSession {
     else this.backToListening();
   }
 
-  /** Say what is queued - unless a route change is rebuilding the audio; it starts this itself. */
+  /** Say what is queued - unless a route change is rebuilding the audio (it starts this itself),
+   *  or a turn is held: nothing is read out over his thinking pause, not an answer, a progress
+   *  line or a ring's result. The queue waits and is said once the turn is sent (`released`). */
   private startDrain(): void {
-    if (this.rerouting > 0) return;
+    if (this.rerouting > 0 || this.held) return;
     this.speaking ??= this.drain();
   }
 
@@ -791,6 +1015,10 @@ export class CallSession {
     const p = this.state.problem;
     if (!p || !this.o.speaker.available()) {
       this.backToListening();
+      return;
+    }
+    if (this.held) {
+      this.problemDue = true; // said when his turn is sent, not over his pause
       return;
     }
     // The answer it cut short is still unwinding: let it, or its ending would ungate the

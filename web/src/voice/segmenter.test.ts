@@ -58,12 +58,24 @@ describe('Segmenter', () => {
     expect(r.events.map((e) => e.type)).toEqual(['speech-start']);
   });
 
-  it('closes a runaway utterance at the ceiling and keeps going', () => {
-    const seg = new Segmenter({ maxUtteranceMs: 2000 });
+  it('a long utterance stays one utterance: three minutes of talk with breaths is not cut', () => {
+    // 2026-11-14: the 30 s ceiling closed a briefing mid-sentence, every half minute a turn of its own.
+    const seg = new Segmenter();
     let r = feed(seg, 0.002, 1000, 0);
-    r = feed(seg, 0.2, 4500, r.t);
-    const types = r.events.map((e) => e.type);
-    expect(types.filter((t) => t === 'speech-end').length).toBeGreaterThanOrEqual(2);
+    const events: SegmentEvent[] = [];
+    while (r.t < 181_000) {
+      r = feed(seg, 0.2, 3000, r.t);
+      events.push(...r.events);
+      r = feed(seg, 0.002, 120, r.t); // a breath, shorter than a pause
+      events.push(...r.events);
+    }
+    expect(events.map((e) => e.type)).toEqual(['speech-start']);
+    expect(seg.talking).toBe(false); // in a breath: a silence, not sound
+    r = feed(seg, 0.2, 200, r.t);
+    expect(seg.talking).toBe(true);
+    r = feed(seg, 0.002, 800, r.t);
+    const end = r.events.find((e) => e.type === 'speech-end');
+    expect(end?.type === 'speech-end' ? end.durationMs : 0).toBeGreaterThan(170_000);
   });
 
   it('endAt closes at a pause that is still going on, and not at one he has talked past', () => {

@@ -33,12 +33,25 @@ class FakeListener implements Listener {
   }
   /** Set by a test to hold a route change open (the real one reopens the microphone and audio). */
   routeGate: Promise<void> | null = null;
+  /** An utterance he is in the middle of: a mute or a route change closes it as the real one does. */
+  open = false;
+  private flush(): void {
+    if (!this.open) return;
+    this.open = false;
+    this.h?.onUtterance(new Blob(['open']), undefined, 0, 0);
+  }
   setRoute(r: 'earpiece' | 'speaker'): Promise<void> {
     this.route = r;
+    this.flush();
     return this.routeGate ?? Promise.resolve();
   }
   setMuted(m: boolean): void {
+    if (m && !this.muted) this.flush();
     this.muted = m;
+  }
+  turnsSent = 0;
+  turnSent(): void {
+    this.turnsSent += 1;
   }
   finished: number[] = [];
   /** finish() closes the utterance the way the real listener does: onUtterance at that pause. */
@@ -104,16 +117,21 @@ class FakeTranscriber implements Transcriber {
   /** What the turn model says; null = it cannot say. */
   turn: number | null = null;
   opts: (TranscribeOptions | undefined)[] = [];
-  /** Answers by the audio's text, for tests that send pieces. */
+  /** Answers by the audio's text, for tests that send pieces; and which of them fail, or take how long. */
   byAudio: Record<string, string> = {};
+  failAudio: string[] = [];
+  delayByAudio: Record<string, number> = {};
   async transcribe(audio: Blob, language: string, opts?: TranscribeOptions): Promise<Recognised> {
     this.hints.push(language);
     this.opts.push(opts);
     this.calls += 1;
     if (this.fail) return Promise.reject(new Error('502'));
-    const key = Object.keys(this.byAudio).length ? await audio.text() : "";
+    const byKey = Object.keys(this.byAudio).length || this.failAudio.length || Object.keys(this.delayByAudio).length;
+    const key = byKey ? await audio.text() : "";
+    if (this.failAudio.includes(key)) return Promise.reject(new Error('502'));
     const res = { text: this.byAudio[key] ?? this.next, language: this.language, turnComplete: this.turn };
-    return this.delayMs ? new Promise((r) => setTimeout(() => r(res), this.delayMs)) : Promise.resolve(res);
+    const delay = this.delayByAudio[key] ?? this.delayMs;
+    return delay ? new Promise((r) => setTimeout(() => r(res), delay)) : Promise.resolve(res);
   }
 }
 
@@ -159,8 +177,11 @@ function build(
     speaker: FakeSpeaker;
     transcriber: FakeTranscriber;
     transport: FakeTransport;
-    joinMs: number;
+    minWaitMs: number;
+    patienceMs: number;
     turnThreshold: number | null;
+    ceilingMs: number;
+    hangUpMs: number;
   }> = {},
 ) {
   const listener = over.listener ?? new FakeListener();
@@ -176,7 +197,10 @@ function build(
     transport,
     language: 'bg',
     languages: ['bg', 'en'],
-    joinMs: over.joinMs ?? 0,
+    // No wait unless a test is about the wait: most tests are about what follows a turn.
+    minWaitMs: over.minWaitMs ?? 0,
+    patienceMs: over.patienceMs ?? 0,
+    limits: { ...(over.ceilingMs !== undefined ? { ceilingMs: over.ceilingMs } : {}), ...(over.hangUpMs !== undefined ? { hangUpMs: over.hangUpMs } : {}) },
     turnThreshold: over.turnThreshold ?? null,
     conversationId: 'c1',
     cues,
@@ -415,7 +439,7 @@ describe('CallSession', () => {
   });
 
   it('a pause for breath does not end the turn: what follows joins the same utterance', async () => {
-    const t = build({ joinMs: 30 });
+    const t = build({ patienceMs: 30 });
     await t.session.start();
     t.listener.say();
     await tick(); // recognised, now waiting for him to go on
@@ -463,29 +487,53 @@ describe('CallSession', () => {
     expect(t.phases().at(-1)).toBe('listening');
   });
 
-  it('the join window counts from the end of speech, not from when the recogniser answered', async () => {
-    const t = build({ joinMs: 80 });
-    t.transcriber.delayMs = 60;
+  it('the wait counts from the start of the silence, not from when the recogniser answered', async () => {
+    const t = build({ patienceMs: 80 });
+    t.transcriber.delayMs = 40;
     await t.session.start();
-    const t0 = Date.now();
-    t.listener.say();
-    await new Promise((r) => setTimeout(r, 105));
-    // 60 ms of recognition + 80 ms of window would be 140; from the end of speech it is 80.
+    t.listener.h?.onSpeechStart();
+    // The release had run 60 ms of the silence already when the utterance closed.
+    t.listener.h?.onUtterance(new Blob(['x']), undefined, 0, 60);
+    await new Promise((r) => setTimeout(r, 70));
+    // From the utterance's close it would be 80 ms; after recognition, 40 + 80. From the silence: 40.
     expect(t.transport.created).toEqual(['какво ще кажеш']);
-    expect(Date.now() - t0).toBeLessThan(140);
   });
 
-  it('a noisy room does not hold his words: only recognised text extends the wait', async () => {
-    const t = build({ joinMs: 30 });
+  it('a noisy room does not hold the turn: a sound with no words goes on with the time that was left', async () => {
+    // The 2026-09-16 rule kept: only recognised words extend the wait ("it catches every sound but not me").
+    const t = build({ patienceMs: 120 });
     await t.session.start();
     t.listener.say();
     await tick();
-    for (let i = 0; i < 5; i += 1) {
-      t.listener.h?.onSpeechStart(); // something in the room, every few ms, never words
-      await new Promise((r) => setTimeout(r, 10));
+    const t0 = Date.now();
+    for (let i = 0; i < 3; i += 1) {
+      await new Promise((r) => setTimeout(r, 20));
+      t.listener.cough(); // something in the room
     }
-    await new Promise((r) => setTimeout(r, 30));
+    t.transcriber.next = ''; // and a longer sound Whisper finds nothing in
+    t.listener.say();
+    await new Promise((r) => setTimeout(r, Math.max(0, 90 - (Date.now() - t0))));
+    expect(t.transport.created).toEqual([]); // still inside the patience
+    await new Promise((r) => setTimeout(r, Math.max(0, 150 - (Date.now() - t0))));
+    // Sent at the first patience's end, not 120 ms after the last sound.
     expect(t.transport.created).toEqual(['какво ще кажеш']);
+  });
+
+  it('a sound that turns out to be words holds the turn until they are in', async () => {
+    const t = build({ patienceMs: 40 });
+    await t.session.start();
+    t.listener.say();
+    await tick();
+    t.transcriber.delayMs = 80; // he goes on, and Whisper takes longer than the patience
+    t.transcriber.next = 'и освен това';
+    t.listener.h?.onSpeechStart();
+    t.listener.h?.onPause(new Blob(['x']), 100);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(t.transport.created).toEqual([]); // words: the clock stood still
+    t.transcriber.delayMs = 0;
+    t.listener.h?.onUtterance(new Blob(['x']), 100, 0, 500);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(t.transport.created).toEqual(['какво ще кажеш и освен това']);
   });
 
   it('the recogniser gets the call language as a hint, and follows him when he switches', async () => {
@@ -682,7 +730,7 @@ describe('CallSession', () => {
     expect(t.transport.created).toEqual([]); // saying the result is not a new turn
   });
   it('a pause the turn model is sure about is the end: closed there and sent with no join window', async () => {
-    const t = build({ joinMs: 5000, turnThreshold: 0.8 });
+    const t = build({ minWaitMs: 5000, patienceMs: 5000, turnThreshold: 0.8 });
     await t.session.start();
     t.transcriber.turn = 0.93;
     t.transcriber.next = 'благодаря, това е всичко';
@@ -696,20 +744,190 @@ describe('CallSession', () => {
     expect(t.transcriber.opts[0]?.turn).toBe(true);
   });
 
-  it('a pause it is not sure about changes nothing: the release and the join window decide', async () => {
-    const t = build({ joinMs: 30, turnThreshold: 0.8 });
+  it('a pause it hears as unfinished waits for him - "go on" on the screen - then sends what was said', async () => {
+    // Until 2026-11-14 a pause it was not sure about changed nothing: the clock sent it after 1.1 s.
+    const t = build({ patienceMs: 100, turnThreshold: 0.8 });
     await t.session.start();
     t.transcriber.turn = 0.2;
+    t.transcriber.next = 'и освен това';
     t.listener.h?.onSpeechStart();
     t.listener.h?.onPause(new Blob(['x']), 100);
     await settle();
     expect(t.listener.finished).toEqual([]);
-    expect(t.transport.created).toEqual([]);
-    t.listener.h?.onUtterance(new Blob(['x']), 100);
+    t.listener.h?.onUtterance(new Blob(['x']), 100, 0, 0);
     await settle();
-    expect(t.transport.created).toEqual([]); // the join window still runs
-    await new Promise((r) => setTimeout(r, 40));
-    expect(t.transport.created).toHaveLength(1);
+    expect(t.transport.created).toEqual([]);
+    // Waiting, not thinking: listening, the words so far on screen, and 0.6 of 0.8 short of sure → 75 ms.
+    expect(t.session.state.phase).toBe('listening');
+    expect(t.session.state.heard).toBe('и освен това');
+    expect(t.session.state.goOn?.ms).toBe(75);
+    await new Promise((r) => setTimeout(r, 110));
+    expect(t.transport.created).toEqual(['и освен това']);
+    expect(t.session.state.goOn).toBeNull();
+    expect(t.listener.turnsSent).toBe(1);
+  });
+
+  describe('how long a turn waits, from the turn model\'s score (patience 3 s, sure at 0.9)', () => {
+    async function waitFor(turn: number | null, over: Parameters<typeof build>[0] = {}) {
+      const t = build({ minWaitMs: 1100, patienceMs: 3000, turnThreshold: 0.9, ...over });
+      await t.session.start();
+      t.transcriber.turn = turn;
+      t.listener.h?.onSpeechStart();
+      t.listener.h?.onUtterance(new Blob(['x']), undefined, 0, 0);
+      await settle();
+      const wait = t.transport.created.length ? 0 : (t.session.state.goOn?.ms ?? -1);
+      t.session.end();
+      return wait;
+    }
+    it('sure: none at all, whatever the patience (a quick question is as quick as before)', async () => {
+      expect(await waitFor(0.95)).toBe(0);
+      expect(await waitFor(0.95, { patienceMs: 8000 })).toBe(0);
+    });
+    it('a finished sentence scored just under the bar waits no longer than before (1.1 s)', async () => {
+      expect(await waitFor(0.87)).toBe(1100);
+      expect(await waitFor(0.6)).toBe(1100);
+    });
+    it('the less finished it sounds, the longer: a cut-off sentence waits nearly the whole patience', async () => {
+      expect(await waitFor(0.5)).toBeCloseTo(1333, 0);
+      expect(await waitFor(0.1)).toBeCloseTo(2667, 0);
+      expect(await waitFor(0.01)).toBeCloseTo(2967, 0);
+    });
+    it('never longer than the patience: at 1 s everything waits 1 s at most', async () => {
+      expect(await waitFor(0.1, { patienceMs: 1000 })).toBe(1000);
+      expect(await waitFor(0.8, { patienceMs: 1000 })).toBe(1000);
+    });
+    it('the model switched off: every pause waits the patience', async () => {
+      expect(await waitFor(null, { turnThreshold: null })).toBe(3000);
+    });
+    it('the model on but unable to say (loading after a deploy): as before, 1.1 s', async () => {
+      expect(await waitFor(null)).toBe(1100);
+    });
+  });
+
+  it('a thinking pause longer than the old 1.5 s cap is one turn: he goes on and all of it is sent once', async () => {
+    // 2026-11-14, the defect itself: the timer sent the first half while he talked on, and the rest
+    // arrived as steers. Scaled down: a patience of 300 ms, an unsure pause, 350 ms before he finishes.
+    const t = build({ patienceMs: 300, turnThreshold: 0.9 });
+    await t.session.start();
+    t.transcriber.turn = 0.1;
+    t.transcriber.next = 'и освен това';
+    t.listener.say();
+    await new Promise((r) => setTimeout(r, 150)); // thinking
+    t.transcriber.next = 'трябва да проверим';
+    t.listener.h?.onSpeechStart();
+    t.listener.h?.onPause(new Blob(['x']), 1000);
+    await new Promise((r) => setTimeout(r, 200)); // past the patience: words hold the turn
+    expect(t.transport.created).toEqual([]);
+    expect(t.listener.h?.onPiece?.(1000)).toBe(true);
+    t.transcriber.turn = 0.95;
+    t.transcriber.next = 'и бюджета.';
+    t.listener.h?.onPause(new Blob(['x']), 2000); // sure: finished
+    await settle();
+    expect(t.transport.created).toEqual(['и освен това трябва да проверим и бюджета.']);
+    expect(t.transport.steered).toEqual([]);
+    // The words after the thinking pause were recognised with the turn before them as context.
+    expect(t.transcriber.opts[1]?.prompt).toBe('и освен това');
+  });
+
+  it("utterances join in the order he said them, whichever Whisper answers first", async () => {
+    const t = build({ patienceMs: 30 });
+    await t.session.start();
+    t.transcriber.byAudio = { u1: 'дълго първо изречение', u2: 'и кратко' };
+    t.transcriber.delayByAudio = { u1: 60 };
+    t.listener.h?.onSpeechStart();
+    t.listener.h?.onUtterance(new Blob(['u1']), undefined, 0, 0);
+    t.listener.h?.onSpeechStart();
+    t.listener.h?.onUtterance(new Blob(['u2']), undefined, 0, 0);
+    await new Promise((r) => setTimeout(r, 130));
+    expect(t.transport.created).toEqual(['дълго първо изречение и кратко']);
+  });
+
+  it('a piece Whisper fails on is not the whole turn: what came back is kept, the problem said once', async () => {
+    const t = build({ patienceMs: 30 });
+    await t.session.start();
+    t.transcriber.byAudio = { p1: 'първо', p2: 'второ', tail: 'трето' };
+    t.transcriber.failAudio = ['p2'];
+    t.listener.h?.onSpeechStart();
+    t.listener.h?.onPause(new Blob(['p1']), 100);
+    await tick();
+    t.listener.h?.onPiece?.(100);
+    t.listener.h?.onPause(new Blob(['p2']), 200);
+    await tick();
+    t.listener.h?.onPiece?.(200);
+    t.listener.h?.onUtterance(new Blob(['tail']), 300, 0, 0);
+    await new Promise((r) => setTimeout(r, 60));
+    expect(t.transport.created).toEqual(['първо трето']);
+    const shown = t.states.map((s) => s.problem).filter((p, i, all) => p && p !== all[i - 1]);
+    expect(shown).toHaveLength(1);
+    expect(shown[0]).toMatch(/can't hear you/);
+  });
+
+  it('nothing is read out over his pause: a ring result and an answer wait until his turn is sent', async () => {
+    const t = build({ patienceMs: 80 });
+    await t.session.start();
+    t.transcriber.next = 'провери пощата';
+    t.listener.say();
+    await new Promise((r) => setTimeout(r, 100));
+    t.session.onRunQueued('r1', 'c1');
+    t.transcriber.next = 'и после';
+    t.listener.say(); // he goes on while it works: held, waiting for the rest
+    await settle();
+    t.session.onDelta('r1', 'Пощата: три нови писма.');
+    t.session.onStepDone('r1', false); // an answer to the first half
+    t.session.onRunDone('r1');
+    t.session.say('Напомняне: среща в 10.');
+    await tick();
+    expect(t.speaker.spoken).toEqual([]);
+    expect(t.session.state.goOn).not.toBeNull();
+    await new Promise((r) => setTimeout(r, 100));
+    // Sent: the run had finished, so it is a new turn - and what waited is said now, in order.
+    expect(t.transport.created).toEqual(['провери пощата', 'и после']);
+    expect(t.speaker.spoken.map((s) => s.text)).toEqual(['Пощата: три нови писма.']);
+  });
+
+  it('muted mid-sentence: what he said is sent at once, not thrown away', async () => {
+    const t = build({ patienceMs: 5000 });
+    await t.session.start();
+    t.transcriber.byAudio = { p1: 'първо', open: 'второ' };
+    t.listener.open = true;
+    t.listener.h?.onSpeechStart();
+    t.listener.h?.onPause(new Blob(['p1']), 100);
+    await tick();
+    t.listener.h?.onPiece?.(100);
+    t.session.setMuted(true);
+    await settle();
+    expect(t.transport.created).toEqual(['първо второ']);
+  });
+
+  it('a route change mid-sentence keeps what was heard, and the clock waits for the new microphone', async () => {
+    const t = build({ patienceMs: 40 });
+    await t.session.start();
+    t.transcriber.byAudio = { p1: 'първо', open: 'второ' };
+    t.listener.open = true;
+    t.listener.h?.onSpeechStart();
+    t.listener.h?.onPause(new Blob(['p1']), 100);
+    await tick();
+    t.listener.h?.onPiece?.(100);
+    let reopen: () => void = () => undefined;
+    t.listener.routeGate = new Promise((r) => (reopen = r));
+    const switching = t.session.setRoute('speaker');
+    await new Promise((r) => setTimeout(r, 70));
+    expect(t.transport.created).toEqual([]); // he cannot be heard yet: nothing is decided for him
+    reopen();
+    await switching;
+    await new Promise((r) => setTimeout(r, 70));
+    expect(t.transport.created).toEqual(['първо второ']);
+  });
+
+  it('a turn held by words that never end is sent at the ceiling; nothing waits for ever', async () => {
+    const t = build({ patienceMs: 5000, ceilingMs: 60 });
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    t.listener.h?.onSpeechStart(); // a television: Whisper finds words in it
+    t.listener.h?.onPause(new Blob(['x']), 100);
+    await new Promise((r) => setTimeout(r, 90));
+    expect(t.transport.created).toEqual(['какво ще кажеш']);
   });
 
   it('without the turn model (switched off) nothing is asked of it', async () => {
@@ -842,7 +1060,8 @@ describe('CallSession', () => {
   });
 
 
-  it('hung up while Whisper works: nothing is sent and the call stays ended', async () => {
+  it('hung up while Whisper works: what he said is sent once it is back, and the call stays ended', async () => {
+    // Gate B, 2026-11-14: hanging up is how a briefing ends; until then its last words were dropped.
     const transcriber = new FakeTranscriber();
     transcriber.delayMs = 20;
     const t = build({ transcriber });
@@ -851,9 +1070,40 @@ describe('CallSession', () => {
     t.session.end();
     const changes = t.states.length;
     await new Promise((r) => setTimeout(r, 40));
-    expect(t.transport.created).toEqual([]);
+    expect(t.transport.created).toEqual(['какво ще кажеш']);
     expect(t.session.state.phase).toBe('ended');
-    expect(t.states.length).toBe(changes);
+    expect(t.states.length).toBe(changes); // nothing on a screen that is gone
+    expect(t.speaker.spoken).toEqual([]);
+  });
+
+  it('hung up while a turn waits for him: what is held, and the pieces still with Whisper, are sent in order', async () => {
+    const t = build({ patienceMs: 5000 });
+    await t.session.start();
+    t.transcriber.byAudio = { x: 'първо', p1: 'второ' };
+    t.transcriber.delayByAudio = { p1: 20 };
+    t.listener.say();
+    await settle();
+    t.listener.h?.onSpeechStart();
+    t.listener.h?.onPause(new Blob(['p1']), 100);
+    t.listener.h?.onPiece?.(100);
+    t.session.end();
+    await new Promise((r) => setTimeout(r, 40));
+    expect(t.transport.created).toEqual(['първо второ']);
+  });
+
+  it('hung up and Whisper is not back within the wait: what is held is sent, the rest dropped', async () => {
+    const t = build({ patienceMs: 5000, hangUpMs: 20 });
+    await t.session.start();
+    t.transcriber.byAudio = { x: 'първо', p1: 'второ' };
+    t.transcriber.delayByAudio = { p1: 80 };
+    t.listener.say();
+    await settle();
+    t.listener.h?.onSpeechStart();
+    t.listener.h?.onPause(new Blob(['p1']), 100);
+    t.listener.h?.onPiece?.(100);
+    t.session.end();
+    await new Promise((r) => setTimeout(r, 120));
+    expect(t.transport.created).toEqual(['първо']);
   });
 
   it('hung up while the microphone is being asked for: the call stays ended', async () => {

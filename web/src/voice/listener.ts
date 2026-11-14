@@ -13,7 +13,10 @@
  * when he goes on after a pause, what came before it — once it is long enough to recognise well on
  * its own — is a piece, whose words are already on their way (the recognition started at that
  * pause). What is sent at the end is only the rest, with up to 8 s before it for the turn model,
- * which judges an ending by how the voice falls, not by the words.
+ * which judges an ending by how the voice falls, not by the words. Those 8 s reach back across his
+ * pauses into the turn he is in the middle of (the pause is itself a signal), but never into a turn
+ * already sent, nor into Jarvis's own voice or a cue. A stretch with no pause in it at all is cut
+ * into a piece every PIECE_MAX_MS anyway, at its quietest moment.
  *
  * While Jarvis speaks, his own voice reaches the microphone — and echo cancellation does NOT
  * catch it, because `speechSynthesis` plays outside the browser's audio path (on the laptop
@@ -33,7 +36,8 @@ import type { CallRoute, Listener, ListenerHandlers } from './session';
 import { callTrace } from './trace';
 
 const TARGET_RATE = 16_000;
-/** Samples kept: the last minute at 16 kHz. An utterance is capped at 30 s by the segmenter. */
+/** Samples kept: the last minute at 16 kHz. An utterance has no length limit (2026-11-14), but what
+ *  is not yet recognised is never more than PIECE_MAX_MS plus the turn model's context. */
 const RING_SECONDS = 60;
 /** Audio kept from before the segmenter called speech, so the first syllable is not lost. */
 const PRE_ROLL_MS = 300;
@@ -42,6 +46,13 @@ const CUT_IN_ATTACK_MS = 450;
 /** A pause closes a piece of a long utterance only once this much speech is behind it: Whisper
  *  recognises a few seconds with the words before it as its prompt as well as the whole. */
 const PIECE_MIN_MS = 4000;
+/** A stretch of talk with no pause in it is cut into a piece after this long anyway. The 30 s
+ *  utterance ceiling it replaces closed a briefing mid-sentence as a turn (2026-11-14); this keeps
+ *  every Whisper request under 20 s of new audio plus the context, and the ring safe. */
+const PIECE_MAX_MS = 20_000;
+/** Where such a cut goes: the quietest 20 ms of the last 1.5 s, so that no syllable is split. */
+const CUT_SEARCH_MS = 1500;
+const CUT_FRAME_MS = 20;
 /** What the turn model is given: the last 8 s, the window it was trained on. */
 const TURN_CONTEXT_MS = 8000;
 /** The worklet that taps the samples; served with the SPA (web/public/pcm-worklet.js). */
@@ -99,6 +110,13 @@ export class MicListener implements Listener {
   private utteranceStartSample = 0;
   /** Where the part of this utterance that is not yet a recognised piece begins. */
   private pieceStartSample = 0;
+  /** Where the turn he is in began: the turn model's context never reaches back past it. */
+  private turnStartSample = 0;
+  /** Where Jarvis's voice, the hold music or a cue last stopped: nor past that. */
+  private voiceEndSample = 0;
+  private holdOn = false;
+  /** No forced piece before this sample: the last one was not taken (the call is ending). */
+  private noForceBefore = 0;
   /** The last pause of this utterance: a breath, if he goes on after it. */
   private lastPause: { at: number; sample: number } | null = null;
   private speaking = false;
@@ -139,9 +157,18 @@ export class MicListener implements Listener {
     this.started = false;
     document.removeEventListener('visibilitychange', this.onVisible);
     this.close();
-    this.seg = new Segmenter();
+    // Its options, not the defaults: a second call on this listener closes as the first did.
+    this.seg = new Segmenter(this.seg.opts);
     this.gate = new EchoGate();
     this.written = 0;
+    this.turnStartSample = 0;
+    this.voiceEndSample = 0;
+    this.noForceBefore = 0;
+  }
+
+  /** His turn was sent: what he says next is a new turn, and the last one is no context for it. */
+  turnSent(): void {
+    this.turnStartSample = this.written;
   }
 
   /** The microphone, then the context on it. A failure leaves nothing open. */
@@ -245,6 +272,7 @@ export class MicListener implements Listener {
   }
 
   setSpeaking(on: boolean, echoCancelled = false): void {
+    if (this.speaking && !on) this.voiceEndSample = this.written;
     this.speaking = on;
     this.echoCancelled = echoCancelled;
     const now = performance.now() - this.t0;
@@ -259,6 +287,8 @@ export class MicListener implements Listener {
    *  microphone is never let go for it, on either route: it is background, he may talk over it. */
   setHold(on: boolean): void {
     if (this.speaking) return; // his voice already decides the gate
+    if (this.holdOn && !on) this.voiceEndSample = this.written;
+    this.holdOn = on;
     const now = performance.now() - this.t0;
     if (on) this.gate.setProfile(this.o.line === true || this.route === 'earpiece');
     this.gate.setSpeaking(on, now, this.seg.noiseFloor);
@@ -281,6 +311,8 @@ export class MicListener implements Listener {
     const run = async () => {
       this.rebuilding = true;
       try {
+        // What he was in the middle of saying is heard, not lost with the old microphone.
+        this.flush();
         this.close();
         // Let the old microphone go all the way before the new one is asked for: Chrome leaves
         // call mode only once no microphone is open, and an output opened while it is still in
@@ -305,8 +337,18 @@ export class MicListener implements Listener {
   }
 
   setMuted(muted: boolean): void {
+    // Muted mid-sentence: what he said up to the tap is closed as an utterance and heard, not
+    // thrown away with the segmenter - with turns minutes long, that could be a whole briefing.
+    if (muted && !this.muted) this.flush();
     this.muted = muted;
     if (muted) this.seg = new Segmenter(this.seg.opts);
+  }
+
+  /** Close the utterance that is open now, as if the release had run out. */
+  private flush(): void {
+    if (!this.handlers) return;
+    const t = performance.now() - this.t0;
+    for (const ev of this.seg.end(t)) this.onSegment(ev, t);
   }
 
   /** The turn model is sure he finished at the pause `at`: close the utterance now instead of
@@ -321,6 +363,7 @@ export class MicListener implements Listener {
   /** Ignore the microphone for a moment: a cue is sounding, and a beep is not a word. */
   suppress(ms: number): void {
     this.suppressUntil = Math.max(this.suppressUntil, performance.now() - this.t0 + ms);
+    this.voiceEndSample = Math.max(this.voiceEndSample, this.written + Math.round((ms / 1000) * TARGET_RATE));
   }
 
   private onAudio(input: Float32Array, rate: number): void {
@@ -340,6 +383,47 @@ export class MicListener implements Listener {
     // Through the gate: while he speaks, only a voice clearly over his own reaches the segmenter.
     const level = t < this.suppressUntil ? 0 : this.lineUp ? rms : this.gate.pass(rms, t, this.seg.noiseFloor);
     for (const ev of this.seg.push(level, t)) this.onSegment(ev, t);
+    this.forcePiece(t);
+  }
+
+  /** A stretch with no pause in it, long enough: a piece is cut at its quietest moment, through
+   *  the same pause-then-piece handshake a real pause makes, so the session recognises it alone. */
+  private forcePiece(t: number): void {
+    if (!this.handlers?.onPiece || !this.seg.talking) return;
+    const max = (PIECE_MAX_MS / 1000) * TARGET_RATE;
+    if (this.written - this.pieceStartSample < max || this.written < this.noForceBefore) return;
+    const cut = this.quietest();
+    const tail = this.tail(cut);
+    if (!tail) return;
+    const at = t - ((this.written - cut) / TARGET_RATE) * 1000;
+    this.handlers.onPause(tail.audio, at, tail.offsetMs);
+    if (this.handlers.onPiece(at)) {
+      callTrace.mark('piece.forced', { ms: Math.round(((cut - this.pieceStartSample) / TARGET_RATE) * 1000) });
+      this.pieceStartSample = cut;
+      this.lastPause = null;
+    } else {
+      this.noForceBefore = this.written + max;
+    }
+  }
+
+  /** The middle of the quietest 20 ms frame in the last 1.5 s. */
+  private quietest(): number {
+    const frame = Math.round((CUT_FRAME_MS / 1000) * TARGET_RATE);
+    const from = Math.max(this.pieceStartSample + frame, this.written - Math.round((CUT_SEARCH_MS / 1000) * TARGET_RATE));
+    let best = this.written;
+    let bestEnergy = Number.POSITIVE_INFINITY;
+    for (let start = from; start + frame <= this.written; start += frame) {
+      let energy = 0;
+      for (let i = start; i < start + frame; i++) {
+        const v = this.ring[i % this.ring.length] ?? 0;
+        energy += v * v;
+      }
+      if (energy < bestEnergy) {
+        bestEnergy = energy;
+        best = start + Math.floor(frame / 2);
+      }
+    }
+    return best;
   }
 
   private onSegment(ev: SegmentEvent, t: number): void {
@@ -368,7 +452,8 @@ export class MicListener implements Listener {
       this.gate.unlatch();
       this.closePiece(ev.at);
       const tail = this.tail(this.written);
-      if (tail) this.handlers.onUtterance(tail.audio, ev.at, tail.offsetMs);
+      // How long he has been quiet already: the session's patience counts from the silence.
+      if (tail) this.handlers.onUtterance(tail.audio, ev.at, tail.offsetMs, Math.max(0, t - ev.at));
       else this.handlers.onSpeechDropped();
     }
   }
@@ -385,10 +470,14 @@ export class MicListener implements Listener {
   }
 
   /** The part of the utterance not yet recognised, with up to 8 s before it for the turn model;
-   *  `offsetMs` is where the unrecognised part begins within the audio. */
+   *  `offsetMs` is where the unrecognised part begins within the audio. The context reaches back
+   *  into this turn's earlier utterances, but not past the turn's start or the end of Jarvis's
+   *  voice - and while he speaks not past this utterance's start: that is a cut-in over him. */
   private tail(end: number): { audio: Blob; offsetMs: number } | null {
     const context = Math.round((TURN_CONTEXT_MS / 1000) * TARGET_RATE);
-    const from = Math.max(this.utteranceStartSample, Math.min(this.pieceStartSample, end - context));
+    const bound = this.speaking || this.holdOn ? this.utteranceStartSample : Math.max(this.turnStartSample, this.voiceEndSample);
+    const floor = Math.max(0, Math.min(this.pieceStartSample, bound));
+    const from = Math.max(floor, Math.min(this.pieceStartSample, end - context));
     const audio = this.slice(from, end);
     return audio ? { audio, offsetMs: ((this.pieceStartSample - from) / TARGET_RATE) * 1000 } : null;
   }

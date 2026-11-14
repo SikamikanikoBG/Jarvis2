@@ -27,8 +27,6 @@ export interface SegmenterOptions {
   pauseMs: number;
   /** Utterances shorter than this are dropped (a cough is not a sentence). */
   minUtteranceMs: number;
-  /** A ceiling on one utterance; beyond it the utterance is closed and a new one opens. */
-  maxUtteranceMs: number;
 }
 
 export const DEFAULT_SEGMENTER: SegmenterOptions = {
@@ -39,7 +37,6 @@ export const DEFAULT_SEGMENTER: SegmenterOptions = {
   releaseMs: 500,
   pauseMs: 250,
   minUtteranceMs: 400,
-  maxUtteranceMs: 30_000,
 };
 
 export type SegmentEvent =
@@ -73,6 +70,11 @@ export class Segmenter {
 
   get speaking(): boolean {
     return this.phase === 'speech' || this.phase === 'release';
+  }
+
+  /** Sound right now, not a silence that may yet be a pause: where a long stretch may be cut. */
+  get talking(): boolean {
+    return this.phase === 'speech';
   }
 
   get noiseFloor(): number {
@@ -120,14 +122,13 @@ export class Segmenter {
         }
         break;
       case 'speech':
+        // No ceiling on how long he talks (2026-11-14): a 30 s one closed a briefing mid-sentence,
+        // and every half minute of it became a turn of its own. The listener cuts a long stretch
+        // into pieces for Whisper instead (listener.ts, PIECE_MAX_MS); the utterance goes on.
         if (!loud) {
           this.phase = 'release';
           this.phaseSince = t;
           this.pauseSent = false;
-        } else if (t - this.utteranceStart >= o.maxUtteranceMs) {
-          out.push(...this.close(t));
-          this.phase = 'attack';
-          this.phaseSince = t;
         }
         break;
       case 'release':

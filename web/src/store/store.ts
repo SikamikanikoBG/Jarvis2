@@ -12,6 +12,7 @@ import type { ThinkChoice } from '../lib/think';
 import { enablePush, pushSupported, refreshPush } from '../push/push';
 import { MicListener } from '../voice/listener';
 import { requestMotionPermission } from '../voice/earPose';
+import { patienceMs } from '../voice/patience';
 import { holdScreen, releaseScreen } from '../voice/screenHold';
 import { firstSentences } from '../voice/sentences';
 import { CallSession, type CallRoute, type CallState } from '../voice/session';
@@ -505,6 +506,9 @@ export const useStore = create<AppState>()((set, get) => ({
     let tts: 'server' | 'device' = 'server';
     let languages = ['bg', 'en'];
     let turnThreshold: number | null = null;
+    // How long a pause that sounds unfinished waits for him - and every pause, with the turn
+    // model off - so it is read whether detection is on or not (voice/patience.ts).
+    let patience = patienceMs(null);
     let waiting: WaitingSound = 'music';
     let holdVolume = 0.4;
     let useLine = !opts?.page;
@@ -514,6 +518,7 @@ export const useStore = create<AppState>()((set, get) => ({
       tts = settings.voice.tts;
       if (settings.stt_languages.length) languages = settings.stt_languages;
       if (settings.voice.turn_detection) turnThreshold = settings.voice.turn_threshold;
+      patience = patienceMs(settings.voice);
       waiting = settings.voice.waiting_sound;
       holdVolume = settings.voice.hold_volume;
       useLine = useLine && settings.voice.line;
@@ -541,7 +546,7 @@ export const useStore = create<AppState>()((set, get) => ({
     const onLine = useLine && tts === 'server' && typeof RTCPeerConnection !== 'undefined';
     const callLine = onLine ? new VoiceLine() : null;
     line = callLine;
-    if (debug) callTrace.start({ line: onLine, tts, languages, turnThreshold, waiting, holdVolume });
+    if (debug) callTrace.start({ line: onLine, tts, languages, turnThreshold, patienceMs: patience, waiting, holdVolume });
     if (debug && callLine) callTrace.watchStats(() => callLine.stats());
     const listener = new MicListener({ line: onLine });
     // Off the line, the voice plays through the microphone's own context (opened in this tap,
@@ -609,6 +614,7 @@ export const useStore = create<AppState>()((set, get) => ({
       language: languages[0] ?? 'bg',
       languages,
       turnThreshold,
+      patienceMs: patience,
       conversationId: open,
       // A call on the line opens where the phone puts a call (the earpiece); the toggle moves it.
       route: callLine ? 'earpiece' : (opts?.route ?? readRoute()),

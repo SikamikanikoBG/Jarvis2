@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { Switch } from '../components/primitives';
 import type { VoiceSettings } from '../protocol/types';
+import { patienceChoices, patienceHint, patienceMs } from '../voice/patience';
 
 interface Props {
   value: VoiceSettings;
@@ -198,12 +199,12 @@ export function VoiceSection({ value, namespaces, onChange, error }: Props) {
         <Switch checked={value.turn_detection} onChange={(v) => patch({ turn_detection: v })} label="Answer as soon as you have finished" />
         <span className="small">End of turn</span>
         <span className="field-hint">
-          A small model hears from your voice whether a sentence is finished, and sends it without waiting out the pause. Words you add
-          after it still reach him.
+          A small model hears from your voice whether a sentence is finished: a finished one is sent without waiting out the pause, an
+          unfinished one waits for you to go on. Words you add after a send still reach him.
         </span>
       </div>
-      {value.turn_detection && (
-        <div className="form-grid">
+      <div className="form-grid">
+        {value.turn_detection && (
           <div className="field">
             <label htmlFor="voice-turn">How sure it must be</label>
             <select id="voice-turn" className="select" value={String(value.turn_threshold)} onChange={(e) => patch({ turn_threshold: Number(e.target.value) })}>
@@ -212,8 +213,20 @@ export function VoiceSection({ value, namespaces, onChange, error }: Props) {
               <option value="0.9">Very sure — waits more often</option>
             </select>
           </div>
+        )}
+        {/* Shown with the model off too: then it is the whole rule (docs/stories/12_assistant.md). */}
+        <div className="field">
+          <label htmlFor="voice-patience">Patience when it hears you are not done</label>
+          <select id="voice-patience" className="select" value={String(patienceMs(value) / 1000)} onChange={(e) => patch({ turn_patience_s: Number(e.target.value) })}>
+            {patienceChoices(value).map((s) => (
+              <option key={s} value={String(s)}>
+                {s} s{s === 3 ? ' — default' : s === 1 ? ' — answers soonest' : s === 8 ? ' — long thinking pauses' : ''}
+              </option>
+            ))}
+          </select>
+          <div className="field-hint">{patienceHint(value)}</div>
         </div>
-      )}
+      </div>
       <div className="think-row">
         <Switch checked={value.think} onChange={(v) => patch({ think: v })} label="Think before answering on a call" />
         <span className="small">Thinking</span>

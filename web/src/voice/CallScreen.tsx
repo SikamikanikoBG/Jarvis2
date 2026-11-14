@@ -6,6 +6,7 @@ import { NEW_CONVERSATION_KEY } from '../store/state';
 import { selectActiveRun } from '../store/selectors';
 import { useStore } from '../store/store';
 import { NotedList } from './NotedList';
+import { goOnDrain, phaseLabel } from './callView';
 import { FINGER_MAX_PX, useAtEar } from './earPose';
 import type { CallPhase, CallState } from './session';
 import { SLIDE_DONE, slide } from './slide';
@@ -29,16 +30,6 @@ function useScreenAngle(active: boolean): number {
   }, [active]);
   return angle;
 }
-
-const PHASE_LABEL: Record<CallPhase, string> = {
-  idle: '',
-  connecting: 'Connecting…',
-  listening: 'Listening',
-  transcribing: 'Heard you…',
-  thinking: 'Thinking…',
-  speaking: 'Speaking',
-  ended: 'Call ended',
-};
 
 /**
  * The call, full screen (docs/stories/10_voice.md). A pure function of the session's state:
@@ -139,9 +130,9 @@ export function CallScreen() {
         </span>
       </div>
 
-      <Ring phase={call.phase} level={call.level} muted={call.muted} />
-      <div className="call-phase" aria-live="polite">
-        {!call.online ? 'No connection — reconnecting…' : call.muted && call.phase === 'listening' ? 'Muted' : PHASE_LABEL[call.phase]}
+      <Ring phase={call.phase} level={call.level} muted={call.muted} goOn={call.muted ? null : call.goOn} />
+      <div className={`call-phase${call.goOn && !call.muted ? ' call-phase-goon' : ''}`} aria-live="polite">
+        {phaseLabel(call)}
       </div>
 
       <Captions call={call} />
@@ -273,16 +264,29 @@ function SlideControl({ label, icon, danger, onDone }: { label: string; icon: 'c
   );
 }
 
-function Ring({ phase, level, muted }: { phase: CallPhase; level: number; muted: boolean }) {
+function Ring({ phase, level, muted, goOn }: { phase: CallPhase; level: number; muted: boolean; goOn: CallState['goOn'] }) {
   // The ring breathes with the microphone while listening and pulses on its own while he speaks.
   const scale = phase === 'listening' && !muted ? 1 + Math.min(0.6, level * 1.2) : 1;
   return (
     <div className="call-ring-wrap" aria-hidden="true">
       <div className="call-ring call-ring-outer" style={{ transform: `scale(${scale})` }} />
+      {/* A new wait is a new arc (the key), so it starts full again when he goes on. */}
+      {goOn && phase === 'listening' && <GoOnArc key={goOn.until} goOn={goOn} />}
       <div className="call-ring call-ring-inner">
         <Icon name={muted ? 'micOff' : phase === 'speaking' ? 'headphones' : phase === 'thinking' || phase === 'transcribing' ? 'brain' : 'mic'} size={34} />
       </div>
     </div>
+  );
+}
+
+/** Waiting for him to go on: an amber arc that runs down over the wait, drawn by CSS alone. The
+ *  delay is taken once, when the wait begins, so the screen's once-a-second tick does not move it. */
+function GoOnArc({ goOn }: { goOn: NonNullable<CallState['goOn']> }) {
+  const [drain] = useState(() => goOnDrain(goOn, Date.now()));
+  return (
+    <svg className="call-goon" viewBox="0 0 100 100" style={{ '--goon-ms': `${drain.durationMs}ms`, '--goon-delay': `${drain.delayMs}ms` } as React.CSSProperties}>
+      <circle cx="50" cy="50" r="47" pathLength={100} />
+    </svg>
   );
 }
 

@@ -585,12 +585,19 @@ class VoiceSettings(BaseModel):
     # rest are synthesised while it plays. 8 steps is 0.54 s against 0.92 s at 16 (ardi's 3090,
     # 2026-10-13) and Whisper hears both the same. None = every sentence at omnivoice_steps.
     omnivoice_first_steps: int | None = None
-    # End-of-turn detection (features/turn.py, Smart Turn v3 on the core's CPU): at the first
-    # pause the audio is scored, and a sentence the model is at least this sure is complete is
-    # sent at once instead of after the release and the join window. Below it nothing changes.
-    # Words said after an early send still join the run as a steer.
+    # End-of-turn detection (features/turn.py, Smart Turn v3 on the core's CPU): every pause is
+    # scored, and a sentence the model is at least this sure is complete is sent at once. Below
+    # it the model decides the other way too: the less finished it sounds, the longer the call
+    # waits for him, up to turn_patience_s. Words said after an early send still join the run
+    # as a steer.
     turn_detection: bool = True
     turn_threshold: float = Field(default=0.8, ge=0.5, le=1.0)
+    # How long (seconds of silence) a call waits for him at a pause that sounds unfinished; with
+    # turn_detection off, every pause waits this long. Read by the web when a call starts
+    # (voice/session.ts). 2026-11-14, "при малка пауза мисли че съм готов": a thinking pause was
+    # sent after about a second whatever the model heard; 31 of 368 voice turns since 25 Oct got
+    # more of his words within 20 s of going (scripts/voice_turn_stats.py).
+    turn_patience_s: float = Field(default=3.0, ge=1.0, le=8.0)
     # What he hears while Jarvis thinks (web voice/tones.ts): soft hold music made in the browser,
     # the quiet pulse it replaced, or nothing - and how loud the music is (0..1).
     waiting_sound: Literal["music", "beeps", "silence"] = "music"

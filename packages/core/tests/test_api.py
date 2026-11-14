@@ -196,6 +196,18 @@ def test_run_routing_only_accepts_lanes(client: TestClient):
     assert r.status_code == 200 and r.json()["run_routing"]["scheduled"] == "chat"
 
 
+def test_turn_patience_round_trips_and_is_bounded(client: TestClient):
+    """Settings → Voice → patience: saved and read back as the web sends it (the whole voice
+    object), and a value outside 1-8 s is refused with nothing stored."""
+    voice = client.get("/api/settings", headers=_h()).json()["voice"]
+    assert voice["turn_patience_s"] == 3.0
+    r = client.patch("/api/settings", json={"voice": {**voice, "turn_patience_s": 5}}, headers=_h())
+    assert r.status_code == 200 and r.json()["voice"]["turn_patience_s"] == 5.0
+    r = client.patch("/api/settings", json={"voice": {**voice, "turn_patience_s": 9}}, headers=_h())
+    assert r.status_code == 422
+    assert client.get("/api/settings", headers=_h()).json()["voice"]["turn_patience_s"] == 5.0
+
+
 def test_every_call_of_a_run_goes_to_its_lane():
     """Inside a run the planner keeps its behaviour (no thinking, low temperature) but takes the
     lane's endpoint; outside a run it uses its own."""

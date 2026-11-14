@@ -604,6 +604,8 @@ export interface VoiceSettings {
   /** End-of-turn detection: a sentence the turn model is this sure is complete is sent at once. */
   turn_detection: boolean;
   turn_threshold: number;
+  /** Seconds of silence a call waits at a pause that sounds unfinished (every pause, with detection off); 1-8. */
+  turn_patience_s: number;
   /** What he hears while Jarvis thinks: soft hold music, a quiet pulse, or nothing. */
   waiting_sound: 'music' | 'beeps' | 'silence';
   /** Hold music volume, 0..1. */

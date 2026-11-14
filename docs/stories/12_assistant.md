@@ -92,11 +92,35 @@ one slot more than the limit.
 - **End of turn:** at the first pause the audio goes to Whisper as before, and also to a small
   turn model (Smart Turn v3, 8 MB, CPU, ~0.1 s, `features/turn.py`). When it is sure the sentence
   is complete, the call sends at once instead of waiting out the release and the join window
-  (~0.5 s sooner). When it is not sure, nothing changes. Words said after an early send join the
-  run as a steer, as they already do.
+  (~0.5 s sooner). Words said after an early send join the run as a steer, as they already do.
+- **Patience (2026-11-14, issue #12):** the turn model decides the other way too. A pause it hears
+  as unfinished holds the turn: the less finished it sounds, the longer it waits, from the old
+  1.1 s up to `voice.turn_patience_s` (Settings → Voice, 1–8 s, default 3 s) — a cut-off sentence
+  (scored 0.06–0.17) waits nearly all of it, a finished one scored just under the bar no longer
+  than before. With the model switched off every pause waits the patience; while it cannot say
+  (loading after a deploy) the wait is the old 1.1 s. The wait counts from the start of the
+  silence. What he says inside it joins the same turn, in the order he said it; a sound with no
+  words in it (a cough, the room) does not hold the turn, and its clock goes on from where it
+  stood. A turn is sent after 5 minutes whatever happens. Nothing is read out while a turn is held
+  (answers, progress lines, a ring's result wait). Before, a pause was sent after at most 1.5 s
+  whatever the model heard: 31 of 368 voice turns from 25 Oct to 14 Nov got more of his words within
+  20 s of going (8.4 %, `scripts/voice_turn_stats.py`).
 - **Long utterances:** speech is recognised in pieces at its pauses while Arsen is still talking,
-  so at the end only the last piece is left. Each piece is given what came before it as Whisper's
-  prompt.
+  so at the end only the last piece is left. Each piece is given what came before it (the held
+  turn's end, then the utterance's pieces) as Whisper's prompt. There is no 30 s cut any more: a
+  stretch with no pause in it is cut into a piece every 20 s at its quietest moment, so every
+  Whisper request stays under 28 s of audio and a five-minute monologue is one turn. The turn
+  model's 8 s reach back across his pauses into the same turn, never past the last send or the end
+  of Jarvis's voice.
+- **Mute, route change, hang-up:** what he was saying is closed and recognised, not dropped. Mute
+  sends a held turn at once; a route change stops its clock until the new microphone is up;
+  hanging up sends what was recognised (waiting up to 5 s for pieces still with Whisper) and the
+  answer lands in the chat. A Whisper failure on one piece keeps the others and says so once.
+- **On the screen:** while a turn waits for him the call reads "Listening — go on" with an amber
+  ring running down over the wait; the words so far stay visible.
+- **Measuring it:** `scripts/voice_turn_stats.py` (read-only) counts voice turns that got more of
+  his words within 20 s of being sent; with `voice_debug` the call trace has `turn.decide`,
+  `turn.wait`, `turn.hold`, `turn.send{why}`, `turn.more` and `piece.forced`.
 - **Recognition context:** what Jarvis last said goes to Whisper as its prompt; a short answer is
   recognised as an answer to that.
 - **The first sentence:** the first sentence of a reply is synthesised with fewer diffusion steps

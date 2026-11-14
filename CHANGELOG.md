@@ -2,6 +2,34 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-15 — core 2.0.0a124, proto 2.0.0a40, web alpha.90
+
+### Changed
+- **On a call Jarvis lets you finish a thought** (issue #12). The turn model now decides both ways: a
+  pause it hears as finished is still sent at once; a pause it hears as unfinished waits for you, the
+  less finished the longer, up to the new **Patience when it hears you are not done** (Settings →
+  Voice, 1–8 s, default 3 s). A finished question scored just under the bar waits no longer than
+  before (1.1 s). With turn detection off the patience is the whole rule; while the model cannot say
+  (loading after a deploy) the wait is the old 1.1 s. What you say inside the wait joins the same
+  turn, in order; a cough or the room does not hold it. The 1.5 s cap and the 30 s cut are gone: a
+  long briefing is one turn, recognised in 20 s pieces while you talk, so the answer is no slower at
+  the end (a turn is sent after 5 minutes whatever happens). While it waits the call screen says
+  **"Listening — go on"** with an amber ring running down, and nothing is read out over your pause.
+  Until now a thinking pause was sent after about a second whatever the model heard: between 25 Oct
+  and 14 Nov 31 of 368 voice turns got more of Arsen's words within 20 s of going, often
+  mid-sentence, and he had to "talk in portions".
+- Hanging up in the middle of a turn sends what was recognised (waiting up to 5 s for pieces still
+  with Whisper); the answer lands in the chat.
+
+### Fixed
+- Muting or switching earpiece/speaker mid-sentence no longer drops what was said: it is closed,
+  recognised and kept (mute sends it at once). If speech recognition fails on one piece, the pieces
+  already recognised are kept and the problem is shown once.
+
+### Added
+- `voice.turn_patience_s` (1–8, default 3). `scripts/voice_turn_stats.py`: read-only share of voice
+  turns that got more of his words within 20 s of being sent, for the before/after.
+
 ## 2026-11-15 — core 2.0.0a123 / proto a39 / web alpha.89
 
 ### Changed

@@ -480,7 +480,8 @@ updated_at)`) is rewritten in the background a few seconds after a run ends, nev
 an incognito chat. Tools: `sessions.today` (the overview), `sessions.list(today=true)` (every
 conversation active today, scheduled ones included). Settings: `assistant.{journal,
 overview_chars, overview_on_calls, home_conversation_id, housekeeping_lane}`,
-`voice.{turn_detection, turn_threshold, omnivoice_first_steps}`; `sessions` is in the default
+`voice.{turn_detection, turn_threshold, turn_patience_s, omnivoice_first_steps}` (`turn_patience_s`:
+1–8 s, default 3; read by the web at the start of a call, 422 outside the range); `sessions` is in the default
 `voice.namespaces`.
 
 ## Delegated tasks (core 2.0.0a101 → a102, docs/stories/13_delegated_tasks.md)

@@ -878,10 +878,13 @@ class TaskService:
         if s.tasks.denies(w.name):
             return f"{w.name} is never offered to a task (settings.tasks.deny_tools)"
         if not s.tasks.frees(w.name):
-            updated = s.model_copy(deep=True)
-            updated.tasks.no_approval = [*s.tasks.no_approval, w.name]
-            await self.core.store.save_settings(updated, only_keys={"tasks"})
-            self.core.apply_settings(updated)
+            # Through the one settings write path: his click is in the trail and can be reverted.
+            from jarvis_core.features.admin import Who  # admin imports the engine, which imports this
+
+            plan = self.core.admin.plan({"tasks.no_approval": [*s.tasks.no_approval, w.name]})
+            await self.core.admin.apply(
+                plan, who=Who(label="Always allow in tasks"), reason=f"always allow {w.name} in tasks"
+            )
             log.info("task %s: %s is now allowed in tasks without asking", task.id, w.name)
         await self.core.engine.confirm(w.run_id, w.call_id, True, "always allowed in tasks from now on")
         return None

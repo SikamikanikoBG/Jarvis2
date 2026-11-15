@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Resp
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from jarvis_core.api.deps import core_of, require_token
+from jarvis_core.api.deps import agent, core_of, require_token
 from jarvis_core.features.attachments import AttachmentError
 from jarvis_proto import Attachment, AttachmentKind
 
@@ -27,7 +27,7 @@ _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 _A_DAY = {"Cache-Control": "private, max-age=86400"}
 
 
-@router.post("/attachments", response_model=Attachment, status_code=201)
+@router.post("/attachments", response_model=Attachment, status_code=201, openapi_extra=agent("none"))
 async def upload(
     request: Request,
     file: UploadFile = File(...),
@@ -51,7 +51,7 @@ async def upload(
         raise HTTPException(422, str(exc)) from exc
 
 
-@router.post("/attachments/text", response_model=Attachment, status_code=201)
+@router.post("/attachments/text", response_model=Attachment, status_code=201, openapi_extra=agent("none"))
 async def upload_text(request: Request, body: TextAttachment) -> Attachment:
     """Pasted text as an attachment, so a wall of log output does not become the message itself."""
     try:
@@ -62,7 +62,7 @@ async def upload_text(request: Request, body: TextAttachment) -> Attachment:
         raise HTTPException(422, str(exc)) from exc
 
 
-@router.get("/attachments/{attachment_id}")
+@router.get("/attachments/{attachment_id}", openapi_extra=agent("none"))
 async def download(request: Request, attachment_id: str, thumb: bool = False, download: bool = False) -> Response:
     """The file. ``download=1`` asks the browser to save it rather than show it. A page or a
     drawing (HTML, SVG) is shown sandboxed: no script in it runs, and it is not this app's origin,
@@ -120,7 +120,7 @@ def _inline(name: str) -> str:
     return f"inline; filename*=UTF-8''{quote(name)}"
 
 
-@router.get("/attachments/{attachment_id}/text")
+@router.get("/attachments/{attachment_id}/text", openapi_extra=agent("read"))
 async def read_text(request: Request, attachment_id: str) -> Response:
     """What the model will see of a non-image attachment."""
     stored = await core_of(request).attachments.get(attachment_id)
@@ -131,14 +131,16 @@ async def read_text(request: Request, attachment_id: str) -> Response:
     return JSONResponse(body, headers=_NO_STORE if stored.private else {})
 
 
-@router.delete("/attachments/{attachment_id}", status_code=204)
+@router.delete("/attachments/{attachment_id}", status_code=204, openapi_extra=agent("write", risk="delete"))
 async def remove(request: Request, attachment_id: str) -> Response:
     if not await core_of(request).attachments.delete(attachment_id):
         raise HTTPException(404, "attachment not found")
     return Response(status_code=204)
 
 
-@router.get("/conversations/{conversation_id}/attachments", response_model=list[Attachment])
+@router.get(
+    "/conversations/{conversation_id}/attachments", response_model=list[Attachment], openapi_extra=agent("read")
+)
 async def by_conversation(request: Request, conversation_id: str) -> list[Attachment]:
     return await core_of(request).attachments.for_conversation(conversation_id)
 

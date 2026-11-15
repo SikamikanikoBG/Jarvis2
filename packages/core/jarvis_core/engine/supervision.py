@@ -78,6 +78,13 @@ class RunWatch:
     # A tool handed the turn's work off (tasks.delegate, tasks.note): the next step is the answer
     # and nothing else - no further tool runs in this turn.
     answer_only: bool = False
+    # The approval rules this run works under (engine/loop._Policy) and the admin epoch they were
+    # taken at: frozen for the run, so it cannot loosen them and use that itself
+    # (docs/stories/14_agent_admin.md).
+    policy: object | None = None
+    policy_epoch: int = -1
+    # A scheduled run whose prompt a run wrote and Arsen has not accepted: it asks like a task.
+    strict: bool = False
 
     def elapsed_s(self) -> float:
         return time.monotonic() - self.started - self.paused_s

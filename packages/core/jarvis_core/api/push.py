@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from jarvis_core.api.deps import core_of, require_token
+from jarvis_core.api.deps import agent, core_of, require_token
 from jarvis_core.features.callme import Ring
 from jarvis_core.features.webpush import PushDevice
 
@@ -47,7 +47,7 @@ class TestRing(BaseModel):
     carrier: str | None
 
 
-@router.get("", response_model=PushState)
+@router.get("", response_model=PushState, openapi_extra=agent("read"))
 async def state(request: Request) -> PushState:
     notify = core_of(request).notify
     devices = await notify.devices.list() if notify.devices else []
@@ -60,7 +60,7 @@ async def state(request: Request) -> PushState:
     )
 
 
-@router.post("/devices", status_code=204)
+@router.post("/devices", status_code=204, openapi_extra=agent("none"))
 async def add_device(request: Request, body: DeviceIn) -> Response:
     notify = core_of(request).notify
     device = PushDevice(endpoint=body.endpoint, p256dh=body.keys.p256dh, auth=body.keys.auth, name=body.name.strip())
@@ -73,7 +73,7 @@ async def add_device(request: Request, body: DeviceIn) -> Response:
     return Response(status_code=204)
 
 
-@router.post("/devices/forget", status_code=204)
+@router.post("/devices/forget", status_code=204, openapi_extra=agent("write", risk="delete"))
 async def forget_device(request: Request, body: Forget) -> Response:
     notify = core_of(request).notify
     if notify.devices is not None:
@@ -81,7 +81,7 @@ async def forget_device(request: Request, body: Forget) -> Response:
     return Response(status_code=204)
 
 
-@router.post("/test", response_model=TestRing)
+@router.post("/test", response_model=TestRing, openapi_extra=agent("write"))
 async def test_ring(request: Request) -> TestRing:
     """Ring now, the way a finished task rings: answering opens a call in a new chat."""
     ring = Ring(run_id="", conversation_id="", kind="done", chat="test", say="This is how I ring when a task is done.")

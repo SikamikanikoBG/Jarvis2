@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
-from jarvis_core.api.deps import core_of, core_of_ws, require_token, ws_token_ok
+from jarvis_core.api.deps import agent, core_of, core_of_ws, require_token, ws_token_ok
 
 log = logging.getLogger(__name__)
 DROPPED_CHECK_S = 15.0
@@ -20,7 +20,7 @@ router = APIRouter()
 rest = APIRouter(prefix="/api/office", dependencies=[Depends(require_token)])
 
 
-@rest.get("/agents")
+@rest.get("/agents", openapi_extra=agent("read"))
 async def office_agents(request: Request) -> dict[str, Any]:
     office = core_of(request).office
     return {"built": office.dist is not None, "agents": office.view()}

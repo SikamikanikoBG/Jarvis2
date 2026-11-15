@@ -6,14 +6,16 @@ import asyncio
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from jarvis_core import __version__
-from jarvis_core.api.deps import core_of, require_token
+from jarvis_core.api.deps import agent, core_of, require_token
+from jarvis_core.features.admin import ChangeRefused, SettingsConflict, SettingsInvalid, Who, shown
 from jarvis_core.features.expiry import valid_ttl
 from jarvis_core.features.sessions import ADDRESSABLE_KINDS, describe, handles_for
 from jarvis_proto import (
     INCOGNITO_TITLE,
+    ChangeRecord,
     ChatFolder,
     Conversation,
     ConversationKind,
@@ -25,18 +27,19 @@ from jarvis_proto import (
     ToolSpec,
 )
 from jarvis_proto.events import ConversationUpdated, FoldersChanged
+from jarvis_proto.settings_paths import PathError
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
 open_router = APIRouter(prefix="/api")
 
 
-@open_router.get("/health")
+@open_router.get("/health", openapi_extra=agent("none"))
 async def health() -> dict[str, Any]:
     """Open on purpose: the UI and Docker use it to tell 'down' from 'wrong token'."""
     return {"ok": True, "version": __version__}
 
 
-@router.get("/status")
+@router.get("/status", openapi_extra=agent("read"))
 async def status(request: Request) -> dict[str, Any]:
     core = core_of(request)
     specs = core.adapters.all_specs()
@@ -64,6 +67,8 @@ async def status(request: Request) -> dict[str, Any]:
         "runs": {"running": len(core.engine.active_run_ids()), "queued": core.engine.queued_count()},
         # Open delegated tasks by state (docs/stories/13_delegated_tasks.md).
         "tasks": {"enabled": core.settings.tasks.enabled, **await core.tasks.counts()},
+        # Jarvis's own changes (docs/stories/14_agent_admin.md): on probation, waiting for Arsen.
+        "admin": {"enabled": core.settings.agent_admin.enabled, **await core.admin.changes.counts()},
     }
 
 
@@ -101,13 +106,13 @@ class ForkRequest(BaseModel):
     up_to_message_id: str | None = None
 
 
-@router.get("/conversations", response_model=list[Conversation])
+@router.get("/conversations", response_model=list[Conversation], openapi_extra=agent("read"))
 async def list_conversations(request: Request, archived: int = 0) -> list[Conversation]:
     convs = await core_of(request).store.list_conversations(include_archived=bool(archived))
     return [c for c in convs if bool(archived) == c.archived] if archived else convs
 
 
-@router.post("/conversations", response_model=Conversation, status_code=201)
+@router.post("/conversations", response_model=Conversation, status_code=201, openapi_extra=agent("write"))
 async def create_conversation(request: Request, body: ConversationCreate) -> Conversation:
     core = core_of(request)
     if body.ttl_seconds is not None and valid_ttl(body.ttl_seconds) is None:
@@ -125,7 +130,7 @@ async def create_conversation(request: Request, body: ConversationCreate) -> Con
     return conv
 
 
-@router.get("/conversations/{conversation_id}", response_model=Conversation)
+@router.get("/conversations/{conversation_id}", response_model=Conversation, openapi_extra=agent("read"))
 async def get_conversation(request: Request, conversation_id: str) -> Conversation:
     conv = await core_of(request).store.get_conversation(conversation_id)
     if conv is None:
@@ -133,7 +138,7 @@ async def get_conversation(request: Request, conversation_id: str) -> Conversati
     return conv
 
 
-@router.patch("/conversations/{conversation_id}", response_model=Conversation)
+@router.patch("/conversations/{conversation_id}", response_model=Conversation, openapi_extra=agent("write"))
 async def patch_conversation(request: Request, conversation_id: str, body: ConversationPatch) -> Conversation:
     core = core_of(request)
     fields = {k: (int(v) if isinstance(v, bool) else v) for k, v in body.model_dump(exclude_none=True).items()}
@@ -166,7 +171,9 @@ async def patch_conversation(request: Request, conversation_id: str, body: Conve
     return conv
 
 
-@router.post("/conversations/{conversation_id}/fork", response_model=Conversation, status_code=201)
+@router.post(
+    "/conversations/{conversation_id}/fork", response_model=Conversation, status_code=201, openapi_extra=agent("write")
+)
 async def fork_conversation(request: Request, conversation_id: str, body: ForkRequest) -> Conversation:
     """Copy the transcript up to (not including) a message into a new conversation - how
     "edit and resend" works on an append-only history."""
@@ -181,19 +188,19 @@ async def fork_conversation(request: Request, conversation_id: str, body: ForkRe
     return conv
 
 
-@router.get("/search", response_model=list[SearchHit])
+@router.get("/search", response_model=list[SearchHit], openapi_extra=agent("read"))
 async def search(request: Request, q: str, limit: int = 30) -> list[SearchHit]:
     """Conversations by title, then by message text; one hit per conversation with a snippet."""
     return await core_of(request).store.search(q, limit=min(limit, 100) if limit > 0 else 30)
 
 
-@router.delete("/conversations/{conversation_id}", status_code=204)
+@router.delete("/conversations/{conversation_id}", status_code=204, openapi_extra=agent("write", risk="delete"))
 async def delete_conversation(request: Request, conversation_id: str) -> Response:
     await core_of(request).delete_conversation(conversation_id)
     return Response(status_code=204)
 
 
-@router.get("/conversations/{conversation_id}/messages", response_model=list[Message])
+@router.get("/conversations/{conversation_id}/messages", response_model=list[Message], openapi_extra=agent("read"))
 async def list_messages(request: Request, conversation_id: str) -> list[Message]:
     core = core_of(request)
     messages = await core.store.list_messages(conversation_id)
@@ -204,7 +211,7 @@ async def list_messages(request: Request, conversation_id: str) -> list[Message]
     return messages
 
 
-@router.get("/conversations/{conversation_id}/runs", response_model=list[Run])
+@router.get("/conversations/{conversation_id}/runs", response_model=list[Run], openapi_extra=agent("read"))
 async def list_runs(request: Request, conversation_id: str, limit: int = 50) -> list[Run]:
     # A negative LIMIT means "no limit" to SQLite, so the ceiling has to hold at both ends.
     return await core_of(request).store.list_runs(conversation_id, limit=min(limit, 200) if limit > 0 else 50)
@@ -241,12 +248,12 @@ class BulkResult(BaseModel):
     updated: list[Conversation] = []
 
 
-@router.get("/folders", response_model=list[ChatFolder])
+@router.get("/folders", response_model=list[ChatFolder], openapi_extra=agent("read"))
 async def list_folders(request: Request) -> list[ChatFolder]:
     return await core_of(request).store.list_folders()
 
 
-@router.post("/folders", response_model=ChatFolder, status_code=201)
+@router.post("/folders", response_model=ChatFolder, status_code=201, openapi_extra=agent("write"))
 async def create_folder(request: Request, body: FolderCreate) -> ChatFolder:
     if not body.name.strip():
         raise HTTPException(422, "name is required")
@@ -256,7 +263,7 @@ async def create_folder(request: Request, body: FolderCreate) -> ChatFolder:
     return folder
 
 
-@router.patch("/folders/{folder_id}", response_model=ChatFolder)
+@router.patch("/folders/{folder_id}", response_model=ChatFolder, openapi_extra=agent("write"))
 async def patch_folder(request: Request, folder_id: str, body: FolderPatch) -> ChatFolder:
     core = core_of(request)
     folder = await core.store.get_folder(folder_id)
@@ -274,7 +281,7 @@ async def patch_folder(request: Request, folder_id: str, body: FolderPatch) -> C
     return folder
 
 
-@router.delete("/folders/{folder_id}", status_code=204)
+@router.delete("/folders/{folder_id}", status_code=204, openapi_extra=agent("write", risk="delete"))
 async def delete_folder(request: Request, folder_id: str) -> Response:
     """Removes the folder, never the chats in it: they land back in the flat list."""
     core = core_of(request)
@@ -287,7 +294,9 @@ async def delete_folder(request: Request, folder_id: str) -> Response:
     return Response(status_code=204)
 
 
-@router.post("/conversations/bulk", response_model=BulkResult)
+@router.post(
+    "/conversations/bulk", response_model=BulkResult, openapi_extra=agent("write", risk_when={"action": ["delete"]})
+)
 async def bulk_conversations(request: Request, body: ConversationBulk) -> BulkResult:
     """Apply one action to many conversations. Ids that no longer exist are skipped, not
     errors: a stale sidebar selection must not fail the whole gesture."""
@@ -328,7 +337,7 @@ async def bulk_conversations(request: Request, body: ConversationBulk) -> BulkRe
 # --- runs --------------------------------------------------------------------------
 
 
-@router.get("/runs/{run_id}", response_model=Run)
+@router.get("/runs/{run_id}", response_model=Run, openapi_extra=agent("read"))
 async def get_run(request: Request, run_id: str) -> Run:
     run = await core_of(request).store.get_run(run_id)
     if run is None:
@@ -336,7 +345,7 @@ async def get_run(request: Request, run_id: str) -> Run:
     return run
 
 
-@router.get("/runs/{run_id}/events")
+@router.get("/runs/{run_id}/events", openapi_extra=agent("read"))
 async def list_run_events(request: Request, run_id: str, after: int = 0) -> list[dict[str, Any]]:
     return await core_of(request).store.list_events(run_id, after_seq=after)
 
@@ -344,7 +353,7 @@ async def list_run_events(request: Request, run_id: str, after: int = 0) -> list
 # --- sessions ----------------------------------------------------------------------
 
 
-@router.get("/sessions")
+@router.get("/sessions", openapi_extra=agent("read"))
 async def list_sessions(request: Request) -> list[dict[str, Any]]:
     """The chats as addressable sessions: the @handle each answers to (features/sessions.py).
 
@@ -360,14 +369,14 @@ async def list_sessions(request: Request) -> list[dict[str, Any]]:
 # --- the assistant across chats (docs/stories/12_assistant.md) ----------------------
 
 
-@router.post("/assistant/home", response_model=Conversation)
+@router.post("/assistant/home", response_model=Conversation, openapi_extra=agent("none"))
 async def assistant_home(request: Request) -> Conversation:
     """The Jarvis conversation - made, pinned and remembered on first use. A call started with no
     chat open goes here."""
     return await core_of(request).home_conversation()
 
 
-@router.get("/assistant/today")
+@router.get("/assistant/today", openapi_extra=agent("read"))
 async def assistant_today(request: Request, exclude: str | None = None) -> dict[str, Any]:
     """The day's overview as a call carries it: where each conversation with activity today
     stands (features/journal.py)."""
@@ -378,65 +387,117 @@ async def assistant_today(request: Request, exclude: str | None = None) -> dict[
 # --- settings / tools --------------------------------------------------------------
 
 
-@router.get("/settings", response_model=Settings)
-async def get_settings(request: Request) -> Settings:
-    return core_of(request).settings
-
-
-def merge_settings(model: type[BaseModel], current: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
-    """PATCH semantics for one settings document: a key that is a settings SECTION (a sub-model,
-    e.g. `tasks`, `voice`) merges field by field - `{"tasks": {"max_running": 2}}` leaves `enabled`
-    as it is (alpha F-13 found it reset to the default). Everything else - a list, a dict keyed by
-    name like `account_rules`, a scalar - is replaced whole, so an entry can still be removed."""
-    out = dict(current)
-    for key, value in body.items():
-        field = model.model_fields.get(key)
-        sub = field.annotation if field is not None else None
-        if (
-            isinstance(sub, type)
-            and issubclass(sub, BaseModel)
-            and isinstance(value, dict)
-            and isinstance(out.get(key), dict)
-        ):
-            out[key] = merge_settings(sub, out[key], value)
-        else:
-            out[key] = value
-    return out
-
-
-@router.patch("/settings", response_model=Settings)
-async def patch_settings(request: Request, body: dict[str, Any]) -> Settings:
+@router.get("/settings", response_model=Settings, openapi_extra=agent("none", prefer="settings.get"))
+async def get_settings(request: Request, response: Response) -> Settings:
+    """The whole document, secrets in clear (the UI shows them). ``ETag`` is the revision a save
+    sends back as ``If-Match``, so a form left open cannot silently undo a newer change."""
     core = core_of(request)
-    merged = merge_settings(Settings, core.settings.model_dump(mode="json"), body)
+    response.headers["ETag"] = f'"{await core.admin.rev()}"'
+    return core.settings
+
+
+def _if_match(request: Request) -> int | None:
+    raw = (request.headers.get("if-match") or "").strip().strip('"').removeprefix("W/").strip('"')
+    return int(raw) if raw.isdigit() else None
+
+
+@router.patch("/settings", response_model=Settings, openapi_extra=agent("none", prefer="settings.set"))
+async def patch_settings(request: Request, response: Response, body: dict[str, Any]) -> Settings:
+    """Saved through the one settings write path (features/admin.py): the same validation, lock,
+    trail and probes as a change Jarvis makes. 409 when ``If-Match`` names an older revision."""
+    core = core_of(request)
     try:
-        new = Settings.model_validate(merged)
-    except ValidationError as exc:
-        raise HTTPException(
-            422, detail=exc.errors(include_url=False, include_context=False, include_input=False)
-        ) from exc
-    # Which conversation is the Jarvis one is the core's to know, not the form's: a Settings screen
-    # opened before it was made would save its stale null and the next call would make a second one.
-    new.assistant.home_conversation_id = core.settings.assistant.home_conversation_id
-    await core.store.save_settings(new, only_keys=set(body))
-    core.apply_settings(new)
-    if "mcp_servers" in body:
-        await core.reload_tools()
+        new = await core.admin.apply_body(body, base_rev=_if_match(request))
+    except SettingsConflict as exc:
+        raise HTTPException(409, detail={"message": str(exc), "rev": exc.rev}) from exc
+    except SettingsInvalid as exc:
+        raise HTTPException(422, detail=exc.errors) from exc
+    except PathError as exc:
+        raise HTTPException(422, detail=str(exc)) from exc
+    response.headers["ETag"] = f'"{await core.admin.rev()}"'
     return new
 
 
-@router.post("/tools/reload", response_model=list[ToolSpec])
+# --- the trail of changes (docs/stories/14_agent_admin.md) --------------------------------
+
+
+@router.get("/settings/changes", response_model=list[ChangeRecord], openapi_extra=agent("read"))
+async def list_changes(
+    request: Request,
+    limit: int = 50,
+    area: str | None = None,
+    conversation_id: str | None = None,
+    status: str | None = None,
+    path: str | None = None,
+) -> list[ChangeRecord]:
+    """Who changed what and when - settings, schedules, and what Jarvis did through the routes."""
+    changes = await core_of(request).admin.changes.list(
+        limit=limit, area=area, conversation_id=conversation_id, status=status, path=path
+    )
+    return [shown(c) for c in changes]
+
+
+@router.get("/settings/changes/{change_id}", response_model=ChangeRecord, openapi_extra=agent("read"))
+async def get_change(request: Request, change_id: str) -> ChangeRecord:
+    rec = await core_of(request).admin.changes.get(change_id)
+    if rec is None:
+        raise HTTPException(404, "change not found")
+    return shown(rec)
+
+
+async def _change_action(request: Request, change_id: str, action: str) -> ChangeRecord:
+    admin = core_of(request).admin
+    try:
+        if action == "revert":
+            rec = await admin.revert(change_id, who=Who())
+        elif action == "apply":
+            rec = await admin.apply_proposal(change_id)
+        else:
+            rec = await admin.discard(change_id)
+    except ChangeRefused as exc:
+        if await admin.changes.get(change_id) is None:
+            raise HTTPException(404, "change not found") from exc
+        raise HTTPException(409, str(exc)) from exc
+    except SettingsInvalid as exc:
+        raise HTTPException(422, detail=exc.errors) from exc
+    return shown(rec)
+
+
+@router.post(
+    "/settings/changes/{change_id}/revert",
+    response_model=ChangeRecord,
+    openapi_extra=agent("none", prefer="settings.revert"),
+)
+async def revert_change(request: Request, change_id: str) -> ChangeRecord:
+    """Undo a change field by field - the Settings screen's Undo, which works with every model down.
+    409 when a field has changed again since."""
+    return await _change_action(request, change_id, "revert")
+
+
+@router.post("/settings/changes/{change_id}/apply", response_model=ChangeRecord, openapi_extra=agent("none"))
+async def apply_change(request: Request, change_id: str) -> ChangeRecord:
+    """Apply a change a run nobody watched proposed (validated and probed now, as Arsen's)."""
+    return await _change_action(request, change_id, "apply")
+
+
+@router.post("/settings/changes/{change_id}/discard", response_model=ChangeRecord, openapi_extra=agent("none"))
+async def discard_change(request: Request, change_id: str) -> ChangeRecord:
+    return await _change_action(request, change_id, "discard")
+
+
+@router.post("/tools/reload", response_model=list[ToolSpec], openapi_extra=agent("write"))
 async def reload_tools(request: Request) -> list[ToolSpec]:
     core = core_of(request)
     await core.reload_tools()
     return core.registry.specs()
 
 
-@router.get("/tools", response_model=list[ToolSpec])
+@router.get("/tools", response_model=list[ToolSpec], openapi_extra=agent("read"))
 async def list_tools(request: Request) -> list[ToolSpec]:
     return core_of(request).registry.specs()
 
 
-@router.post("/browser/reload")
+@router.post("/browser/reload", openapi_extra=agent("none"))
 async def reload_browser_extension(request: Request) -> dict[str, Any]:
     """Tell the connected extension to reload itself — the last step of a deploy that shipped
     new extension files. Before this every such deploy ended with a trip to brave://extensions,

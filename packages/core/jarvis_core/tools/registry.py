@@ -319,6 +319,24 @@ class ToolRegistry:
             return f"invalid arguments for {name}: {exc.message}"
         return None
 
+    async def assess(self, name: str, arguments: dict[str, Any]) -> Any:
+        """The owning provider's ``CallRisk`` for this exact call, or None
+        (docs/stories/14_agent_admin.md). An MCP provider has no opinion. A hook that raises is
+        logged and the call counts as risky: not knowing is no reason to let it through unasked."""
+        entry = self._index.get(name)
+        hook = getattr(entry[0], "assess", None) if entry is not None else None
+        if hook is None:
+            return None
+        try:
+            return await hook(name, arguments)
+        except Exception as exc:
+            from jarvis_core.tools.builtin import CallRisk  # builtin imports this module
+
+            log.exception("risk hook for %s raised", name)
+            return CallRisk(
+                reason=f"could not judge the risk of this call ({type(exc).__name__}: {exc})", risk=["unknown"]
+            )
+
     async def call(
         self,
         name: str,

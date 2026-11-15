@@ -8,7 +8,7 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
@@ -26,6 +26,25 @@ ToolFn = Callable[..., Awaitable[ToolResult]]
 
 
 @dataclass(slots=True)
+class CallRisk:
+    """Why ONE call asks first although its tool does not always (docs/stories/14_agent_admin.md).
+
+    A tool's ``destructive`` flag is fixed when it is declared; ``settings.set`` is harmless or
+    risky depending on its arguments (hold-music volume, or the chat lane's endpoint). A provider
+    that can tell answers ``assess``; the loop then treats the call as destructive, so the existing
+    confirmation, task-approval and voice paths decide whether and how it asks.
+
+    ``propose`` is what to do instead in a run nobody can answer (a schedule at 06:30): record the
+    change as a proposal for Arsen and return what the model is told. None = such a run is refused.
+    """
+
+    reason: str
+    risk: list[str] = field(default_factory=list)
+    preview: list[Any] | None = None
+    propose: Callable[[], Awaitable[ToolResult]] | None = None
+
+
+@dataclass(slots=True)
 class _Entry:
     spec: ToolSpec
     fn: ToolFn
@@ -40,6 +59,7 @@ def tool(
     read_only: bool = False,
     destructive: bool = False,
     idempotent: bool = False,
+    owner_only: bool = False,
 ) -> Callable[[ToolFn], ToolFn]:
     def deco(fn: ToolFn) -> ToolFn:
         schema = args.model_json_schema() if args else {"type": "object", "properties": {}}
@@ -52,6 +72,7 @@ def tool(
                 read_only=read_only,
                 destructive=destructive,
                 idempotent=idempotent,
+                owner_only=owner_only,
                 provider="builtin",
             ),
             fn=fn,
@@ -80,6 +101,10 @@ class BuiltinProvider:
 
     async def list_tools(self) -> list[ToolSpec]:
         return [e.spec for e in self._entries.values()]
+
+    async def assess(self, name: str, arguments: dict[str, Any]) -> CallRisk | None:
+        """Why this call is risky, or None. Most tools have nothing to add to their flags."""
+        return None
 
     async def call(
         self,

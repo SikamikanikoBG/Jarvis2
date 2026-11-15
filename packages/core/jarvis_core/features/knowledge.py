@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -333,6 +334,8 @@ class KnowledgeLearner:
         self._classifier = classifier  # Callable[[], ModelAdapter]
         self.user_name = user_name
         self._tasks: set[asyncio.Task[None]] = set()
+        # Masks every stored secret (features/admin.py): a password Jarvis read out is never learned.
+        self.redact: Callable[[str], str] = lambda text: text
 
     def schedule(self, conversation_id: str, user_text: str, assistant_text: str, message_id: str | None) -> None:
         if len(user_text) + len(assistant_text) < 60:
@@ -351,7 +354,9 @@ class KnowledgeLearner:
         try:
             adapter: ModelAdapter = self._classifier()
             prompt = _EXTRACT_PROMPT.format(
-                user=self.user_name, user_text=user_text[:3000], assistant_text=assistant_text[:3000]
+                user=self.user_name,
+                user_text=self.redact(user_text)[:3000],
+                assistant_text=self.redact(assistant_text)[:3000],
             )
             text = ""
             async for chunk in adapter.stream([Message.user(prompt)], [], cancel=asyncio.Event()):

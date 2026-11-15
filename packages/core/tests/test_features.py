@@ -11,6 +11,7 @@ from jarvis_core.models.base import ModelDoneChunk, ModelTextChunk
 from jarvis_core.models.fake import FakeAdapter, FakeTurn
 from jarvis_core.tools.facades import ExposurePolicy, build_facades
 from jarvis_proto import Message, ModelUsage, RoleName, RunKind, RunStatus, ToolCall, ToolSpec
+from jarvis_proto.settings import Confirmations
 from tests.conftest import Harness
 
 
@@ -560,14 +561,13 @@ async def test_schedule_tool_creates_from_chat(harness: Harness):
     )
     conv = await core.store.create_conversation()
     sub = harness.subscribe(conv.id)
-    run, _ = await core.engine.create_run(text="every weekday at 8:30 prep my standup notes", conversation_id=conv.id)
-    # Creating a standing automation asks first (it is destructive); Arsen approves.
-    seen = await harness.wait_for(sub, "run.waiting_user")
-    req = next(e for e in seen if e.type == "tool.confirm_requested")
-    assert req.name == "schedule.create"
-    await core.engine.confirm(run.id, req.call_id, True)
-    seen += await harness.wait_for(sub, "run.done")
+    await core.engine.create_run(text="every weekday at 8:30 prep my standup notes", conversation_id=conv.id)
+    # Creating a schedule applies at once with a change card (Gate A 2026-11-15, issue #14: only
+    # risky writes ask; it used to ask as destructive). Deleting it is what asks.
+    seen = await harness.wait_for(sub, "run.done")
+    assert not any(e.type == "tool.confirm_requested" for e in seen)
     assert any(e.type == "schedule.changed" for e in seen)
+    assert any(e.type == "change.recorded" and e.change.area == "schedule" for e in seen)
     items = await core.schedules.list()
     assert [s.name for s in items] == ["Standup"] and items[0].cron == "30 8 * * 1-5" and items[0].next_fire is not None
 
@@ -734,8 +734,10 @@ async def test_scheduled_run_knows_it_is_the_reminder(harness: Harness):
     assert "## This run" not in harness.chat.calls[-1][0][0].content
 
 
-async def test_schedule_create_asks_for_confirmation_in_chat(harness: Harness):
-    """Creating a standing automation is consequential: interactive runs must confirm it."""
+async def test_schedule_create_asks_when_he_lists_it(harness: Harness):
+    """Creating a schedule no longer asks by itself (issue #14); confirmations.always_ask is how
+    Arsen makes it ask again, and that still holds."""
+    harness.enable(confirmations=Confirmations(always_ask=["schedule.create"], outbound_check=[]))
     harness.chat.push(
         FakeTurn(
             tool_calls=[

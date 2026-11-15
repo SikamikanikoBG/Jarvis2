@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from jarvis_core.api.deps import core_of, require_token
+from jarvis_core.api.deps import agent, core_of, require_token
 from jarvis_proto import Task
 
 router = APIRouter(prefix="/api/tasks", dependencies=[Depends(require_token)])
@@ -23,7 +23,7 @@ class AllowToolBody(BaseModel):
     call_id: str
 
 
-@router.get("/status")
+@router.get("/status", openapi_extra=agent("read"))
 async def tasks_status(request: Request) -> dict[str, Any]:
     """Whether tasks are on, how many calls are open, and what Settings → Voice should say about a
     call style that could not be brought up to date."""
@@ -36,13 +36,13 @@ async def tasks_status(request: Request) -> dict[str, Any]:
     }
 
 
-@router.get("", response_model=list[Task])
+@router.get("", response_model=list[Task], openapi_extra=agent("read"))
 async def list_tasks(request: Request, conversation_id: str | None = None, open: int = 0) -> list[Task]:
     """A chat's tasks (``conversation_id``), or every task; ``open=1`` leaves out the ended ones."""
     return await core_of(request).tasks.store.list(origin=conversation_id, open_only=bool(open))
 
 
-@router.get("/{task_id}", response_model=Task)
+@router.get("/{task_id}", response_model=Task, openapi_extra=agent("read"))
 async def get_task(request: Request, task_id: str) -> Task:
     task = await core_of(request).tasks.store.get(task_id)
     if task is None:
@@ -50,7 +50,7 @@ async def get_task(request: Request, task_id: str) -> Task:
     return task
 
 
-@router.post("/{task_id}/cancel", response_model=Task)
+@router.post("/{task_id}/cancel", response_model=Task, openapi_extra=agent("write"))
 async def cancel_task(request: Request, task_id: str) -> Task:
     task = await core_of(request).tasks.cancel(task_id)
     if task is None:
@@ -61,14 +61,14 @@ async def cancel_task(request: Request, task_id: str) -> Task:
 calls = APIRouter(prefix="/api/calls", dependencies=[Depends(require_token)])
 
 
-@calls.post("/{call_id}/end", status_code=204)
+@calls.post("/{call_id}/end", status_code=204, openapi_extra=agent("none"))
 async def end_call(request: Request, call_id: str) -> None:
     """Hang-up from a page that is going away (pagehide): the WebSocket may already be closed, a
     keepalive request still goes out. The same exactly-once end as ``call.ended``."""
     await core_of(request).tasks.call_ended(call_id, how="hangup")
 
 
-@router.post("/{task_id}/allow-tool", response_model=Task)
+@router.post("/{task_id}/allow-tool", response_model=Task, openapi_extra=agent("none"))
 async def allow_tool(request: Request, task_id: str, body: AllowToolBody) -> Task:
     """ "Always allow this tool in tasks": approve the call the task waits on and add its tool to
     settings.tasks.no_approval. 409 when the task is not waiting on that call or the tool is one
@@ -84,7 +84,7 @@ async def allow_tool(request: Request, task_id: str, body: AllowToolBody) -> Tas
     return task
 
 
-@router.post("/{task_id}/steer", response_model=Task)
+@router.post("/{task_id}/steer", response_model=Task, openapi_extra=agent("write"))
 async def steer_task(request: Request, task_id: str, body: SteerBody) -> Task:
     """His words for the task: into its working run, or a new round when it has stopped."""
     task = await core_of(request).tasks.steer(task_id, body.text)

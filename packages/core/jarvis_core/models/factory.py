@@ -147,6 +147,14 @@ class AdapterFactory:
             self._cache[key] = self._build(spec, role)
         return self._cache[key]
 
+    def detached(self, spec: ModelSpec) -> ModelAdapter:
+        """A throw-away adapter for a spec that is not in force yet - probing a lane change before
+        it is saved (features/admin.py). Never cached; the caller closes it. A fake lane in tests
+        answers through the injected fake."""
+        if spec.provider is Provider.FAKE and self.fakes:
+            return next(iter(self.fakes.values()))
+        return self._build(spec)
+
     def _build(self, spec: ModelSpec, role: RoleName | None = None) -> ModelAdapter:
         limit = self._settings.max_concurrent_runs_per_endpoint
         name = role.value if role is not None else None

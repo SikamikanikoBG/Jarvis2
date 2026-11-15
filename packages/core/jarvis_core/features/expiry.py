@@ -90,5 +90,7 @@ async def delete_conversation(core: Core, conversation_id: str) -> None:
         if not run.status.terminal:
             await core.engine.cancel(run.id)
     await core.attachments.delete_for_conversation(conversation_id)
+    # Its changes stay in the trail - they are not chat content - but no longer point at it.
+    await core.admin.changes.forget_conversation(conversation_id)
     await core.store.delete_conversation(conversation_id)
     core.bus.publish(ConversationDeleted(conversation_id=conversation_id))

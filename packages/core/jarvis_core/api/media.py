@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Resp
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from jarvis_core.api.deps import core_of, require_token
+from jarvis_core.api.deps import agent, core_of, require_token
 from jarvis_core.features.mail import Mailbox, MailError
 from jarvis_core.features.maildesk import MailDeskError
 from jarvis_core.features.stt import SttError
@@ -21,7 +21,7 @@ from jarvis_proto import Conversation, MailAccount, Meeting, MeetingDetail, Tria
 router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
 
 
-@router.post("/stt")
+@router.post("/stt", openapi_extra=agent("none"))
 async def stt(
     request: Request,
     audio: UploadFile = File(...),
@@ -75,7 +75,7 @@ class TtsRequest(BaseModel):
     cache: bool = True
 
 
-@router.post("/tts")
+@router.post("/tts", openapi_extra=agent("none"))
 async def tts(request: Request, body: TtsRequest) -> Response:
     """One sentence as MP3, in the neural voice configured for its language. 502 when the voice
     service cannot be reached - the browser then says the sentence with the device's own voice."""
@@ -95,7 +95,7 @@ class LineOffer(BaseModel):
     type: str
 
 
-@router.post("/voice/line/offer")
+@router.post("/voice/line/offer", openapi_extra=agent("none"))
 async def line_offer(request: Request, body: LineOffer) -> dict[str, str]:
     """A call's WebRTC offer, handed to the line (scripts/voiceline) and its answer handed back:
     the line has no token of its own, so it is reached only through here. 502 when the line is
@@ -124,7 +124,7 @@ class CallTrace(BaseModel):
     events: list[dict[str, Any]] = Field(max_length=5000)
 
 
-@router.post("/voice/trace")
+@router.post("/voice/trace", openapi_extra=agent("none"))
 async def voice_trace(request: Request, body: CallTrace) -> dict[str, bool]:
     """A batch of a call's trace from the phone (voice/trace.ts): tilt, touches, levels, phases,
     pauses, the line's stats. Appended to <home>/voice-debug/traces/<id>.jsonl while
@@ -150,12 +150,12 @@ class MeetingStart(BaseModel):
     host: str
 
 
-@router.get("/meetings", response_model=list[Meeting])
+@router.get("/meetings", response_model=list[Meeting], openapi_extra=agent("read"))
 async def list_meetings(request: Request) -> list[Meeting]:
     return await core_of(request).meetings.list()
 
 
-@router.post("/meetings", response_model=Meeting, status_code=201)
+@router.post("/meetings", response_model=Meeting, status_code=201, openapi_extra=agent("none"))
 async def start_meeting(request: Request, body: MeetingStart) -> Meeting:
     try:
         return await core_of(request).meetings.start(title=body.title, host=body.host)
@@ -163,7 +163,7 @@ async def start_meeting(request: Request, body: MeetingStart) -> Meeting:
         raise HTTPException(502, str(exc)) from exc
 
 
-@router.get("/meetings/{meeting_id}", response_model=MeetingDetail)
+@router.get("/meetings/{meeting_id}", response_model=MeetingDetail, openapi_extra=agent("read"))
 async def get_meeting(request: Request, meeting_id: str) -> MeetingDetail:
     detail = await core_of(request).meetings.detail(meeting_id)
     if detail is None:
@@ -171,7 +171,7 @@ async def get_meeting(request: Request, meeting_id: str) -> MeetingDetail:
     return detail
 
 
-@router.delete("/meetings/{meeting_id}", status_code=204)
+@router.delete("/meetings/{meeting_id}", status_code=204, openapi_extra=agent("write", risk="delete"))
 async def delete_meeting(request: Request, meeting_id: str, keep_conversation: bool = False) -> Response:
     """Delete a recording: its rows, its frames on disk and, unless asked otherwise, the
     conversation holding its transcript. A recording still running is stopped first."""
@@ -181,7 +181,7 @@ async def delete_meeting(request: Request, meeting_id: str, keep_conversation: b
     return Response(status_code=204)
 
 
-@router.post("/meetings/{meeting_id}/stop", response_model=Meeting)
+@router.post("/meetings/{meeting_id}/stop", response_model=Meeting, openapi_extra=agent("write"))
 async def stop_meeting(request: Request, meeting_id: str) -> Meeting:
     try:
         return await core_of(request).meetings.stop(meeting_id)
@@ -189,7 +189,7 @@ async def stop_meeting(request: Request, meeting_id: str) -> Meeting:
         raise HTTPException(404, "meeting not found") from exc
 
 
-@router.post("/meetings/{meeting_id}/chunks")
+@router.post("/meetings/{meeting_id}/chunks", openapi_extra=agent("none"))
 async def meeting_chunk(
     request: Request,
     meeting_id: str,
@@ -211,7 +211,7 @@ async def meeting_chunk(
     return {"segments_added": added}
 
 
-@router.post("/meetings/{meeting_id}/frames")
+@router.post("/meetings/{meeting_id}/frames", openapi_extra=agent("none"))
 async def meeting_frame(
     request: Request,
     meeting_id: str,
@@ -226,7 +226,7 @@ async def meeting_frame(
     return {"seq": seq, "url": f"/api/meetings/{meeting_id}/frames/{seq}"}
 
 
-@router.get("/meetings/{meeting_id}/frames/{seq}")
+@router.get("/meetings/{meeting_id}/frames/{seq}", openapi_extra=agent("none"))
 async def meeting_frame_file(request: Request, meeting_id: str, seq: int) -> FileResponse:
     path = await core_of(request).meetings.frame_path(meeting_id, seq)
     if path is None or not path.exists():
@@ -237,7 +237,7 @@ async def meeting_frame_file(request: Request, meeting_id: str, seq: int) -> Fil
 # --- mail accounts (IMAP) -------------------------------------------------------------------
 
 
-@router.post("/mail/test")
+@router.post("/mail/test", openapi_extra=agent("write"))
 async def mail_test(request: Request, account: MailAccount) -> dict[str, Any]:
     """Log in with these (unsaved) details and count the Inbox - the Settings "Test" button.
     An empty app_password means "the one already saved for this address"."""
@@ -257,12 +257,12 @@ async def mail_test(request: Request, account: MailAccount) -> dict[str, Any]:
 # --- triage ---------------------------------------------------------------------------------
 
 
-@router.get("/triage/state", response_model=list[TriageState])
+@router.get("/triage/state", response_model=list[TriageState], openapi_extra=agent("read"))
 async def triage_state(request: Request) -> list[TriageState]:
     return await core_of(request).triage.states()
 
 
-@router.post("/triage/run")
+@router.post("/triage/run", openapi_extra=agent("write"))
 async def triage_run(
     request: Request,
     dry_run: bool = False,
@@ -289,7 +289,7 @@ async def triage_run(
     }
 
 
-@router.post("/triage/audit")
+@router.post("/triage/audit", openapi_extra=agent("write"))
 async def triage_audit(
     request: Request, hours: int = 24, sample: int | None = None, post: bool = False
 ) -> dict[str, Any]:
@@ -321,7 +321,7 @@ def _desk_error(exc: MailDeskError) -> HTTPException:
     return HTTPException(502, str(exc))
 
 
-@router.get("/mail/threads")
+@router.get("/mail/threads", openapi_extra=agent("read"))
 async def mail_threads(request: Request, account: str | None = None, refresh: bool = False) -> dict[str, Any]:
     """Unread mail of the inbox grouped into threads, newest first (cached for a minute;
     ``refresh=true`` reads the mailbox again)."""
@@ -331,7 +331,7 @@ async def mail_threads(request: Request, account: str | None = None, refresh: bo
         raise _desk_error(exc) from exc
 
 
-@router.get("/mail/search")
+@router.get("/mail/search", openapi_extra=agent("read"))
 async def mail_search(request: Request, q: str, account: str | None = None) -> dict[str, Any]:
     """Outlook-syntax search (from: subject: received: …) over every mail folder, as threads."""
     try:
@@ -340,7 +340,7 @@ async def mail_search(request: Request, q: str, account: str | None = None) -> d
         raise _desk_error(exc) from exc
 
 
-@router.get("/mail/thread")
+@router.get("/mail/thread", openapi_extra=agent("read"))
 async def mail_thread(request: Request, entry_id: str, account: str | None = None) -> dict[str, Any]:
     """Every message of the conversation ``entry_id`` belongs to, oldest first, Sent Items too."""
     try:
@@ -349,7 +349,7 @@ async def mail_thread(request: Request, entry_id: str, account: str | None = Non
         raise _desk_error(exc) from exc
 
 
-@router.get("/mail/message")
+@router.get("/mail/message", openapi_extra=agent("read"))
 async def mail_message(request: Request, entry_id: str, account: str | None = None) -> dict[str, Any]:
     """One message with its whole body (a thread shows previews of up to 4,000 characters)."""
     try:
@@ -358,7 +358,7 @@ async def mail_message(request: Request, entry_id: str, account: str | None = No
         raise _desk_error(exc) from exc
 
 
-@router.post("/mail/read")
+@router.post("/mail/read", openapi_extra=agent("write"))
 async def mail_mark_read(request: Request, body: MarkReadRequest) -> dict[str, Any]:
     """Mark messages read (or unread); answers which changed and which did not."""
     try:
@@ -367,7 +367,7 @@ async def mail_mark_read(request: Request, body: MarkReadRequest) -> dict[str, A
         raise _desk_error(exc) from exc
 
 
-@router.post("/mail/session", response_model=Conversation)
+@router.post("/mail/session", response_model=Conversation, openapi_extra=agent("none"))
 async def mail_session(request: Request, body: MailSessionRequest) -> Conversation:
     """The chat beside a thread: the same one every time this thread is opened, its
     instructions refreshed with the thread as it is now."""
@@ -380,7 +380,7 @@ async def mail_session(request: Request, body: MailSessionRequest) -> Conversati
 # --- meeting auto-RSVP ------------------------------------------------------------------------
 
 
-@router.get("/rsvp/state")
+@router.get("/rsvp/state", openapi_extra=agent("read"))
 async def rsvp_state(request: Request) -> dict[str, Any]:
     core = core_of(request)
     state = await core.rsvp.state()
@@ -391,7 +391,7 @@ async def rsvp_state(request: Request) -> dict[str, Any]:
     }
 
 
-@router.post("/rsvp/run")
+@router.post("/rsvp/run", openapi_extra=agent("write"))
 async def rsvp_run(request: Request, dry_run: bool = False) -> dict[str, Any]:
     """Run one RSVP pass now. ``?dry_run=true`` reports what would be answered and how, sending
     nothing and recording nothing."""
@@ -409,14 +409,14 @@ async def rsvp_run(request: Request, dry_run: bool = False) -> dict[str, Any]:
 # --- shadow decisions (features/shadow.py) ----------------------------------------------------
 
 
-@router.get("/shadow/stats")
+@router.get("/shadow/stats", openapi_extra=agent("read"))
 async def shadow_stats(request: Request) -> dict[str, Any]:
     """Rows per decision point and source, Laya's answer and error counts, mean latencies."""
     core = core_of(request)
     return {"settings": core.settings.shadow.model_dump(mode="json"), **await core.shadow.stats()}
 
 
-@router.get("/shadow/rows")
+@router.get("/shadow/rows", openapi_extra=agent("read"))
 async def shadow_rows(request: Request, since_id: int = 0, limit: int = 1000) -> dict[str, Any]:
     """The recorded rows after ``since_id``, oldest first - page through with the last id."""
     rows = await core_of(request).shadow.rows(since_id=since_id, limit=max(1, min(limit, 5000)))

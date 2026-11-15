@@ -39,6 +39,8 @@ from jarvis_core.engine.context import (
 )
 from jarvis_core.engine.loop import AgentLoop
 from jarvis_core.engine.supervision import Supervisor
+from jarvis_core.features.admin import SettingsAdmin, SettingsTools
+from jarvis_core.features.admin_api import ApiTools
 from jarvis_core.features.attachments import AttachmentStore
 from jarvis_core.features.boards import BoardStore, NotesTools
 from jarvis_core.features.callme import CallMe
@@ -116,6 +118,14 @@ class Core:
         self.learner = KnowledgeLearner(self.knowledge, lambda: self.adapters.for_role(RoleName.CLASSIFIER))
         self.reflector = PlaybookReflector(self.skills, lambda: self.adapters.for_role(RoleName.CLASSIFIER))
         self.schedules = ScheduleStore(self.db, self.bus)
+        # Jarvis's own settings, schedules and routes (docs/stories/14_agent_admin.md): the one
+        # settings write path, its trail, and the tools over it. ``policy_epoch`` moves whenever the
+        # approval rules change by anyone but a run (engine/loop.AdminGate).
+        self.policy_epoch = 0
+        self.app: FastAPI | None = None  # set by create_app: jarvis.api_* calls the routes in process
+        self.admin = SettingsAdmin(self)
+        self.settings_tools = SettingsTools(self)
+        self.api_tools = ApiTools(self)
         # An extension is named after the MCP host at its address: the laptop's is "workocholic".
         self.browser = WsProvider(
             namer=self._host_named, fetch_file=lambda host, path: fetch_host_file(self, host, path)
@@ -212,11 +222,17 @@ class Core:
         self.engine.on_finished(self.tasks.after_run)
         self.engine.set_task_gate(self.tasks.may_start)
         self.loop.set_task_gate(self.tasks)
+        self.loop.set_admin_gate(self.admin)
+        self.learner.redact = self.admin.redact
+        self.engine.on_finished(self._forget_secrets_seen)
         self.scheduler = Scheduler(self.schedules, self._fire_schedule)
         self.reaper = Reaper(self)
         # Every model call, live and over time, for the Context screen (features/context_usage.py).
         self.context_usage = ContextUsage(self.db, settings, self.adapters)
         self.adapters.ledger.chars_per_token = lambda: self.context.chars_per_token
+
+    async def _forget_secrets_seen(self, run: Run) -> None:
+        self.admin.forget_run(run.id)
 
     def _housekeeping_model(self) -> Any:
         return self.adapters.on_lane(RoleName.CLASSIFIER, self.settings.assistant.housekeeping_lane)
@@ -251,8 +267,7 @@ class Core:
             conv = await self.store.update_conversation(conv.id, pinned=1, title_auto=0) or conv
             settings = self.settings.model_copy(deep=True)
             settings.assistant.home_conversation_id = conv.id
-            await self.store.save_settings(settings, only_keys={"assistant"})
-            self.apply_settings(settings)
+            await self.admin.save_system(settings, {"assistant"})
             self.bus.publish(ConversationUpdated(conversation=conv))
             return conv
 
@@ -324,6 +339,8 @@ class Core:
         # After the engine has picked up what was running: a round that ended while the core was
         # down is finished, a report that was owed is written.
         await self.tasks.reconcile()
+        # A lifeline change still on probation when the core stopped is checked again now.
+        await self.admin.recover()
         await self.scheduler.start()
         await self.triage.start()
         await self.triage_audit.start()
@@ -343,8 +360,7 @@ class Core:
         updated, note = voice_style_upgrade(self.settings)
         self.tasks.voice_style_note = note
         if updated is not None:
-            await self.store.save_settings(updated, only_keys={"voice"})
-            self.apply_settings(updated)
+            await self.admin.save_system(updated, {"voice"})
 
     async def _watch_mcp(self) -> None:
         """Keep every MCP server's tool list true, without waiting for a tool call to fail.
@@ -368,6 +384,8 @@ class Core:
             watch.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await watch
+        await self.admin.stop()
+        await self.api_tools.aclose()
         await self.reaper.stop()
         await self.context_usage.stop()
         await self.triage.stop()
@@ -390,7 +408,11 @@ class Core:
         await self.shadow.close()
         await self.db.close()
 
-    def apply_settings(self, settings: Settings) -> None:
+    def apply_settings(self, settings: Settings, *, by_run: bool = False) -> None:
+        """Put settings in force. ``by_run``: a run changed them - the approval rules a run started
+        with then stay frozen for it (engine/loop._rules); any other change counts at once."""
+        if not by_run:
+            self.policy_epoch += 1
         self.settings = settings
         self.adapters.update_settings(settings)
         self.policy.mode = settings.tool_exposure
@@ -411,7 +433,9 @@ class Core:
                 ResultsTools(self.store),
                 FilesTools(self),
                 SkillsTools(self.skills),
-                ScheduleTools(self.schedules, tz=lambda: self.settings.timezone),
+                ScheduleTools(self.schedules, tz=lambda: self.settings.timezone, scheduler=self.scheduler, core=self),
+                self.settings_tools,
+                self.api_tools,
                 self.sessions,
                 self.task_tools,
                 self.notify,
@@ -443,6 +467,7 @@ def create_app(config: CoreConfig | None = None, *, core: Core | None = None) ->
     # description — every route, parameter and model — was readable by anyone who found the port.
     app = FastAPI(title="Jarvis V2", version=__version__, lifespan=lifespan, docs_url=None, openapi_url=None)
     app.state.core = the_core
+    the_core.app = app
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],

@@ -10,8 +10,9 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
@@ -40,7 +41,7 @@ from jarvis_core.models.base import (
     ModelToolCallsChunk,
 )
 from jarvis_core.tools import ToolRegistry
-from jarvis_core.tools.builtin import IS_WAIT_TOOL
+from jarvis_core.tools.builtin import IS_WAIT_TOOL, CallRisk
 from jarvis_core.tools.facades import ExposurePolicy
 from jarvis_proto import (
     Channel,
@@ -79,7 +80,7 @@ from jarvis_proto.events import (
     ToolResultEvent,
 )
 from jarvis_proto.runs import PlanStepStatus
-from jarvis_proto.settings import RoleName
+from jarvis_proto.settings import Confirmations, EmailPolicy, RoleName, TasksSettings
 
 if TYPE_CHECKING:
     # Type-only: these live in jarvis_core.features, which imports jarvis_core.engine.bus, which
@@ -155,6 +156,32 @@ class TaskGate(Protocol):
     async def paused(self, run: Run, on: bool) -> None: ...
 
 
+class AdminGate(Protocol):
+    """What the loop asks Jarvis's own admin (features/admin.py, docs/stories/14_agent_admin.md)."""
+
+    def policy_epoch(self) -> int:
+        """Bumped whenever the approval rules change by anyone but a run. A run keeps the rules it
+        started with until then: a run cannot switch confirmations off and use that itself."""
+        ...
+
+    def revealed(self, run_id: str) -> set[str]:
+        """The secrets this run has read in clear (settings.get reveal=true)."""
+        ...
+
+    async def strict(self, run: Run) -> bool:
+        """This scheduled run fires a prompt a run wrote and Arsen has not accepted: it asks like a task."""
+        ...
+
+
+@dataclass(slots=True)
+class _Policy:
+    """The approval rules a run works under, frozen at its start (see AdminGate.policy_epoch)."""
+
+    confirmations: Confirmations
+    tasks: TasksSettings
+    email: EmailPolicy
+
+
 class AgentLoop:
     def __init__(
         self,
@@ -197,10 +224,41 @@ class AgentLoop:
         self._voice_asks: dict[tuple[str, str, str], tuple[datetime, str | None]] = {}
         self._shadow = shadow
         self._tasks: TaskGate | None = None
+        self._admin: AdminGate | None = None
 
     def set_task_gate(self, gate: TaskGate | None) -> None:
         """Delegated tasks' rules (features/tasks.py), wired after both exist."""
         self._tasks = gate
+
+    def set_admin_gate(self, gate: AdminGate | None) -> None:
+        """Jarvis's own admin (features/admin.py), wired after both exist."""
+        self._admin = gate
+
+    def _rules(self, watch: RunWatch) -> _Policy:
+        """The run's approval rules: what they were when it started, unless Arsen (or the core)
+        has changed them since - his change counts at once, a run's own only from the next run."""
+        epoch = self._admin.policy_epoch() if self._admin is not None else 0
+        if not isinstance(watch.policy, _Policy) or watch.policy_epoch != epoch:
+            s = self._settings()
+            watch.policy = _Policy(
+                s.confirmations.model_copy(deep=True), s.tasks.model_copy(deep=True), s.email.model_copy(deep=True)
+            )
+            watch.policy_epoch = epoch
+        return watch.policy
+
+    def _leaks_secret(self, run: Run, call: ToolCall) -> CallRisk | None:
+        """A call whose arguments carry a secret this run read in clear, going anywhere but back
+        into the settings: it asks (and in a run nobody watches it is refused). Compared as data -
+        the exact stored value - so no word in the arguments decides it."""
+        if self._admin is None or call.name.split(".", 1)[0] == "settings":
+            return None
+        secrets = [s for s in self._admin.revealed(run.id) if len(s) >= 4]
+        if not secrets:
+            return None
+        text = json.dumps(call.arguments, ensure_ascii=False, default=str)
+        if any(s in text or json.dumps(s, ensure_ascii=False)[1:-1] in text for s in secrets):
+            return CallRisk(reason="this call would send a stored secret out of the core", risk=["secret"])
+        return None
 
     def _shadow_preflight(
         self, run: Run, skill_names: list[str], trace: dict[str, object], pre: Preflight | None, pre_ms: float
@@ -246,6 +304,9 @@ class AgentLoop:
         if run is not None and self._tasks is not None:
             gate = self._tasks
             specs = [t for t in specs if not gate.hidden(run, t)]
+        if run is not None and run.kind is RunKind.COLLAB:
+            # Another agent holding a collab key is not Arsen (docs/stories/14_agent_admin.md).
+            specs = [t for t in specs if not t.owner_only]
         tools = self._policy.expose(specs)
         if plan_active:
             tools = [*tools, *PLAN_TOOLS]
@@ -260,6 +321,9 @@ class AgentLoop:
     async def run(self, run: Run, ctl: RunControl) -> None:
         emit = ctl.emitter.emit
         watch = RunWatch(budget=run.budget)
+        self._rules(watch)  # the approval rules this run starts with
+        if self._admin is not None and run.kind is RunKind.SCHEDULED:
+            watch.strict = await self._admin.strict(run)
         # The run executes on one lane (settings.run_routing): the main loop as the lane's spec,
         # every other model call it makes on the lane's endpoint — so a scheduled run chewing
         # through 84k-token steps cannot starve the chat Arsen is typing in.
@@ -877,6 +941,8 @@ class AgentLoop:
                 f"{call.name} is not available in an incognito chat: nothing from this conversation "
                 "is stored anywhere. Tell Arsen you cannot save it here."
             )
+        if error is None and spec is not None and spec.owner_only and run.kind is RunKind.COLLAB:
+            error = f"{call.name} is only for Arsen's own runs, never a collab session"
         refused = None
         if self._tasks is not None:
             # jarvis.wait_until calls another tool for the run, so that tool is gated as if the run
@@ -923,31 +989,63 @@ class AgentLoop:
         # call before it is dispatched, so the model cannot talk its way past it.
         # Outlook on a host (`<host>.outlook_send`) and the core's own IMAP/SMTP mail (`mail.send`) alike.
         is_send = call.name.split(".")[-1] == "outlook_send" or call.name == "mail.send"
+        policy = self._rules(watch)
         if is_send and not call.arguments.get("draft"):
-            blocked = self._settings().email.unapproved(
-                str(call.arguments.get("to", "")), str(call.arguments.get("cc", ""))
-            )
+            blocked = policy.email.unapproved(str(call.arguments.get("to", "")), str(call.arguments.get("cc", "")))
             if blocked:
                 call.arguments["draft"] = True
                 call.arguments["_policy_note"] = f"not on the approved-direct-send list: {', '.join(blocked)}"
                 log.info("email policy: drafting instead of sending to %s", ", ".join(blocked))
 
-        confirmations = self._settings().confirmations
-        unattended = run.kind in _UNATTENDED
-        confirm = confirmations.needs_confirmation(
-            call.name, destructive=bool(spec and spec.destructive), unattended=unattended
-        )
-        reason = "this action cannot be undone"
-        if run.kind is RunKind.TASK:
+        confirmations = policy.confirmations
+        # A scheduled run whose prompt a run wrote and Arsen has not accepted asks like a task
+        # (docs/stories/14_agent_admin.md): content must not turn into standing authority unseen.
+        kind = RunKind.TASK if watch.strict else run.kind
+        unattended = kind in _UNATTENDED
+        # The risk of THIS call, from its arguments (a settings field's marker, a route's): it then
+        # behaves as destructive, so every existing way of asking applies unchanged.
+        risk: CallRisk | None = None
+        if spec is not None and not read_only:
+            risk = await self._registry.assess(call.name, call.arguments)
+        if risk is None and spec is not None:
+            risk = self._leaks_secret(run, call)
+        if risk is not None and unattended:
+            # Nobody can answer a card at 06:30. A risky change becomes a proposal Arsen sees and
+            # applies with one tap; anything else risky is not done.
+            result = (
+                await risk.propose()
+                if risk.propose is not None
+                else ToolResult.failure(
+                    f"not done: {risk.reason}. That needs Arsen's yes and nobody can answer in a run like this - "
+                    "say it in your report instead."
+                )
+            )
+            await emit(
+                ToolCallEvent(
+                    run_id="",
+                    conversation_id="",
+                    call_id=call.id,
+                    name=call.name,
+                    arguments=call.arguments,
+                    read_only=read_only,
+                    idempotency_key=key,
+                )
+            )
+            return await self._tool_message(run, call, result, 0, emit), step_of(call.name, call.arguments, result)
+        destructive = bool(spec and spec.destructive) or risk is not None
+        confirm = confirmations.needs_confirmation(call.name, destructive=destructive, unattended=unattended)
+        reason = risk.reason if risk is not None else "this action cannot be undone"
+        if kind is RunKind.TASK:
             # A task asks what an attended chat would - his own confirmation settings - plus one
             # floor, because nobody watches it: a tool annotated destructive asks even with the mode
-            # off. Names he freed for tasks never ask (settings.tasks.no_approval; UAT 2026-10-31).
-            destructive = bool(spec and spec.destructive)
-            confirm = self._settings().tasks.needs_approval(
-                call.name, destructive=destructive, confirmations=confirmations
+            # off. Names he freed for tasks never ask (settings.tasks.no_approval; UAT 2026-10-31) -
+            # unless this call is risky by its arguments: freeing `settings.*` meant the safe ones.
+            confirm = policy.tasks.needs_approval(call.name, destructive=destructive, confirmations=confirmations) or (
+                risk is not None
             )
             if (
                 confirm
+                and risk is None
                 and destructive
                 and not confirmations.needs_confirmation(call.name, destructive=True, unattended=False)
             ):
@@ -962,7 +1060,7 @@ class AgentLoop:
         if (
             not confirm
             and confirmations.checks_outbound(call.name, unattended=unattended)
-            and not (run.kind is RunKind.TASK and self._settings().tasks.frees(call.name))
+            and not (kind is RunKind.TASK and policy.tasks.frees(call.name))
         ):
             # Whatever the mode: something said or promised to others in his name that he did
             # not ask for waits for him (features/outbound.py).
@@ -983,7 +1081,15 @@ class AgentLoop:
                 # ask him again; the no goes back to it as a decision (alpha N-4).
                 return await self._tool_message(run, call, ToolResult.failure(refused), 0, emit), None
             if decision is None:
-                await self._wait_for_confirmation(run, ctl, call, reason=reason, watch=watch)
+                await self._wait_for_confirmation(
+                    run,
+                    ctl,
+                    call,
+                    reason=reason,
+                    watch=watch,
+                    preview=risk.preview if risk is not None else None,
+                    risk=risk.risk if risk is not None else None,
+                )
                 decision = await self._recorded_decision(run, call.id)
             if decision is not None and not decision[0]:
                 watch.declined.add(args_hash(call.name, call.arguments))
@@ -1177,7 +1283,15 @@ class AgentLoop:
         return admit(message, self._admit_chars)
 
     async def _wait_for_confirmation(
-        self, run: Run, ctl: RunControl, call: ToolCall, *, reason: str, watch: RunWatch | None = None
+        self,
+        run: Run,
+        ctl: RunControl,
+        call: ToolCall,
+        *,
+        reason: str,
+        watch: RunWatch | None = None,
+        preview: list[Any] | None = None,
+        risk: list[str] | None = None,
     ) -> None:
         """Ask him and wait. The wait is his time, not the run's work: it is credited to the run
         clock like any deliberate wait, or the progress check counts it - on 2026-11-05 twenty
@@ -1185,19 +1299,35 @@ class AgentLoop:
         moment he said no."""
         t0 = time.perf_counter()
         try:
-            await self._ask_and_wait(run, ctl, call, reason=reason)
+            await self._ask_and_wait(run, ctl, call, reason=reason, preview=preview, risk=risk)
         finally:
             if watch is not None:
                 watch.paused_s += time.perf_counter() - t0
 
-    async def _ask_and_wait(self, run: Run, ctl: RunControl, call: ToolCall, *, reason: str) -> None:
+    async def _ask_and_wait(
+        self,
+        run: Run,
+        ctl: RunControl,
+        call: ToolCall,
+        *,
+        reason: str,
+        preview: list[Any] | None = None,
+        risk: list[str] | None = None,
+    ) -> None:
         emit = ctl.emitter.emit
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[tuple[bool, str | None]] = loop.create_future()
         ctl.confirmations[call.id] = fut
         await emit(
             ToolConfirmRequested(
-                run_id="", conversation_id="", call_id=call.id, name=call.name, arguments=call.arguments, reason=reason
+                run_id="",
+                conversation_id="",
+                call_id=call.id,
+                name=call.name,
+                arguments=call.arguments,
+                reason=reason,
+                preview=preview,
+                risk=risk,
             )
         )
         run.status = RunStatus.WAITING_USER

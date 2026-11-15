@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from jarvis_core.api.deps import core_of, require_token
+from jarvis_core.api.deps import agent, core_of, require_token
 from jarvis_proto import CollabKey
 
 router = APIRouter(prefix="/api")
@@ -46,24 +46,24 @@ class CollabMessage(BaseModel):
     conversation_id: str | None = None
 
 
-@owner_router.get("/collab/keys", response_model=list[CollabKey])
+@owner_router.get("/collab/keys", response_model=list[CollabKey], openapi_extra=agent("read"))
 async def list_keys(request: Request) -> list[CollabKey]:
     return await core_of(request).collab_keys.list()
 
 
-@owner_router.post("/collab/keys", status_code=201)
+@owner_router.post("/collab/keys", status_code=201, openapi_extra=agent("none"))
 async def create_key(request: Request, body: KeyCreate) -> dict[str, Any]:
     plain, key = await core_of(request).collab_keys.create(body.name)
     return {"key": plain, "id": key.id, "name": key.name, "created_at": key.created_at}
 
 
-@owner_router.delete("/collab/keys/{key_id}", status_code=204)
+@owner_router.delete("/collab/keys/{key_id}", status_code=204, openapi_extra=agent("none"))
 async def delete_key(request: Request, key_id: str) -> Response:
     await core_of(request).collab_keys.delete(key_id)
     return Response(status_code=204)
 
 
-@router.post("/collab/message")
+@router.post("/collab/message", openapi_extra=agent("none"))
 async def collab_message(request: Request, body: CollabMessage, who: Identity = Depends(identify)) -> dict[str, Any]:
     from jarvis_core.features.collab import run_and_wait
 
@@ -73,12 +73,12 @@ async def collab_message(request: Request, body: CollabMessage, who: Identity = 
     return {"reply": reply, "conversation_id": conv_id, "run_id": run_id, "status": status}
 
 
-@router.get("/whoami")
+@router.get("/whoami", openapi_extra=agent("read"))
 async def whoami(who: Identity = Depends(identify)) -> dict[str, Any]:
     return {"owner": who.owner, "key_name": who.key.name if who.key else None}
 
 
-@owner_router.get("/pair")
+@owner_router.get("/pair", openapi_extra=agent("none"))
 async def pair(request: Request) -> dict[str, str]:
     """URL + QR for the phone. The URL carries the owner token; show it only to the owner."""
     import qrcode

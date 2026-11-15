@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hmac
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from fastapi import HTTPException, Request, WebSocket
 
@@ -48,3 +48,25 @@ def ws_token_ok(ws: WebSocket) -> bool:
     return token_matches(ws.query_params.get("token"), expected) or token_matches(
         ws.cookies.get("jarvis_token"), expected
     )
+
+
+AgentAccess = Literal["read", "write", "none"]
+
+
+def agent(
+    access: AgentAccess,
+    *,
+    risk: str | None = None,
+    risk_when: dict[str, list[Any]] | None = None,
+    prefer: str | None = None,
+) -> dict[str, Any]:
+    """Whether Jarvis may call this route itself through jarvis.api_* (docs/stories/14_agent_admin.md).
+
+    A declaration on the route, read back from ``app.openapi()``, so a route added later forces a
+    yes or no in the same diff (tests/test_agent_routes.py fails on an /api route without one) and
+    nobody keeps a list. ``read`` = GET it; ``write`` = call it; ``none`` = never (credentials,
+    approvals, media streams). ``risk`` makes every call ask first (a DELETE is "delete" by
+    nature); ``risk_when`` only when a body field has one of the values (bulk delete, not bulk
+    archive). ``prefer`` names the precise tool to use instead.
+    """
+    return {"x-jarvis-agent": {"access": access, "risk": risk, "risk_when": risk_when, "prefer": prefer}}

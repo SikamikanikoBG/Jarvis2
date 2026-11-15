@@ -8,20 +8,20 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from jarvis_core.api.deps import core_of, require_token
+from jarvis_core.api.deps import agent, core_of, require_token
 from jarvis_core.features.context_usage import RANGES
 
 router = APIRouter(prefix="/api/context", dependencies=[Depends(require_token)])
 
 
-@router.get("/live")
+@router.get("/live", openapi_extra=agent("read"))
 async def context_live(request: Request) -> dict[str, Any]:
     """Per endpoint: the calls in flight or waiting, by source; the last 15 minutes; overflows of
     the last 24 hours."""
     return await core_of(request).context_usage.live()
 
 
-@router.get("/usage")
+@router.get("/usage", openapi_extra=agent("read"))
 async def context_usage(request: Request, range: str = "24h", tz: str | None = None) -> dict[str, Any]:
     """Buckets over ``range`` (1h, 6h, 24h, 7d, 30d, 90d) in the clock of ``tz`` (an IANA name;
     the settings' timezone when omitted)."""

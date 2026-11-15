@@ -167,6 +167,9 @@ class DayJournal:
             return
         run = runs[0]
         request, answer = await self._exchange(run)
+        # A secret Jarvis read out in this chat is never written into the day's journal
+        # (docs/stories/14_agent_admin.md): the stored values themselves are masked, no word list.
+        request, answer = self._core.admin.redact(request), self._core.admin.redact(answer)
         day = self.today()
         previous = await self._row(conversation_id, day)
         data = await self._ask(conv, run, request, answer, previous)

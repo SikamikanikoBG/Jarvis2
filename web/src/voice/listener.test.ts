@@ -68,12 +68,15 @@ afterEach(() => {
 
 type Heard = { kind: 'pause' | 'utterance'; at: number; bytes: number; offsetMs: number; silentMs?: number };
 
-async function listening() {
+async function listening(opts: { line?: boolean } = {}) {
   const heard: Heard[] = [];
   const pieces: number[] = [];
+  const sounds: string[] = [];
   let dropped = 0;
   const handlers: ListenerHandlers = {
     onLevel: noop,
+    onSoundStart: () => sounds.push('start'),
+    onSoundEnd: () => sounds.push('end'),
     onSpeechStart: noop,
     onPause: (audio, at, offsetMs) => heard.push({ kind: 'pause', at, bytes: audio.size, offsetMs: offsetMs ?? 0 }),
     onPiece: (at) => {
@@ -84,7 +87,7 @@ async function listening() {
     onSpeechDropped: () => (dropped += 1),
     onError: noop,
   };
-  const listener = new MicListener();
+  const listener = new MicListener(opts);
   await listener.start(handlers);
   /** Push `ms` of sound at `amplitude` (a 200 Hz tone; 0 is silence). */
   const feed = (amplitude: number, ms: number) => {
@@ -98,7 +101,7 @@ async function listening() {
     }
   };
   feed(0, 1000); // the room, while the floor warms up
-  return { listener, heard, pieces, feed, dropped: () => dropped };
+  return { listener, heard, pieces, feed, sounds, dropped: () => dropped };
 }
 
 describe('MicListener', () => {
@@ -171,6 +174,34 @@ describe('MicListener', () => {
     const last = t.heard.filter((h) => h.kind === 'utterance').at(-1);
     // 500 ms of quiet after him, less the 300 ms pre-roll: nothing from before he stopped.
     expect(last?.offsetMs).toBeLessThanOrEqual(300);
+  });
+
+  it('the first sound of the next sentence is reported before it is speech, and its end if it was nothing', async () => {
+    const t = await listening();
+    t.feed(0.3, 2000);
+    t.feed(0, 800); // the utterance closes
+    const before = t.sounds.length; // the first sentence's own onset
+    t.feed(0.3, 60); // he starts again: an onset, long before the attack holds
+    expect(t.sounds.slice(before)).toEqual(['start']);
+    t.feed(0, 600); // it was a click
+    expect(t.sounds.slice(before)).toEqual(['start', 'end']);
+  });
+
+  it('a cut-in arrives whole: "Чакай." before the gap is not cut off by the attack starting over', async () => {
+    // Alpha 2026-11-14 (F-02, ec5): over his voice the 450 ms cut-in attack restarted at the gap
+    // after "Чакай.", so the utterance - and Whisper - began at "Спри за малко".
+    const t = await listening({ line: true });
+    t.listener.setSpeaking(true, true);
+    const start = now;
+    t.feed(0.3, 360); // "Чакай."
+    t.feed(0, 200);
+    t.feed(0.3, 1200); // "Спри за малко"
+    t.listener.setSpeaking(false);
+    t.feed(0, 800);
+    const [cut] = t.heard.filter((h) => h.kind === 'utterance');
+    // From the pre-roll before "Чакай" to the release that closed it (300 ms short of now).
+    const fromWait = ((now - start) / 1000) * RATE * 2;
+    expect(cut?.bytes).toBeGreaterThanOrEqual(WAV_HEADER + fromWait - 2 * RATE * 2 * 0.05);
   });
 
   it('muted mid-sentence: what he said up to the tap is an utterance, not thrown away', async () => {

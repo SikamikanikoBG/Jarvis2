@@ -104,6 +104,10 @@ export interface Listener {
 
 export interface ListenerHandlers {
   onLevel(level: number): void;
+  /** Sound over the floor that is not yet speech (the segmenter's attack has not held yet), and
+   *  then, if it never becomes speech, that it came to nothing. */
+  onSoundStart?(): void;
+  onSoundEnd?(): void;
   onSpeechStart(): void;
   /** Silence that may be the end: the audio so far, to be recognised now rather than after the
    *  release. `at` names the pause; an utterance that ends there carries the same `at`.
@@ -262,12 +266,15 @@ export class CallSession {
   private talking = false;
   private sound = 0;
   private soundWords: boolean | null = null;
+  /** The sound is only an onset so far, not yet speech: a `quiet` lets go of it. */
+  private onsetOnly = false;
   /** The last send, for `turn.more`: words that followed it are the split this is all about. */
   private lastSend: { at: number; why: SendWhy } | null = null;
   /** A run's failure to be said once his turn is sent: nothing is said over his pause. */
   private problemDue = false;
-  /** A recognition started at a pause, before the utterance was known to have ended. */
-  private speculative: { at: number; result: Promise<Recognised | Error> } | null = null;
+  /** A recognition started at a pause, before the utterance was known to have ended; `back` once
+   *  it has come back, so a piece made of it can be the next piece's prompt at once. */
+  private speculative: { at: number; result: Promise<Recognised | Error>; back?: Recognised | Error } | null = null;
   /** The pieces of a long utterance recognised while he was still talking, in order, and the
    *  words of those already back (Whisper's prompt for the next one). */
   private pieces: Promise<Recognised | Error>[] = [];
@@ -315,6 +322,8 @@ export class CallSession {
     try {
       await this.o.listener.start({
         onLevel: (level) => this.set({ level }),
+        onSoundStart: () => this.onSoundStart(),
+        onSoundEnd: () => this.onSoundEnd(),
         onSpeechStart: () => this.onSpeechStart(),
         onPause: (audio, at, offsetMs) => this.onPause(audio, at, offsetMs),
         onPiece: (at) => this.onPiece(at),
@@ -343,6 +352,9 @@ export class CallSession {
     const unsent = this.held !== '' || this.pending > 0 || unheard.length > 0;
     const chain = this.chain;
     const runId = this.state.runId;
+    // Marked now: the trace stops with the call, before Whisper has the rest (the alpha found no
+    // mark at all for a hang-up send, 2026-11-14).
+    if (unsent) callTrace.mark('turn.send', { why: 'hangup', chars: this.held.length, pending: this.pending, pieces: unheard.length, heldMs: this.held ? Math.round(this.now() - this.heldSince) : 0 });
     this.paused = false;
     this.stopClock();
     this.stopCeiling();
@@ -371,7 +383,6 @@ export class CallSession {
     const said = [this.held, ...(rest ?? []).map((r) => (r instanceof Error ? '' : r.text.trim()))];
     this.held = '';
     const text = said.filter(Boolean).join(' ');
-    callTrace.mark('turn.send', { why: 'hangup', chars: text.length, complete: rest !== null });
     if (!text) return;
     // A run still working takes them as a steer; one that has finished, the core makes a new turn of.
     if (runId) this.o.transport.steer(runId, text);
@@ -386,6 +397,7 @@ export class CallSession {
     if (muted) {
       this.dropPieces();
       this.talking = false;
+      this.onsetOnly = false;
     }
     // Muted mid-sound: nothing more will come of it.
     if (muted && this.paused) this.onSpeechDropped();
@@ -450,12 +462,42 @@ export class CallSession {
 
   // --- from the listener -------------------------------------------------------------------
 
-  private onSpeechStart(): void {
-    // A new sound: while a turn is held, its clock stands still until the sound turns out to be
-    // words (it holds the turn) or not (the clock goes on from where it stood).
+  /**
+   * Sound over the floor, before it has held long enough to be speech. A turn that is ready to go
+   * waits for it all the same: in the alpha (2026-11-14) 17 of 24 sends went 30-491 ms after he
+   * had started the next sentence - the decision lands 0.7-1.1 s after an utterance closes, a
+   * breath between sentences is 0.3-0.8 s, and only a confirmed attack stopped the send. The
+   * sound's first recognition then decides, as for speech; if it never becomes speech (`quiet`),
+   * the clock goes on with what was left.
+   */
+  private onSoundStart(): void {
+    if (this.talking) return;
     this.talking = true;
+    this.onsetOnly = true;
     this.sound += 1;
     this.soundWords = null;
+    if (this.held) callTrace.mark('sound', { on: true });
+    this.reclock();
+  }
+
+  private onSoundEnd(): void {
+    if (!this.onsetOnly) return;
+    this.onsetOnly = false;
+    this.talking = false;
+    if (this.held) callTrace.mark('sound', { on: false });
+    this.reclock();
+  }
+
+  private onSpeechStart(): void {
+    // A new sound: while a turn is held, its clock stands still until the sound turns out to be
+    // words (it holds the turn) or not (the clock goes on from where it stood). It may have been
+    // an onset already: then it is the same sound.
+    if (!this.onsetOnly) {
+      this.sound += 1;
+      this.soundWords = null;
+    }
+    this.talking = true;
+    this.onsetOnly = false;
     this.reclock();
     callTrace.mark('speech', { phase: this.state.phase, then: this.state.phase !== 'speaking' ? 'listen' : this.o.speaker.pause && this.o.speaker.resume ? 'pause' : 'cut', spokenUpTo: this.state.spokenUpTo });
     if (this.state.phase === 'speaking' && this.o.speaker.pause && this.o.speaker.resume) {
@@ -518,10 +560,12 @@ export class CallSession {
     callTrace.mark('utt.pause', { at: Math.round(at), bytes: audio.size, offsetMs: offsetMs ?? 0 });
     if (this.state.phase === 'ended' || this.state.muted) return;
     const result = this.recognise(audio, offsetMs);
-    this.speculative = { at, result };
+    const spec: NonNullable<CallSession['speculative']> = { at, result };
+    this.speculative = spec;
     const sound = this.sound;
     const said = this.piecesSaid;
     void result.then((r) => {
+      spec.back = r;
       // The first words of a sound settle whether it holds a turn that was waiting for him.
       if (sound === this.sound && this.talking && !(r instanceof Error)) {
         this.soundWords = this.soundWords === true || r.text.trim() !== '' || said.length > 0;
@@ -537,16 +581,21 @@ export class CallSession {
   /** A pause he went on after: what was recognised from it is a piece of this utterance. */
   private onPiece(at: number): boolean {
     if (this.speculative?.at !== at || this.state.phase === 'ended') return false;
-    const piece = this.speculative.result;
+    const { result: piece, back } = this.speculative;
     this.speculative = null;
     this.pieces.push(piece);
     const said = this.piecesSaid;
-    void piece.then((r) => {
+    const add = (r: Recognised | Error) => {
       if (r instanceof Error || !r.text.trim()) return;
       said.push(r.text.trim());
       // What he has said so far stays on the screen while he goes on: a briefing is minutes long.
       if (said === this.piecesSaid && this.state.phase !== 'ended') this.set({ heard: [this.held, ...said].filter(Boolean).join(' ') });
-    });
+    };
+    // Already back: its words are the prompt of the recognition the listener starts right after
+    // this, at the same pause. Through a `then` they came a moment too late, and every piece was
+    // recognised without the one just before it (2026-11-14 alpha, F-03).
+    if (back) add(back);
+    else void piece.then(add);
     return true;
   }
 

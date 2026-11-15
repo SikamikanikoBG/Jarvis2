@@ -428,7 +428,14 @@ export class MicListener implements Listener {
 
   private onSegment(ev: SegmentEvent, t: number): void {
     if (!this.handlers) return;
-    if (ev.type === 'speech-start') {
+    if (ev.type === 'onset') {
+      // Sound over the floor, not yet speech: nothing of his turn may be sent over it.
+      this.handlers.onSoundStart?.();
+    } else if (ev.type === 'quiet') {
+      this.handlers.onSoundEnd?.();
+    } else if (ev.type === 'speech-start') {
+      // From the first sound of it (the segmenter reaches back past a restarted attack), with
+      // the pre-roll before that.
       const preRoll = Math.round((PRE_ROLL_MS / 1000) * TARGET_RATE);
       const startedAgoMs = t - ev.at;
       this.utteranceStartSample = Math.max(0, this.written - Math.round((startedAgoMs / 1000) * TARGET_RATE) - preRoll);

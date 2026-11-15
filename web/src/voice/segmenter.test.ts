@@ -15,7 +15,7 @@ describe('Segmenter', () => {
     let r = feed(seg, 0.002, 1000, 0); // a quiet room: the floor settles
     expect(r.events).toEqual([]);
     r = feed(seg, 0.2, 1200, r.t); // a sentence
-    expect(r.events.map((e) => e.type)).toEqual(['speech-start']);
+    expect(r.events.map((e) => e.type)).toEqual(['onset', 'speech-start']);
     r = feed(seg, 0.002, 400, r.t); // a breath: not the end yet, but maybe — a pause is reported
     expect(r.events.map((e) => e.type)).toEqual(['pause']);
     r = feed(seg, 0.2, 800, r.t); // …more of the sentence
@@ -43,10 +43,10 @@ describe('Segmenter', () => {
     let r = feed(seg, 0.002, 1000, 0);
     r = feed(seg, 0.3, 120, r.t); // a click: shorter than the attack
     const afterClick = feed(seg, 0.002, 1000, r.t);
-    expect([...r.events, ...afterClick.events]).toEqual([]);
+    expect([...r.events, ...afterClick.events].map((e) => e.type)).toEqual(['onset', 'quiet']); // a sound, and then it was nothing
     r = feed(seg, 0.3, 300, afterClick.t); // a cough: past the attack, under the minimum utterance
     const afterCough = feed(seg, 0.002, 1000, r.t);
-    expect([...r.events, ...afterCough.events].map((e) => e.type)).toEqual(['speech-start', 'dropped']);
+    expect([...r.events, ...afterCough.events].map((e) => e.type)).toEqual(['onset', 'speech-start', 'dropped']);
   });
 
   it('adapts its floor to a noisy room instead of calling the noise speech', () => {
@@ -55,7 +55,7 @@ describe('Segmenter', () => {
     expect(r.events).toEqual([]);
     expect(seg.noiseFloor).toBeGreaterThan(0.03);
     r = feed(seg, 0.3, 1000, r.t); // a voice well over it
-    expect(r.events.map((e) => e.type)).toEqual(['speech-start']);
+    expect(r.events.map((e) => e.type)).toEqual(['onset', 'speech-start']);
   });
 
   it('a long utterance stays one utterance: three minutes of talk with breaths is not cut', () => {
@@ -69,7 +69,7 @@ describe('Segmenter', () => {
       r = feed(seg, 0.002, 120, r.t); // a breath, shorter than a pause
       events.push(...r.events);
     }
-    expect(events.map((e) => e.type)).toEqual(['speech-start']);
+    expect(events.map((e) => e.type)).toEqual(['onset', 'speech-start']);
     expect(seg.talking).toBe(false); // in a breath: a silence, not sound
     r = feed(seg, 0.2, 200, r.t);
     expect(seg.talking).toBe(true);
@@ -98,6 +98,60 @@ describe('Segmenter', () => {
     const breath = r.events.find((e) => e.type === 'pause')?.at ?? -1;
     r = feed(seg, 0.2, 400, r.t);
     expect(seg.endAt(breath)).toEqual([]);
+  });
+
+  it('a sound not yet speech is reported at once, and when it came to nothing', () => {
+    // 2026-11-14 alpha: the session sent a turn while he had already started the next sentence,
+    // because only a confirmed attack said so. The onset is reported on the first loud frame.
+    const seg = new Segmenter();
+    let r = feed(seg, 0.002, 1000, 0);
+    r = feed(seg, 0.3, 80, r.t);
+    expect(r.events).toEqual([{ type: 'onset', at: 1000 }]);
+    r = feed(seg, 0.002, 400, r.t); // shorter than a release: it may still be words
+    expect(r.events).toEqual([]);
+    r = feed(seg, 0.002, 200, r.t);
+    expect(r.events.map((e) => e.type)).toEqual(['quiet']);
+  });
+
+  it('an utterance starts at the first sound of it, not where a dip inside a word restarted the attack', () => {
+    const seg = new Segmenter();
+    seg.setAttack(450); // a cut-in over his voice
+    let r = feed(seg, 0.002, 1000, 0);
+    const events: SegmentEvent[] = [];
+    // "Чакай." (360 ms), a 200 ms gap, then "Спри за малко" - the attack starts over at the gap.
+    for (const [level, ms] of [[0.3, 360], [0.002, 200], [0.3, 1200]] as const) {
+      r = feed(seg, level, ms, r.t);
+      events.push(...r.events);
+    }
+    expect(events.map((e) => e.type)).toEqual(['onset', 'speech-start']);
+    expect(events[1]?.at).toBe(1000); // "Чакай", not "Спри"
+  });
+
+  it('a long-ago click does not drag the start back: the reach is bounded', () => {
+    const seg = new Segmenter({ onsetReachMs: 300 });
+    let r = feed(seg, 0.002, 1000, 0);
+    r = feed(seg, 0.3, 40, r.t); // a click at 1000
+    r = feed(seg, 0.002, 440, r.t); // not long enough to be quiet
+    const start = r.t;
+    r = feed(seg, 0.3, 400, r.t); // speech at 1480, more than 300 ms after the click
+    expect(r.events.find((e) => e.type === 'speech-start')?.at).toBe(start);
+  });
+
+  it('a clattering room that never becomes speech is let go of, and does not start again until it is quiet', () => {
+    // Bursts too short to be speech, too close together to be quiet: the turn must not wait on them.
+    const seg = new Segmenter();
+    let r = feed(seg, 0.002, 1000, 0);
+    const events: SegmentEvent[] = [];
+    for (let i = 0; i < 12; i += 1) {
+      r = feed(seg, 0.3, 120, r.t);
+      events.push(...r.events);
+      r = feed(seg, 0.002, 200, r.t);
+      events.push(...r.events);
+    }
+    expect(events.map((e) => e.type)).toEqual(['onset', 'quiet']);
+    r = feed(seg, 0.002, 600, r.t); // the room is quiet for a moment
+    r = feed(seg, 0.3, 40, r.t);
+    expect(r.events.map((e) => e.type)).toEqual(['onset']);
   });
 
   it('end() closes what is open', () => {

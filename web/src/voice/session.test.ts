@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   CallSession,
   type CallState,
@@ -11,6 +11,7 @@ import {
   type Transport,
 } from './session';
 import type { Cues } from './tones';
+import { callTrace } from './trace';
 
 /** A listener the test drives by hand. */
 class FakeListener implements Listener {
@@ -68,6 +69,13 @@ class FakeListener implements Listener {
   cough(): void {
     this.h?.onSpeechStart();
     this.h?.onSpeechDropped();
+  }
+  /** Sound over the floor the segmenter has not yet called speech; and that it came to nothing. */
+  onset(): void {
+    this.h?.onSoundStart?.();
+  }
+  quiet(): void {
+    this.h?.onSoundEnd?.();
   }
 }
 
@@ -917,6 +925,97 @@ describe('CallSession', () => {
     await switching;
     await new Promise((r) => setTimeout(r, 70));
     expect(t.transport.created).toEqual(['първо второ']);
+  });
+
+  it('a "sure" turn is not sent while he has already started the next sentence: its first words decide', async () => {
+    // Alpha 2026-11-14 (F-01): the decision came 0.7-1.1 s after the utterance closed, he was 30-491 ms
+    // into the next sentence, and only a confirmed attack held the send - 16 sends for one briefing.
+    const t = build({ turnThreshold: 0.9, patienceMs: 3000 });
+    await t.session.start();
+    t.transcriber.turn = 0.97;
+    t.transcriber.delayMs = 30;
+    t.transcriber.next = 'Първо обсъдихме графика.';
+    t.listener.h?.onSpeechStart();
+    t.listener.h?.onUtterance(new Blob(['x']), undefined, 0, 500);
+    t.listener.onset(); // the next sentence begins while Whisper works
+    await new Promise((r) => setTimeout(r, 60));
+    expect(t.transport.created).toEqual([]); // "sure", but he is talking
+    t.transcriber.delayMs = 0;
+    t.transcriber.turn = 0.2;
+    t.transcriber.next = 'След това бюджета';
+    t.listener.h?.onSpeechStart(); // the onset was speech after all
+    t.listener.h?.onPause(new Blob(['x']), 2000);
+    await settle();
+    expect(t.transport.created).toEqual([]); // words: held
+    t.transcriber.turn = 0.96;
+    t.transcriber.next = 'и разходите.';
+    t.listener.h?.onUtterance(new Blob(['y']), 3000, 0, 500);
+    await settle();
+    expect(t.transport.created).toEqual(['Първо обсъдихме графика. и разходите.']);
+    expect(t.transport.steered).toEqual([]);
+  });
+
+  it('a sound that never becomes speech holds a ready turn only until it is quiet', async () => {
+    const t = build({ turnThreshold: 0.9 });
+    await t.session.start();
+    t.transcriber.turn = 0.97;
+    t.listener.h?.onSpeechStart();
+    t.listener.h?.onUtterance(new Blob(['x']), undefined, 0, 500);
+    t.listener.onset(); // a click before the recognition is back
+    await settle();
+    expect(t.transport.created).toEqual([]);
+    t.listener.quiet(); // it was nothing
+    expect(t.transport.created).toEqual(['какво ще кажеш']);
+  });
+
+  it('the patience does not run out under him: sound before it ends stops the clock (US-1, 2.5 s pause)', async () => {
+    // Alpha 2026-11-14: at patience 3 s and a 2.5 s pause the clock ran out 140 ms after he went on.
+    const t = build({ patienceMs: 80 });
+    await t.session.start();
+    t.transcriber.next = 'и освен това';
+    t.listener.say();
+    await new Promise((r) => setTimeout(r, 50));
+    t.listener.onset(); // he goes on, not yet confirmed as speech
+    await new Promise((r) => setTimeout(r, 80)); // past the patience
+    expect(t.transport.created).toEqual([]);
+    t.listener.quiet(); // only a breath: the 30 ms that were left run now
+    expect(t.transport.created).toEqual([]);
+    await new Promise((r) => setTimeout(r, 60));
+    expect(t.transport.created).toEqual(['и освен това']);
+  });
+
+  it("a piece that is back is the next piece's prompt at once, at the same pause", async () => {
+    // Alpha 2026-11-14 (F-03): the listener closes a piece and asks for the next recognition in one
+    // go; the piece's words reached the prompt a microtask later, so every prompt missed one.
+    const t = build();
+    await t.session.start();
+    t.transcriber.byAudio = { p1: 'Защото цените са се вдигнали.', p2: 'Петър поиска отчет.' };
+    t.listener.h?.onSpeechStart();
+    t.listener.h?.onPause(new Blob(['p1']), 100);
+    await tick();
+    t.listener.h?.onPiece?.(100);
+    t.listener.h?.onPause(new Blob(['p2']), 200);
+    expect(t.transcriber.opts.at(-1)?.prompt).toBe('Защото цените са се вдигнали.');
+  });
+
+  it("hanging up mid-turn is in the call's trace, before the trace stops with the call", async () => {
+    // Alpha 2026-11-14 (F-06): the mark was written once Whisper was back, after the trace had stopped.
+    const marks: string[] = [];
+    const spy = vi.spyOn(callTrace, 'mark').mockImplementation((k: string, data?: Record<string, unknown>) => {
+      if (k === 'turn.send') marks.push(String(data?.why));
+    });
+    try {
+      const t = build({ patienceMs: 5000 });
+      await t.session.start();
+      t.listener.say();
+      await settle();
+      t.session.end();
+      expect(marks).toEqual(['hangup']);
+      await settle();
+      expect(t.transport.created).toEqual(['какво ще кажеш']);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('a turn held by words that never end is sent at the ceiling; nothing waits for ever', async () => {

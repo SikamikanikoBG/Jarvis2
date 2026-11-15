@@ -312,6 +312,27 @@ class RunEngine:
         self._bus.publish(RunUpdated(run=run.model_copy()))
         return True
 
+    async def set_think(self, run_id: str, think: bool | None, think_level: ThinkLevel | None) -> bool:
+        """Change how a run that is already working thinks: the chip changed mid-reply. The loop
+        reads ``run.think`` / ``run.think_level`` at every step, so the next model call follows
+        it; the one streaming now is not interrupted. False when the run has already ended.
+
+        Until 2026-11-15 the chip only reached the NEXT message: a reply that needed more (or
+        less) thought had to be stopped and asked again. Same live-object rule as set_call_me."""
+        entry = self._active.get(run_id)
+        run = entry[1].emitter.run if entry is not None else self._queued.get(run_id)
+        if run is None:
+            run = await self._store.get_run(run_id)  # parked on a question across a restart
+        if run is None or run.status.terminal:
+            return False
+        run.think = think
+        run.think_level = think_level if think else None
+        if entry is not None:
+            entry[1].think_changed = True
+        await self._store.save_run(run)
+        self._bus.publish(RunUpdated(run=run.model_copy()))
+        return True
+
     async def confirm(self, run_id: str, call_id: str, approved: bool, note: str | None = None) -> bool:
         entry = self._active.get(run_id)
         if entry is not None and entry[1].resolve_confirmation(call_id, approved, note):

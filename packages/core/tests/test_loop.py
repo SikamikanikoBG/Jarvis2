@@ -1205,3 +1205,29 @@ def test_a_long_run_whose_aged_results_alone_overflow_the_window_still_fits():
     tools = [m for m in messages if m.role.value == "tool"][:-1]
     assert len(tools[0].content) < len(tools[-1].content), "the oldest results gave way first"
     assert all("@" in m.content for m in tools), "every shrunk result still names its ref"
+
+
+async def test_the_thinking_chip_changed_mid_reply_reaches_the_next_step(harness: Harness):
+    # 2026-11-15: the chip only reached the next message, so a reply that needed more thought had
+    # to be stopped and asked again. Changed while it works, the next model call follows it.
+    await with_tools(harness)
+    harness.chat.push(
+        FakeTurn(
+            text="let me check that",
+            token_delay_s=0.05,
+            tool_calls=[ToolCall(id="c1", name="test.echo", arguments={"text": "a"})],
+        ),
+        FakeTurn(text="done"),
+    )
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    run, _ = await harness.core.engine.create_run(text="go", conversation_id=conv.id, think=False)
+    first = (await harness.wait_for(sub, "model.call"))[-1]
+    assert (first.think, first.think_level) == (False, None)
+    assert await harness.core.engine.set_think(run.id, True, "high")
+    seen = await harness.wait_for(sub, "run.done")
+    # Adaptive thinking would call the step after a tool result mechanical; the chip wins it.
+    nxt = next(e for e in seen if e.type == "model.call")
+    assert (nxt.think, nxt.think_level) == (True, "high")
+    # A finished run cannot be changed any more.
+    assert not await harness.core.engine.set_think(run.id, False, None)

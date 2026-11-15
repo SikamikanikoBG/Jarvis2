@@ -1242,6 +1242,13 @@ export interface RunCallMeRequest {
   run_id: string;
   on: boolean;
 }
+/** The thinking chip, changed while a run is ALREADY working: its next step thinks this way. */
+export interface RunThinkRequest {
+  type: 'run.think';
+  run_id: string;
+  think: boolean | null;
+  think_level: ThinkLevel | null;
+}
 /** Something said to a run that is ALREADY working; it reads it at its next step. */
 export interface RunSteerRequest {
   type: 'run.steer';
@@ -1312,6 +1319,7 @@ export type ClientMessage =
   | RunCreateRequest
   | RunCancelRequest
   | RunCallMeRequest
+  | RunThinkRequest
   | RunSteerRequest
   | ToolConfirmRequest
   | Subscribe

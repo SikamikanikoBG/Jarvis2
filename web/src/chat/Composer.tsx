@@ -534,7 +534,7 @@ function CallButton() {
   );
 }
 
-/** Per-conversation thinking override for the next messages: role default / off / on / on·level. */
+/** Per-conversation thinking override - for the next messages and for a reply already working (from its next step): role default / off / on / on·level. */
 function ThinkChip() {
   const choice = useStore((s) => s.thinkChoice[s.openConversationId ?? NEW_CONVERSATION_KEY] ?? THINK_DEFAULT);
   const setChoice = useStore((s) => s.setThinkChoice);
@@ -548,7 +548,7 @@ function ThinkChip() {
         onClick={(e) => setAnchor(anchor ? null : e.currentTarget)}
         aria-haspopup="menu"
         aria-expanded={Boolean(anchor)}
-        title="Thinking for the next message"
+        title="Thinking - a reply already working follows it from its next step, and so do the next messages"
       >
         <Icon name="brain" size={12} />
         Thinking: {current?.label}

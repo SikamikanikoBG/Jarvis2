@@ -1234,8 +1234,13 @@ export const useStore = create<AppState>()((set, get) => ({
   },
 
   setThinkChoice: (choice) => {
-    const key = get().openConversationId ?? NEW_CONVERSATION_KEY;
-    set((s) => ({ thinkChoice: choice.think === null ? omit(s.thinkChoice, key) : { ...s.thinkChoice, [key]: choice } }));
+    const s = get();
+    const key = s.openConversationId ?? NEW_CONVERSATION_KEY;
+    set((st) => ({ thinkChoice: choice.think === null ? omit(st.thinkChoice, key) : { ...st.thinkChoice, [key]: choice } }));
+    // A reply already working follows it from its next step, not only the next message
+    // (2026-11-15: it had to be stopped and asked again to think more, or less).
+    const run = selectActiveRun(s, s.openConversationId);
+    if (run) ws?.send({ type: 'run.think', run_id: run.id, think: choice.think, think_level: choice.think ? choice.think_level : null });
   },
 
   setDraftPrivacy: (privacy) => set({ draftPrivacy: privacy }),

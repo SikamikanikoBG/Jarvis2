@@ -407,6 +407,16 @@ class RunCallMeRequest(BaseModel):
     on: bool = True
 
 
+class RunThinkRequest(BaseModel):
+    """The thinking chip, changed while a run is ALREADY working: its next step thinks this way.
+    Both null = the role's own setting, as for a new run."""
+
+    type: Literal["run.think"] = "run.think"
+    run_id: str
+    think: bool | None = None
+    think_level: ThinkLevel | None = None
+
+
 class RunSteerRequest(BaseModel):
     """Something Arsen says to a run that is ALREADY working.
 
@@ -500,6 +510,7 @@ ClientMessage = Annotated[
     RunCreateRequest
     | RunCancelRequest
     | RunCallMeRequest
+    | RunThinkRequest
     | RunSteerRequest
     | ToolConfirmRequest
     | Subscribe

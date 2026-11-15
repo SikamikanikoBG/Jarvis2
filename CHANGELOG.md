@@ -2,6 +2,15 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-15 — core 2.0.0a123 / proto a39 / web alpha.89
+
+### Changed
+- **Thinking chip takes effect on a reply that is already working.** Changing it mid-reply sends
+  `run.think` to the run: its next model step thinks the new way (even a step adaptive thinking would
+  have called mechanical), the step streaming now is not interrupted, and the next messages follow it as
+  before. Until now the chip only reached the next message, so a reply that needed more (or less) thought
+  had to be stopped and asked again.
+
 ## 2026-11-07 — core 2.0.0a116 / web alpha.88
 
 ### Added

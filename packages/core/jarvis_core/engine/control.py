@@ -27,6 +27,9 @@ class RunControl:
     # (sessions.say). From then on it may not hand work to a task: a delegation has to come from
     # his own words (docs/stories/13_delegated_tasks.md).
     steered_by_other: bool = False
+    # The thinking chip was changed while the run worked: its next step reasons (or not) the new
+    # way even if adaptive thinking would call it mechanical - he asked for it just now.
+    think_changed: bool = False
 
     def resolve_confirmation(self, call_id: str, approved: bool, note: str | None) -> bool:
         fut = self.confirmations.get(call_id)

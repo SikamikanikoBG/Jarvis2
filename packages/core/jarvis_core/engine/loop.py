@@ -386,6 +386,9 @@ class AgentLoop:
                 messages.append(await self._persist(run, Message.user(said, channel=run.channel)))
                 await emit(RunSteered(run_id="", conversation_id="", text=said[:400]))
                 think_next = True  # Arsen just changed the task; work it out properly
+            if ctl.think_changed:
+                ctl.think_changed = False
+                think_next = True  # the chip changed mid-reply: the next step follows it, not adaptive
 
             # Plan progress is the one thing that changes every step; it rides as the LAST message
             # so every cached token before it stays valid (the system prompt never changes).

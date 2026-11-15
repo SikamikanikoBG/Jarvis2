@@ -291,17 +291,60 @@ Replaces V1 reminders/scheduler. Each fire = a new conversation (`kind=scheduled
 GET    /api/schedules                → Schedule[]
 POST   /api/schedules {name, prompt, cron?, at?, tz?, enabled?, catch_up?, think?, think_level?, call_me?} → Schedule 201
        call_me: "default" (Settings › Calls decides) | "always" | "never" (jarvis.call_me cannot override it)
-PATCH  /api/schedules/{id} {…same…}  → Schedule
-DELETE /api/schedules/{id}
+PATCH  /api/schedules/{id} {…same…}  → Schedule   (only the fields sent; think/think_level: null = back to default)
+DELETE /api/schedules/{id}                         (404 unknown)
 POST   /api/schedules/{id}/run       → {run_id, conversation_id}   (fires now)
+POST   /api/schedules/{id}/accept    → Schedule   (a prompt a run wrote fires with full authority again)
 GET    /api/schedules/{id}/fires?limit=20 → Fire[] {scheduled_for, run_id, conversation_id, status}
 ```
 `Schedule {id, name, prompt, cron: string|null, at: datetime|null, tz, enabled, catch_up: "skip"|"run_once",
-think, think_level, next_fire, last_fired_for, last_run_id, last_status, created_at, updated_at}`
+think, think_level, call_me, prompt_by, next_fire, last_fired_for, last_run_id, last_status, created_at, updated_at}`
+`prompt_by`: null = Arsen wrote the prompt; a run id = a run nobody asked from wrote it, and it fires asking like a
+task until accepted. An `at` more than 60 s in the past, and a prompt over 20,000 chars, are 422.
 Exactly one of `cron` / `at` (one-shot, auto-disables after firing). `UNIQUE(schedule_id,
 scheduled_for)` makes double-fire impossible. WS: `schedule.changed {schedule_id|null}`.
-Tools (builtin): `schedule.create {name, prompt, cron?, at?}`, `schedule.list`, `schedule.delete {id}`.
+Tools (builtin): `schedule.create {name, prompt, cron?, at?, tz?, enabled?, catch_up?, think?, think_level?, call_me?}`
+(applies at once since 2026-11-15), `schedule.list`, `schedule.get {id, fires}`, `schedule.update {id, …}`,
+`schedule.run_now {id}`, `schedule.fires {id, limit}`, `schedule.delete {id}` (asks; names the fires lost).
 Sidebar: `Scheduled ▸ <schedule name> ▸ conversations by date`.
+
+## Agent admin (core 2.0.0a125, docs/stories/14_agent_admin.md)
+
+Jarvis reads and changes its own settings, schedules and the rest of the UI. Behind
+`settings.agent_admin.enabled` (default true; off = the tools are not offered).
+
+```
+GET   /api/settings                      → Settings          ETag: "<rev>"
+PATCH /api/settings  If-Match: "<rev>"   → Settings          409 {message, rev} when someone saved since; no If-Match = as before
+GET   /api/settings/changes?limit=&area=&conversation_id=&status=&path= → ChangeRecord[] (newest first, secrets masked)
+GET   /api/settings/changes/{id}         → ChangeRecord
+POST  /api/settings/changes/{id}/revert  → ChangeRecord      (the new change; 409 already reverted / changed since; 404)
+POST  /api/settings/changes/{id}/apply   → ChangeRecord      (a proposal, run now through validation and probes as Arsen's)
+POST  /api/settings/changes/{id}/discard → ChangeRecord
+GET   /api/status                        → … admin: {enabled, probing, proposed, auto_reverted_24h, last_change_at}
+```
+
+`ChangeRecord {id, at, area: settings|schedule|api, target, actor: arsen|jarvis|system|revert|probe-revert,
+actor_label, run_id, run_kind, conversation_id, call_id, fields: [{path, old, new, op: set|add|remove, secret}],
+risk[], reason, status: applied|probing|proposed|auto_reverted|reverted|discarded|expired, rev, reverts,
+reverted_by, note, revertible}`. Every settings save is one (the UI's too). WS (to every client):
+`settings.changed {rev, paths, change_id, actor}` (paths, never values) and `change.recorded {change}`.
+`tool.confirm_requested` gains `preview: ChangeField[]|null` and `risk: string[]|null`; `ToolResult.change`
+carries the record of what a call changed (the chat's change card).
+
+Paths: dotted over the settings JSON - `voice.hold_volume`, `roles.chat.base_url`, `budgets.task.max_steps`;
+a list item by its `x-key` field - `mcp_servers[name=fetch].enabled`, `mail_accounts[address=a@b.bg]`;
+a dict key that is not a word in brackets - `triage.account_rules[a@b.bg]`. A masked secret written back
+means "keep the saved one". Risk markers (`x-risk`: lifeline | safety | secret) are on the fields in
+`jarvis_proto/settings.py`.
+
+Tools: `settings.get {path, reveal}`, `settings.set {set: {path: value}, add: {list path: item},
+remove: [item path], reason, dry_run}`, `settings.revert {change_id}`, `jarvis.api_describe {path}`,
+`jarvis.api_read {path}`, `jarvis.api_write {method, path, body, reason}` (the routes marked
+`openapi_extra=agent("read"|"write", risk=, risk_when=, prefer=)` in `api/deps.py`; a DELETE asks).
+None of them is offered to a collab run (`ToolSpec.owner_only`).
+
+Break-glass with the core down: `python3 scripts/admin_revert.py --list | --last | <chg_id>` on ardi.
 
 ## Triage (Phase 4)
 

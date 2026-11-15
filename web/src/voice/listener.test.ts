@@ -204,6 +204,21 @@ describe('MicListener', () => {
     expect(cut?.bytes).toBeGreaterThanOrEqual(WAV_HEADER + fromWait - 2 * RATE * 2 * 0.05);
   });
 
+  it('a short sentence over the hold music reaches Whisper whole, though its attack never held', async () => {
+    // Alpha round 2 (2026-11-15, R2-01): "Чакай, спри за малко." during thinking was dropped unheard.
+    const t = await listening({ line: true });
+    t.listener.setHold(true); // the hold music: the 450 ms attack
+    const start = now;
+    for (const [level, ms] of [[0.3, 360], [0, 120], [0.3, 360], [0, 120], [0.3, 360]] as const) t.feed(level, ms);
+    const spoke = now - start;
+    t.feed(0, 800);
+    const heard = t.heard.filter((h) => h.kind === 'utterance');
+    expect(heard).toHaveLength(1);
+    expect(t.dropped()).toBe(0);
+    // All of it, from the pre-roll before the first word, to the end of the silence that closed it.
+    expect(heard[0]?.bytes).toBeGreaterThanOrEqual(WAV_HEADER + ((spoke + 300) / 1000) * RATE * 2);
+  });
+
   it('muted mid-sentence: what he said up to the tap is an utterance, not thrown away', async () => {
     const t = await listening();
     t.feed(0.3, 2500);

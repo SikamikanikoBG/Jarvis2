@@ -674,6 +674,7 @@ export class CallSession {
       if (!text && !this.held) {
         if (this.paused) this.onSpeechDropped();
         else this.set({ phase: 'listening' });
+        this.reclock();
         return;
       }
     }
@@ -742,9 +743,17 @@ export class CallSession {
   /**
    * The turn's clock runs only while a turn is held, none of it is still with Whisper, the audio
    * is not being rebuilt, and he is not making a sound that is (or may yet be) words. Stopped, it
-   * keeps what was left; run out, the turn is sent. Called whenever any of that changes.
+   * keeps what was left; run out, the turn is sent. Called whenever any of that changes - which is
+   * also when what waited not to be said over him may be said (`floorFree`).
    */
   private reclock(): void {
+    if (this.floorFree()) {
+      if (this.queue.length > 0) this.startDrain();
+      if (this.problemDue) {
+        this.problemDue = false;
+        void this.sayProblem();
+      }
+    }
     if (!this.held || this.state.phase === 'ended') {
       this.stopClock();
       return;
@@ -945,8 +954,9 @@ export class CallSession {
       return;
     }
     if (!text) return;
-    // He is in the middle of a turn: whatever this answers, it answers only part of it.
-    if (this.steeredMidStep || this.held) {
+    // He is in the middle of a turn, or saying something now: whatever this answers, it may well
+    // answer only part of it. Parked; said after all if the run ends without his words (onRunDone).
+    if (this.steeredMidStep || !this.floorFree()) {
       // An answer to what he said before he went on: held back, not read out.
       this.steeredMidStep = false;
       this.supersededText = text;
@@ -1049,11 +1059,18 @@ export class CallSession {
   }
 
   /** Say what is queued - unless a route change is rebuilding the audio (it starts this itself),
-   *  or a turn is held: nothing is read out over his thinking pause, not an answer, a progress
-   *  line or a ring's result. The queue waits and is said once the turn is sent (`released`). */
+   *  or the floor is his: nothing is read out over his thinking pause, over a sound he is making
+   *  or over words of his still with Whisper - not an answer, a progress line or a ring's result.
+   *  The queue waits and is said once the floor is free (`reclock`, `released`). */
   private startDrain(): void {
-    if (this.rerouting > 0 || this.held) return;
+    if (this.rerouting > 0 || !this.floorFree()) return;
     this.speaking ??= this.drain();
+  }
+
+  /** Nothing of his is in the air: no turn held, no sound going on, nothing with Whisper. The
+   *  alpha (2026-11-15) heard Jarvis start an answer 50 ms after he began to speak during thinking. */
+  private floorFree(): boolean {
+    return !this.held && !this.talking && this.pending === 0;
   }
 
   private backToListening(): void {
@@ -1066,8 +1083,8 @@ export class CallSession {
       this.backToListening();
       return;
     }
-    if (this.held) {
-      this.problemDue = true; // said when his turn is sent, not over his pause
+    if (!this.floorFree()) {
+      this.problemDue = true; // said once the floor is free, not over him
       return;
     }
     // The answer it cut short is still unwinding: let it, or its ending would ungate the

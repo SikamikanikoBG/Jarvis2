@@ -34,6 +34,9 @@ export interface SegmenterOptions {
   /** How long a sound that has not become speech is reported as one (`onset` until `quiet`): a
    *  turn waits on it no longer than this. A café's clatter never becomes speech. */
   onsetHoldMs: number;
+  /** A sound that ended without its attack ever holding is still an utterance, if it lasted
+   *  minUtteranceMs: this much of its end at most (a Whisper request stays small). */
+  lateUtteranceMaxMs: number;
 }
 
 export const DEFAULT_SEGMENTER: SegmenterOptions = {
@@ -46,6 +49,7 @@ export const DEFAULT_SEGMENTER: SegmenterOptions = {
   minUtteranceMs: 400,
   onsetReachMs: 3000,
   onsetHoldMs: 1500,
+  lateUtteranceMaxMs: 20_000,
 };
 
 export type SegmentEvent =
@@ -130,9 +134,10 @@ export class Segmenter {
     const loud = !warming && rms >= threshold;
 
     if (loud && (this.phase === 'silence' || this.phase === 'attack')) this.lastLoud = t;
-    // A sound that has not become speech in all that time is most likely the room (a café's
-    // clatter), and a turn must not wait on it any longer.
-    if (this.onsetOpen && this.soundSince !== null && t - this.soundSince >= o.onsetHoldMs) {
+    // A sound still going on that has not become speech in all that time is most likely the room
+    // (a café's clatter), and a turn must not wait on it any longer. One that has stopped is
+    // closed by the release instead, as an utterance if it was long enough (closeSound).
+    if (loud && this.onsetOpen && this.soundSince !== null && t - this.soundSince >= o.onsetHoldMs) {
       this.onsetOpen = false;
       out.push({ type: 'quiet', at: t });
     }
@@ -148,10 +153,8 @@ export class Segmenter {
             out.push({ type: 'onset', at: t });
           }
         } else if (this.soundSince !== null && t - this.lastLoud >= o.releaseMs) {
-          // Quiet for as long as an utterance takes to close: whatever it was, it was not words.
-          this.soundSince = null;
-          if (this.onsetOpen) out.push({ type: 'quiet', at: this.lastLoud });
-          this.onsetOpen = false;
+          // Quiet for as long as an utterance takes to close: the sound is over.
+          out.push(...this.closeSound());
         }
         break;
       case 'attack':
@@ -208,15 +211,30 @@ export class Segmenter {
     if (!this.speaking) {
       this.phase = 'silence';
       // A sound that never became speech is over too: nothing may wait on it.
-      const open = this.onsetOpen;
-      this.soundSince = null;
-      this.onsetOpen = false;
-      return open ? [{ type: 'quiet', at: this.lastLoud }] : [];
+      return this.soundSince === null ? [] : this.closeSound();
     }
     const at = this.phase === 'release' ? this.phaseSince : t;
     const out = this.close(at);
     this.phase = 'silence';
     return out;
+  }
+
+  /**
+   * A sound is over and its attack never held. Long enough to be words, it is an utterance all
+   * the same, from its first sound to its last: over the hold music (450 ms attack) a whole "Чакай,
+   * спри за малко." never held and was thrown away unheard (2026-11-15, alpha round 2). Whisper's
+   * answer decides - no words, and it is dropped like a cough. Shorter, it was a click: `quiet`.
+   */
+  private closeSound(): SegmentEvent[] {
+    const since = this.soundSince ?? this.lastLoud;
+    const open = this.onsetOpen;
+    this.soundSince = null;
+    this.onsetOpen = false;
+    if (this.lastLoud - since >= this.opts.minUtteranceMs) {
+      this.utteranceStart = Math.max(since, this.lastLoud - this.opts.lateUtteranceMaxMs);
+      return [{ type: 'speech-start', at: this.utteranceStart }, ...this.close(this.lastLoud)];
+    }
+    return open ? [{ type: 'quiet', at: this.lastLoud }] : [];
   }
 
   private close(at: number): SegmentEvent[] {

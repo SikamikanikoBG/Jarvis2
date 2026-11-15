@@ -1018,6 +1018,47 @@ describe('CallSession', () => {
     }
   });
 
+  it('Jarvis does not start speaking while he is making a sound; a sound that was nothing lets him', async () => {
+    // Alpha round 2 (2026-11-15): Jarvis began his answer 50 ms after Arsen began to speak in thinking.
+    const t = build();
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    t.session.onRunQueued('r1', 'c1');
+    t.listener.onset(); // he starts to say something while the answer is written
+    t.session.onDelta('r1', 'Готово, записах го.');
+    t.session.onStepDone('r1', false);
+    t.session.onRunDone('r1');
+    await tick();
+    expect(t.speaker.spoken).toEqual([]);
+    t.listener.quiet(); // it was nothing: the answer is said
+    await tick();
+    expect(t.speaker.spoken.map((s) => s.text)).toEqual(['Готово, записах го.']);
+  });
+
+  it('words said while the answer is written reach the run, and that answer is not read out', async () => {
+    const t = build();
+    await t.session.start();
+    t.listener.say();
+    await settle();
+    t.session.onRunQueued('r1', 'c1');
+    t.listener.h?.onSpeechStart(); // "Чакай, спри за малко." while it thinks
+    t.session.onDelta('r1', 'Римската империя започва през 753 г. пр.н.е.');
+    t.session.onStepDone('r1', false);
+    await tick();
+    expect(t.speaker.spoken).toEqual([]);
+    t.transcriber.next = 'Чакай, спри за малко.';
+    t.listener.h?.onUtterance(new Blob(['x']), undefined, 0, 500);
+    await settle();
+    expect(t.transport.steered.map((s) => s.text)).toEqual(['Чакай, спри за малко.']);
+    expect(t.speaker.spoken).toEqual([]); // the answer to the first half is held back
+    t.session.onDelta('r1', 'Спрях.');
+    t.session.onStepDone('r1', false);
+    t.session.onRunDone('r1');
+    await tick();
+    expect(t.speaker.spoken.map((s) => s.text)).toEqual(['Спрях.']);
+  });
+
   it('a turn held by words that never end is sent at the ceiling; nothing waits for ever', async () => {
     const t = build({ patienceMs: 5000, ceilingMs: 60 });
     await t.session.start();

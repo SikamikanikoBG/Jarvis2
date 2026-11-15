@@ -154,6 +154,27 @@ describe('Segmenter', () => {
     expect(r.events.map((e) => e.type)).toEqual(['onset']);
   });
 
+  it('a short sentence whose attack never held is an utterance all the same, not thrown away', () => {
+    // Alpha round 2 (2026-11-15, R2-01): over the hold music "Чакай, спри за малко." (1.2 s) never
+    // held the 450 ms attack and was dropped unheard.
+    const seg = new Segmenter();
+    seg.setAttack(450);
+    let r = feed(seg, 0.002, 1000, 0);
+    const events: SegmentEvent[] = [];
+    for (const [level, ms] of [[0.3, 360], [0.002, 120], [0.3, 360], [0.002, 120], [0.3, 360], [0.002, 800]] as const) {
+      r = feed(seg, level, ms, r.t);
+      events.push(...r.events);
+    }
+    expect(events.map((e) => e.type)).toEqual(['onset', 'speech-start', 'speech-end']);
+    expect(events[1]?.at).toBe(1000);
+    const end = events[2];
+    expect(end?.type === 'speech-end' ? end.durationMs : 0).toBeGreaterThan(1200);
+    // A click is still only a click.
+    const click = feed(seg, 0.3, 120, r.t);
+    r = feed(seg, 0.002, 800, click.t);
+    expect([...click.events, ...r.events].map((e) => e.type)).toEqual(['onset', 'quiet']);
+  });
+
   it('a cut-in that takes seconds to confirm under the long attack still starts at its first word', () => {
     // Alpha 2026-11-15: over the hold music the 450 ms attack took 2.7 s to hold on "Чакай, спри за
     // малко. Кажи ми…"; letting go of the sound at 1.5 s also lost where it began.

@@ -16,6 +16,11 @@ Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal
 - The locked call screen on the light theme: dark-theme colours for the slides and the amber too.
 - Hanging up mid-turn is in the call trace (`turn.send why=hangup`); an incognito call keeps no
   voice-debug trace or clips.
+- **A short sentence said while Jarvis thinks or speaks is no longer lost** (round 2): over the hold
+  music a 1.2 s "Чакай, спри за малко." never held the longer attack and was thrown away unheard. A
+  sound long enough to be words is now recognised however it ended, and Jarvis does not start
+  speaking while you make a sound or while your words are still being recognised; an answer written
+  meanwhile waits, and is dropped if your words go to the run.
 
 ### Changed
 - **On a call Jarvis lets you finish a thought** (issue #12). The turn model now decides both ways: a

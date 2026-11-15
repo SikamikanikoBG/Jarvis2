@@ -122,7 +122,10 @@ one slot more than the limit.
   that comes to nothing (`quiet`, a release of silence, or 1.5 s without becoming speech) lets the
   clock go on with what was left. An utterance starts at its first sound, not where a dip inside a
   word restarted the attack (the 450 ms cut-in attack lost "Чакай." that way), with the pre-roll
-  before it. A piece already recognised is the next piece's Whisper prompt at once.
+  before it. A piece already recognised is the next piece's Whisper prompt at once. A sound that
+  ends before its attack ever held (over the hold music the attack is 450 ms) is still an utterance
+  if it lasted 400 ms, and Whisper decides; while he makes a sound or his words are with Whisper
+  nothing is read out, and an answer written meanwhile is parked like one he talked over.
 - **Incognito:** with `voice_debug` on, an incognito call writes no trace and its clips are not kept
   (`/api/stt keep=false`).
 - **On the screen:** while a turn waits for him the call reads "Listening — go on" with an amber

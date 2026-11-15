@@ -7,7 +7,7 @@
  * message, and the `tool.call` / `tool.result` / `tool.confirm_*` events when they are loaded.
  */
 import { isInjectedUserMessage } from '../lib/injected';
-import type { ConversationSummary, Plan, Run, RunScopedEvent, ToolResult, Attachment } from '../protocol/types';
+import type { ChangeField, ChangeRecord, ConversationSummary, Plan, Run, RunScopedEvent, ToolResult, Attachment } from '../protocol/types';
 import { isTerminal } from '../protocol/types';
 import type { ChatState, LocalMessage } from './state';
 
@@ -51,7 +51,13 @@ export type TranscriptItem =
       name: string;
       arguments: Record<string, unknown>;
       reason: string;
+      /** What it would change, old → new, when the tool could say (settings.set). */
+      preview: ChangeField[] | null;
+      /** It asks because of its arguments: no "always allow" for it. */
+      risk: string[] | null;
     }
+  /** What a tool call changed (docs/stories/14_agent_admin.md): stays in sight when the run folds. */
+  | { kind: 'change'; key: string; change: ChangeRecord }
   | { kind: 'stream'; key: string; runId: string }
   | { kind: 'run'; key: string; runId: string }
   | { kind: 'summary'; key: string; text: string }
@@ -171,6 +177,8 @@ function buildBlock(src: TranscriptSource, block: Block): TranscriptItem[] {
     if (!card) return;
     emitted.add(callId);
     items.push({ kind: 'tool', key: `tool:${runId ?? ''}:${callId}`, card });
+    const change = card.result?.change;
+    if (change) items.push({ kind: 'change', key: `change:${change.id}`, change });
   };
 
   for (const t of timed) {
@@ -210,6 +218,8 @@ function buildBlock(src: TranscriptSource, block: Block): TranscriptItem[] {
             name: ev.name,
             arguments: ev.arguments,
             reason: ev.reason,
+            preview: ev.preview ?? null,
+            risk: ev.risk ?? null,
           });
         } else if (!cards.has(ev.call_id) || !events.some((e) => e.type === 'tool.call' && e.call_id === ev.call_id)) {
           emitCard(ev.call_id);
@@ -254,6 +264,8 @@ function inSight(item: TranscriptItem): boolean {
     case 'injected':
     case 'confirm':
       return false;
+    case 'change':
+      return true; // what Jarvis changed is read like an answer, with its Revert at hand
     default:
       return true;
   }

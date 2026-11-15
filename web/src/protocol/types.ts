@@ -50,6 +50,9 @@ export interface ToolResult {
   total: number | null;
   cursor: string | null;
   error: string | null;
+  /** What the call changed (Jarvis's own settings, a schedule, a route; docs/stories/14_agent_admin.md):
+   *  the chat draws a change card from it. Absent on results stored before 2026-11-15. */
+  change?: ChangeRecord | null;
 }
 
 // ---- runs.py -------------------------------------------------------------------------
@@ -668,6 +671,13 @@ export interface MailTestResult {
   error?: string;
 }
 
+export interface AgentAdminSettings {
+  enabled: boolean;
+  api_enabled: boolean;
+  probe_window_s: number;
+  proposal_ttl_s: number;
+}
+
 export interface Settings {
   assistant_name: string;
   user_name: string;
@@ -726,6 +736,8 @@ export interface Settings {
   searxng_url: string | null;
   shadow: ShadowSettings;
   tasks: TasksSettings;
+  /** Jarvis changing its own settings and schedules (docs/stories/14_agent_admin.md). */
+  agent_admin?: AgentAdminSettings;
 }
 
 /** Delegated tasks (docs/stories/13_delegated_tasks.md). Off until the alpha passes. */
@@ -832,6 +844,43 @@ export interface Skill {
   updated_at: string;
 }
 
+// ---- features.py: the trail of changes (docs/stories/14_agent_admin.md) ----------------
+
+export type ChangeArea = 'settings' | 'schedule' | 'api';
+export type ChangeStatus = 'applied' | 'probing' | 'proposed' | 'auto_reverted' | 'reverted' | 'discarded' | 'expired';
+
+/** One field a change touched. A secret's values arrive masked. */
+export interface ChangeField {
+  path: string;
+  old: unknown;
+  new: unknown;
+  op: 'set' | 'add' | 'remove';
+  secret: boolean;
+}
+
+export interface ChangeRecord {
+  id: string;
+  at: string;
+  area: ChangeArea;
+  target: string;
+  /** arsen | jarvis | system | revert | probe-revert */
+  actor: string;
+  actor_label: string;
+  run_id: string | null;
+  run_kind: string | null;
+  conversation_id: string | null;
+  call_id: string | null;
+  fields: ChangeField[];
+  risk: string[];
+  reason: string;
+  status: ChangeStatus;
+  rev: number | null;
+  reverts: string | null;
+  reverted_by: string | null;
+  note: string;
+  revertible: boolean;
+}
+
 export type CatchUp = 'skip' | 'run_once';
 /** Whether a scheduled task rings when it ends: 'default' follows Settings > Calls. */
 export type ScheduleCallMe = 'default' | 'always' | 'never';
@@ -848,6 +897,9 @@ export interface Schedule {
   think: boolean | null;
   think_level: ThinkLevel | null;
   call_me: ScheduleCallMe;
+  /** Who wrote the prompt: null = Arsen; a run id = a run nobody asked from. Such a prompt fires
+   *  asking like a task until he accepts it. Absent from cores before 2026-11-15. */
+  prompt_by?: string | null;
   next_fire: string | null;
   last_fired_for: string | null;
   last_run_id: string | null;
@@ -939,6 +991,7 @@ export interface ToolSpec {
   destructive: boolean;
   idempotent: boolean;
   provider: string;
+  owner_only?: boolean;
 }
 
 // ---- events.py: server → client ------------------------------------------------------
@@ -1063,6 +1116,10 @@ export interface ToolConfirmRequested extends RunEventBase {
   name: string;
   arguments: Record<string, unknown>;
   reason: string;
+  /** What the call would change, old → new (settings.set); secrets masked. */
+  preview?: ChangeField[] | null;
+  /** The risk classes that made THIS call ask: no "always allow this tool" for it. */
+  risk?: string[] | null;
 }
 export interface ToolConfirmResolved extends RunEventBase {
   type: 'tool.confirm_resolved';
@@ -1133,6 +1190,19 @@ export interface ScheduleChanged extends Base {
   type: 'schedule.changed';
   schedule_id: string | null;
 }
+/** The settings changed (UI, Jarvis, a revert): paths only, an open Settings screen refetches. */
+export interface SettingsChanged extends Base {
+  type: 'settings.changed';
+  rev: number;
+  paths: string[];
+  change_id: string | null;
+  actor: string;
+}
+/** A change was written to the trail, or its status moved. */
+export interface ChangeRecorded extends Base {
+  type: 'change.recorded';
+  change: ChangeRecord;
+}
 export interface ToolsChanged extends Base {
   type: 'tools.changed';
   provider: string | null;
@@ -1164,7 +1234,16 @@ export interface TaskRemoved extends Base {
   task_id: string;
 }
 
-export type FeatureEvent = BoardChanged | KgChanged | SkillsChanged | ScheduleChanged | ToolsChanged | MeetingSegment | MeetingChanged;
+export type FeatureEvent =
+  | BoardChanged
+  | KgChanged
+  | SkillsChanged
+  | ScheduleChanged
+  | SettingsChanged
+  | ChangeRecorded
+  | ToolsChanged
+  | MeetingSegment
+  | MeetingChanged;
 
 export type RunScopedEvent =
   | RunQueued

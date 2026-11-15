@@ -67,6 +67,7 @@ export function SchedulesScreen() {
       })
       .catch(fail('Run now'));
   const remove = (id: string) => api.schedules.remove(id).then(reload).catch(fail('Delete'));
+  const accept = (s: Schedule) => api.schedules.accept(s.id).then(reload).catch(fail('Accept'));
 
   return (
     <div className="screen">
@@ -128,6 +129,12 @@ export function SchedulesScreen() {
                       </span>
                       {s.last_status && <span className={`chip ${statusChip(s.last_status)}`}>{s.last_status}</span>}
                       {s.call_me === 'never' && <span className="chip chip-outline">no call</span>}
+                      {/* A prompt a run wrote fires asking like a task until he accepts it (docs/stories/14_agent_admin.md). */}
+                      {s.prompt_by && (
+                        <button type="button" className="chip chip-warn" title="Written by a run, not by you: it asks before acting until you accept it" onClick={() => void accept(s)}>
+                          by Jarvis · Accept
+                        </button>
+                      )}
                     </div>
                     {/* Only when the prompt is what matched — otherwise the row stays as it was. */}
                     {q && !matchesQuery(q, s.name) && matchesQuery(q, s.prompt) && (

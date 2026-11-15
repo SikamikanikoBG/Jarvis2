@@ -927,3 +927,77 @@
 /* Settings -> Tasks: the tools tasks may use without asking, each removable. */
 .freed-list { list-style: none; margin: 0 0 6px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .freed-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; overflow-wrap: anywhere; }
+
+/* Change card: what Jarvis changed in its own settings / schedules / routes (docs/stories/14_agent_admin.md) */
+.change-card {
+  align-self: stretch;
+  max-width: var(--composer-max);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.change-card.proposed {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+}
+.change-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.change-title {
+  font-weight: 600;
+}
+.change-when {
+  margin-left: auto;
+}
+.change-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--fs-sm);
+}
+.change-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-width: 0;
+}
+.change-path {
+  color: var(--fg-2);
+  overflow-wrap: anywhere;
+}
+.change-vals {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.change-old {
+  color: var(--fg-3, var(--fg-2));
+}
+.change-new {
+  font-weight: 600;
+}
+.change-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.confirm .change-diff {
+  padding: 8px 10px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+}
+.settings-elsewhere {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}

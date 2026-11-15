@@ -39,6 +39,8 @@ export function applyServerEvent<S extends ChatState>(state: S, event: ServerEve
     case 'kg.changed':
     case 'skills.changed':
     case 'schedule.changed':
+    case 'settings.changed':
+    case 'change.recorded':
     case 'tools.changed':
     case 'meeting.segment':
     case 'meeting.changed':

@@ -132,3 +132,26 @@ describe('folding a finished run’s work', () => {
     expect(shape(items)).toEqual(['message:m_u', 'message:m_a1', 'tool', 'message:m_a2', 'run']);
   });
 });
+
+describe('a change card', () => {
+  it('sits right after the tool card that made it and stays in sight when the run folds', () => {
+    const messages = oneToolTurn();
+    const change = {
+      id: 'chg_1', at: iso(3), area: 'settings', target: 'settings', actor: 'jarvis', actor_label: 'chat', run_id: RUN,
+      run_kind: 'chat', conversation_id: 'conv_a', call_id: 'c1', risk: [], reason: '', status: 'applied', rev: 2,
+      reverts: null, reverted_by: null, note: '', revertible: true,
+      fields: [{ path: 'voice.hold_volume', old: 0.4, new: 0.3, op: 'set', secret: false }],
+    };
+    const events = [
+      { type: 'tool.call', ts: iso(2), run_id: RUN, conversation_id: 'conv_a', seq: 1, call_id: 'c1', name: 'settings.set', arguments: {}, read_only: false, idempotency_key: 'k' },
+      {
+        type: 'tool.result', ts: iso(3), run_id: RUN, conversation_id: 'conv_a', seq: 2, call_id: 'c1', name: 'settings.set', duration_ms: 5,
+        result: { kind: 'data', text: 'Changed', count: null, total: null, cursor: null, error: null, change },
+      },
+    ] as unknown as RunScopedEvent[];
+    const open = buildTranscriptFrom(source(messages, 'done', { runEvents: { [RUN]: events }, foldWork: false }));
+    expect(shape(open)).toEqual(['message:m_u', 'message:m_a1', 'tool', 'change', 'message:m_a2', 'run']);
+    const folded = buildTranscriptFrom(source(messages, 'done', { runEvents: { [RUN]: events } }));
+    expect(shape(folded)).toEqual(['message:m_u', 'work(message,tool)', 'change', 'work(message)', 'message:m_a2', 'run']);
+  });
+});

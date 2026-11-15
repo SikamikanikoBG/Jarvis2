@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, api, describeError, fieldErrors } from '../api/client';
 import { Switch } from '../components/primitives';
 import type { ThemePref } from '../lib/theme';
 import { LANES, ROLE_NAMES, RUN_KINDS, THINK_LEVELS, type Lane, type ModelSpec, type Provider, type RoleName, type RunKind, type Settings, type SttKind, type ThinkLevel, type ToolExposure } from '../protocol/types';
 import { useStore } from '../store/store';
 import { CallsSection } from './CallsSection';
+import { ChangesSection } from './ChangesSection';
 import { CollabSection } from './CollabSection';
 import { MailAccountsSection } from './MailAccountsSection';
 import { McpServersSection } from './McpServersSection';
@@ -36,29 +37,56 @@ export function SettingsScreen() {
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [namespaces, setNamespaces] = useState<string[]>([]);
+  // The revision the form was loaded at: a save sends it back, and the core answers 409 when
+  // someone - Jarvis, another tab - saved since (docs/stories/14_agent_admin.md). null = overwrite.
+  const [rev, setRev] = useState<number | null>(null);
+  // Fields changed elsewhere while this form has unsaved edits: say so instead of saving over them.
+  const [elsewhere, setElsewhere] = useState<string[] | null>(null);
   const themePref = useStore((s) => s.themePref);
   const setTheme = useStore((s) => s.setTheme);
+  const settingsVersion = useStore((s) => s.featureVersion.settings);
+  const lastChange = useStore((s) => s.settingsChanged);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     api.settings
-      .get()
-      .then((s) => {
-        setOriginal(s);
-        setDraft(s);
+      .load()
+      .then(({ settings, rev: r }) => {
+        setOriginal(settings);
+        setDraft(settings);
+        setRev(r);
+        setElsewhere(null);
       })
       .catch((e: unknown) => setLoadError(e instanceof ApiError ? describeError(e.status, e.body) : String(e)));
+  }, []);
+
+  useEffect(() => {
+    load();
     // The namespaces a call may be allowed: read from the live tool list, so the allow-list
     // offers what exists and never asks Arsen to type "workocholic" from memory.
     api.tools
       .list()
       .then((tools) => setNamespaces([...new Set(tools.map((t) => t.name.split('.', 1)[0] ?? ''))].filter(Boolean)))
       .catch(() => undefined);
-  }, []);
+  }, [load]);
 
   const dirtyKeys = useMemo(() => {
     if (!original || !draft) return [];
     return (Object.keys(draft) as (keyof Settings)[]).filter((k) => !deepEqual(draft[k], original[k]));
   }, [original, draft]);
+
+  // A change from anywhere else (Jarvis, a revert, another tab): an untouched form simply shows
+  // it; a form with edits of his own warns rather than silently saving the old values back.
+  const seen = useRef({ rev, dirty: false, saving: false });
+  useEffect(() => {
+    seen.current = { rev, dirty: dirtyKeys.length > 0, saving };
+  });
+  useEffect(() => {
+    if (settingsVersion === 0 || !lastChange) return;
+    const { rev: mine, dirty, saving: ours } = seen.current;
+    if (ours || (mine !== null && lastChange.rev <= mine)) return; // our own save
+    if (dirty) setElsewhere(lastChange.paths);
+    else load();
+  }, [settingsVersion, lastChange, load]);
 
   const patch = <K extends keyof Settings>(key: K, value: Settings[K]) => {
     setDraft((d) => (d ? { ...d, [key]: value } : d));
@@ -80,13 +108,17 @@ export function SettingsScreen() {
     const body: Partial<Settings> = {};
     for (const k of dirtyKeys) (body as Record<string, unknown>)[k] = draft[k];
     try {
-      const saved = await api.settings.patch(body);
+      const { settings: saved, rev: r } = await api.settings.save(body, rev);
       setOriginal(saved);
       setDraft(saved);
+      setRev(r);
+      setElsewhere(null);
       useStore.getState().setCallMeDefault(saved.call_me_default.includes('chat'));
       setSavedAt(Date.now());
     } catch (e) {
-      if (e instanceof ApiError && e.status === 422) {
+      if (e instanceof ApiError && e.status === 409) {
+        setElsewhere(lastChange?.paths.length ? lastChange.paths : ['(saved elsewhere since this screen opened)']);
+      } else if (e instanceof ApiError && e.status === 422) {
         const fe = fieldErrors(e.body);
         setErrors(Object.keys(fe).length ? fe : { _: describeError(e.status, e.body) });
       } else {
@@ -133,6 +165,29 @@ export function SettingsScreen() {
         <h1>Settings</h1>
 
         <SettingsNav />
+
+        {elsewhere && (
+          <div className="card settings-elsewhere" role="alert">
+            <strong>Changed elsewhere while you were editing:</strong> <span className="mono small">{elsewhere.join(', ')}</span>
+            <div className="change-actions">
+              <button type="button" className="btn btn-secondary btn-sm" onClick={load}>
+                Reload (drop my edits)
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => {
+                  setElsewhere(null);
+                  setRev(null); // his next save overwrites, knowingly
+                }}
+              >
+                Keep mine
+              </button>
+            </div>
+          </div>
+        )}
+
+        <ChangesSection />
 
         <section id="settings-appearance" className="card role-card settings-anchor">
           <div className="section-head">

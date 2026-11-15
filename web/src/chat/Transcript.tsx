@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 import { Icon } from '../components/Icon';
 import { useStore } from '../store/store';
 import type { TranscriptItem } from '../store/transcript';
+import { ChangeCard } from './ChangeCard';
 import { ConfirmCard } from './ConfirmCard';
 import { InjectedNote } from './InjectedNote';
 import { MessageItem } from './MessageItem';
@@ -181,7 +182,9 @@ function renderItem(it: TranscriptItem): ReactNode {
     case 'note':
       return <Note key={it.key} note={it.note} />;
     case 'confirm':
-      return <ConfirmCard key={it.key} runId={it.runId} callId={it.callId} name={it.name} arguments={it.arguments} reason={it.reason} />;
+      return <ConfirmCard key={it.key} runId={it.runId} callId={it.callId} name={it.name} arguments={it.arguments} reason={it.reason} preview={it.preview} />;
+    case 'change':
+      return <ChangeCard key={it.key} change={it.change} />;
     case 'stream':
       return <StreamBubble key={it.key} runId={it.runId} />;
     case 'run':

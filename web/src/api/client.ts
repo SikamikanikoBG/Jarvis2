@@ -1,4 +1,5 @@
 import type {
+  ChangeRecord,
   Attachment,
   ContextLive,
   ContextRange,
@@ -68,7 +69,18 @@ const STT_TIMEOUT_MS = 60_000;
 /** `timeoutMs`: give up after this long. A call cannot wait on a request the network dropped (a
  *  phone moving from Wi-Fi to mobile data): it would sit on "Heard you..." for good. */
 async function request<T>(method: string, path: string, body?: unknown, timeoutMs?: number): Promise<T> {
-  const headers: Record<string, string> = { Accept: 'application/json' };
+  return (await requestFull(method, path, body, timeoutMs)).data as T;
+}
+
+/** `request` with the response's ETag, and extra headers (the settings revision as If-Match). */
+async function requestFull(
+  method: string,
+  path: string,
+  body?: unknown,
+  timeoutMs?: number,
+  extra?: Record<string, string>,
+): Promise<{ data: unknown; etag: string | null }> {
+  const headers: Record<string, string> = { Accept: 'application/json', ...extra };
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   const multipart = body instanceof FormData;
@@ -80,7 +92,8 @@ async function request<T>(method: string, path: string, body?: unknown, timeoutM
     credentials: 'same-origin',
     ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
   });
-  if (res.status === 204) return null as T;
+  const etag = res.headers.get('etag');
+  if (res.status === 204) return { data: null, etag };
   const text = await res.text();
   let data: unknown = null;
   if (text) {
@@ -91,7 +104,13 @@ async function request<T>(method: string, path: string, body?: unknown, timeoutM
     }
   }
   if (!res.ok) throw new ApiError(res.status, data, describeError(res.status, data));
-  return data as T;
+  return { data, etag };
+}
+
+/** The settings revision from an ETag (`"12"`), or null. */
+function revOf(etag: string | null): number | null {
+  const n = Number((etag ?? '').replace(/^W\//, '').replace(/"/g, ''));
+  return etag && Number.isFinite(n) ? n : null;
 }
 
 /** A query string from the values that are set; null and empty are left out. */
@@ -233,6 +252,8 @@ export const api = {
     remove: (id: string) => request<null>('DELETE', `/api/schedules/${encodeURIComponent(id)}`),
     run: (id: string) => request<ScheduleRunResponse>('POST', `/api/schedules/${encodeURIComponent(id)}/run`),
     fires: (id: string, limit = 20) => request<ScheduleFire[]>('GET', `/api/schedules/${encodeURIComponent(id)}/fires?limit=${limit}`),
+    /** He accepts a prompt a run wrote: it fires with the schedule's own authority again. */
+    accept: (id: string) => request<Schedule>('POST', `/api/schedules/${encodeURIComponent(id)}/accept`),
   },
   mail: {
     /** Log in with these (unsaved) details and count the Inbox. Empty app_password = the saved one. */
@@ -351,6 +372,25 @@ export const api = {
   settings: {
     get: () => request<Settings>('GET', '/api/settings'),
     patch: (body: Partial<Settings>) => request<Settings>('PATCH', '/api/settings', body),
+    /** The settings and their revision: a save sends it back, and 409 means someone saved since. */
+    load: async () => {
+      const { data, etag } = await requestFull('GET', '/api/settings');
+      return { settings: data as Settings, rev: revOf(etag) };
+    },
+    save: async (body: Partial<Settings>, rev: number | null) => {
+      const { data, etag } = await requestFull('PATCH', '/api/settings', body, undefined, rev === null ? undefined : { 'If-Match': `"${rev}"` });
+      return { settings: data as Settings, rev: revOf(etag) };
+    },
+    /** The trail: who changed what and when (docs/stories/14_agent_admin.md). */
+    changes: (params: { limit?: number; conversation_id?: string; status?: string } = {}) =>
+      request<ChangeRecord[]>(
+        'GET',
+        `/api/settings/changes?${qs({ limit: String(params.limit ?? 30), conversation_id: params.conversation_id, status: params.status })}`,
+      ),
+    change: (id: string) => request<ChangeRecord>('GET', `/api/settings/changes/${encodeURIComponent(id)}`),
+    revert: (id: string) => request<ChangeRecord>('POST', `/api/settings/changes/${encodeURIComponent(id)}/revert`),
+    apply: (id: string) => request<ChangeRecord>('POST', `/api/settings/changes/${encodeURIComponent(id)}/apply`),
+    discard: (id: string) => request<ChangeRecord>('POST', `/api/settings/changes/${encodeURIComponent(id)}/discard`),
   },
   /** The chats as addressable sessions, with the @handle the core derives from each title. */
   sessions: {

@@ -1,7 +1,9 @@
 import { useState, type ReactNode } from 'react';
 import { Icon } from '../components/Icon';
 import { prettyJson } from '../lib/format';
+import type { ChangeField } from '../protocol/types';
 import { useStore } from '../store/store';
+import { ChangeDiff } from './ChangeCard';
 
 interface Props {
   runId: string;
@@ -11,10 +13,12 @@ interface Props {
   reason: string;
   /** More ways to answer, beside Approve / Reject (a task's "Always allow this tool in tasks"). */
   extra?: ReactNode;
+  /** What the call would change, old → new (settings.set): shown above the raw arguments. */
+  preview?: ChangeField[] | null;
 }
 
 /** Approve / reject a tool call the engine paused on. Disappears when `tool.confirm_resolved` arrives. */
-export function ConfirmCard({ runId, callId, name, arguments: args, reason, extra }: Props) {
+export function ConfirmCard({ runId, callId, name, arguments: args, reason, extra, preview }: Props) {
   const confirmTool = useStore((s) => s.confirmTool);
   const [note, setNote] = useState('');
   const [sent, setSent] = useState<boolean | null>(null);
@@ -33,7 +37,17 @@ export function ConfirmCard({ runId, callId, name, arguments: args, reason, extr
         </span>
       </div>
       <div className="confirm-reason">{reason}</div>
-      <pre>{prettyJson(args)}</pre>
+      {preview && preview.length > 0 ? (
+        <>
+          <ChangeDiff fields={preview} />
+          <details className="small">
+            <summary className="muted">Arguments</summary>
+            <pre>{prettyJson(args)}</pre>
+          </details>
+        </>
+      ) : (
+        <pre>{prettyJson(args)}</pre>
+      )}
       <div className="confirm-actions">
         <input
           className="input"

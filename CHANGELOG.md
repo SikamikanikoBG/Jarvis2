@@ -2,6 +2,43 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-15 — core 2.0.0a125, proto 2.0.0a41, web alpha.91
+
+### Added
+- **Jarvis changes its own settings, schedules and anything else the UI can** (issue #14,
+  docs/stories/14_agent_admin.md). New tools: `settings.get` (any setting, with what it means, from the
+  comment above the field), `settings.set` (validated like the Settings screen, all or nothing),
+  `settings.revert`; `schedule.get`, `schedule.update` (same id, history kept: time, prompt,
+  pause/resume), `schedule.run_now`, `schedule.fires`; and `jarvis.api_describe / api_read / api_write`,
+  which call the UI's own routes in process for boards, folders, chats, skills, the knowledge graph,
+  meetings, triage and RSVP runs. Not offered to collab runs. Flag: `settings.agent_admin.enabled`.
+- **A change card in the chat** under every call that changed something: old → new, Revert, and
+  Apply / Discard for a proposal. The approval card shows the same diff.
+- **Settings → Changes**: who changed what (Arsen or Jarvis), Undo last change, Revert, Apply. It needs
+  no model. Break-glass with the core down: `scripts/admin_revert.py --last` on ardi.
+- REST: `GET /api/settings/changes`, `…/{id}`, `…/{id}/revert|apply|discard`,
+  `POST /api/schedules/{id}/accept`; `ETag` / `If-Match` on `/api/settings`; WS `settings.changed`,
+  `change.recorded`; `/api/status` → `admin`.
+
+### Changed
+- **Only risky changes ask, and risk is a marker on the field** (`lifeline`, `safety`, `secret`, plus
+  removing an item): a lane's endpoint, MCP hosts, confirmations, approved senders, secrets ask; patience,
+  RSVP times, names apply at once. A lifeline is probed before it is saved and put back on its own if
+  its re-check fails (also after a restart).
+- **`schedule.create` no longer asks** (Gate A: only risky writes ask); `schedule.delete` asks and names
+  the fires lost. `confirmations.always_ask` still makes create ask.
+- In a scheduled, triage, meeting or system run a risky change becomes a proposal for Arsen instead of
+  being applied. A run keeps the approval rules it started with. A schedule prompt a run wrote fires
+  asking like a task until Arsen accepts it.
+- The Settings screen refreshes when something else changes the settings, and warns instead of saving
+  over a newer value (409).
+
+### Fixed
+- Two saves of the settings at once (the UI and anything else) no longer lose one of them; every save
+  goes through one locked path and is applied onto what is in force.
+- A schedule's thinking override can be set back to the default (`think` / `think_level` null), in the
+  UI too. `DELETE /api/schedules/{unknown}` is 404. A one-shot `at` in the past is refused (422).
+
 ## 2026-11-15 — core 2.0.0a124, proto 2.0.0a40, web alpha.90
 
 ### Fixed in the alpha, before this release (call patience, round 1)

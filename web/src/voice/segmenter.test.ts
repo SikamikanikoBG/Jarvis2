@@ -154,6 +154,26 @@ describe('Segmenter', () => {
     expect(r.events.map((e) => e.type)).toEqual(['onset']);
   });
 
+  it('a cut-in that takes seconds to confirm under the long attack still starts at its first word', () => {
+    // Alpha 2026-11-15: over the hold music the 450 ms attack took 2.7 s to hold on "Чакай, спри за
+    // малко. Кажи ми…"; letting go of the sound at 1.5 s also lost where it began.
+    const seg = new Segmenter();
+    seg.setAttack(450);
+    let r = feed(seg, 0.002, 1000, 0);
+    const events: SegmentEvent[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      r = feed(seg, 0.3, 360, r.t); // syllables, never 450 ms without a dip
+      events.push(...r.events);
+      r = feed(seg, 0.002, 120, r.t);
+      events.push(...r.events);
+    }
+    r = feed(seg, 0.3, 600, r.t);
+    events.push(...r.events);
+    // A held turn is let go of after 1.5 s; the utterance still begins at the first word.
+    expect(events.map((e) => e.type)).toEqual(['onset', 'quiet', 'speech-start']);
+    expect(events.find((e) => e.type === 'speech-start')?.at).toBe(1000);
+  });
+
   it('end() closes what is open', () => {
     const seg = new Segmenter();
     let r = feed(seg, 0.002, 1000, 0);

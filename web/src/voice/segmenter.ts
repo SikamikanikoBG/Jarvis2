@@ -28,8 +28,12 @@ export interface SegmenterOptions {
   /** Utterances shorter than this are dropped (a cough is not a sentence). */
   minUtteranceMs: number;
   /** How far back an utterance may start before its confirmed attack: to the first sound of it,
-   *  when the attack began again on a dip inside a word (see `onset`). */
+   *  when the attack began again on dips inside the words (see `onset`). Over Jarvis's voice or
+   *  the hold music the attack is 450 ms, and a cut-in took 2.7 s to confirm (alpha, 2026-11-15). */
   onsetReachMs: number;
+  /** How long a sound that has not become speech is reported as one (`onset` until `quiet`): a
+   *  turn waits on it no longer than this. A café's clatter never becomes speech. */
+  onsetHoldMs: number;
 }
 
 export const DEFAULT_SEGMENTER: SegmenterOptions = {
@@ -40,14 +44,16 @@ export const DEFAULT_SEGMENTER: SegmenterOptions = {
   releaseMs: 500,
   pauseMs: 250,
   minUtteranceMs: 400,
-  onsetReachMs: 1500,
+  onsetReachMs: 3000,
+  onsetHoldMs: 1500,
 };
 
 export type SegmentEvent =
   /** Sound over the floor, not yet held long enough to be speech: maybe a click, maybe the first
    *  syllable of the next sentence. A `speech-start` or a `quiet` follows. */
   | { type: 'onset'; at: number }
-  /** The sound since the last `onset` came to nothing: silent for a release since `at`. */
+  /** The sound since the last `onset` came to nothing: silent for a release since `at`, or still
+   *  not speech after `onsetHoldMs`. */
   | { type: 'quiet'; at: number }
   | { type: 'speech-start'; at: number }
   | { type: 'speech-end'; at: number; startedAt: number; durationMs: number }
@@ -75,8 +81,10 @@ export class Segmenter {
    *  after a send were cut off - the 450 ms cut-in attack restarted at every gap). */
   private soundSince: number | null = null;
   private lastLoud = 0;
-  /** A sound went on too long without becoming speech: no onset until the room is quiet again. */
-  private noisy = false;
+  /** An `onset` was reported and no `quiet` yet. A sound that went on for onsetHoldMs without
+   *  becoming speech gets its `quiet` early, and no new onset until the room has been quiet once,
+   *  so noise cannot hold his turn open - but it is still where an utterance would start. */
+  private onsetOpen = false;
   readonly opts: SegmenterOptions;
 
   constructor(opts: Partial<SegmenterOptions> = {}) {
@@ -122,12 +130,10 @@ export class Segmenter {
     const loud = !warming && rms >= threshold;
 
     if (loud && (this.phase === 'silence' || this.phase === 'attack')) this.lastLoud = t;
-    // A sound that has not become speech in all that time is a room, not a word (a café's
-    // clatter): it is let go of, and no new one is reported until the room has been quiet once,
-    // so noise cannot hold his turn open.
-    if (this.soundSince !== null && t - this.soundSince >= o.onsetReachMs && (this.phase === 'silence' || this.phase === 'attack')) {
-      this.soundSince = null;
-      this.noisy = true;
+    // A sound that has not become speech in all that time is most likely the room (a café's
+    // clatter), and a turn must not wait on it any longer.
+    if (this.onsetOpen && this.soundSince !== null && t - this.soundSince >= o.onsetHoldMs) {
+      this.onsetOpen = false;
       out.push({ type: 'quiet', at: t });
     }
     switch (this.phase) {
@@ -136,17 +142,16 @@ export class Segmenter {
           this.phase = 'attack';
           this.phaseSince = t;
           this.floorAtStart = this.floor;
-          if (this.soundSince === null && !this.noisy) {
+          if (this.soundSince === null) {
             this.soundSince = t;
+            this.onsetOpen = true;
             out.push({ type: 'onset', at: t });
           }
-        } else if (t - this.lastLoud >= o.releaseMs) {
-          this.noisy = false;
-          if (this.soundSince !== null) {
-            // Quiet for as long as an utterance takes to close: whatever it was, it was not words.
-            this.soundSince = null;
-            out.push({ type: 'quiet', at: this.lastLoud });
-          }
+        } else if (this.soundSince !== null && t - this.lastLoud >= o.releaseMs) {
+          // Quiet for as long as an utterance takes to close: whatever it was, it was not words.
+          this.soundSince = null;
+          if (this.onsetOpen) out.push({ type: 'quiet', at: this.lastLoud });
+          this.onsetOpen = false;
         }
         break;
       case 'attack':
@@ -157,6 +162,7 @@ export class Segmenter {
           const since = this.soundSince ?? this.phaseSince;
           this.utteranceStart = this.phaseSince - since <= o.onsetReachMs ? since : this.phaseSince;
           this.soundSince = null;
+          this.onsetOpen = false;
           out.push({ type: 'speech-start', at: this.utteranceStart });
         }
         break;
@@ -202,9 +208,10 @@ export class Segmenter {
     if (!this.speaking) {
       this.phase = 'silence';
       // A sound that never became speech is over too: nothing may wait on it.
-      if (this.soundSince === null) return [];
+      const open = this.onsetOpen;
       this.soundSince = null;
-      return [{ type: 'quiet', at: this.lastLoud }];
+      this.onsetOpen = false;
+      return open ? [{ type: 'quiet', at: this.lastLoud }] : [];
     }
     const at = this.phase === 'release' ? this.phaseSince : t;
     const out = this.close(at);

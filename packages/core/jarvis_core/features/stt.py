@@ -76,11 +76,20 @@ class Transcriber:
         return (url if url.endswith("/v1") else url + "/v1") + "/audio/transcriptions"
 
     async def transcribe(
-        self, audio: bytes, *, filename: str, mime: str, language: str | None = None, prompt: str | None = None
+        self,
+        audio: bytes,
+        *,
+        filename: str,
+        mime: str,
+        language: str | None = None,
+        prompt: str | None = None,
+        keep: bool = True,
     ) -> SttResult:
         """``prompt`` is Whisper's initial prompt: what was said just before (on a call, Jarvis's
         last sentence; for a long utterance recognised in pieces, the pieces so far). A short
-        answer is then heard as an answer to it, and names already said are spelled the same."""
+        answer is then heard as an answer to it, and names already said are spelled the same.
+        ``keep=False``: never kept for voice_debug, whatever the setting - an incognito call's
+        words are not written down (2026-11-14, EC-11 of the call-patience alpha)."""
         s = self._settings()
         prompt = " ".join((prompt or "").split())[-PROMPT_CHARS:] or None
         if not s.stt_url:
@@ -132,7 +141,7 @@ class Transcriber:
             warning = f"served by fallback upstream {chain[-1]} after {', '.join(chain[:-1])} failed"
             log.warning("stt: %s", warning)
         backend = f"{kind}:{chain[-1] if chain else s.stt_url}"
-        if s.voice_debug and self._keep_dir is not None:
+        if keep and s.voice_debug and self._keep_dir is not None:
             self._keep(audio, mime, prompt, text, lang, raw, s.stt_no_speech_max)
         return SttResult(text=text, language=lang, backend=backend, duration_ms=ms, warning=warning, segments=segments)
 

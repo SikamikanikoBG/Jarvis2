@@ -29,12 +29,14 @@ async def stt(
     prompt: str | None = Form(default=None),
     turn: bool = Form(default=False),
     stt_offset_ms: int = Form(default=0, ge=0),
+    keep: bool = Form(default=True),
 ) -> dict[str, Any]:
     """Speech to text. ``prompt``: what was said just before, for Whisper's context. ``turn``: also
     score whether the speech is a finished turn (features/turn.py) - in parallel, so it costs no
     time; ``turn_complete`` is null when the detector cannot say. ``stt_offset_ms`` (a WAV only):
     the audio before it was already recognised and is there for the turn model's sake - Whisper
-    hears from the offset on."""
+    hears from the offset on. ``keep=false`` (an incognito call): the clip is not kept for
+    voice_debug."""
     core = core_of(request)
     data = await audio.read()
     if not data:
@@ -48,6 +50,7 @@ async def stt(
             mime=audio.content_type or "audio/webm",
             language=language or None,
             prompt=prompt or None,
+            keep=keep,
         )
     except SttError as exc:
         if scoring is not None:

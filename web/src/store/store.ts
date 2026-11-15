@@ -526,9 +526,11 @@ export const useStore = create<AppState>()((set, get) => ({
     } catch {
       /* the defaults stand; the server voice falls back to the device on its own */
     }
-    // An incognito call is one from the first word: the chat it opens is incognito, and the
-    // sentences Jarvis says are not written to the core's voice cache.
+    // An incognito call is one from the first word: the chat it opens is incognito, the
+    // sentences Jarvis says are not written to the core's voice cache, and with voice_debug on
+    // neither its trace nor its clips are kept (EC-11; the alpha found both written, 2026-11-14).
     const incognito = selectIncognitoNow(s);
+    if (incognito) debug = false;
     // No chat open: the call is to Jarvis himself, in the one conversation that is about the day
     // rather than a task (docs/stories/12_assistant.md). If it cannot be had, a new chat as before.
     // Not after "New chat": that asked for an empty chat, and the call starts it.
@@ -575,7 +577,7 @@ export const useStore = create<AppState>()((set, get) => ({
           const t0 = performance.now();
           callTrace.mark('stt.send', { bytes: audio.size, type: audio.type, language, turn: o?.turn ?? false, offsetMs: o?.offsetMs ?? 0 });
           try {
-            const res = await api.stt(audio, language, o);
+            const res = await api.stt(audio, language, { ...o, keep: !incognito });
             callTrace.mark('stt', { ms: Math.round(performance.now() - t0), text: res.text, language: res.language, turnComplete: res.turn_complete ?? null });
             return { text: res.text, language: res.language, turnComplete: res.turn_complete ?? null };
           } catch (e) {

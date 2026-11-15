@@ -116,11 +116,22 @@ one slot more than the limit.
   sends a held turn at once; a route change stops its clock until the new microphone is up;
   hanging up sends what was recognised (waiting up to 5 s for pieces still with Whisper) and the
   answer lands in the chat. A Whisper failure on one piece keeps the others and says so once.
+- **Not over his next sentence (alpha, 2026-11-14):** a turn is never sent, by the model's "sure" or
+  by the patience running out, while there is sound over the floor that is not yet confirmed as
+  speech (the segmenter's `onset`); the sound's first recognition decides as for speech, and a sound
+  that comes to nothing (`quiet`, a release of silence, or 1.5 s without becoming speech) lets the
+  clock go on with what was left. An utterance starts at its first sound, not where a dip inside a
+  word restarted the attack (the 450 ms cut-in attack lost "Чакай." that way), with the pre-roll
+  before it. A piece already recognised is the next piece's Whisper prompt at once.
+- **Incognito:** with `voice_debug` on, an incognito call writes no trace and its clips are not kept
+  (`/api/stt keep=false`).
 - **On the screen:** while a turn waits for him the call reads "Listening — go on" with an amber
-  ring running down over the wait; the words so far stay visible.
+  ring running down over the wait; the words so far stay visible. The locked (black) call screen
+  carries the dark theme's colours for everything on it, whatever the theme.
 - **Measuring it:** `scripts/voice_turn_stats.py` (read-only) counts voice turns that got more of
   his words within 20 s of being sent; with `voice_debug` the call trace has `turn.decide`,
-  `turn.wait`, `turn.hold`, `turn.send{why}`, `turn.more` and `piece.forced`.
+  `turn.wait`, `turn.hold`, `turn.send{why}` (sure, patience, ceiling, mute, hangup), `turn.more`,
+  `sound` and `piece.forced`.
 - **Recognition context:** what Jarvis last said goes to Whisper as its prompt; a short answer is
   recognised as an answer to that.
 - **The first sentence:** the first sentence of a reply is synthesised with fewer diffusion steps

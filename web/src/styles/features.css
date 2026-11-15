@@ -1405,8 +1405,13 @@
 /* Locked: the light goes down, the words stay legible for a glance, nothing responds.
    The ground is black WHATEVER the theme, so the ink tokens must be the dark theme's here too:
    with the phone on the light theme the current sentence came out #141a2b on #000 (13 Sep 2026,
-   "с тъмни букви на тъмен фон и не се чете"). */
+   "с тъмни букви на тъмен фон и не се чете"). Every token a part of this screen draws with is
+   here (callTheme.test.ts): the slides and the "go on" amber still had the light theme's
+   white and brown on the black (2026-11-14, call-patience alpha). */
 .call-locked {
+  --bg: #0a0e1a;
+  --bg-surface: #121829;
+  --border: #232f4d;
   --fg: #eaf0fb;
   --fg-2: #aab4cc;
   --fg-muted: #8893ad;
@@ -1415,7 +1420,10 @@
   --border-strong: #34426a;
   --accent: #25d8ff;
   --accent-soft: rgba(37, 216, 255, 0.12);
+  --ok: #4ade80;
+  --warn: #ffb347;
   --warn-soft: rgba(255, 179, 71, 0.14);
+  --danger: #ff5470;
   --danger-soft: rgba(255, 84, 112, 0.14);
   background: #000;
   color: var(--fg-2);

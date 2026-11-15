@@ -577,6 +577,46 @@ async def test_what_whisper_itself_scores_as_not_speech_is_not_words(tmp_path: P
     await t.aclose()
 
 
+def test_an_incognito_calls_clips_are_not_kept_for_voice_debug(client: TestClient, monkeypatch):
+    """EC-11 (call-patience alpha, F-07): with voice_debug on, an incognito call's speech was still
+    written to the clips folder with its transcript. The page says keep=false; the default keeps."""
+    from jarvis_core.features.stt import SttResult
+
+    core: Core = client.app.state.core  # type: ignore[attr-defined]
+    seen: list[object] = []
+
+    async def transcribe(audio: bytes, **kw: object) -> SttResult:
+        seen.append(kw.get("keep"))
+        return SttResult(text="Да.", language="bg", backend="test", duration_ms=5)
+
+    monkeypatch.setattr(core.transcriber, "transcribe", transcribe)
+    files = {"audio": ("u.wav", _wav(), "audio/wav")}
+    assert client.post("/api/stt", files=files, data={"keep": "false"}, headers=_h()).status_code == 200
+    assert client.post("/api/stt", files=files, headers=_h()).status_code == 200
+    assert seen == [False, True]
+
+
+async def test_a_clip_asked_not_to_be_kept_is_not_kept_even_with_voice_debug_on(tmp_path: Path):
+    import httpx
+
+    from jarvis_core.features.stt import Transcriber
+    from jarvis_proto import Settings
+
+    settings = Settings(stt_url="http://whisper:9000", stt_kind="asr", voice_debug=True)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"text": "Да.", "language": "bg", "segments": []})
+
+    keep = tmp_path / "stt-kept"
+    t = Transcriber(lambda: settings, keep)
+    t._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # pyright: ignore[reportPrivateUsage]
+    await t.transcribe(b"RIFF-incognito", filename="a.wav", mime="audio/wav", keep=False)
+    assert not keep.exists() or not list(keep.iterdir())
+    await t.transcribe(b"RIFF-kept", filename="a.wav", mime="audio/wav")
+    assert [f.read_bytes() for f in keep.glob("*.wav")] == [b"RIFF-kept"]
+    await t.aclose()
+
+
 async def test_with_voice_debug_on_every_clip_is_kept_with_whispers_scores(tmp_path: Path):
     import json
 

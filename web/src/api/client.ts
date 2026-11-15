@@ -273,14 +273,16 @@ export const api = {
     return res.arrayBuffer();
   },
   /** `prompt`: what was said just before (Whisper's context). `turn`: also score whether this is
-   *  a finished turn. `offsetMs`: the audio before it is there for the turn model only. */
-  stt: (audio: Blob, language?: string, opts: { prompt?: string; turn?: boolean; offsetMs?: number } = {}) => {
+   *  a finished turn. `offsetMs`: the audio before it is there for the turn model only.
+   *  `keep: false`: an incognito call's clip, never kept for voice_debug. */
+  stt: (audio: Blob, language?: string, opts: { prompt?: string; turn?: boolean; offsetMs?: number; keep?: boolean } = {}) => {
     const form = new FormData();
     form.append('audio', audio, audio.type === 'audio/wav' ? 'speech.wav' : 'speech.webm');
     if (language) form.append('language', language);
     if (opts.prompt) form.append('prompt', opts.prompt);
     if (opts.turn) form.append('turn', 'true');
     if (opts.offsetMs) form.append('stt_offset_ms', String(Math.round(opts.offsetMs)));
+    if (opts.keep === false) form.append('keep', 'false');
     return request<SttResponse>('POST', '/api/stt', form, STT_TIMEOUT_MS);
   },
   voice: {

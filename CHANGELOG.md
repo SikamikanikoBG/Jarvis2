@@ -4,6 +4,19 @@ Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal
 
 ## 2026-11-15 — core 2.0.0a124, proto 2.0.0a40, web alpha.90
 
+### Fixed in the alpha, before this release (call patience, round 1)
+- **A turn is no longer sent while you have already started your next sentence.** The "sure" decision
+  lands 0.7–1.1 s after a sentence ends, a breath is 0.3–0.8 s, and only speech the segmenter had
+  confirmed stopped the send: a 69 s briefing went out as 8 sends and 3 runs. Now any sound over the
+  floor holds it until its first words decide (no words: the wait goes on with what was left); noise
+  that never becomes speech is let go of after 1.5 s.
+- **The first words of a sentence are no longer cut off** when the attack started over on a gap
+  inside it ("Чакай." over Jarvis, the words after a send): an utterance starts at its first sound.
+- A piece of a long turn is recognised with the piece just before it as Whisper's prompt.
+- The locked call screen on the light theme: dark-theme colours for the slides and the amber too.
+- Hanging up mid-turn is in the call trace (`turn.send why=hangup`); an incognito call keeps no
+  voice-debug trace or clips.
+
 ### Changed
 - **On a call Jarvis lets you finish a thought** (issue #12). The turn model now decides both ways: a
   pause it hears as finished is still sent at once; a pause it hears as unfinished waits for you, the

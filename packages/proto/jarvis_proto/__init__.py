@@ -56,6 +56,8 @@ from jarvis_proto.events import (
 )
 from jarvis_proto.features import (
     Board,
+    ChangeField,
+    ChangeRecord,
     CollabKey,
     Edge,
     Entity,
@@ -136,6 +138,8 @@ __all__ = [
     "Board",
     "CallAlive",
     "CallEnded",
+    "ChangeField",
+    "ChangeRecord",
     "Channel",
     "ChatFolder",
     "ClientMessage",

@@ -12,8 +12,30 @@ from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
+from pydantic.config import JsonDict
 
 from jarvis_proto.runs import RunBudget, RunKind, ThinkLevel
+
+# What a change to a setting can do, as data on the field itself (docs/stories/14_agent_admin.md).
+# Jarvis may change its own settings; whether a change asks first, is probed, or is masked comes
+# from these markers and never from a list of names in the code that applies it:
+#   lifeline - can cut Jarvis off (a lane's endpoint, an MCP host, speech-to-text): probed before
+#              it is saved and re-checked after, reverted on its own if the check fails;
+#   safety   - loosens what stops for Arsen, or where things go (confirmations, approved senders);
+#   secret   - a credential: masked unless asked for in clear, and asks before it is written.
+# A marker on a section or a list covers everything under it. ``x-key`` names the field that
+# identifies an item of a list (``mcp_servers[name=fetch]``), so a path survives reordering.
+RiskClass = Literal["lifeline", "safety", "secret"]
+
+
+def marks(*risk: RiskClass, key: str | None = None) -> JsonDict:
+    """``json_schema_extra`` for a settings field: its risk classes and, for a list, its item key."""
+    out: JsonDict = {}
+    if risk:
+        out["x-risk"] = list(risk)
+    if key:
+        out["x-key"] = key
+    return out
 
 
 class Provider(StrEnum):
@@ -43,9 +65,10 @@ LANES: tuple[RoleName, ...] = (RoleName.CHAT, RoleName.BACKGROUND)
 
 
 class ModelSpec(BaseModel):
-    provider: Provider = Provider.OLLAMA
-    base_url: str = "http://localhost:11434"
-    model: str = ""
+    # Where a lane's calls go: a wrong one leaves Jarvis without a model to answer with.
+    provider: Provider = Field(default=Provider.OLLAMA, json_schema_extra=marks("lifeline"))
+    base_url: str = Field(default="http://localhost:11434", json_schema_extra=marks("lifeline"))
+    model: str = Field(default="", json_schema_extra=marks("lifeline"))
     think: bool = False
     # Only meaningful when ``think`` is on. Ollama: sent as the string level for models that
     # support levels (gpt-oss); vLLM: ``reasoning_effort``. None = the model's default depth.
@@ -95,9 +118,9 @@ class McpServerSpec(BaseModel):
     transport: McpTransport = McpTransport.STDIO
     command: str | None = None
     args: list[str] = Field(default_factory=list)
-    env: dict[str, str] = Field(default_factory=dict)
+    env: dict[str, str] = Field(default_factory=dict, json_schema_extra=marks("secret"))
     url: str | None = None
-    headers: dict[str, str] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory=dict, json_schema_extra=marks("secret"))
     enabled: bool = True
     timeout_s: int = 60
 
@@ -300,11 +323,12 @@ class MailAccount(BaseModel):
     """A mailbox the core reaches directly over IMAP/SMTP - no Outlook, no Windows host.
 
     Gmail: ``app_password`` is a Google *app password* (16 letters, needs 2-Step Verification),
-    never the account password. Secret: never echoed in logs or tool results.
+    never the account password. Secret: never in logs; ``settings.get`` masks it unless Arsen asks
+    for it in clear (Gate A 2026-11-15: Jarvis may read and set it - writing one asks first).
     """
 
     address: str
-    app_password: str = ""
+    app_password: str = Field(default="", json_schema_extra=marks("secret"))
     username: str = ""  # "" = the address
     imap_host: str = "imap.gmail.com"
     imap_port: int = 993
@@ -372,8 +396,10 @@ class MeetingRsvpSettings(BaseModel):
     host: str = ""  # jarvis-host MCP server that owns the calendar
     account: str = ""  # Outlook account (store) whose invites are answered; "" = default
     lookahead_days: int = 5
-    allowed_domains: list[str] = Field(default_factory=list)  # e.g. ["postbank.bg"]
-    vip: list[str] = Field(default_factory=list)  # addresses or domains, never declined
+    # Who gets an answer in his name and who is never declined: widening either changes who hears
+    # from his calendar, so both are safety.
+    allowed_domains: list[str] = Field(default_factory=list, json_schema_extra=marks("safety"))  # ["postbank.bg"]
+    vip: list[str] = Field(default_factory=list, json_schema_extra=marks("safety"))  # addresses or domains
     remove_canceled: bool = True
     propose_slots: int = 3
     work_start_hour: int = 9
@@ -550,7 +576,7 @@ class VoiceSettings(BaseModel):
     # "*" = every tool, as in the chat (2026-10-14: "всички инструменти да ги има и във voice
     # call-а"). An explicit list narrows a call to those namespaces. Anything that would ask for a
     # confirmation in the chat is confirmed by voice on a call (engine/loop.py).
-    namespaces: list[str] = Field(default_factory=lambda: ["*"])
+    namespaces: list[str] = Field(default_factory=lambda: ["*"], json_schema_extra=marks("lifeline"))
     think: bool = False
     # The longest a call turn may work, whatever the chat budget allows: he is on the line hearing
     # hold music. When it runs out the turn says what it has. 0 = the chat budget alone.
@@ -685,6 +711,7 @@ class TasksSettings(BaseModel):
     #: say: his explicit trust, added in Settings or with "Always allow this tool in tasks" on an
     #: approval card. An exact name or a `namespace.*` / `*.tool` glob. Never a ``deny_tools`` one.
     no_approval: list[str] = Field(
+        json_schema_extra=marks("safety"),
         default_factory=lambda: [
             "files.attach",
             "task.*",
@@ -693,11 +720,13 @@ class TasksSettings(BaseModel):
             "fetch.fetch",
             "browser.open",
             "browser.scroll",
-        ]
+        ],
     )
     #: Never offered to a task: a long job left unattended on a host's shell is what took a box
     #: down twice (2026-10-11, 2026-10-15).
-    deny_tools: list[str] = Field(default_factory=lambda: ["*.shell_run", "*.fs_write", "*.fs_edit"])
+    deny_tools: list[str] = Field(
+        default_factory=lambda: ["*.shell_run", "*.fs_write", "*.fs_edit"], json_schema_extra=marks("safety")
+    )
     #: An approval nobody answered in this long is turned down with "re-read the source and ask
     #: again": a draft approved four hours later may answer a thread that has moved on.
     approval_ttl_s: int = Field(default=14_400, ge=60)
@@ -765,25 +794,42 @@ class ShadowSettings(BaseModel):
         return any(tool == g or (g.startswith("*.") and tool.endswith(g[1:])) for g in self.guardrail_tools)
 
 
+class AgentAdminSettings(BaseModel):
+    """Jarvis reading and changing its own settings, schedules and the rest of what the UI can
+    (docs/stories/14_agent_admin.md). The section is itself ``safety``: Jarvis cannot quietly
+    switch off the rules that guard its own changes."""
+
+    #: Off = the settings.* and jarvis.api_* tools are not offered at all (the rollback).
+    enabled: bool = True
+    #: The generic route tools (jarvis.api_*) on their own; the precise ones stay.
+    api_enabled: bool = True
+    #: How long after a lifeline change it is checked again before it counts as kept.
+    probe_window_s: int = Field(default=120, ge=1, le=900)
+    #: A risky change proposed by a run nobody watched waits this long for Arsen, then lapses.
+    proposal_ttl_s: int = Field(default=259_200, ge=600)
+
+
 class Settings(BaseModel):
     assistant_name: str = "Jarvis"
     user_name: str = "Arsen"
     timezone: str = "Europe/Sofia"
     language_hint: str = "Reply in the language the user wrote in (Bulgarian or English)."
     personality: Personality = Field(default_factory=Personality)
-    confirmations: Confirmations = Field(default_factory=Confirmations)
-    email: EmailPolicy = Field(default_factory=EmailPolicy)
+    confirmations: Confirmations = Field(default_factory=Confirmations, json_schema_extra=marks("safety"))
+    email: EmailPolicy = Field(default_factory=EmailPolicy, json_schema_extra=marks("safety"))
     roles: dict[RoleName, ModelSpec] = Field(default_factory=_default_roles)
     # Which lane (CHAT or BACKGROUND) each run kind executes on. A run is routed whole: its main
     # loop and every planner/classifier/judge call it makes go to that lane's endpoint.
-    run_routing: dict[RunKind, RoleName] = Field(default_factory=_default_routing)
+    run_routing: dict[RunKind, RoleName] = Field(default_factory=_default_routing, json_schema_extra=marks("lifeline"))
     # When the run's lane cannot be reached at all (its engine is booting, restarted, gone),
     # the step is retried once on the other lane — the same model, a different box — and the
     # run inspector shows the switch. Off = the run fails as it did on 2026-09-18 07:07, when
     # watchtower had just recreated both engines: "ConnectError: All connection attempts failed".
     lane_failover: bool = True
     budgets: dict[RunKind, RunBudget] = Field(default_factory=_default_budgets)
-    mcp_servers: list[McpServerSpec] = Field(default_factory=_default_mcp_servers)
+    mcp_servers: list[McpServerSpec] = Field(
+        default_factory=_default_mcp_servers, json_schema_extra=marks("lifeline", key="name")
+    )
     # Two, because pre-flight asks the model two independent questions about the incoming message
     # (which skills apply, and whether it needs a plan) and they now go together — at 1 they
     # queue behind each other and the gather is a no-op. Measured on ardi 2026-09-06: median time
@@ -870,23 +916,24 @@ class Settings(BaseModel):
     assistant: AssistantSettings = Field(default_factory=AssistantSettings)
     shadow: ShadowSettings = Field(default_factory=ShadowSettings)
     tasks: TasksSettings = Field(default_factory=TasksSettings)
+    agent_admin: AgentAdminSettings = Field(default_factory=AgentAdminSettings, json_schema_extra=marks("safety"))
     # The address people actually reach this core on (e.g. the Tailscale Serve HTTPS URL).
     # Used for pairing/QR; without it the URL is derived from the request. The phone's mic and
     # the PWA need a secure context, so this is normally an https:// URL.
     public_url: str | None = None
-    # The push channel for reminders and scheduled-run summaries (notify.discord). Secret:
-    # never echoed in logs or the UI beyond "configured".
-    discord_webhook_url: str | None = None
+    # The push channel for reminders and scheduled-run summaries (notify.discord). Secret: never
+    # in logs; masked in settings.get unless asked for in clear.
+    discord_webhook_url: str | None = Field(default=None, json_schema_extra=marks("secret"))
     # The kinds of run that ring Arsen when they end without being asked to
     # (docs/stories/11_call_me.md). A ring by default stays quiet while he is watching the chat,
     # and a call's own turns never ring (he is on the line); the bell turns it off per message.
     call_me_default: list[RunKind] = Field(default_factory=lambda: [RunKind.CHAT, RunKind.SCHEDULED])
     # Mailboxes served by the core itself over IMAP/SMTP (features/mail.py): Gmail with an app
     # password, so personal mail does not depend on Outlook on a Windows host.
-    mail_accounts: list[MailAccount] = Field(default_factory=list)
+    mail_accounts: list[MailAccount] = Field(default_factory=list, json_schema_extra=marks(key="address"))
     # SearXNG base URL for web.search (ardi runs one). None = no search tool.
     searxng_url: str | None = None
-    stt_url: str | None = None
+    stt_url: str | None = Field(default=None, json_schema_extra=marks("lifeline"))
     stt_kind: Literal["openai", "asr"] = "openai"  # OpenAI-compatible /v1/audio/transcriptions or WhisperX /asr
     stt_model: str = "large-v3"
     stt_languages: list[str] = Field(default_factory=lambda: ["bg", "en"])

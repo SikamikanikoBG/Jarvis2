@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -111,6 +111,10 @@ class Schedule(BaseModel):
     think: bool | None = None
     think_level: ThinkLevel | None = None
     call_me: ScheduleCallMe = "default"
+    # Who wrote the prompt: None = Arsen (in the UI, or Jarvis at his asking in his own chat); a
+    # run id = a run nobody was asking from. Such a prompt is standing authority nobody approved,
+    # so it fires with a task's approvals until he accepts it (docs/stories/14_agent_admin.md).
+    prompt_by: str | None = None
     next_fire: datetime | None = None
     last_fired_for: datetime | None = None
     last_run_id: str | None = None
@@ -125,6 +129,53 @@ class ScheduleFire(BaseModel):
     run_id: str | None = None
     conversation_id: str | None = None
     status: str | None = None
+
+
+# --- agent admin: the trail of changes (docs/stories/14_agent_admin.md) ------------------
+
+ChangeArea = Literal["settings", "schedule", "api"]
+# applied: in force. probing: a lifeline change in force, still being re-checked. proposed: a risky
+# change a run nobody watched asked for - not applied until Arsen presses Apply. auto_reverted: the
+# re-check failed and the old value is back. reverted / discarded / expired: undone, turned down,
+# lapsed.
+ChangeStatus = Literal["applied", "probing", "proposed", "auto_reverted", "reverted", "discarded", "expired"]
+
+
+class ChangeField(BaseModel):
+    """One field a change touched. A secret's values are always masked when sent anywhere."""
+
+    path: str
+    old: Any = None
+    new: Any = None
+    op: Literal["set", "add", "remove"] = "set"
+    secret: bool = False
+
+
+class ChangeRecord(BaseModel):
+    id: str
+    at: datetime
+    area: ChangeArea
+    #: "settings", a schedule id, or "PATCH /api/boards/b_1".
+    target: str
+    #: arsen (the UI, or a REST call) | jarvis (a tool in a run) | system | revert | probe-revert
+    actor: str
+    #: What a person would call where it came from: "chat", "Morning brief", "incognito chat".
+    actor_label: str = ""
+    run_id: str | None = None
+    run_kind: str | None = None
+    conversation_id: str | None = None
+    call_id: str | None = None
+    fields: list[ChangeField] = Field(default_factory=list)
+    risk: list[str] = Field(default_factory=list)
+    reason: str = ""
+    status: ChangeStatus = "applied"
+    #: The settings revision after this change (settings changes only).
+    rev: int | None = None
+    reverts: str | None = None
+    reverted_by: str | None = None
+    #: What the probe said, or what a revert cannot take back ("what it already did stays").
+    note: str = ""
+    revertible: bool = False
 
 
 # --- collab -----------------------------------------------------------------------------

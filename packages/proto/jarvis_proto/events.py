@@ -12,6 +12,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
 
+from jarvis_proto.features import ChangeField, ChangeRecord
 from jarvis_proto.messages import Channel, Message, ToolResult
 from jarvis_proto.runs import Conversation, ModelUsage, Plan, Run, RunKind, ThinkLevel
 from jarvis_proto.tasks import Task
@@ -176,6 +177,12 @@ class ToolConfirmRequested(RunEvent):
     name: str
     arguments: dict[str, Any]
     reason: str
+    # What the call would change, old -> new, when the tool can say (settings.set): the card shows
+    # the diff instead of only the JSON. Secrets masked.
+    preview: list[ChangeField] | None = None
+    # The risk classes that made THIS call ask (docs/stories/14_agent_admin.md). The risk belongs
+    # to the arguments, not the tool, so such a card offers no "always allow this tool".
+    risk: list[str] | None = None
 
 
 class ToolConfirmResolved(RunEvent):
@@ -270,6 +277,24 @@ class ScheduleChanged(_Base):
     schedule_id: str | None = None
 
 
+class SettingsChanged(_Base):
+    """The settings changed (by the UI, by Jarvis, by a revert). Paths only, never values: an open
+    Settings screen refetches, or warns when the same field is being edited."""
+
+    type: Literal["settings.changed"] = "settings.changed"
+    rev: int
+    paths: list[str] = Field(default_factory=list)
+    change_id: str | None = None
+    actor: str = "arsen"
+
+
+class ChangeRecorded(_Base):
+    """A change was written to the trail, or its status moved (reverted, probe done, applied)."""
+
+    type: Literal["change.recorded"] = "change.recorded"
+    change: ChangeRecord
+
+
 class ToolsChanged(_Base):
     type: Literal["tools.changed"] = "tools.changed"
     provider: str | None = None
@@ -344,6 +369,8 @@ ServerEvent = Annotated[
     | KgChanged
     | SkillsChanged
     | ScheduleChanged
+    | SettingsChanged
+    | ChangeRecorded
     | ToolsChanged
     | MeetingSegment
     | MeetingChanged

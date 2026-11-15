@@ -69,3 +69,61 @@ def test_turn_patience_defaults_to_3s_and_is_held_to_1_to_8():
     for bad in (0.5, 9):
         with pytest.raises(ValidationError):
             VoiceSettings(turn_patience_s=bad)
+
+
+# --- agent admin: settings paths and risk markers (issue #14) --------------------------------
+
+
+def test_setting_risk_comes_from_the_field_markers():
+    from jarvis_proto import settings_paths as sp
+
+    assert sp.resolve("roles.chat.base_url").risk == {"lifeline"}
+    assert sp.resolve("roles.chat.temperature").risk == set()
+    assert sp.resolve("mcp_servers[name=fetch].headers").risk == {"lifeline", "secret"}
+    assert sp.resolve("mail_accounts[address=a@b.bg].app_password").risk == {"secret"}
+    assert sp.resolve("confirmations.mode").risk == {"safety"}
+    assert sp.resolve("agent_admin.enabled").risk == {"safety"}
+    assert sp.resolve("voice.hold_volume").risk == set()
+
+
+def test_settings_paths_set_diff_and_mask_round_trip():
+    from jarvis_proto import MailAccount, Settings
+    from jarvis_proto import settings_paths as sp
+
+    old = Settings(mail_accounts=[MailAccount(address="a@gmail.com", app_password="abcd1234")]).model_dump(mode="json")
+    new = sp.deep(old)
+    sp.set_at(new, "mcp_servers[name=fetch].enabled", False)
+    sp.set_at(new, "budgets.task.max_steps", 70)
+    sp.remove_at(new, "mail_accounts[address=a@gmail.com]")
+    leaves = {leaf.path: leaf for leaf in sp.diff(old, new)}
+    assert leaves["mcp_servers[name=fetch].enabled"].risk == {"lifeline"}
+    assert leaves["budgets.task.max_steps"].new == 70
+    gone = leaves["mail_accounts[address=a@gmail.com]"]
+    assert gone.op == "remove" and gone.secret and "delete" in gone.risk
+    shown = sp.mask(old)
+    assert "abcd1234" not in str(shown) and sp.keep_masked(shown, old) == old
+    try:
+        sp.resolve("voice.hold_volumee")
+    except sp.PathError as exc:
+        assert "voice.hold_volume" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("a typo must fail")
+
+
+def test_confirm_requested_and_tool_result_stay_compatible():
+    from jarvis_proto import ToolResult
+    from jarvis_proto.events import parse_server_event
+
+    ev = parse_server_event(
+        {
+            "type": "tool.confirm_requested",
+            "run_id": "r",
+            "conversation_id": "c",
+            "call_id": "x",
+            "name": "n",
+            "arguments": {},
+            "reason": "r",
+        }
+    )
+    assert ev.preview is None and ev.risk is None
+    assert ToolResult.data("x").model_dump()["change"] is None

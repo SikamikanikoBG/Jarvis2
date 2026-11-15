@@ -140,6 +140,10 @@ class ToolResult(BaseModel):
     # The call handed the turn's work to someone else (a delegated task): the run's next step is
     # its answer and no further tool runs in this turn (engine/loop.py). Never serialised.
     ends_turn: bool = Field(default=False, exclude=True)
+    # What the call changed, as a ChangeRecord dump (features.ChangeRecord; a dict here because
+    # features is not imported by messages): the chat draws a change card from it - old -> new,
+    # Revert, or Apply for a proposal (docs/stories/14_agent_admin.md). Secrets masked.
+    change: dict[str, Any] | None = None
 
     @classmethod
     def data(cls, text: str, *, count: int | None = None, total: int | None = None) -> ToolResult:

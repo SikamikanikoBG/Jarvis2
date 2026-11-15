@@ -25,6 +25,10 @@ class ToolSpec(BaseModel):
     # Called by the core itself (e.g. a host's fs_fetch behind jarvis.attach) and never offered to
     # the model. An MCP server says so with ``_meta: {"jarvis/internal": true}`` on the tool.
     internal: bool = False
+    # Only for runs of Arsen's own (docs/stories/14_agent_admin.md): the tools that read and change
+    # Jarvis's settings are never offered to a collab run - another agent holding a collab key -
+    # because they would hand it every password and every guard rail.
+    owner_only: bool = False
 
     @property
     def namespace(self) -> str:

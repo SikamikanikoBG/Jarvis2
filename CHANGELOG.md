@@ -2,6 +2,21 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-16 — core 2.0.0a128 / proto a44
+
+### Fixed
+- **A chat call beside a background call no longer overruns llama.cpp's shared KV pool.** With `-kvu`
+  all slots of a llama-server share one pool (vader: 98,304 tokens, 4 slots). At 11:36 a chat call
+  (49k prompt) let in by the reserved interactive slot beside a scheduled call (65k) asked it for
+  114k; the server answered "Context size has been exceeded" to both and both runs failed. The pool
+  is now read from the server (/props, /slots, /v1/models: slots whose n_ctx add up to more than
+  the context share it) and a call is admitted only if its estimated prompt plus output room fits
+  beside the calls in flight - interactive still first, a call alone always admitted. If it runs
+  out anyway beside other calls, the call waits for the endpoint to itself and goes again once
+  (in the adapter before any output, else the run loop retries the step: "chat (again, alone)");
+  a lone overflow fails as before. vLLM and Ollama are unchanged. `interactive_reserved_calls` 1
+  is safe again.
+
 ## 2026-11-16 — core 2.0.0a127 / proto a43 / web alpha.93
 
 ### Changed

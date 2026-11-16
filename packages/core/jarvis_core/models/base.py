@@ -8,8 +8,9 @@ per-role ``think`` switch. It does not own: history, tools, persistence, cancell
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from types import TracebackType
@@ -59,10 +60,16 @@ class ProbeResult:
 class ModelError(RuntimeError):
     """A model call failed for good (after retries, or a non-retryable status)."""
 
-    def __init__(self, message: str, *, retryable: bool = False, status: int | None = None) -> None:
+    def __init__(
+        self, message: str, *, retryable: bool = False, status: int | None = None, crowded: bool = False
+    ) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.status = status
+        # 2026-11-16: the server ran out of its shared KV pool while other calls were in flight
+        # beside this one, after part of the answer had already streamed. Not this call's fault:
+        # the caller may make it again, once, with `call_alone` set.
+        self.crowded = crowded
 
 
 class ModelCancelled(Exception):
@@ -84,6 +91,22 @@ class ModelAdapter(Protocol):
 #: it per run; a call made outside any run is background.
 VOICE, TYPED, BACKGROUND = 0, 1, 2
 call_urgency: ContextVar[int] = ContextVar("call_urgency", default=BACKGROUND)
+#: Set for the one retry of a call that lost the endpoint's shared KV pool to the calls beside it
+#: (ModelError.crowded): that call waits until it can run on the endpoint by itself.
+call_alone: ContextVar[bool] = ContextVar("call_alone", default=False)
+#: The output room a call is assumed to take in a shared KV pool when its spec sets no max_tokens:
+#: the same default the run loop budgets its window with (engine/loop.py _DEFAULT_MAX_TOKENS).
+DEFAULT_OUTPUT_RESERVE = 16_384
+
+
+@dataclass(slots=True, eq=False)
+class GateHold:
+    """One call holding the gate: the KV tokens it was admitted with, whether it holds the
+    endpoint alone, and whether any other call was in flight beside it at some point."""
+
+    tokens: int = 0
+    alone: bool = False
+    crowded: bool = False
 
 
 class EndpointGate:
@@ -101,22 +124,38 @@ class EndpointGate:
     calls never take: background room = limit, typed = limit + reserved, voice = one more again.
     Within one urgency the order is strictly first come, first served (a ticket per waiter).
 
+    2026-11-16, later the same day: a free slot is not free room. llama.cpp with ``-kvu`` keeps ONE
+    KV pool for all its slots (vader: 98,304 tokens for 4 slots), and a chat call (49k prompt) let
+    in by the reserve beside a scheduled call (65k) asked it for 114k: the server answered "Context
+    size has been exceeded" to both and both runs failed. So when the endpoint has a shared
+    ``pool`` (learned from the server, openai_compat.py) a call also needs its tokens - estimated
+    prompt plus output room - to fit beside the tokens of the calls in flight. A call alone is
+    always admitted (its own window already bounds it). The order does not change: the first
+    waiter that does not fit holds the ones behind it, so a big call is not starved by small ones
+    and interactive still goes first. ``pool`` None = no shared pool: vLLM manages its own KV and
+    queues what does not fit; Ollama has one num_ctx per loaded model.
+
     Background calls are not protected from starvation: while interactive calls keep every slot
     of the limit busy, background waits. That is the intent - a person is waiting on one and not
     on the other - and in practice chat is bursty, so background gets the gaps.
     """
 
-    def __init__(self, limit: int, reserved: int = 0) -> None:
+    def __init__(self, limit: int, reserved: int = 0, pool: int | None = None) -> None:
         self.limit = limit
         self.reserved = reserved
-        self._busy = 0
+        self.pool = pool
+        self._holds: list[GateHold] = []
         self._next_ticket = 0
         self._waiting: list[list[int]] = [[], [], []]  # per urgency: tickets in arrival order
         self._cond = asyncio.Condition()
 
     @property
     def busy(self) -> int:
-        return self._busy
+        return len(self._holds)
+
+    @property
+    def tokens_in_flight(self) -> int:
+        return sum(h.tokens for h in self._holds)
 
     def room(self, urgency: int) -> int:
         """How many calls may be in flight when a call of this urgency starts."""
@@ -124,29 +163,57 @@ class EndpointGate:
             return self.limit
         return self.limit + self.reserved + (1 if urgency == VOICE else 0)
 
-    def _may_go(self, urgency: int, ticket: int) -> bool:
+    def _fits(self, tokens: int, alone: bool) -> bool:
+        if not self._holds:
+            return True
+        if alone or any(h.alone for h in self._holds):
+            return False
+        return self.pool is None or self.tokens_in_flight + tokens <= self.pool
+
+    def _may_go(self, urgency: int, ticket: int, tokens: int, alone: bool) -> bool:
         return (
-            self._busy < self.room(urgency) and not any(self._waiting[:urgency]) and self._waiting[urgency][0] == ticket
+            self.busy < self.room(urgency)
+            and not any(self._waiting[:urgency])
+            and self._waiting[urgency][0] == ticket
+            and self._fits(tokens, alone)
         )
 
-    async def acquire(self, urgency: int | None = None) -> None:
+    async def acquire(self, urgency: int | None = None, *, tokens: int = 0, alone: bool = False) -> GateHold:
         level = call_urgency.get() if urgency is None else urgency
+        hold = GateHold(tokens=tokens, alone=alone)
         async with self._cond:
             ticket = self._next_ticket
             self._next_ticket += 1
             self._waiting[level].append(ticket)
             try:
-                await self._cond.wait_for(lambda: self._may_go(level, ticket))
+                await self._cond.wait_for(lambda: self._may_go(level, ticket, tokens, alone))
             finally:
                 self._waiting[level].remove(ticket)
                 # A waiter that gave up (or went) may have been what held the others back.
                 self._cond.notify_all()
-            self._busy += 1
+            if self._holds:
+                hold.crowded = True
+                for other in self._holds:
+                    other.crowded = True
+            self._holds.append(hold)
+        return hold
 
-    async def release(self) -> None:
+    async def release(self, hold: GateHold | None = None) -> None:
         async with self._cond:
-            self._busy -= 1
+            if hold is None and self._holds:
+                hold = self._holds[-1]
+            if hold is not None and hold in self._holds:
+                self._holds.remove(hold)
             self._cond.notify_all()
+
+    @contextlib.asynccontextmanager
+    async def admit(self, urgency: int, *, tokens: int = 0, alone: bool = False) -> AsyncGenerator[GateHold, None]:
+        """Hold the gate for one call: ``tokens`` of the shared pool, or the whole endpoint."""
+        hold = await self.acquire(urgency, tokens=tokens, alone=alone)
+        try:
+            yield hold
+        finally:
+            await self.release(hold)
 
     async def __aenter__(self) -> None:
         await self.acquire()
@@ -234,6 +301,9 @@ class ServerFacts:
 
     kind: Provider
     slots: int | None = None  # llama.cpp's total_slots
+    # The KV pool all its slots share, in tokens (llama.cpp -kvu: every slot reports the whole
+    # pool as its n_ctx). None = no shared pool, or not known: calls are admitted by count only.
+    kv_pool: int | None = None
     retry_at: float = 0.0  # when a look that failed is taken again (monotonic); 0 = settled
     priority: bool = True  # False once a vLLM server refused a non-zero priority
 

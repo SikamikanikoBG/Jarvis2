@@ -39,6 +39,7 @@ from jarvis_core.models.base import (
     ModelReasoningChunk,
     ModelTextChunk,
     ModelToolCallsChunk,
+    call_alone,
 )
 from jarvis_core.tools import ToolRegistry
 from jarvis_core.tools.builtin import IS_WAIT_TOOL, CallRisk
@@ -522,32 +523,63 @@ class AgentLoop:
             try:
                 text, reasoning, raw_calls, usage, finish = await self._stream(adapter, messages, tools, run, ctl)
             except ModelError as exc:
-                # The lane is unreachable (booting, restarted, gone): the other lane serves the
-                # same model. One try, shown in the inspector as a second model.call; a failure
-                # there is the run's failure.
-                other = self._settings().other_lane(main_role) if self._settings().lane_failover else None
-                if not exc.retryable or other is None:
-                    raise
-                log.warning(
-                    "run %s: lane %s unreachable (%s); falling over to %s", run.id, main_role.value, exc, other.value
-                )
-                adapter = self._adapters(
-                    other, think=adapter.spec.think, think_level=adapter.spec.think_level, exact=True
-                )
-                await emit(
-                    ModelCall(
-                        run_id="",
-                        conversation_id="",
-                        role=f"{other.value} (failover from {main_role.value})",
-                        provider=adapter.spec.provider.value,
-                        model=adapter.spec.model,
-                        message_count=len(messages),
-                        tool_count=len(tools),
-                        think=adapter.spec.think,
-                        think_level=adapter.spec.think_level,
+                if exc.crowded:
+                    # 2026-11-16: llama.cpp ran out of the KV pool its slots share, with other
+                    # calls in flight beside this one, after part of the answer had streamed (a
+                    # chat and a scheduled call, 49k + 65k prompt tokens against a 98k pool: both
+                    # runs failed). The step goes again once, on the endpoint by itself.
+                    log.warning("run %s: model call crowded out of the shared KV pool (%s); again, alone", run.id, exc)
+                    await emit(
+                        ModelCall(
+                            run_id="",
+                            conversation_id="",
+                            role=f"{main_role.value} (again, alone)",
+                            provider=adapter.spec.provider.value,
+                            model=adapter.spec.model,
+                            message_count=len(messages),
+                            tool_count=len(tools),
+                            think=adapter.spec.think,
+                            think_level=adapter.spec.think_level,
+                        )
                     )
-                )
-                text, reasoning, raw_calls, usage, finish = await self._stream(adapter, messages, tools, run, ctl)
+                    alone = call_alone.set(True)
+                    try:
+                        text, reasoning, raw_calls, usage, finish = await self._stream(
+                            adapter, messages, tools, run, ctl
+                        )
+                    finally:
+                        call_alone.reset(alone)
+                else:
+                    # The lane is unreachable (booting, restarted, gone): the other lane serves the
+                    # same model. One try, shown in the inspector as a second model.call; a failure
+                    # there is the run's failure.
+                    other = self._settings().other_lane(main_role) if self._settings().lane_failover else None
+                    if not exc.retryable or other is None:
+                        raise
+                    log.warning(
+                        "run %s: lane %s unreachable (%s); falling over to %s",
+                        run.id,
+                        main_role.value,
+                        exc,
+                        other.value,
+                    )
+                    adapter = self._adapters(
+                        other, think=adapter.spec.think, think_level=adapter.spec.think_level, exact=True
+                    )
+                    await emit(
+                        ModelCall(
+                            run_id="",
+                            conversation_id="",
+                            role=f"{other.value} (failover from {main_role.value})",
+                            provider=adapter.spec.provider.value,
+                            model=adapter.spec.model,
+                            message_count=len(messages),
+                            tool_count=len(tools),
+                            think=adapter.spec.think,
+                            think_level=adapter.spec.think_level,
+                        )
+                    )
+                    text, reasoning, raw_calls, usage, finish = await self._stream(adapter, messages, tools, run, ctl)
             self._context.observe(sent_chars, usage.prompt_tokens)
             calls = [self._policy.resolve(c) for c in raw_calls]  # facade op → canonical namespace.op
             if watch.answer_only and calls:

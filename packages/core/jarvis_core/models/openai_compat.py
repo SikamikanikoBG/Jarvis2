@@ -18,6 +18,7 @@ from typing import Any
 
 from jarvis_core.models.base import (
     BACKGROUND,
+    DEFAULT_OUTPUT_RESERVE,
     ModelDoneChunk,
     ModelError,
     ModelEvent,
@@ -26,13 +27,14 @@ from jarvis_core.models.base import (
     ModelToolCallsChunk,
     ProbeResult,
     ServerFacts,
+    call_alone,
     call_urgency,
     endpoint_semaphore,
     server_facts,
     slot_pool,
 )
 from jarvis_core.models.http import Stopwatch, make_client, stream_lines
-from jarvis_core.models.ledger import CallRecord, ContextLedger
+from jarvis_core.models.ledger import CallRecord, ContextLedger, estimate_prompt_tokens, is_context_overflow
 from jarvis_proto import AttachmentKind, Message, ModelSpec, ModelUsage, Provider, Role, ToolCall, ToolSpec, new_id
 
 log = logging.getLogger(__name__)
@@ -175,6 +177,48 @@ def _nothing() -> None:
     pass
 
 
+def shared_kv_pool(props: dict[str, Any], slots: list[dict[str, Any]] | None, total_ctx: int | None) -> int | None:
+    """The KV pool a llama-server's slots share, in tokens, or None when each slot has its own.
+
+    llama-server splits its context (`-c`) between its slots (`-np`), each slot reporting its share
+    as n_ctx in /slots and /props `default_generation_settings`; with `-kvu` (unified KV) there is
+    one pool and every slot reports the whole of it. vader, 2026-11-16 (`-c 98304 -np 4 -kvu`):
+    total_slots 4, every slot n_ctx 98,304, /v1/models meta n_ctx 98,304 - so the slots add up to
+    four times the context there is, and two long calls together can run it out. The server has no
+    "unified" flag of its own, so it is read off those numbers: shared when the slots' n_ctx add up
+    to more than the whole context. When the whole context is not reported (/v1/models without
+    meta.n_ctx) one slot's n_ctx is taken as the pool - at worst a big call waits that would have
+    fitted, never one that fails. One slot: llama.cpp queues the second request itself."""
+    count = int(props.get("total_slots") or 0) or len(slots or [])
+    if count < 2:
+        return None
+    per_slot = max((int(s.get("n_ctx") or 0) for s in slots or []), default=0)
+    if not per_slot:
+        per_slot = int((props.get("default_generation_settings") or {}).get("n_ctx") or 0)
+    if not per_slot:
+        return None
+    if total_ctx and per_slot * count <= total_ctx:
+        return None  # each slot owns its share of the context
+    return total_ctx or per_slot
+
+
+def _meta_ctx(models: dict[str, Any], model: str) -> int | None:
+    """The whole context llama-server was started with, from its /v1/models (`meta.n_ctx`)."""
+    data = models.get("data") or []
+    served = next((m for m in data if m.get("id") == model), data[0] if data else {})
+    n = (served.get("meta") or {}).get("n_ctx")
+    return int(n) if n else None
+
+
+def _crowded_overflow(exc: ModelError, facts: ServerFacts) -> bool:
+    """llama.cpp ran out of KV for this call - mid-stream ("Context size has been exceeded", code
+    500) or as a 5xx. A 4xx is the request itself not fitting its slot, which waiting for the
+    other calls to end does not change."""
+    if facts.kind is not Provider.LLAMACPP or not is_context_overflow(str(exc)):
+        return False
+    return exc.status is None or exc.status >= 500
+
+
 def _priority_refused(error: str) -> bool:
     """vLLM's answer to a non-zero `priority` when it schedules first come, first served."""
     return "priority" in error.lower() and "schedul" in error.lower()
@@ -215,26 +259,62 @@ class OpenAICompatAdapter:
             return facts
         kind = self.spec.provider
         try:
+            models: dict[str, Any] | None = None
             if kind is not Provider.LLAMACPP:
                 resp = await self._client.get(
                     self.spec.base_url.rstrip("/") + "/models", headers=self._headers, timeout=5.0
                 )
-                owners = {str(m.get("owned_by", "")).lower() for m in resp.json().get("data", [])}
+                models = listed = resp.json()
+                owners = {str(m.get("owned_by", "")).lower() for m in listed.get("data", [])}
                 if "llamacpp" in owners:
                     kind = Provider.LLAMACPP
             slots: int | None = None
+            pool: int | None = None
             if kind is Provider.LLAMACPP:
                 resp = await self._client.get(
                     _server_root(self.spec.base_url) + "/props", headers=self._headers, timeout=5.0
                 )
-                total = resp.json().get("total_slots")
+                props = resp.json()
+                total = props.get("total_slots")
                 slots = int(total) if total else None
-            facts = ServerFacts(kind=kind, slots=slots)
+                pool = await self._kv_pool(props, models)
+            facts = ServerFacts(kind=kind, slots=slots, kv_pool=pool)
         except Exception as exc:  # not knowing costs only the speed levers, never the call
             log.info("model endpoint %s: could not tell what server it is: %s", key, exc)
             facts = ServerFacts(kind=kind, retry_at=time.monotonic() + _DETECT_RETRY_S)
         server_facts[key] = facts
         return facts
+
+    async def _kv_pool(self, props: dict[str, Any], models: dict[str, Any] | None) -> int | None:
+        """The shared KV pool of a llama-server (shared_kv_pool), from /slots and /v1/models. Each
+        is optional: /slots answers 501 without `--slots`, and a look that fails leaves what the
+        others said (2026-11-16)."""
+        slot_list: list[dict[str, Any]] | None = None
+        with contextlib.suppress(Exception):
+            resp = await self._client.get(
+                _server_root(self.spec.base_url) + "/slots", headers=self._headers, timeout=5.0
+            )
+            body = resp.json() if resp.status_code == 200 else None
+            slot_list = [s for s in body if isinstance(s, dict)] if isinstance(body, list) else None
+        if models is None:
+            with contextlib.suppress(Exception):
+                resp = await self._client.get(
+                    self.spec.base_url.rstrip("/") + "/models", headers=self._headers, timeout=5.0
+                )
+                models = resp.json() if resp.status_code == 200 else None
+        total = None
+        with contextlib.suppress(Exception):
+            total = _meta_ctx(models or {}, self.spec.model)
+        pool = shared_kv_pool(props, slot_list, total)
+        if pool:
+            log.info("model endpoint %s: its slots share one KV pool of %d tokens", self.spec.endpoint_key, pool)
+        return pool
+
+    def _need(self, messages: list[Message], tools: list[ToolSpec], rec: CallRecord | None) -> int:
+        """The KV tokens a call takes at most: its estimated prompt (the ledger's estimate, from the
+        context builder's calibrated chars per token) plus the output room it may use."""
+        prompt = rec.prompt_estimate if rec is not None else estimate_prompt_tokens(messages, tools, 0.0)
+        return prompt + (self.spec.max_tokens or DEFAULT_OUTPUT_RESERVE)
 
     def _known(self) -> ServerFacts:
         """What is known about the server right now, without waiting for anyone to answer. The
@@ -308,7 +388,8 @@ class OpenAICompatAdapter:
         try:
             # aclosing: when the caller stops early, the inner stream must release the endpoint's
             # slot now, not whenever the garbage collector finalises it.
-            async with contextlib.aclosing(self._stream(url, payload, rec, cancel)) as events:
+            need = self._need(messages, tools, rec)
+            async with contextlib.aclosing(self._stream(url, payload, rec, cancel, need)) as events:
                 async for event in events:
                     yield event
         except BaseException as exc:
@@ -317,19 +398,46 @@ class OpenAICompatAdapter:
             raise
 
     async def _stream(
-        self, url: str, payload: dict[str, Any], rec: CallRecord | None, cancel: asyncio.Event
+        self, url: str, payload: dict[str, Any], rec: CallRecord | None, cancel: asyncio.Event, need: int = 0
     ) -> AsyncGenerator[ModelEvent, None]:
+        """One call through the endpoint's gate, admitted by count and - on a llama.cpp whose slots
+        share one KV pool - by the tokens it needs (base.py EndpointGate).
+
+        2026-11-16: if llama.cpp still runs out of KV for it while other calls were in flight (the
+        estimate is chars, not tokens; pictures are not in it), that is the crowd's doing, not the
+        call's: it waits until it can have the endpoint to itself and goes again, once. Before any
+        of the answer has streamed that happens here, unseen; after, the caller is told
+        (ModelError.crowded) and decides - the run loop makes the step again (engine/loop.py).
+        A call that was alone when it overflowed is a real overflow and fails as before."""
         urgency = call_urgency.get()
-        async with self._sem:
-            # The slot is chosen once the call holds the gate: only then is "which slots are
-            # free" true of the moment the request goes out.
-            payload, give_back = await self._native(payload, urgency)
-            try:
-                async with contextlib.aclosing(self._events(url, payload, rec, cancel)) as events:
-                    async for event in events:
-                        yield event
-            finally:
-                give_back()
+        alone = call_alone.get()
+        while True:
+            facts = self._known()
+            self._sem.pool = facts.kv_pool
+            async with self._sem.admit(urgency, tokens=need, alone=alone) as hold:
+                # The slot is chosen once the call holds the gate: only then is "which slots are
+                # free" true of the moment the request goes out.
+                sent, give_back = await self._native(payload, urgency)
+                streamed = False
+                try:
+                    async with contextlib.aclosing(self._events(url, sent, rec, cancel)) as events:
+                        async for event in events:
+                            streamed = True
+                            yield event
+                    return
+                except ModelError as exc:
+                    if alone or not hold.crowded or not _crowded_overflow(exc, facts):
+                        raise
+                    if streamed:
+                        raise ModelError(str(exc), retryable=True, status=exc.status, crowded=True) from exc
+                    log.warning(
+                        "model %s: out of shared KV beside %d other call(s); going again alone",
+                        self.spec.model,
+                        self._sem.busy - 1,
+                    )
+                    alone = True
+                finally:
+                    give_back()
 
     async def _events(
         self, url: str, payload: dict[str, Any], rec: CallRecord | None, cancel: asyncio.Event

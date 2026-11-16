@@ -191,3 +191,29 @@ its Jarvis slot at once and then sat 76 s in the llama.cpp fork's prefill admiss
 another slot prefilled 58k tokens with nothing cached). With `-kvu` the 98k KV pool is shared by all four
 slots, so a long task prompt still evicts the chat's even in its own slot; the server flags are
 being changed separately.
+
+## 2026-11-16 — the reserved slot overran the shared KV pool (core 2.0.0a128)
+
+11:36, production: a chat call (49k prompt) let in by the reserved interactive slot beside a
+scheduled call (65k prompt) asked vader's llama.cpp (`-c 98304 -np 4 -kvu`) for 114k of a 98,304
+token pool. The fork answered `{'code': 500, 'message': 'Context size has been exceeded.'}`
+mid-stream to both and both runs failed (model_calls 11:36:32 scheduled, 11:37:37 chat).
+Stopgap on production: `interactive_reserved_calls` 0, which brings back the waits.
+
+What the server says (GET, read-only): /props `total_slots` 4, `default_generation_settings.n_ctx`
+98,304; /slots every slot `n_ctx` 98,304; /v1/models `meta.n_ctx` 98,304. There is no "unified"
+flag; four slots of 98k on a 98k context is what `-kvu` looks like (without it each slot reports
+its share, 24,576). So the pool is read off those numbers (`shared_kv_pool`).
+
+Now `EndpointGate` admits a call by count AND, with a shared pool, by tokens: its estimated prompt
+(the ledger's estimate, calibrated chars/token) plus `max_tokens` (16,384 when unset) must fit
+beside the calls in flight; a call alone always goes. The order is unchanged - interactive first,
+FIFO within a class, the first waiter that does not fit holds the ones behind it. Two 49k/65k
+calls now run one after the other; two ordinary chat/classifier calls still run side by side.
+
+If the pool runs out anyway (the estimate has no pictures and no chat-template overhead) and other
+calls were in flight, the call waits for the endpoint to itself and goes again once: inside the
+adapter when nothing had streamed yet, or as a step retried by the run loop
+(`ModelError.crowded`, inspector shows "chat (again, alone)"). Alone, an overflow is real and
+fails as before. vLLM manages its own KV (it queues what does not fit) and Ollama has one num_ctx
+per loaded model, so both keep admission by count.

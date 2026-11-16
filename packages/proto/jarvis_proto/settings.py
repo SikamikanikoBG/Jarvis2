@@ -856,6 +856,9 @@ class Settings(BaseModel):
     # chat call starts at once even while a task's 5-minute call holds the endpoint (2026-11-15:
     # chat calls waited up to 323 s behind task calls at limit 1). 0 = no reserve: an interactive
     # call only goes ahead of the queue. A call on the line gets one slot more again (base.py).
+    # A slot is not room: on a llama.cpp whose slots share one KV pool (-kvu, read from the server)
+    # a call also waits until its prompt and output fit beside the calls in flight (2026-11-16: a
+    # 49k chat beside a 65k scheduled call overran vader's 98k pool and both runs failed).
     interactive_reserved_calls: int = Field(default=1, ge=0)
     # The run kinds whose calls count as interactive - someone is looking at the reply. Their
     # calls take the next free slot before any background call (FIFO within a class) and may use

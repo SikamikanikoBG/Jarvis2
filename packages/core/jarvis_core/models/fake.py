@@ -26,6 +26,8 @@ class FakeTurn:
     tool_calls: list[ToolCall] = field(default_factory=list)
     token_delay_s: float = 0.0  # per text token; lets tests cancel mid-stream
     fail_before_first_byte: bool = False  # transient error → the loop should see retry/fail
+    # streams its text, then the endpoint's shared KV pool runs out beside other calls (2026-11-16)
+    crowded_after_text: bool = False
     hang: bool = False  # never finishes until cancelled
     # None = counted from the prompt at 3.2 chars a token, so the assembler's calibration sees
     # a plausible ratio from a fake and tests keep the constant they were written against.
@@ -73,6 +75,8 @@ class FakeAdapter:
                 if cancel.is_set():
                     raise ModelCancelled
             yield ModelTextChunk(token)
+        if turn.crowded_after_text:
+            raise ModelError("fake: Context size has been exceeded.", retryable=True, crowded=True)
         if turn.tool_calls:
             yield ModelToolCallsChunk(list(turn.tool_calls))
         yield ModelDoneChunk(

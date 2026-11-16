@@ -66,8 +66,8 @@ export function TasksSection({ value, onChange, error }: Props) {
       <div className="field">
         <span className="field-label">When a task asks you</span>
         <div className="field-hint">
-          A task asks what a chat would under Confirmations above (mode, always allow, always ask) — plus one floor: a tool marked
-          destructive by its own annotation asks in a task even when the mode is off, because nobody is watching it.
+          A task has the rights of your chat: the same tools, and it asks exactly what a chat would under Confirmations above
+          (mode, always allow, always ask). Risky settings changes still ask.
         </div>
       </div>
       <div className="field">
@@ -78,6 +78,7 @@ export function TasksSection({ value, onChange, error }: Props) {
       <div className="field">
         <label htmlFor="tasks-deny">Never offered to a task</label>
         <ListField id="tasks-deny" value={value.deny_tools} onChange={(v) => patch({ deny_tools: v })} />
+        <div className="field-hint">Empty: a task is offered every tool your chat has. Add a name or a glob (e.g. *.shell_run) to keep it from tasks only.</div>
       </div>
     </section>
   );

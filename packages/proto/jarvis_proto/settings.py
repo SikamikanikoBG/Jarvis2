@@ -711,10 +711,10 @@ class TasksSettings(BaseModel):
     Off until the alpha passes: with ``enabled`` false no task tool is offered, no task block is
     sent and a call keeps its old "do it now" rule word for word.
 
-    A task runs with nobody watching, so the 2026-10-15 lesson (a run nobody watched rebooted the
-    box) is settings here, not hope: every action that is not read-only waits for his approval
-    whatever ``confirmations`` says, except the names on ``no_approval``; the names on
-    ``deny_tools`` are never offered to a task at all.
+    A task has the rights of his own chat (2026-11-16, "subagents трябва да имат същите права като
+    основния chat"): the same tools and the same ``confirmations``. Nothing extra asks and nothing
+    is withheld by default; ``deny_tools`` (empty) and ``no_approval`` remain for him to tighten or
+    free a tool for tasks only. Risky settings changes still ask as they do in the chat.
     """
 
     enabled: bool = False
@@ -737,11 +737,10 @@ class TasksSettings(BaseModel):
             "browser.scroll",
         ],
     )
-    #: Never offered to a task: a long job left unattended on a host's shell is what took a box
-    #: down twice (2026-10-11, 2026-10-15).
-    deny_tools: list[str] = Field(
-        default_factory=lambda: ["*.shell_run", "*.fs_write", "*.fs_edit"], json_schema_extra=marks("safety")
-    )
+    #: Never offered to a task. Empty since 2026-11-16: a task has the chat's tools. It held the
+    #: host shells and file writes back after a long unattended job took a box down twice
+    #: (2026-10-11, 2026-10-15) - and so most tasks he delegated could not do the work.
+    deny_tools: list[str] = Field(default_factory=list, json_schema_extra=marks("safety"))
     #: An approval nobody answered in this long is turned down with "re-read the source and ask
     #: again": a draft approved four hours later may answer a thread that has moved on.
     approval_ttl_s: int = Field(default=14_400, ge=60)
@@ -750,16 +749,15 @@ class TasksSettings(BaseModel):
     call_drop_after_s: int = Field(default=240, ge=30)
 
     def needs_approval(self, name: str, *, destructive: bool, confirmations: Confirmations) -> bool:
-        """Whether a task's call waits for Arsen (UAT 2026-10-31, "inherit + small floor").
+        """Whether a task's call waits for Arsen: exactly what his own chat would ask under his
+        ``confirmations`` (mode, always_allow, always_ask). A name on ``no_approval`` never asks.
 
-        A task asks what an attended chat would ask under his ``confirmations`` (mode, always_allow,
-        always_ask) - the rule that every non-read-only step asked made him approve browser clicks
-        all day. One floor on top, because nobody watches a task: a tool whose own annotation says
-        destructive asks even with the mode off. A name on ``no_approval`` (he freed it, often with
-        the card's "Always allow" button) never asks."""
+        Until 2026-11-16 a floor sat on top - a tool annotated destructive asked even with the mode
+        off - and with his mode off it was most of what a task asked about (screen clicks and typing
+        on the VM, browser clicks, schedules): "постоянно ми иска approval"."""
         if any(tool_matches(name, p) for p in self.no_approval):
             return False
-        return destructive or confirmations.needs_confirmation(name, destructive=destructive, unattended=False)
+        return confirmations.needs_confirmation(name, destructive=destructive, unattended=False)
 
     def frees(self, name: str) -> bool:
         """He freed this tool for tasks (``no_approval``)."""

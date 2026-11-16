@@ -2,6 +2,16 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-16 — core 2.0.0a127 / proto a43 / web alpha.93
+
+### Changed
+- **Delegated tasks have the rights of the chat.** A task is offered the chat's tools (the default
+  `tasks.deny_tools` is now empty, so host shells and file writes are no longer held back) and asks
+  exactly what the chat would under Confirmations - the extra floor that made every destructive-annotated
+  tool ask in a task even with the mode off is gone. Since 1 Nov most task approvals were VM screen
+  clicks/typing, browser clicks and schedules, and shell/file work was refused outright. `no_approval`
+  and `deny_tools` remain for tightening tasks only; risky settings changes still ask.
+
 ## 2026-11-16 — core 2.0.0a126, proto 2.0.0a42, web alpha.92
 
 ### Changed

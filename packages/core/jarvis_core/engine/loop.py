@@ -1036,20 +1036,13 @@ class AgentLoop:
         confirm = confirmations.needs_confirmation(call.name, destructive=destructive, unattended=unattended)
         reason = risk.reason if risk is not None else "this action cannot be undone"
         if kind is RunKind.TASK:
-            # A task asks what an attended chat would - his own confirmation settings - plus one
-            # floor, because nobody watches it: a tool annotated destructive asks even with the mode
-            # off. Names he freed for tasks never ask (settings.tasks.no_approval; UAT 2026-10-31) -
-            # unless this call is risky by its arguments: freeing `settings.*` meant the safe ones.
+            # A task asks what an attended chat would - his own confirmation settings, no floor of
+            # its own since 2026-11-16. Names he freed for tasks never ask (settings.tasks.no_approval;
+            # UAT 2026-10-31) - unless this call is risky by its arguments: freeing `settings.*`
+            # meant the safe ones.
             confirm = policy.tasks.needs_approval(call.name, destructive=destructive, confirmations=confirmations) or (
                 risk is not None
             )
-            if (
-                confirm
-                and risk is None
-                and destructive
-                and not confirmations.needs_confirmation(call.name, destructive=True, unattended=False)
-            ):
-                reason = "a delegated task asks before anything destructive, whatever the confirmation mode"
         if not confirm and args_hash(call.name, call.arguments) in watch.declined:
             # He already said no to exactly this call in this run. It waits for him again rather
             # than going out because a check judged the second attempt differently: on 2026-11-05

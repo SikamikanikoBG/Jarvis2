@@ -325,12 +325,33 @@ async def test_with_confirmations_off_a_task_clicks_and_types_without_asking(har
     assert not any(e["type"] == "tool.confirm_requested" for e in events)
 
 
-async def test_a_tool_annotated_destructive_still_asks_in_a_task_with_confirmations_off(harness: Harness):
-    """The floor: nobody watches a task, so its own annotation decides - not a list of names."""
+async def test_a_task_asks_what_the_chat_would_no_floor_of_its_own(harness: Harness):
+    """2026-11-16: a task has the chat's rights. With his confirmations off, a tool annotated
+    destructive runs in a task exactly as it would in his chat - the old floor made him approve
+    screen clicks and browser clicks all day ("постоянно ми иска approval")."""
     split = await tasks_on(harness)
     tools = await with_tools(harness)
-    sent = pushes(harness)
-    harness.enable(confirmations=Confirmations(mode="off", always_allow=["test.*"], outbound_check=[]))
+    pushes(harness)
+    harness.enable(confirmations=Confirmations(mode="off", always_allow=[], outbound_check=[]))
+    split.push(FakeTurn(tool_calls=[delegate()]), FakeTurn(text="ok"))
+    split.task.push(
+        FakeTurn(tool_calls=[ToolCall(id="s1", name="test.send", arguments={})]),
+        FakeTurn(tool_calls=[finish("f1", (1, True, ["s1"]))]),
+        FakeTurn(text="sent"),
+    )
+    await ask(harness, "send it")
+    await reported(harness)
+    assert tools.calls == ["send"]
+    task = await the_task(harness)
+    assert task.waiting is None
+
+
+async def test_a_destructive_tool_asks_in_a_task_when_his_mode_asks_in_the_chat(harness: Harness):
+    """The same rule both ways: with the mode on "destructive", the task asks like the chat does."""
+    split = await tasks_on(harness)
+    tools = await with_tools(harness)
+    pushes(harness)
+    harness.enable(confirmations=Confirmations(mode="destructive", always_allow=[], outbound_check=[]))
     split.push(FakeTurn(tool_calls=[delegate()]), FakeTurn(text="ok"))
     split.task.push(
         FakeTurn(tool_calls=[ToolCall(id="s1", name="test.send", arguments={})]),
@@ -340,10 +361,6 @@ async def test_a_tool_annotated_destructive_still_asks_in_a_task_with_confirmati
     await ask(harness, "send it")
     task = await the_task(harness, lambda t: t.state is TaskState.WAITING)
     assert tools.calls == [] and task.waiting is not None and task.waiting.name == "test.send"
-    assert "whatever the confirmation mode" in task.waiting.reason
-    assert task.waiting.arguments == {}  # the card shows exactly what will run
-    await until(lambda: any("approval" in p["title"] for p in sent))
-    assert sent[-1]["type"] == "notice" and sent[-1]["path"].endswith(f"?task={task.id}")  # opens the card
     await harness.core.engine.confirm(task.waiting.run_id, task.waiting.call_id, True)
     await reported(harness)
     assert tools.calls == ["send"]
@@ -484,8 +501,21 @@ async def _host(h: Harness) -> FakeHost:
     return host
 
 
-async def test_shell_and_file_writes_are_not_offered_to_a_task_and_refused_if_named(harness: Harness):
+async def test_a_task_is_offered_the_chats_tools_including_the_shell(harness: Harness):
+    # 2026-11-16: a task has the chat's tools; shell and file writes are no longer held back.
     split = await tasks_on(harness)
+    await _host(harness)
+    pushes(harness)
+    split.push(FakeTurn(tool_calls=[delegate()]), FakeTurn(text="ok"))
+    split.task.push(FakeTurn(tool_calls=[finish("f1", (1, True, []))]), FakeTurn(text="Done."))
+    await ask(harness, "fix the box")
+    await the_task(harness, lambda t: t.state.terminal)
+    tools = offered(split.task)
+    assert "hosty.shell_run" in tools and "hosty.fs_write" in tools
+
+
+async def test_a_tool_he_denies_to_tasks_is_not_offered_and_refused_if_named(harness: Harness):
+    split = await tasks_on(harness, deny_tools=["*.shell_run", "*.fs_write", "*.fs_edit"])
     host = await _host(harness)
     pushes(harness)
     split.push(FakeTurn(tool_calls=[delegate()]), FakeTurn(text="ok"))
@@ -513,7 +543,7 @@ async def test_a_task_cannot_reach_a_denied_tool_through_wait_until(harness: Har
     # 2026-11-11: a task denied `*.shell_run` ran jarvisvm.shell_run through jarvis.wait_until
     # (the shell was on wait_until_pollable for chats) and planned its code edits that way. A tool
     # polled by a wait is gated as if the run had called it itself.
-    split = await tasks_on(harness)
+    split = await tasks_on(harness, deny_tools=["*.shell_run"])
     harness.enable(wait_until_pollable=["hosty.shell_run"])
     host = await _host(harness)
     pushes(harness)

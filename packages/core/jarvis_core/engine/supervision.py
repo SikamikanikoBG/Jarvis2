@@ -239,6 +239,7 @@ class Supervisor:
             f"Task: {run.input_text[:600]}\n"
             f"Signal: {detail}\n"
             f"Recent tool steps (oldest first):\n{render_steps(watch.steps[-8:])}\n\n"
+            + self._failed(watch)
             + self._alternatives(watch)
             + "Some tools act on state their arguments do not name (a browser tab, a cursor). For\n"
             "those, identical arguments are normal and say nothing; judge by whether the RESULTS\n"
@@ -249,7 +250,12 @@ class Supervisor:
             "continue = the repetition is justified (e.g. paging); nudge = it should change approach — then "
             "the reason MUST name the tool or the concrete step to take instead, from the list above when one "
             "fits (e.g. 'use browser.wait instead of sleeping and re-reading'); "
-            "stop = it is looping or cannot succeed."
+            "stop = it is looping or cannot succeed.\n"
+            "Never tell it to type a password, a one-time code or to approve a sign-in, and never to retry a\n"
+            "tool that already failed above for a reason that has not changed. When what blocks it is a step\n"
+            "only the person it works for can take (approving a sign-in on his phone, a captcha, a code he\n"
+            "receives), the nudge is: ask him for that step (task.ask in a delegated task, otherwise say so in\n"
+            "the reply) and then wait for the page to move on with browser.wait."
         )
         try:
             adapter = self._judge()
@@ -268,12 +274,40 @@ class Supervisor:
                 )
             return Verdict("stop", f"supervisor could not evaluate progress ({type(exc).__name__}); stopping")
 
+    @staticmethod
+    def _refused(watch: RunWatch) -> dict[str, str]:
+        """Tools whose latest call in this run failed, with the start of why.
+
+        The judge sees only the last eight steps, and it used to offer the tools "not used in these
+        steps" as the way out - so on 2026-11-16 it told a run stuck on a course page to try
+        browser.eval, which that run had seen refused by a CSP five minutes earlier.
+        """
+        latest: dict[str, StepRecord] = {}
+        for step in watch.steps:
+            latest[step.tool] = step
+        return {
+            tool: _clip(" ".join(step.summary.split()), 160)
+            for tool, step in latest.items()
+            if step.kind is ToolResultKind.ERROR
+        }
+
+    def _failed(self, watch: RunWatch) -> str:
+        lines = [f"- {tool}: {why}" for tool, why in self._refused(watch).items()]
+        if not lines:
+            return ""
+        return (
+            "Tools whose last call in this run FAILED (do not suggest them unless the cause is gone):\n"
+            + "\n".join(lines[-8:])
+            + "\n\n"
+        )
+
     def _alternatives(self, watch: RunWatch) -> str:
-        """The other tools of the namespaces the run is stuck in, one line each."""
+        """The other tools of the namespaces the run is stuck in, one line each - minus the ones
+        that already failed in this run."""
         if self._catalog is None or not watch.steps:
             return ""
         spaces = {s.tool.split(".", 1)[0] for s in watch.steps[-8:] if "." in s.tool}
-        used = {s.tool for s in watch.steps[-8:]}
+        used = {s.tool for s in watch.steps[-8:]} | set(self._refused(watch))
         lines = []
         for spec in self._catalog():
             if spec.name.split(".", 1)[0] in spaces and spec.name not in used:

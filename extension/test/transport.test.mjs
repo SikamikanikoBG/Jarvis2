@@ -20,7 +20,7 @@ const BACKGROUND_SRC = fs.readFileSync(path.join(EXT_DIR, "background.js"), "utf
 const MANIFEST = JSON.parse(fs.readFileSync(path.join(EXT_DIR, "manifest.json"), "utf8"));
 
 const TIMEOUTS = { call: 400, inject: 250, load: 400, settle: 60, retryMin: 40, retryMax: 160, afterAction: 0, contextDebounce: 5,
-                   waitPoll: 40, waitSettle: 100 };
+                   waitPoll: 40, waitSettle: 100, popupWatch: 300 };
 
 const API_TOOLS = ["browser.tabs", "browser.open", "browser.read", "browser.find",
                    "browser.click", "browser.type", "browser.upload", "browser.scroll", "browser.screenshot",
@@ -117,7 +117,7 @@ test("browser.hello announces agent, version and exactly the tools in API.md", (
   assert.equal(hello.agent, "jarvis-extension");
   assert.equal(hello.version, "2.0.0-test");
   assert.deepEqual(hello.tools.map((t) => t.name), API_TOOLS);
-  assert.equal(MANIFEST.version, "2.4.2");
+  assert.equal(MANIFEST.version, "2.5.0");
 });
 
 test("every tool that acts on a page takes the tab id its results name", () => {
@@ -571,6 +571,96 @@ test("an unconfigured extension says so and does not connect", async () => {
   assert.equal(st.connected, false);
   assert.match(st.error, /not configured/);
   w.shutdown();
+});
+
+// ── what a click sets off elsewhere, error pages, eval past every CSP ────
+// 2026-11-16: a course's «Продължи курса» opened its player through a sign-in
+// popup; two runs read "Clicked" + "Nothing changed in 15s" and never saw it.
+describe("popups, error pages and the user-script world", () => {
+  const COURSE = "https://learn.test/course";
+  const PLAYER = "https://login.test/authorize";
+  let core2, chrome2, client2;
+
+  before(async () => {
+    core2 = await startMockCore({ token: "t0k" });
+    chrome2 = makeChrome({
+      storage: { coreUrl: core2.url, token: "t0k" },
+      tabs: [{ id: 30, url: COURSE, title: "Course", active: true }],
+      fixtures: {
+        [COURSE]: { title: "Course", html: `<h1>Course</h1><a href="#" id="go">Продължи курса</a><p>${"Course text. ".repeat(30)}</p>` },
+        [PLAYER]: { title: "Sign in to your account", html: `<h1>Approve the sign-in request</h1><button>Send another request</button>` },
+      },
+      userScripts: true,
+    });
+    bootWorker({ chrome: chrome2 });
+    [, client2] = await core2.waitFor("hello");
+  });
+
+  after(async () => { await core2.close(); });
+
+  test("a click that opens a popup names the new tab, so the next step goes there", async () => {
+    setTimeout(() => chrome2._openPopup(30, PLAYER), 40);
+    const r = await core2.call(client2, "browser.click", { tab: 30, ref: "Продължи курса" });
+    assert.equal(r.kind, "data", r.text);
+    assert.match(r.text, /Clicked @e\d+ a#go «Продължи курса»/);
+    const popup = chrome2._tabs.find((t) => t.url === PLAYER);
+    assert.ok(r.text.includes(`This opened a new tab: [tab ${popup.id}] Sign in to your account — ${PLAYER}. Carry on there with tab=${popup.id}.`), r.text);
+    // The popup is in front and is his own (not another chat's): a read with no tab reads it.
+    const read = await core2.call(client2, "browser.read", {});
+    assert.match(read.text, /Approve the sign-in request/);
+    await chrome2.tabs.update(30, { active: true });
+  });
+
+  test("a click with no popup says nothing about other tabs", async () => {
+    const r = await core2.call(client2, "browser.click", { tab: 30, ref: "Продължи курса" });
+    assert.equal(r.kind, "data", r.text);
+    assert.ok(!/new tab|another tab/.test(r.text), r.text);
+  });
+
+  test("browser.wait returns as soon as a tab opens beside the page, instead of 'nothing changed'", async () => {
+    setTimeout(() => chrome2._openPopup(30, PLAYER), 60);
+    const t0 = Date.now();
+    const r = await core2.call(client2, "browser.wait", { tab: 30, timeout_s: 5 });
+    assert.equal(r.kind, "data", r.text);
+    assert.match(r.text, /not on this page but beside it:\nThis opened a new tab: \[tab \d+\] Sign in to your account/);
+    assert.ok(Date.now() - t0 < 2500, "did not sit out the timeout");
+    await chrome2.tabs.update(30, { active: true });
+  });
+
+  test("browser.eval runs in the user-script world when Chrome allows it", async () => {
+    const r = await core2.call(client2, "browser.eval", { tab: 30, code: "return { h1: $('h1').textContent, el: $('#go') };" });
+    assert.equal(r.kind, "data", r.text);
+    assert.match(r.text, /"h1": "Course"/);
+    assert.match(r.text, /"el": "<a#go>"/);
+    const last = chrome2._calls.executeScript.at(-1);
+    assert.equal(last.userScript, true);
+    assert.equal(last.world, "USER_SCRIPT");
+  });
+
+  test("browser.eval in the user-script world: helpers, a thrown error, a syntax error", async () => {
+    const outline = await core2.call(client2, "browser.read", { tab: 30, mode: "outline" });
+    const ref = /(@e\d+) link «Продължи курса»/.exec(outline.text)[1];
+    const d = await core2.call(client2, "browser.eval", { tab: 30, code: `return describe($ref('${ref}'));` });
+    assert.match(d.text, /a#go «Продължи курса»/);
+    const thrown = await core2.call(client2, "browser.eval", { tab: 30, code: "return $('#nope').textContent;" });
+    assert.equal(thrown.kind, "error");
+    assert.match(thrown.text, /TypeError/);
+    const bad = await core2.call(client2, "browser.eval", { tab: 30, code: "return {{;" });
+    assert.equal(bad.kind, "error");
+    const nothing = await core2.call(client2, "browser.eval", { tab: 30, code: "document.title;" });
+    assert.match(nothing.text, /\nundefined$/);
+  });
+
+  test("an error page says why the load failed, not 'Frame with ID 0 is showing error page'", async () => {
+    const DEAD = "https://learn.test/mycourses";
+    chrome2.scripting.executeScript = async () => { throw new Error("Frame with ID 0 is showing error page"); };
+    await chrome2.tabs.update(30, { url: DEAD });
+    await sleep(10);
+    chrome2.webNavigation.onErrorOccurred._fire({ tabId: 30, frameId: 0, url: DEAD, error: "net::ERR_HTTP_RESPONSE_CODE_FAILURE" });
+    const r = await core2.call(client2, "browser.read", { tab: 30 });
+    assert.equal(r.kind, "error");
+    assert.match(r.error, /error page — loading https:\/\/learn\.test\/mycourses failed with net::ERR_HTTP_RESPONSE_CODE_FAILURE/);
+  });
 });
 
 }); // describe

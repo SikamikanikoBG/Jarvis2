@@ -1344,7 +1344,7 @@ class _DelegateArgs(BaseModel):
         default="",
         description=(
             "Only what the task cannot find in his words or in this chat's recent messages: something from "
-            "much earlier, an id, a file. Usually empty."
+            "much earlier, an id, a file, the browser tab where the page already is. Usually empty."
         ),
     )
     needs: list[str] = Field(
@@ -1357,7 +1357,13 @@ class _DelegateArgs(BaseModel):
         max_length=8,
         description="Optional: the Definition of Done. Without it the task writes it.",
     )
-    constraints: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Limits it must keep (budget, dates, sources). Not 'stop at a sign-in': a step only he can take "
+            "(approving a sign-in, a code) the task asks him for and then carries on."
+        ),
+    )
     approvals: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
 
@@ -1879,6 +1885,13 @@ class TaskBlock:
             "task waits for his answer. If he turns it down, do not find another way around it.\n"
             "- Something only he knows (which document, which person, how much): task.ask with the one "
             "question, then end your turn. Never guess it.\n"
+            "- Something only he can DO - approve a sign-in on his phone, solve a captcha, read you a code he "
+            "received: that is not where the task ends, and never cancel the prompt. Leave it waiting (or ask "
+            "the site to send it again), task.ask him for that one step, end your turn, and when he answers "
+            "carry on from the same page. Never type a password or code he has not given you for this.\n"
+            "- In the browser, start from what is already open: browser.tabs first, and when one of his tabs "
+            "(or the asking chat's) already shows the page you need - signed in, mid-course, mid-form - work "
+            "in that tab by its id instead of opening the page afresh.\n"
             "- End with task.finish: a short summary and every DoD item by number - met or not, with the ids "
             "of the tool calls or files that show it. An item you cannot show is not met.\n"
             "- A tool whose machine is down: say so; do not wait for it to come back.\n"

@@ -188,3 +188,43 @@ async def test_a_nudge_after_the_run_recovered_is_a_first_nudge_not_a_stop():
     assert await check() == "nudge", "the earlier nudges worked; this is a new problem"
     assert await check() == "nudge"
     assert await check() == "stop", "two nudges in a row that did not help still end the run"
+
+
+async def test_the_judge_is_told_what_already_failed_and_is_not_offered_it_as_a_way_out():
+    """2026-11-16, the Postbank course: browser.eval was refused by a CSP early in the run; five
+    minutes later the judge, seeing only the last eight steps, offered "browser.eval to inspect the
+    iframe" as the way out, and next told the run to type credentials into a sign-in."""
+    from jarvis_core.models.base import ModelTextChunk
+    from jarvis_proto import ToolSpec
+
+    prompts: list[str] = []
+
+    class Judge:
+        async def stream(self, messages, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+            prompts.append(messages[0].content)
+            yield ModelTextChunk(text='{"verdict": "nudge", "reason": "r"}')
+
+    async def emit(_event: object) -> None:
+        return None
+
+    def spec(name: str) -> ToolSpec:
+        return ToolSpec(name=name, description=f"{name} does a thing. More.", input_schema={"type": "object"})
+
+    catalog = [spec(n) for n in ("browser.read", "browser.eval", "browser.wait", "browser.click")]
+    supervisor = Supervisor(Settings, Judge, catalog=lambda: catalog)  # type: ignore[arg-type]
+    refused = step_of(
+        "browser.eval", {"code": "x"}, ToolResult.failure("A Content Security Policy refuses code built from a string")
+    )
+    reads = [read_step(f"[tab 5] Course — page {i}") for i in range(9)]
+    watch = watch_of(refused, *reads)
+    watch.started -= 601
+    run = Run(id="r", conversation_id="c", kind=RunKind.TASK, input_text="finish the course")
+    await supervisor.review(run, watch, [], emit, asyncio.Event())  # type: ignore[arg-type]
+
+    prompt = prompts[0]
+    assert "FAILED" in prompt and "- browser.eval:" in prompt and "Content Security Policy refuses" in prompt
+    offered = prompt.split("has NOT used in these steps:", 1)[1].split("\n\n", 1)[0]
+    assert "browser.eval" not in offered, "a tool that failed is not a way out"
+    assert "browser.wait" in offered
+    assert "Never tell it to type a password" in prompt
+    assert "task.ask" in prompt

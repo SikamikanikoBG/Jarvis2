@@ -51,7 +51,7 @@ function titleFrom(url) {
  * @param {Array}  o.tabs      [{id, url, title, active?, windowId?}]
  * @param {object} o.fixtures  url -> html string | {html, title}
  */
-export function makeChrome({ storage = {}, tabs = [], fixtures = {}, manifest = { version: "2.0.0-test" } } = {}) {
+export function makeChrome({ storage = {}, tabs = [], fixtures = {}, manifest = { version: "2.0.0-test" }, userScripts = false } = {}) {
   const local = { ...storage };
   const session = {};
   const pages = new Map();                 // tabId -> {url, ctx, dom, win, doc}
@@ -101,6 +101,7 @@ export function makeChrome({ storage = {}, tabs = [], fixtures = {}, manifest = 
     },
     tabs: {
       onActivated: fakeEvent(),
+      onCreated: fakeEvent(),
       onUpdated: fakeEvent(),
       onRemoved: fakeEvent(),
       async query(q = {}) {
@@ -123,8 +124,10 @@ export function makeChrome({ storage = {}, tabs = [], fixtures = {}, manifest = 
       },
       async create(props) {
         const t = { id: nextTabId++, windowId: 1, active: false, url: props.url, title: fixtureFor(props.url).title };
+        if (props.openerTabId !== undefined) t.openerTabId = props.openerTabId;
         tabList.push(t);
         if (props.active !== false) setActive(t);
+        chrome.tabs.onCreated._fire({ ...t });
         setTimeout(() => chrome.tabs.onUpdated._fire(t.id, { status: "complete" }, { ...t }), 6);
         return { ...t };
       },
@@ -162,8 +165,11 @@ export function makeChrome({ storage = {}, tabs = [], fixtures = {}, manifest = 
       },
     },
     sidePanel: { async setPanelBehavior() {} },
+    webNavigation: { onErrorOccurred: fakeEvent() },
 
     // test hooks
+    // What a page's window.open does: a new tab, opened by `fromId`, in front.
+    _openPopup: (fromId, url) => chrome.tabs.create({ url, openerTabId: fromId, active: true }),
     _tabs: tabList,
     _pages: pages,
     _pageFor: (id) => pageFor(find(id)),
@@ -173,6 +179,24 @@ export function makeChrome({ storage = {}, tabs = [], fixtures = {}, manifest = 
     _session: session,
     _closeAll() { for (const p of pages.values()) { try { p.win.close(); } catch (e) {} } pages.clear(); },
   };
+  // chrome.userScripts exists only once the user allowed it; off by default.
+  if (userScripts) {
+    chrome.userScripts = {
+      async execute({ target, js, world }) {
+        calls.executeScript.push({ target, userScript: true, world });
+        const tab = find(target.tabId);
+        const p = pageFor(tab);
+        let value;
+        try {
+          value = vm.runInContext(js.map((j) => j.code).join(String.fromCharCode(10)), p.ctx, { filename: "userscript.js" });
+        } catch (e) {
+          return [{ frameId: 0, error: String(e && e.message || e) }];
+        }
+        const result = await value;
+        return [{ frameId: 0, result: result === undefined ? null : structuredClone(result) }];
+      },
+    };
+  }
   return chrome;
 }
 

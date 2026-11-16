@@ -32,6 +32,9 @@ const SETTLE_BUDGET_MS = TUNE.settle || 6000;        // client-rendered content 
 const RETRY_MIN_MS = TUNE.retryMin || 1000;
 const RETRY_MAX_MS = TUNE.retryMax || 30000;
 const AFTER_ACTION_MS = TUNE.afterAction === undefined ? 400 : TUNE.afterAction;
+// After a click, how long to watch for a tab it opened elsewhere (a popup takes
+// a moment to be created). Ends early the moment one appears.
+const POPUP_WATCH_MS = TUNE.popupWatch === undefined ? 900 : TUNE.popupWatch;
 // browser.wait: poll the page text until it changes and settles (or a phrase
 // appears). The model has no other clock — before this it slept through
 // workocholic.shell_run and re-read the page, and the identical reads tripped
@@ -63,7 +66,10 @@ const TOOLS = [
     name: "browser.tabs",
     description:
       "List the tabs open in the user's browser: id, title, URL and which one is active. " +
-      "Call it first when the user says 'this page', 'the tab I have open' or names a site they already opened.",
+      "Call it first when the user says 'this page', 'the tab I have open' or names a site they already opened. " +
+      "When one of his tabs already shows what you need — signed in, mid-course, mid-form, a player already " +
+      "open — carry on in THAT tab by passing its id to the other tools, instead of browser.open: a fresh " +
+      "open starts over and can land on a sign-in the open tab is already past.",
     input_schema: { type: "object", properties: {}, additionalProperties: false },
     read_only: true, destructive: false, idempotent: true,
   },
@@ -71,7 +77,8 @@ const TOOLS = [
     name: "browser.open",
     description:
       "Open a full http(s) URL in Jarvis's own work tab (never in the user's tabs) and wait for it to load; " +
-      "follow with browser.read. Reports where the browser actually landed.",
+      "follow with browser.read. Reports where the browser actually landed, and when the page failed to load. " +
+      "If the page is already open in one of his tabs (browser.tabs), use that tab instead.",
     input_schema: {
       type: "object",
       properties: {
@@ -119,7 +126,9 @@ const TOOLS = [
     description:
       "Click a link, button, tab, checkbox or other control by its @ref from browser.read mode=outline or " +
       "browser.find (its exact visible text also works). Scrolls it into view, refuses disabled controls and " +
-      "ones covered by a modal, and reports what changed. Never click a chip whose label reads like a message — it sends it.",
+      "ones covered by a modal, and reports what changed — including a new tab or popup window the click " +
+      "opened (a player, a sign-in, a download page): carry on there with the tab id it names. " +
+      "Never click a chip whose label reads like a message — it sends it.",
     input_schema: {
       type: "object",
       properties: { tab: TAB_PROP, ref: { type: "string", minLength: 1, description: "@ref such as @e12, or the control's visible text." } },
@@ -205,8 +214,9 @@ const TOOLS = [
       "dispatch the exact event a widget wants, read state only the page knows, click by CSS selector. Write the " +
       "body of an async function and `return` the value. Helpers: $(sel), $$(sel), $ref('e9') resolves an outline " +
       "@ref to its element, describe(el) and evidence(el) give the kernel's view of a node. Runs in the " +
-      "extension's isolated world (full DOM, no page variables); set page_world=true to run in the page's own " +
-      "JavaScript world (its globals, subject to its CSP). Output capped at 20k characters.",
+      "extension's user-script world (full DOM, no page variables), which no page's Content Security Policy " +
+      "can block; set page_world=true to run in the page's own JavaScript world (its globals, subject to its " +
+      "CSP). Output capped at 20k characters.",
     input_schema: {
       type: "object",
       properties: {
@@ -224,8 +234,10 @@ const TOOLS = [
     description:
       "Wait for the page to change — a chatbot's reply, a search result, a form's confirmation — and return " +
       "the new text when it arrives. Blocks until the visible text changes and holds still, or until `text` " +
-      "appears, or until timeout_s runs out (default 30, max 120). Use this after a click or type that starts " +
-      "something slow, instead of sleeping and re-reading; a timeout means nothing changed, not an error.",
+      "appears, or until timeout_s runs out (default 30, max 120); it also returns as soon as a new tab or " +
+      "popup opens. Use this after a click or type that starts something slow, instead of sleeping and " +
+      "re-reading; a timeout means nothing changed, not an error. To wait for HIM (he approves a sign-in on " +
+      "his phone, solves a captcha), wait on the page that should move on, with a long timeout_s.",
     input_schema: {
       type: "object",
       properties: {
@@ -638,6 +650,97 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   stickyFrame.delete(tabId);
 });
 
+// ---------------------------------------------------------------------------
+// Other tabs an action set off: popups, players, sign-ins
+// ---------------------------------------------------------------------------
+// A click that opens its result in ANOTHER tab (target=_blank, window.open, a
+// named popup the site reuses) used to come back as "Clicked" and then "Nothing
+// changed in 15s": the clicked page indeed stayed put. On 2026-11-16 a SCORM
+// course's «Продължи курса» opened its player through a Microsoft sign-in popup
+// three times over and two runs never learned it existed. So every tab event is
+// kept for a short while, and an action reports the ones that happened during it.
+const TAB_EVENTS_MAX = 60;
+const tabEvents = [];                   // {at, kind: opened|navigated|closed, tabId, url}
+const openerOf = new Map();             // tabId -> the tab that opened it
+
+function noteTabEvent(kind, tabId, url) {
+  tabEvents.push({ at: Date.now(), kind: kind, tabId: tabId, url: url || "" });
+  if (tabEvents.length > TAB_EVENTS_MAX) tabEvents.shift();
+}
+
+if (chrome.tabs.onCreated) {
+  chrome.tabs.onCreated.addListener((t) => {
+    if (!t) return;
+    if (t.openerTabId !== undefined) openerOf.set(t.id, t.openerTabId);
+    noteTabEvent("opened", t.id, t.pendingUrl || t.url);
+  });
+}
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+  if (info && info.url) noteTabEvent("navigated", tabId, info.url);
+});
+chrome.tabs.onRemoved.addListener((tabId) => {
+  noteTabEvent("closed", tabId, "");
+  navErrors.delete(tabId);
+});
+
+// What happened to tabs other than `actedId` since `since`, written for the
+// model. A tab that only navigated counts when it came to the front or was
+// opened by the acted tab - a background tab refreshing itself is not news.
+// Another chat's work tab is never reported.
+async function otherTabsSince(since, actedId, session) {
+  const seen = new Map();
+  for (const e of tabEvents) {
+    if (e.at < since || e.tabId === actedId) continue;
+    const prev = seen.get(e.tabId);
+    if (e.kind === "opened") seen.set(e.tabId, "opened");
+    else if (e.kind === "closed") seen.set(e.tabId, prev === "opened" ? "flash" : "closed");
+    else if (!prev) seen.set(e.tabId, "navigated");
+  }
+  const lines = [];
+  for (const [id, kind] of seen) {
+    if (kind === "flash") continue;
+    const owner = await ownerOf(id);
+    if (owner && owner !== session) continue;
+    if (kind === "closed") {
+      if (openerOf.get(id) === actedId) lines.push("Tab " + id + ", which this page had opened, closed itself.");
+      continue;
+    }
+    let t;
+    try { t = await chrome.tabs.get(id); } catch (e) { continue; }
+    const from = t.openerTabId !== undefined ? t.openerTabId : openerOf.get(id);
+    if (kind === "navigated" && !t.active && from !== actedId) continue;
+    const what = kind === "opened" ? "opened a new tab" : "sent another tab (a window the site reuses) to a new page";
+    lines.push("This " + what + ": [tab " + t.id + "] " + (t.title || "(untitled)") + " — " +
+               (t.url || t.pendingUrl || "") + ". Carry on there with tab=" + t.id + ".");
+  }
+  return lines;
+}
+
+// A top-level load that failed shows the browser's own error page, which no
+// script may touch; Chrome then says only "Frame with ID 0 is showing error
+// page". Keep the real reason per tab so the model hears it.
+const navErrors = new Map();            // tabId -> {url, error}
+if (chrome.webNavigation && chrome.webNavigation.onErrorOccurred) {
+  chrome.webNavigation.onErrorOccurred.addListener((d) => {
+    if (!d || d.frameId !== 0) return;
+    navErrors.set(d.tabId, { url: d.url || "", error: d.error || "unknown error" });
+  });
+}
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+  if (info && info.status === "loading") navErrors.delete(tabId);
+});
+
+function explainInjectError(tab, e) {
+  const msg = String((e && e.message) || e);
+  if (!/showing error page/i.test(msg)) return e;
+  const err = navErrors.get(tab.id);
+  return new Error(
+    "tab " + tab.id + " shows the browser's own error page — " +
+    (err ? "loading " + err.url + " failed with " + err.error : "the last load of " + (tab.url || "this tab") + " failed") +
+    ". Nothing on it can be read or clicked. browser.open the URL again or the site's start page; if it " +
+    "fails the same way, the site refuses that address or is down.");
+}
+
 // The core says a chat's run has ended. Its tab is given a few minutes in case the
 // next turn carries on with the same page, then closed — a job that is over should
 // not leave a tab behind (20 Sep 2026).
@@ -686,7 +789,8 @@ async function closeWorkTab(session) {
 // it here and say which tab and which op stalled — an unbounded wait is the one
 // outcome the model can do nothing with.
 function withInjectBudget(promise, tab, args) {
-  return withTimeout(promise, INJECT_BUDGET_MS, () =>
+  const explained = Promise.resolve(promise).catch((e) => { throw explainInjectError(tab, e); });
+  return withTimeout(explained, INJECT_BUDGET_MS, () =>
     "injecting into tab " + tab.id + " (" + String(tab.url || "").slice(0, 80) + ") did not " +
     "complete within " + Math.round(INJECT_BUDGET_MS / 1000) + "s for '" + (args && args[0]) +
     "' — the tab is still committing a document; wait for it to settle or re-open the URL");
@@ -957,6 +1061,11 @@ async function toolOpen(args, session) {
               "assuming the target loaded.";
     }
   } catch (e) {}
+  const failed = navErrors.get(fresh.id);
+  if (failed) {
+    text += "\nThe page did NOT load: " + failed.error + " for " + failed.url + ". The tab shows the browser's " +
+            "error page; open the site's start page or try again.";
+  }
   return data(text);
 }
 
@@ -1017,18 +1126,33 @@ async function toolAct(op, args, session) {
   const p = op === "click"
     ? { selector: ref }
     : { selector: ref, value: String(args.text == null ? "" : args.text), submit: !!args.submit };
+  const since = Date.now();
   const res = await actWithFrameFallback(tab, op, p);
   // Let a navigation or re-render triggered by the action settle before
   // reporting back — the model's next read should see the new page.
   if (AFTER_ACTION_MS) await sleep(AFTER_ACTION_MS);
   const out = fromKernel(tab, res, op);
   if (out.kind !== "error") {
+    let elsewhere = await otherTabsSince(since, tab.id, session);
+    // A popup is created a beat after the click; watch a little longer, unless
+    // the clicked page itself is already moving (then the result is right here).
+    while (!elsewhere.length && Date.now() - since < POPUP_WATCH_MS) {
+      let moving = false;
+      try { const cur = await chrome.tabs.get(tab.id); moving = cur.url !== tab.url || cur.status === "loading"; } catch (e) {}
+      if (moving) break;
+      await sleep(100);
+      elsewhere = await otherTabsSince(since, tab.id, session);
+    }
     try {
       const fresh = await chrome.tabs.get(tab.id);
       if (fresh && fresh.url !== tab.url) {
         out.text += "\nThe page navigated: now " + (fresh.title || "(untitled)") + " — " + (fresh.url || "");
       }
     } catch (e) {}
+    if (elsewhere.length) {
+      if (out.kind === "empty") out.kind = "data";
+      out.text += "\n" + elsewhere.join("\n");
+    }
   }
   return out;
 }
@@ -1195,23 +1319,93 @@ function renderValue(v) {
 // Unlike the typed ops, eval carries the model's own code, so the frame it
 // runs in is stated every time and the page's main world is opt-in: a bank's
 // CSP may refuse it, and that refusal is reported as the fact it is.
+// The model's code as one user script: the kernel's helpers, the code as the
+// body of an async function, and a result that survives serialisation (DOM
+// nodes become "<tag#id>"). It is injected as script SOURCE, not compiled from
+// a string inside the page, so neither the page's CSP nor the extension's own
+// isolated-world CSP (MV3 forbids unsafe-eval there on EVERY site) applies.
+// Before this, browser.eval without page_world failed everywhere (2026-11-16).
+function evalSource(code) {
+  return "(async () => {\n" +
+    "const pageKernel = " + pageKernel.toString() + ";\n" +
+    "const __h = pageKernel('helpers', {});\n" +
+    "const $ = __h.$, $$ = __h.$$, $ref = __h.$ref, describe = __h.describe, evidence = __h.evidence;\n" +
+    "const __node = (k, x) => (x && typeof x === 'object' && typeof x.nodeType === 'number' && x.tagName)" +
+    " ? '<' + String(x.tagName).toLowerCase() + (x.id ? '#' + x.id : '') + '>' : x;\n" +
+    "const __clean = (v) => { if (v === undefined) return { undef: true };" +
+    " try { return { value: JSON.parse(JSON.stringify(v, __node)) }; } catch (e) { return { value: String(v) }; } };\n" +
+    "try {\n" +
+    "  const __v = await (async () => {\n" + code + "\n})();\n" +
+    "  return Object.assign({ ok: true }, __clean(__v));\n" +
+    "} catch (e) {\n" +
+    "  return { ok: false, thrown: true, error: ((e && e.name) ? e.name + ': ' : '') + ((e && e.message) || String(e))," +
+    " stack: e && e.stack ? String(e.stack).split('\\n').slice(0, 4).join(' | ') : undefined };\n" +
+    "}\n" +
+    "})()";
+}
+
+// Chrome exposes chrome.userScripts only when the user allowed it for this
+// extension (chrome://extensions → Details → "Allow user scripts").
+function userScriptsAvailable() {
+  try {
+    return !!(chrome.userScripts && typeof chrome.userScripts.execute === "function");
+  } catch (e) {
+    return false;
+  }
+}
+
+const USER_SCRIPTS_OFF =
+  "browser.eval runs best in the user-script world, which Chrome keeps off until it is allowed: Arsen can " +
+  "turn on \"Allow user scripts\" for the Jarvis extension (chrome://extensions → Jarvis Side Panel → Details). " +
+  "Until then the typed tools (find, read outline, click, type, wait) work on this page.";
+
+async function evalInUserWorld(tab, code, frameId) {
+  const target = { tabId: tab.id };
+  if (frameId) target.frameIds = [frameId];
+  const out = await withInjectBudget(chrome.userScripts.execute({
+    target: target,
+    js: [{ code: evalSource(code) }],
+    world: "USER_SCRIPT",
+    injectImmediately: true,
+  }), tab, ["eval"]);
+  const first = out && out[0];
+  if (first && first.error) return { ok: false, error: String(first.error) };
+  return first ? first.result : null;
+}
+
 async function toolEval(args, session) {
   const tab = await pickTab(args.tab, session);
   assertScriptable(tab);
   const code = String(args.code == null ? "" : args.code);
   if (!code.trim()) throw new Error("browser.eval needs code");
   const sticky = stickyFrame.get(tab.id);
-  const target = { tabId: tab.id };
-  if (sticky) target.frameIds = [sticky];
-  const inject = { target: target, func: pageKernel, args: ["eval", { code: code }] };
-  if (args.page_world) inject.world = "MAIN";
   let res;
-  try {
-    const out = await withInjectBudget(chrome.scripting.executeScript(inject), tab, ["eval"]);
-    res = out && out[0] ? out[0].result : null;
-  } catch (e) {
-    return fail("browser.eval could not run in tab " + tab.id + ": " + String((e && e.message) || e) +
-                (args.page_world ? " (page_world=true is subject to the page's CSP; try without it)" : ""));
+  let userWorldError = "";
+  if (!args.page_world && userScriptsAvailable()) {
+    try {
+      res = await evalInUserWorld(tab, code, sticky);
+    } catch (e) {
+      // The API refused (switched off mid-session, an old Chrome): fall back
+      // below, and say what it said - a syntax error in the code lands here too.
+      userWorldError = String((e && e.message) || e);
+    }
+  }
+  if (res === undefined) {
+    const target = { tabId: tab.id };
+    if (sticky) target.frameIds = [sticky];
+    const inject = { target: target, func: pageKernel, args: ["eval", { code: code }] };
+    if (args.page_world) inject.world = "MAIN";
+    try {
+      const out = await withInjectBudget(chrome.scripting.executeScript(inject), tab, ["eval"]);
+      res = out && out[0] ? out[0].result : null;
+    } catch (e) {
+      return fail("browser.eval could not run in tab " + tab.id + ": " + String((e && e.message) || e) +
+                  (args.page_world ? " (page_world=true is subject to the page's CSP; try without it)" : ""));
+    }
+    if (res && res.csp_blocked && !args.page_world) {
+      res.error = (userWorldError ? "The user-script world said: " + userWorldError + "\n" : "") +
+                  (userScriptsAvailable() ? res.error : USER_SCRIPTS_OFF);
+    }
   }
   const where = header(tab) + (sticky ? "\n(inside the iframe last read)" : "") +
                 (args.page_world ? "\n(page main world)" : "");
@@ -1221,6 +1415,7 @@ async function toolEval(args, session) {
     return { kind: "error", error: err,
              text: "Error: " + err + (res.stack ? "\n" + res.stack : "") + "\n" + where };
   }
+  if (res.undef) res.value = undefined;
   let text = renderValue(res.value);
   if (text.length > EVAL_MAX_CHARS) text = text.slice(0, EVAL_MAX_CHARS) + "\n… [cut at " + EVAL_MAX_CHARS + " chars — return less]";
   if (AFTER_ACTION_MS) await sleep(AFTER_ACTION_MS);
@@ -1275,6 +1470,12 @@ async function toolWait(args, session) {
   let lastChange = 0;
   while (Date.now() - started < total) {
     await sleep(Math.min(WAIT_POLL_MS, Math.max(50, total - (Date.now() - started))));
+    // What it is waiting for may have opened somewhere else: say so now, rather
+    // than "nothing changed" after the whole timeout.
+    const elsewhere = await otherTabsSince(started, tab.id, session);
+    if (elsewhere.length) {
+      return data(header(tab) + "\nAfter " + seconds() + "s, not on this page but beside it:\n" + elsewhere.join("\n"));
+    }
     let cur;
     try { cur = await snapshotText(tab); } catch (e) { continue; }   // mid-navigation: try again
     if (cur !== last) { last = cur; changed = true; lastChange = Date.now(); }

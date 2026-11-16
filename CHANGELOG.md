@@ -2,6 +2,30 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-16 — core 2.0.0a129 / extension 2.5.0
+
+### Fixed
+- **A click that opens its result in another tab is seen.** A popup, a `target=_blank` link or a named
+  window the site reuses used to come back as "Clicked" and then "Nothing changed in 15s". On 16 Nov a
+  Postbank course's «Продължи курса» opened its player through a Microsoft sign-in popup and two runs
+  never learned it existed. `browser.click`/`type` now report the tab the action opened or sent to a
+  new page ("This opened a new tab: [tab N] … Carry on there with tab=N"), and `browser.wait` returns as
+  soon as one appears.
+- **`browser.eval` works on every page.** Without `page_world` it ran in the isolated world, where MV3
+  forbids compiling strings on every site (the "CSP" in its refusal was the extension's own). It now runs
+  as a user script, which no page CSP can block, once "Allow user scripts" is on for the extension;
+  until then the refusal says how to turn it on.
+- **A page that failed to load says why** (`net::ERR_…` and the URL) instead of "Frame with ID 0 is
+  showing error page", in reads, clicks and `browser.open`.
+- **The supervisor no longer suggests what already failed, or typing credentials.** It is shown the
+  tools whose last call failed in the run, they are no longer offered as the way out, and a step only
+  Arsen can take (approve a sign-in, a captcha, a code) is answered with "ask him and wait".
+
+### Changed
+- **A delegated task asks for a step only Arsen can take and carries on**, rather than cancelling the
+  prompt and ending "not done"; and it starts from the tab where the page already is (his, or the
+  asking chat's) instead of opening it afresh. `browser.tabs`/`open` say the same to every run.
+
 ## 2026-11-16 — core 2.0.0a128 / proto a44
 
 ### Fixed

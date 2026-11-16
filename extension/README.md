@@ -86,7 +86,7 @@ both        ping / pong
 | `browser.scroll` | `ref?` \| `direction` | page or its main scrolling container; by ref → into view |
 | `browser.screenshot` | — | visible tab as JPEG (`image` field) |
 | `browser.wait` | `text?`, `timeout_s?` | blocks (default 30 s, max 120) until the visible text changes and holds still, or `text` appears; returns only the new text; `empty` on timeout — the clock for chatbots and slow forms, instead of sleep-and-re-read |
-| `browser.eval` | `code`, `page_world?` | the escape hatch: the model's own JavaScript in the work tab (frame last read), value back as JSON; helpers `$`, `$$`, `$ref('e9')`, `describe(el)`, `evidence(el)`; isolated world by default, `page_world` opts into the page's globals (its CSP applies). A page whose CSP forbids `unsafe-eval` (dev.to, GitHub, most banks) refuses the compiled string in either world — that refusal is reported as a CSP refusal and points at the typed tools, which are DOM calls and keep working |
+| `browser.eval` | `code`, `page_world?` | the escape hatch: the model's own JavaScript in the work tab (frame last read), value back as JSON; helpers `$`, `$$`, `$ref('e9')`, `describe(el)`, `evidence(el)`; runs as a **user script** (`chrome.userScripts`, world `USER_SCRIPT`), injected as source, so no page CSP can refuse it; needs "Allow user scripts" switched on for the extension (chrome://extensions → Details). Without it the isolated world is tried, where MV3 forbids compiling strings on every site, and the refusal says how to switch user scripts on. `page_world` opts into the page's globals (its CSP applies) |
 
 Refs (`@e12`) are `data-jarvis-ref` attributes stamped by `read`/`find`; they
 stay valid until the page navigates, and a recycled node (virtualised lists) is
@@ -136,3 +136,13 @@ token like the core does (403 at the handshake, 401 on `/api/health`), records
 - The MV3 worker can be evicted when idle. The alarm revives it; a call landing
   in that gap is answered on the next connection — the core sees a timeout and
   retries.
+
+
+## Tabs a click sets off (2.5.0)
+
+Every tab event (created, navigated, closed) is kept for a short while. `browser.click`/`type` watch
+up to ~0.9 s after the action for a tab it opened (a popup, `target=_blank`) or a tab that came to the
+front on a new page (a named window the site reuses), and name it with its id; `browser.wait` returns as
+soon as one appears. Another chat's work tab is never reported. Failed top-level loads are kept per tab
+from `webNavigation.onErrorOccurred`, so an error page is reported with its `net::ERR_…` reason.
+Permissions added in 2.5.0: `webNavigation`, `userScripts`.

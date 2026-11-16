@@ -1452,6 +1452,19 @@ function pageKernel(op, p) {
     case "__tuning":
       return { CLICKABLE_BONUS: CLICKABLE_BONUS, LABEL_PENALTY: LABEL_PENALTY };
 
+    // browser.eval's helpers for code that runs in the user-script world
+    // (background.js, evalSource): the same $ref/describe/evidence the isolated
+    // world gets, handed over as live functions. Only ever called in-world -
+    // functions do not survive executeScript's serialisation.
+    case "helpers":
+      return {
+        $: (s) => document.querySelector(s),
+        $$: (s) => Array.prototype.slice.call(document.querySelectorAll(s)),
+        $ref: (r) => document.querySelector("[" + REF + "=\"" + String(r).replace(/^@/, "") + "\"]"),
+        describe: describe,
+        evidence: evidence,
+      };
+
     case "read": {
       const mode = String(p.mode || "text").toLowerCase();
       return mode === "outline" ? readOutline(p) : readText(p);
@@ -1486,14 +1499,17 @@ function pageKernel(op, p) {
                           "return (async () => {\n" + code + "\n})();");
       } catch (e) {
         const msg = (e && e.message) || String(e);
-        // A strict page CSP (dev.to, GitHub, most banks) refuses compiled
-        // strings in this world too, and the refusal arrives as an EvalError
-        // from `new Function` — which is not a syntax error, and saying so
-        // sends the model off rewriting perfectly good code.
+        // A Content Security Policy refuses compiled strings, and the refusal
+        // arrives as an EvalError from `new Function` — which is not a syntax
+        // error, and saying so sends the model off rewriting perfectly good code.
+        // In the isolated world the policy is the EXTENSION's own (MV3 forbids
+        // unsafe-eval there on every site — the quoted policy names
+        // chrome-extension://); in the main world it is the page's. The worker
+        // avoids both through the user-script world when Chrome allows it.
         if ((e && e.name === "EvalError") || /unsafe-eval|Content Security Policy|Refused to evaluate/i.test(msg)) {
           return finalize({ ok: false, kernel_error: false, csp_blocked: true,
-            error: "This page's Content Security Policy refuses code built from a string, so browser.eval " +
-                   "cannot run here at all (" + msg.split("\n")[0] + "). Nothing was executed. Use the typed " +
+            error: "A Content Security Policy refuses code built from a string here, so browser.eval " +
+                   "cannot run (" + msg.split("\n")[0] + "). Nothing was executed. Use the typed " +
                    "tools instead: browser.find and browser.read mode=outline to locate a control, " +
                    "browser.click and browser.type to drive it, browser.upload to put a file into an upload " +
                    "field, browser.wait for what follows. They work on this page — they are DOM calls, not " +

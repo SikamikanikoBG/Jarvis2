@@ -160,3 +160,34 @@ It is O(what is new), not O(how long the chat is).
 * `max_concurrent_runs_per_endpoint` 3 measured better (803 ms) on an idle box. It is one
   setting away, and the reason it is not the default is written next to it.
 
+
+## 2026-11-16 — chat behind a background call (core 2.0.0a126)
+
+Live core, last 24 h: chat calls waited up to 323 s at the endpoint behind 4-6 minute task calls
+(`max_concurrent_runs_per_endpoint` 1 gates model *calls*), then re-prefilled 47-65k tokens with
+nothing cached. Going ahead of the queue (VOICE/TYPED) was already there; it cannot help when the
+one slot is held by a call that runs for minutes.
+
+Now interactive calls may use `interactive_reserved_calls` (1) slots background never takes, and
+on llama.cpp every call is pinned to a slot of its class (`id_slot`, `cache_prompt`), chat in
+0-1, background in 2-3. Verified on the live llama.cpp first: `id_slot` is honoured on
+/v1/chat/completions (same 1.5k prompt again in the same slot: 1511 cached; in another: 0).
+
+Throw-away alpha on ardi (:9123), production's roles and limit 1, the shared llama.cpp under
+production load: a scheduled run writing a 1500-word essay, a chat question 12 s later, then a
+second chat turn.
+
+```
+                          old (reserve 0, no pinning)      new (reserve 1, pinning)
+chat 1  main call wait    602.7 s                          0.0 s
+chat 1  main call         10.3 s, cached 0 / 8,337         2.3 s, cached 8,170 / 8,337
+chat 1  first token       648.8 s                          ~78 s (see below)
+chat 2  whole run         83.4 s                           4.1 s, cached 8,333 / 8,500
+```
+
+What is left of chat 1's 78 s is on the server, not in Jarvis: its 101-token classifier call got
+its Jarvis slot at once and then sat 76 s in the llama.cpp fork's prefill admission
+(`/slots` → `prefill_waiting: true`, `prefill_wait_ms` 44,362 seen for a tiny request while
+another slot prefilled 58k tokens with nothing cached). With `-kvu` the 98k KV pool is shared by all four
+slots, so a long task prompt still evicts the chat's even in its own slot; the server flags are
+being changed separately.

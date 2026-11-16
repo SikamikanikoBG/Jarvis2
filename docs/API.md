@@ -300,7 +300,7 @@ GET    /api/schedules/{id}/fires?limit=20 → Fire[] {scheduled_for, run_id, con
 `Schedule {id, name, prompt, cron: string|null, at: datetime|null, tz, enabled, catch_up: "skip"|"run_once",
 think, think_level, call_me, prompt_by, next_fire, last_fired_for, last_run_id, last_status, created_at, updated_at}`
 `prompt_by`: null = Arsen wrote the prompt; a run id = a run nobody asked from wrote it, and it fires asking like a
-task until accepted. An `at` more than 60 s in the past, and a prompt over 20,000 chars, are 422.
+task until accepted. An `at` more than 5 min in the past, and a prompt over 20,000 chars, are 422.
 Exactly one of `cron` / `at` (one-shot, auto-disables after firing). `UNIQUE(schedule_id,
 scheduled_for)` makes double-fire impossible. WS: `schedule.changed {schedule_id|null}`.
 Tools (builtin): `schedule.create {name, prompt, cron?, at?, tz?, enabled?, catch_up?, think?, think_level?, call_me?}`

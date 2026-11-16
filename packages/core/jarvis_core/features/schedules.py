@@ -87,8 +87,9 @@ def _repeated_wall_time(value: datetime, zone: ZoneInfo) -> bool:
 
 # A schedule's prompt is a standing instruction, not a document: generous, but bounded (EC-10).
 PROMPT_MAX_CHARS = 20_000
-# A one-shot given a time this far in the past is a mistake, not a catch-up.
-_PAST_GRACE_S = 60
+# A one-shot given a time this far in the past is a mistake, not a catch-up. Five minutes, not
+# one: "remind me now" is written as a time just gone, and a slow machine must not refuse it.
+_PAST_GRACE_S = 300
 _EDITABLE = {"name", "prompt", "cron", "at", "tz", "enabled", "catch_up", "call_me"}
 _CLEARABLE = {"think", "think_level"}
 

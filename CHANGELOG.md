@@ -37,7 +37,7 @@ Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal
 - Two saves of the settings at once (the UI and anything else) no longer lose one of them; every save
   goes through one locked path and is applied onto what is in force.
 - A schedule's thinking override can be set back to the default (`think` / `think_level` null), in the
-  UI too. `DELETE /api/schedules/{unknown}` is 404. A one-shot `at` in the past is refused (422).
+  UI too. `DELETE /api/schedules/{unknown}` is 404. A one-shot `at` more than 5 minutes in the past is refused (422).
 
 ## 2026-11-15 — core 2.0.0a124, proto 2.0.0a40, web alpha.90
 

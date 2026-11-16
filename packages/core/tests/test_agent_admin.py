@@ -703,3 +703,13 @@ async def test_the_break_glass_script_reverts_in_the_database(harness: Harness):
     stored = await core.store.load_settings()
     assert stored.voice.hold_volume == 0.4 and stored.roles["chat"].temperature == 0.7
     assert (await core.admin.changes.get(rec.id)).status == "reverted"  # type: ignore[union-attr]
+
+
+async def test_a_one_shot_just_gone_is_still_taken_but_an_old_one_is_refused(harness: Harness):
+    """CI 2026-11-15: "remind me now" written as a time a minute ago must not be refused on a slow
+    machine; an hour ago is a mistake."""
+    core = harness.core
+    ok = await core.schedules.create(name="Now", prompt="x", at=datetime.now(UTC) - timedelta(minutes=2), tz="UTC")
+    assert ok.next_fire is not None
+    with pytest.raises(ValueError, match="in the past"):
+        await core.schedules.create(name="Old", prompt="x", at=datetime.now(UTC) - timedelta(hours=1), tz="UTC")

@@ -329,7 +329,8 @@ export interface SearchHit {
 
 // ---- settings.py ---------------------------------------------------------------------
 
-export type Provider = 'ollama' | 'vllm' | 'fake';
+/** llamacpp = llama.cpp's llama-server (OpenAI-compatible, with its own KV slots). */
+export type Provider = 'ollama' | 'vllm' | 'llamacpp' | 'fake';
 
 export type RoleName = 'chat' | 'background' | 'planner' | 'classifier' | 'judge' | 'triage';
 
@@ -353,6 +354,12 @@ export interface ModelSpec {
   keep_alive: string | null;
   /** Pictures + clips per request the endpoint accepts (vLLM --limit-mm-per-prompt); null = no cap. */
   max_media?: number | null;
+  /** llama.cpp only: pin calls to KV slots (id_slot) so background work never evicts the chat's cache. */
+  slot_pinning?: boolean;
+  /** llama.cpp only: how many of the server's slots serve interactive calls; the rest serve background. */
+  interactive_slots?: number;
+  /** vLLM only: the server runs --scheduling-policy priority; requests carry their urgency. */
+  priority_scheduling?: boolean;
 }
 
 export type McpTransport = 'stdio' | 'streamable_http';
@@ -691,7 +698,12 @@ export interface Settings {
   run_routing: Record<RunKind, Lane>;
   budgets: Record<RunKind, RunBudget>;
   mcp_servers: McpServerSpec[];
+  /** Model calls in flight per endpoint (despite the name: calls, not runs). */
   max_concurrent_runs_per_endpoint: number;
+  /** Extra calls in flight per endpoint that only interactive calls may use; 0 = none. */
+  interactive_reserved_calls?: number;
+  /** Run kinds whose calls go first at the endpoint and may use the reserve; a voice turn always does. */
+  interactive_run_kinds?: RunKind[];
   repeated_call_threshold: number;
   /** Read-only calls from one batch that may run at once. */
   max_parallel_tools: number;

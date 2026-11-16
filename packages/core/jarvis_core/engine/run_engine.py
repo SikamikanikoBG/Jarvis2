@@ -431,7 +431,9 @@ class RunEngine:
         # Every model call made by this task — and by tasks it spawns — is routed to the run's lane.
         current_run_kind.set(run.kind)
         # ...and waits for a free slot on it by how much Arsen is waiting for it (models/base.py).
-        call_urgency.set(VOICE if run.channel is Channel.VOICE else TYPED if run.kind is RunKind.CHAT else BACKGROUND)
+        # Which kinds someone is looking at is a setting (interactive_run_kinds; chat and collab).
+        interactive = run.kind in self._settings().interactive_run_kinds
+        call_urgency.set(VOICE if run.channel is Channel.VOICE else TYPED if interactive else BACKGROUND)
         # ...and every tool it calls can tell where it is standing (engine/current.py).
         current_run_id.set(run.id)
         current_conversation_id.set(run.conversation_id)

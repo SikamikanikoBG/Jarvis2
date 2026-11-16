@@ -59,14 +59,23 @@ def to_ollama_tools(tools: list[ToolSpec]) -> list[dict[str, Any]]:
     ]
 
 
+_DEFAULT_KEEP_ALIVE = "30m"
+
+
 class OllamaAdapter:
     def __init__(
-        self, spec: ModelSpec, *, concurrency: int = 1, role: str | None = None, ledger: ContextLedger | None = None
+        self,
+        spec: ModelSpec,
+        *,
+        concurrency: int = 1,
+        reserved: int = 0,
+        role: str | None = None,
+        ledger: ContextLedger | None = None,
     ) -> None:
         self.spec = spec
         self.role = role
         self._ledger = ledger
-        self._sem = endpoint_semaphore(spec, concurrency)
+        self._sem = endpoint_semaphore(spec, concurrency, reserved)
         self._client = make_client(spec.timeout_s)
 
     async def aclose(self) -> None:
@@ -91,8 +100,10 @@ class OllamaAdapter:
         }
         if tools:
             payload["tools"] = to_ollama_tools(tools)
-        if self.spec.keep_alive:
-            payload["keep_alive"] = self.spec.keep_alive
+        # Unset, Ollama unloads the model after 5 idle minutes and the next message pays the whole
+        # load before its first token. Half an hour covers a conversation with pauses in it
+        # (2026-11-16); a spec's own keep_alive still wins ("-1" = never unload).
+        payload["keep_alive"] = self.spec.keep_alive or _DEFAULT_KEEP_ALIVE
         return payload
 
     async def stream(

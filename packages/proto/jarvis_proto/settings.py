@@ -41,6 +41,10 @@ def marks(*risk: RiskClass, key: str | None = None) -> JsonDict:
 class Provider(StrEnum):
     OLLAMA = "ollama"
     VLLM = "vllm"
+    # llama.cpp's llama-server: the same OpenAI-compatible API as vLLM, but its own levers for
+    # speed (a KV slot per request, `id_slot`; `cache_prompt`). A "vllm" endpoint that turns out
+    # to be llama.cpp (/v1/models says owned_by llamacpp) is treated as this one (2026-11-16).
+    LLAMACPP = "llamacpp"
     FAKE = "fake"  # scripted adapter for tests and CI
 
 
@@ -81,6 +85,17 @@ class ModelSpec(BaseModel):
     # Pictures + clips per request the endpoint accepts (vLLM --limit-mm-per-prompt; both lanes: 6).
     # The newest this many keep their pixels; older ones become a line. None = no cap.
     max_media: int | None = 6
+    # Speed levers each server has natively (2026-11-16: a chat call waited up to 5 min behind a
+    # task call and then re-prefilled 65k tokens from nothing - the task had taken its cache).
+    # llama.cpp only: pin requests to KV slots (`id_slot`) - the first `interactive_slots` slots
+    # serve calls Arsen is waiting for, the rest serve background work, so a task cannot evict
+    # the chat's cached prefix. The slot count is read from the server (/props total_slots).
+    slot_pinning: bool = True
+    interactive_slots: int = Field(default=2, ge=1)
+    # vLLM only: the server runs with --scheduling-policy priority, so each request carries its
+    # urgency as `priority` (lower first). Off by default because vLLM REFUSES any priority but 0
+    # under its default fcfs policy ("Any priority other than 0 will raise an error").
+    priority_scheduling: bool = False
 
     @model_validator(mode="after")
     def _level_needs_think(self) -> ModelSpec:
@@ -838,6 +853,16 @@ class Settings(BaseModel):
     # tokens against a 305k-token KV cache, so they start evicting each other's cached prefixes —
     # which is the expensive thing this whole exercise removed. Raise it if the box grows.
     max_concurrent_runs_per_endpoint: int = 2
+    # Despite its name the limit above gates model CALLS in flight per endpoint, not runs. Calls
+    # Arsen waits for may take this many more on top, which background calls never can - so a
+    # chat call starts at once even while a task's 5-minute call holds the endpoint (2026-11-15:
+    # chat calls waited up to 323 s behind task calls at limit 1). 0 = no reserve: an interactive
+    # call only goes ahead of the queue. A call on the line gets one slot more again (base.py).
+    interactive_reserved_calls: int = Field(default=1, ge=0)
+    # The run kinds whose calls count as interactive - someone is looking at the reply. Their
+    # calls take the next free slot before any background call (FIFO within a class) and may use
+    # the reserve above. A voice turn is always interactive, whatever its kind.
+    interactive_run_kinds: list[RunKind] = Field(default_factory=lambda: [RunKind.CHAT, RunKind.COLLAB])
     # How long the Context screen's per-call history (model_calls) is kept, in days.
     context_usage_retention_days: int = Field(default=90, ge=1, le=730)
     repeated_call_threshold: int = 3

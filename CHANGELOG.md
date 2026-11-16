@@ -2,6 +2,21 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-16 — core 2.0.0a126, proto 2.0.0a42, web alpha.92
+
+### Changed
+- **A chat reply no longer waits behind a background model call.** Calls Arsen waits for (chat, collab,
+  voice: `interactive_run_kinds`) take the next free slot at the endpoint before any background call
+  (first come, first served within each class) and may use `interactive_reserved_calls` (default 1)
+  extra calls in flight that background never takes. 2026-11-15: chat calls waited up to 323 s
+  behind 4-6 minute task calls at `max_concurrent_runs_per_endpoint` 1 (which gates calls, not runs).
+- **Per-provider speed levers.** New provider `llamacpp`; a `vllm` endpoint whose /v1/models says
+  `owned_by: llamacpp` is treated as one. llama.cpp: `cache_prompt` and `id_slot` slot pinning
+  (`slot_pinning`, `interactive_slots`, slot count read from /props) so a task never evicts the
+  chat's cached prompt. vLLM: `priority` only with `priority_scheduling` (servers on
+  `--scheduling-policy priority`; refused priorities are dropped and remembered). Ollama:
+  `keep_alive` defaults to 30m and one `num_ctx` per box, so the model is not reloaded.
+
 ## 2026-11-15 — core 2.0.0a125, proto 2.0.0a41, web alpha.91
 
 ### Added

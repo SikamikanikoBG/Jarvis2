@@ -20,7 +20,7 @@ import { TasksSection } from './TasksSection';
 import { ShadowSection } from './ShadowSection';
 import { VoiceSection } from './VoiceSection';
 
-const PROVIDERS: Provider[] = ['ollama', 'vllm'];
+const PROVIDERS: Provider[] = ['ollama', 'vllm', 'llamacpp'];
 const THINK_HINT = 'Only chat may think. Planners, classifiers and judges with thinking on spend their whole budget thinking.';
 
 function deepEqual(a: unknown, b: unknown): boolean {
@@ -258,8 +258,11 @@ export function SettingsScreen() {
             <Field label="Discord webhook" error={errors.discord_webhook_url} hint="Push channel for reminders and scheduled-run summaries (notify.discord), and for Jarvis's calls when no device rings. Secret.">
               <input className="input" type="password" autoComplete="off" value={draft.discord_webhook_url ?? ''} onChange={(e) => patch('discord_webhook_url', e.target.value || null)} placeholder="https://discord.com/api/webhooks/…" />
             </Field>
-            <Field label="Concurrent runs per endpoint" error={errors.max_concurrent_runs_per_endpoint}>
+            <Field label="Concurrent calls per endpoint" error={errors.max_concurrent_runs_per_endpoint} hint="Model calls in flight on one server at once, any kind.">
               <NumberInput value={draft.max_concurrent_runs_per_endpoint} min={1} onChange={(v) => patch('max_concurrent_runs_per_endpoint', v ?? 1)} />
+            </Field>
+            <Field label="Reserved for interactive calls" error={errors.interactive_reserved_calls} hint="Extra calls per endpoint that only chat/voice may use, so a reply never waits behind a long task call. 0 = none.">
+              <NumberInput value={draft.interactive_reserved_calls ?? 1} min={0} onChange={(v) => patch('interactive_reserved_calls', v ?? 0)} label="Reserved for interactive calls" />
             </Field>
             <Field label="Repeated call threshold" error={errors.repeated_call_threshold} hint="Identical tool calls before the judge is summoned.">
               <NumberInput value={draft.repeated_call_threshold} min={1} onChange={(v) => patch('repeated_call_threshold', v ?? 1)} />
@@ -426,6 +429,25 @@ export function SettingsScreen() {
               </Field>
             ))}
           </div>
+          <Field label="Interactive run kinds" error={errors.interactive_run_kinds} hint="Someone is waiting for these replies: their model calls take the next free slot first and may use the reserve. A voice turn always does.">
+            <div className="think-row" role="group" aria-label="Interactive run kinds">
+              {RUN_KINDS.map((kind) => {
+                const kinds = draft.interactive_run_kinds ?? ['chat', 'collab'];
+                const on = kinds.includes(kind);
+                return (
+                  <label key={kind} className="small">
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      aria-label={`${kind} is interactive`}
+                      onChange={(e) => patch('interactive_run_kinds', e.target.checked ? [...kinds, kind] : kinds.filter((k) => k !== kind))}
+                    />{' '}
+                    {kind}
+                  </label>
+                );
+              })}
+            </div>
+          </Field>
         </section>
 
         <div id="settings-mcp" className="settings-anchor">
@@ -565,6 +587,8 @@ function NumberInput({
 function RoleCard({ role, spec, onChange }: { role: RoleName; spec: ModelSpec; onChange: (s: Partial<ModelSpec>) => void }) {
   const mayThink = role === 'chat' || role === 'background';
   const ollama = spec.provider === 'ollama';
+  // vLLM endpoints that turn out to be llama.cpp are treated as llama.cpp, so both show the levers.
+  const openai = spec.provider === 'vllm' || spec.provider === 'llamacpp';
   return (
     <div id={`role-${role}`} className="card role-card settings-anchor">
       <div className="role-head">
@@ -600,8 +624,11 @@ function RoleCard({ role, spec, onChange }: { role: RoleName; spec: ModelSpec; o
         <Field label="Timeout (s)">
           <NumberInput value={spec.timeout_s} min={1} onChange={(v) => onChange({ timeout_s: v ?? 1 })} />
         </Field>
-        <Field label="Keep alive" hint={ollama ? 'Ollama only, e.g. 30m' : 'Ollama only'}>
+        <Field label="Keep alive" hint={ollama ? 'Ollama only. Empty = 30m.' : 'Ollama only'}>
           <input className="input" value={spec.keep_alive ?? ''} disabled={!ollama} onChange={(e) => onChange({ keep_alive: e.target.value || null })} placeholder="30m" />
+        </Field>
+        <Field label="Interactive slots" hint={openai ? 'llama.cpp: KV slots kept for chat/voice; the rest serve background work.' : 'llama.cpp only'}>
+          <NumberInput value={spec.interactive_slots ?? 2} min={1} disabled={!openai} onChange={(v) => onChange({ interactive_slots: v ?? 1 })} label={`Interactive slots for ${role}`} />
         </Field>
       </div>
       <div className="think-row">
@@ -618,6 +645,16 @@ function RoleCard({ role, spec, onChange }: { role: RoleName; spec: ModelSpec; o
         )}
         <span className="field-hint">{mayThink ? 'Reasoning is streamed into the fold and stored beside the reply. Level: Ollama think level / vLLM reasoning_effort.' : THINK_HINT}</span>
       </div>
+      {openai && (
+        <div className="think-row">
+          <Switch checked={spec.slot_pinning ?? true} onChange={(v) => onChange({ slot_pinning: v })} label={`Slot pinning for ${role}`} />
+          <span className="small">Slot pinning</span>
+          <span className="field-hint">llama.cpp: send each call to a KV slot of its class (id_slot + cache_prompt), so a task never evicts the chat's cached prompt. Ignored by vLLM.</span>
+          <Switch checked={spec.priority_scheduling ?? false} onChange={(v) => onChange({ priority_scheduling: v })} label={`Priority scheduling for ${role}`} />
+          <span className="small">Priority scheduling</span>
+          <span className="field-hint">vLLM started with --scheduling-policy priority: each call carries its urgency. Off for any other vLLM — it refuses a priority.</span>
+        </div>
+      )}
     </div>
   );
 }

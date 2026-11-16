@@ -1,4 +1,4 @@
-"""OpenAI-compatible adapter (vLLM) over ``/v1/chat/completions`` SSE.
+"""OpenAI-compatible adapter (vLLM, llama.cpp) over ``/v1/chat/completions`` SSE.
 
 Thinking is controlled through ``chat_template_kwargs.enable_thinking`` (Qwen-style
 templates) and surfaced by vLLM in the delta field ``reasoning`` (or ``reasoning_content``
@@ -13,10 +13,11 @@ import json
 import logging
 import re
 import time
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from typing import Any
 
 from jarvis_core.models.base import (
+    BACKGROUND,
     ModelDoneChunk,
     ModelError,
     ModelEvent,
@@ -24,11 +25,15 @@ from jarvis_core.models.base import (
     ModelTextChunk,
     ModelToolCallsChunk,
     ProbeResult,
+    ServerFacts,
+    call_urgency,
     endpoint_semaphore,
+    server_facts,
+    slot_pool,
 )
 from jarvis_core.models.http import Stopwatch, make_client, stream_lines
 from jarvis_core.models.ledger import CallRecord, ContextLedger
-from jarvis_proto import AttachmentKind, Message, ModelSpec, ModelUsage, Role, ToolCall, ToolSpec, new_id
+from jarvis_proto import AttachmentKind, Message, ModelSpec, ModelUsage, Provider, Role, ToolCall, ToolSpec, new_id
 
 log = logging.getLogger(__name__)
 
@@ -154,12 +159,34 @@ def _smaller_max_tokens(error: str, requested: int) -> int | None:
     return candidate if candidate >= _MIN_OUTPUT_TOKENS else None
 
 
+# The looks at what a server is that are under way, one per endpoint (strong references).
+_looking: dict[str, asyncio.Task[ServerFacts]] = {}
+# How long a failed look at what the server is waits before the next one, in seconds.
+_DETECT_RETRY_S = 60.0
+
+
+def _server_root(base_url: str) -> str:
+    """llama-server answers /props at its root, beside /v1."""
+    root = base_url.rstrip("/")
+    return root.removesuffix("/v1")
+
+
+def _nothing() -> None:
+    pass
+
+
+def _priority_refused(error: str) -> bool:
+    """vLLM's answer to a non-zero `priority` when it schedules first come, first served."""
+    return "priority" in error.lower() and "schedul" in error.lower()
+
+
 class OpenAICompatAdapter:
     def __init__(
         self,
         spec: ModelSpec,
         *,
         concurrency: int = 1,
+        reserved: int = 0,
         api_key: str | None = None,
         role: str | None = None,
         ledger: ContextLedger | None = None,
@@ -167,12 +194,92 @@ class OpenAICompatAdapter:
         self.spec = spec
         self.role = role
         self._ledger = ledger
-        self._sem = endpoint_semaphore(spec, concurrency)
+        self._sem = endpoint_semaphore(spec, concurrency, reserved)
         self._client = make_client(spec.timeout_s)
         self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    async def server(self) -> ServerFacts:
+        """What the endpoint really is - llama.cpp or vLLM - and, for llama.cpp, how many slots it
+        has. Asked once per endpoint and kept; a look that failed is taken again after a minute.
+
+        The provider in settings says how to talk; it cannot always say who answers: the live
+        endpoint was set up as "vllm" and is llama.cpp (2026-11-16). /v1/models names its owner
+        (`owned_by: llamacpp`) and llama-server's /props has `total_slots`. An explicit "llamacpp"
+        skips the first question; an explicit "vllm" on a vLLM server costs one GET, once."""
+        key = self.spec.endpoint_key
+        facts = server_facts.get(key)
+        if facts is not None and (facts.retry_at == 0.0 or time.monotonic() < facts.retry_at):
+            return facts
+        kind = self.spec.provider
+        try:
+            if kind is not Provider.LLAMACPP:
+                resp = await self._client.get(
+                    self.spec.base_url.rstrip("/") + "/models", headers=self._headers, timeout=5.0
+                )
+                owners = {str(m.get("owned_by", "")).lower() for m in resp.json().get("data", [])}
+                if "llamacpp" in owners:
+                    kind = Provider.LLAMACPP
+            slots: int | None = None
+            if kind is Provider.LLAMACPP:
+                resp = await self._client.get(
+                    _server_root(self.spec.base_url) + "/props", headers=self._headers, timeout=5.0
+                )
+                total = resp.json().get("total_slots")
+                slots = int(total) if total else None
+            facts = ServerFacts(kind=kind, slots=slots)
+        except Exception as exc:  # not knowing costs only the speed levers, never the call
+            log.info("model endpoint %s: could not tell what server it is: %s", key, exc)
+            facts = ServerFacts(kind=kind, retry_at=time.monotonic() + _DETECT_RETRY_S)
+        server_facts[key] = facts
+        return facts
+
+    def _known(self) -> ServerFacts:
+        """What is known about the server right now, without waiting for anyone to answer. The
+        first call to an endpoint starts the look in the background and goes out as the settings
+        say (a call holding the gate must not also wait on a GET); every call after that has the
+        answer."""
+        key = self.spec.endpoint_key
+        facts = server_facts.get(key)
+        if facts is not None and (facts.retry_at == 0.0 or time.monotonic() < facts.retry_at):
+            return facts
+        if key not in _looking:
+            look = asyncio.create_task(self.server(), name=f"server-kind {key}")
+            _looking[key] = look
+            look.add_done_callback(lambda _: _looking.pop(key, None))
+        return facts or ServerFacts(kind=self.spec.provider)
+
+    async def _native(self, payload: dict[str, Any], urgency: int) -> tuple[dict[str, Any], Callable[[], None]]:
+        """The request with the server's own speed levers for a call of this urgency, and the
+        llama.cpp slot it took (given back when the call ends).
+
+        llama.cpp: `cache_prompt` (its prefix cache; the default in recent builds, said anyway)
+        and, with slot pinning, `id_slot` - interactive calls in their slots, background in the
+        rest, so a task never evicts the chat's cached prefix. Verified on the live server
+        2026-11-16: a request with id_slot 3 ran in slot 3, the same prompt again there came back
+        1511 of 1515 tokens cached, and the same prompt in another slot 0 cached.
+        vLLM: `priority` only when the server schedules by it (lower = sooner; urgency is already
+        0 voice, 1 typed, 2 background); its automatic prefix caching needs nothing in the request.
+        Ollama has its own adapter (ollama.py)."""
+        facts = self._known()
+        if facts.kind is Provider.LLAMACPP:
+            if self.spec.slot_pinning and facts.slots and facts.slots >= 2:
+                pool = slot_pool(self.spec, facts.slots)
+                slot = pool.acquire(urgency < BACKGROUND, self._affinity())
+                return {**payload, "cache_prompt": True, "id_slot": slot}, lambda: pool.release(slot)
+            return {**payload, "cache_prompt": True}, _nothing
+        if facts.kind is Provider.VLLM and self.spec.priority_scheduling and facts.priority:
+            return {**payload, "priority": urgency}, _nothing
+        return payload, _nothing
+
+    def _affinity(self) -> tuple[str | None, str | None]:
+        """Calls that should share a slot: the same conversation and the same role (the main loop
+        and the planner send different prompts; taking turns in one slot evicts both)."""
+        from jarvis_core.engine.current import current_conversation_id
+
+        return current_conversation_id.get(), self.role
 
     def _payload(self, messages: list[Message], tools: list[ToolSpec]) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -212,63 +319,77 @@ class OpenAICompatAdapter:
     async def _stream(
         self, url: str, payload: dict[str, Any], rec: CallRecord | None, cancel: asyncio.Event
     ) -> AsyncGenerator[ModelEvent, None]:
+        urgency = call_urgency.get()
         async with self._sem:
-            ContextLedger.started(rec)
-            watch = Stopwatch()
-            usage = ModelUsage(calls=1)
-            finish: str | None = None
-            pending: dict[int, dict[str, Any]] = {}
-            async for line in self._lines(url, payload, cancel=cancel, rec=rec):
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                chunk = json.loads(data)
-                if "error" in chunk:
-                    raise ModelError(str(chunk["error"]))
-                if chunk.get("usage"):
-                    u = chunk["usage"]
-                    usage.prompt_tokens = int(u.get("prompt_tokens") or 0)
-                    usage.completion_tokens = int(u.get("completion_tokens") or 0)
-                    # vLLM reports what its prefix cache served. It is the only honest measure of
-                    # whether the prompt stayed append-only; everything else is inferred from
-                    # timings that vary with load.
-                    details = u.get("prompt_tokens_details") or {}
-                    usage.cached_tokens = int(details.get("cached_tokens") or 0)
-                for choice in chunk.get("choices") or []:
-                    delta = choice.get("delta") or {}
-                    reasoning = delta.get("reasoning") or delta.get("reasoning_content")
-                    if reasoning:
-                        watch.mark_first()
-                        ContextLedger.saw(rec, reasoning)
-                        yield ModelReasoningChunk(reasoning)
-                    content = delta.get("content")
-                    if content:
-                        watch.mark_first()
-                        ContextLedger.saw(rec, content)
-                        yield ModelTextChunk(content)
-                    for tc in delta.get("tool_calls") or []:
-                        watch.mark_first()
-                        idx = int(tc.get("index", len(pending)))
-                        slot = pending.setdefault(idx, {"id": None, "name": "", "args": ""})
-                        if tc.get("id"):
-                            slot["id"] = tc["id"]
-                        fn = tc.get("function") or {}
-                        if fn.get("name"):
-                            slot["name"] += fn["name"]
-                        if fn.get("arguments"):
-                            slot["args"] += fn["arguments"]
-                            ContextLedger.saw(rec, fn["arguments"])
-                    if choice.get("finish_reason"):
-                        finish = choice["finish_reason"]
-            if pending:
-                yield ModelToolCallsChunk(_finalize_tool_calls(pending))
-            usage.ttft_ms = watch.ttft_ms
-            usage.duration_ms = watch.elapsed_ms
-            if self._ledger:
-                self._ledger.finish(rec, usage, finish, self.spec.max_tokens)
-            yield ModelDoneChunk(usage=usage, finish_reason=finish)
+            # The slot is chosen once the call holds the gate: only then is "which slots are
+            # free" true of the moment the request goes out.
+            payload, give_back = await self._native(payload, urgency)
+            try:
+                async with contextlib.aclosing(self._events(url, payload, rec, cancel)) as events:
+                    async for event in events:
+                        yield event
+            finally:
+                give_back()
+
+    async def _events(
+        self, url: str, payload: dict[str, Any], rec: CallRecord | None, cancel: asyncio.Event
+    ) -> AsyncGenerator[ModelEvent, None]:
+        ContextLedger.started(rec)
+        watch = Stopwatch()
+        usage = ModelUsage(calls=1)
+        finish: str | None = None
+        pending: dict[int, dict[str, Any]] = {}
+        async for line in self._lines(url, payload, cancel=cancel, rec=rec):
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            chunk = json.loads(data)
+            if "error" in chunk:
+                raise ModelError(str(chunk["error"]))
+            if chunk.get("usage"):
+                u = chunk["usage"]
+                usage.prompt_tokens = int(u.get("prompt_tokens") or 0)
+                usage.completion_tokens = int(u.get("completion_tokens") or 0)
+                # vLLM reports what its prefix cache served. It is the only honest measure of
+                # whether the prompt stayed append-only; everything else is inferred from
+                # timings that vary with load.
+                details = u.get("prompt_tokens_details") or {}
+                usage.cached_tokens = int(details.get("cached_tokens") or 0)
+            for choice in chunk.get("choices") or []:
+                delta = choice.get("delta") or {}
+                reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+                if reasoning:
+                    watch.mark_first()
+                    ContextLedger.saw(rec, reasoning)
+                    yield ModelReasoningChunk(reasoning)
+                content = delta.get("content")
+                if content:
+                    watch.mark_first()
+                    ContextLedger.saw(rec, content)
+                    yield ModelTextChunk(content)
+                for tc in delta.get("tool_calls") or []:
+                    watch.mark_first()
+                    idx = int(tc.get("index", len(pending)))
+                    slot = pending.setdefault(idx, {"id": None, "name": "", "args": ""})
+                    if tc.get("id"):
+                        slot["id"] = tc["id"]
+                    fn = tc.get("function") or {}
+                    if fn.get("name"):
+                        slot["name"] += fn["name"]
+                    if fn.get("arguments"):
+                        slot["args"] += fn["arguments"]
+                        ContextLedger.saw(rec, fn["arguments"])
+                if choice.get("finish_reason"):
+                    finish = choice["finish_reason"]
+        if pending:
+            yield ModelToolCallsChunk(_finalize_tool_calls(pending))
+        usage.ttft_ms = watch.ttft_ms
+        usage.duration_ms = watch.elapsed_ms
+        if self._ledger:
+            self._ledger.finish(rec, usage, finish, self.spec.max_tokens)
+        yield ModelDoneChunk(usage=usage, finish_reason=finish)
 
     async def _lines(
         self, url: str, payload: dict[str, Any], *, cancel: asyncio.Event, rec: CallRecord | None = None
@@ -283,6 +404,14 @@ class OpenAICompatAdapter:
                     yield line
                 return
             except ModelError as exc:
+                if exc.status == 400 and "priority" in payload and _priority_refused(str(exc)):
+                    # The spec said the server schedules by priority; it does not. Go again
+                    # without it, and stop sending it to this endpoint.
+                    log.warning("model endpoint %s does not schedule by priority; not sending it", url)
+                    if (facts := server_facts.get(self.spec.endpoint_key)) is not None:
+                        facts.priority = False
+                    payload = {k: v for k, v in payload.items() if k != "priority"}
+                    continue
                 requested = int(payload.get("max_tokens") or 0)
                 if exc.status != 400 or requested <= 0:
                     raise

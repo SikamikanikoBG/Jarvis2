@@ -32,6 +32,9 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
       'asr',
       'languages',
       'concurrent runs',
+      'concurrent calls',
+      'reserved',
+      'interactive',
       'endpoint',
       'repeated call',
       'threshold',
@@ -131,7 +134,7 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   {
     id: 'settings-roles',
     label: 'Model roles',
-    keywords: ['provider', 'ollama', 'vllm', 'base url', 'num_ctx', 'context', 'temperature', 'max tokens', 'timeout', 'keep alive', 'thinking', 'reasoning', 'lane'],
+    keywords: ['provider', 'ollama', 'vllm', 'llamacpp', 'llama.cpp', 'slot', 'id_slot', 'priority', 'base url', 'num_ctx', 'context', 'temperature', 'max tokens', 'timeout', 'keep alive', 'thinking', 'reasoning', 'lane'],
   },
   { id: 'role-chat', label: 'chat', group: 'Model roles', keywords: ['answers you', 'chat model'] },
   { id: 'role-background', label: 'background', group: 'Model roles', keywords: ['lane', 'scheduled', 'unattended', 'long context'] },

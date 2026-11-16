@@ -20,8 +20,20 @@ from jarvis_proto import LANES, ModelSpec, Provider, RoleName, RunKind, Settings
 
 current_run_kind: ContextVar[RunKind | None] = ContextVar("current_run_kind", default=None)
 
-# The fields that say WHERE a call goes; the rest of a ModelSpec says HOW it behaves.
-_ENDPOINT_FIELDS = ("provider", "base_url", "model", "num_ctx", "keep_alive", "timeout_s")
+# The fields that say WHERE a call goes; the rest of a ModelSpec says HOW it behaves. The
+# server's speed levers belong to the endpoint too (2026-11-16): a planner call on the chat
+# lane that did not pin its llama.cpp slot could land in - and evict - the chat's.
+_ENDPOINT_FIELDS = (
+    "provider",
+    "base_url",
+    "model",
+    "num_ctx",
+    "keep_alive",
+    "timeout_s",
+    "slot_pinning",
+    "interactive_slots",
+    "priority_scheduling",
+)
 
 
 class AdapterFactory:
@@ -157,12 +169,25 @@ class AdapterFactory:
 
     def _build(self, spec: ModelSpec, role: RoleName | None = None) -> ModelAdapter:
         limit = self._settings.max_concurrent_runs_per_endpoint
+        reserved = self._settings.interactive_reserved_calls
         name = role.value if role is not None else None
         if spec.provider is Provider.OLLAMA:
-            return OllamaAdapter(spec, concurrency=limit, role=name, ledger=self.ledger)
-        if spec.provider is Provider.VLLM:
-            return OpenAICompatAdapter(spec, concurrency=limit, role=name, ledger=self.ledger)
+            spec = self._steady_ollama(spec)
+            return OllamaAdapter(spec, concurrency=limit, reserved=reserved, role=name, ledger=self.ledger)
+        if spec.provider in (Provider.VLLM, Provider.LLAMACPP):
+            return OpenAICompatAdapter(spec, concurrency=limit, reserved=reserved, role=name, ledger=self.ledger)
         return FakeAdapter(spec=spec)
+
+    def _steady_ollama(self, spec: ModelSpec) -> ModelSpec:
+        """Ollama reloads the model whenever a request asks for a different num_ctx, which costs
+        seconds before the first token. Inside a run every call already takes its lane's value;
+        a call outside any run (a role's own spec) on the SAME Ollama box takes it too, so one
+        box only ever sees one num_ctx and one keep_alive (2026-11-16)."""
+        for lane in LANES:
+            ls = self._settings.roles[lane]
+            if ls.provider is Provider.OLLAMA and ls.endpoint_key == spec.endpoint_key and ls.model == spec.model:
+                return spec.model_copy(update={"num_ctx": ls.num_ctx, "keep_alive": ls.keep_alive})
+        return spec
 
     def all_specs(self) -> dict[RoleName, ModelSpec]:
         return dict(self._settings.roles)

@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Protocol
 
-from jarvis_proto import Message, ModelSpec, ModelUsage, ToolCall, ToolSpec
+from jarvis_proto import Message, ModelSpec, ModelUsage, Provider, ToolCall, ToolSpec
 
 log = logging.getLogger(__name__)
 
@@ -94,31 +94,52 @@ class EndpointGate:
     silence on the line. Now a waiting call goes ahead of every less urgent one, and a VOICE call
     may take one slot more than the limit: the engine batches one more request far better than
     Arsen waits for a scheduled step to finish.
+
+    2026-11-16: going ahead of the queue was not enough. At limit 1 a typed chat call still waited
+    for the call in flight, and a task's call runs 4-6 minutes (chat waited up to 323 s). So calls
+    Arsen waits for (VOICE, TYPED) may also use ``reserved`` slots of their own that background
+    calls never take: background room = limit, typed = limit + reserved, voice = one more again.
+    Within one urgency the order is strictly first come, first served (a ticket per waiter).
+
+    Background calls are not protected from starvation: while interactive calls keep every slot
+    of the limit busy, background waits. That is the intent - a person is waiting on one and not
+    on the other - and in practice chat is bursty, so background gets the gaps.
     """
 
-    def __init__(self, limit: int) -> None:
+    def __init__(self, limit: int, reserved: int = 0) -> None:
         self.limit = limit
+        self.reserved = reserved
         self._busy = 0
-        self._waiting = [0, 0, 0]  # per urgency
+        self._next_ticket = 0
+        self._waiting: list[list[int]] = [[], [], []]  # per urgency: tickets in arrival order
         self._cond = asyncio.Condition()
 
     @property
     def busy(self) -> int:
         return self._busy
 
-    def _may_go(self, urgency: int) -> bool:
-        room = self.limit + (1 if urgency == VOICE else 0)
-        return self._busy < room and not any(self._waiting[:urgency])
+    def room(self, urgency: int) -> int:
+        """How many calls may be in flight when a call of this urgency starts."""
+        if urgency >= BACKGROUND:
+            return self.limit
+        return self.limit + self.reserved + (1 if urgency == VOICE else 0)
+
+    def _may_go(self, urgency: int, ticket: int) -> bool:
+        return (
+            self._busy < self.room(urgency) and not any(self._waiting[:urgency]) and self._waiting[urgency][0] == ticket
+        )
 
     async def acquire(self, urgency: int | None = None) -> None:
         level = call_urgency.get() if urgency is None else urgency
         async with self._cond:
-            self._waiting[level] += 1
+            ticket = self._next_ticket
+            self._next_ticket += 1
+            self._waiting[level].append(ticket)
             try:
-                await self._cond.wait_for(lambda: self._may_go(level))
+                await self._cond.wait_for(lambda: self._may_go(level, ticket))
             finally:
-                self._waiting[level] -= 1
-                # A waiter that gave up may have been what held the less urgent ones back.
+                self._waiting[level].remove(ticket)
+                # A waiter that gave up (or went) may have been what held the others back.
                 self._cond.notify_all()
             self._busy += 1
 
@@ -136,10 +157,10 @@ class EndpointGate:
         await self.release()
 
 
-_endpoint_semaphores: dict[str, tuple[int, EndpointGate]] = {}
+_endpoint_semaphores: dict[str, tuple[tuple[int, int], EndpointGate]] = {}
 
 
-def endpoint_semaphore(spec: ModelSpec, limit: int) -> EndpointGate:
+def endpoint_semaphore(spec: ModelSpec, limit: int, reserved: int = 0) -> EndpointGate:
     """One semaphore per endpoint (GPU box), shared by every role that points at it.
 
     Keyed by the limit that was CONFIGURED, not by how many permits are free. The check used to
@@ -150,14 +171,80 @@ def endpoint_semaphore(spec: ModelSpec, limit: int) -> EndpointGate:
     """
     key = spec.endpoint_key
     current = _endpoint_semaphores.get(key)
-    if current is None or current[0] != limit:
-        current = (limit, EndpointGate(limit))
+    if current is None or current[0] != (limit, reserved):
+        current = ((limit, reserved), EndpointGate(limit, reserved))
         _endpoint_semaphores[key] = current
     return current[1]
 
 
+class SlotPool:
+    """Which llama.cpp KV slot (``id_slot``) a call is sent to, so work does not evict each other.
+
+    llama.cpp keeps one cached prompt per slot and, left to choose, gives a request any idle slot
+    - a task's 50k-token prompt landed in the slot that held the chat's, and the next chat call
+    re-prefilled 65k tokens from nothing (2026-11-15: 71-107 s, cached_tokens 0). Here the first
+    ``interactive`` slots serve calls Arsen waits for and the rest serve background work; inside
+    its class a call goes back to the slot it used last (same conversation and role - the main
+    loop and the planner have different prompts and must not take turns in one slot), else to
+    the free slot used longest ago. When every slot of its class is busy it shares one: llama.cpp
+    queues it behind that slot, which is still better than evicting the other class.
+    """
+
+    def __init__(self, total: int, interactive: int) -> None:
+        self.total = total
+        self.interactive = interactive
+        split = max(1, min(interactive, total - 1))
+        self._classes = (list(range(split)), list(range(split, total)))
+        self._busy = [0] * total
+        self._key: list[object] = [None] * total
+        self._used = [0] * total
+        self._tick = 0
+
+    def acquire(self, interactive: bool, key: object) -> int:
+        ids = self._classes[0 if interactive else 1]
+        free = [i for i in ids if self._busy[i] == 0]
+        pool = free or ids
+        mine = [i for i in pool if self._key[i] == key]
+        slot = mine[0] if mine else min(pool, key=lambda i: (self._busy[i], self._used[i]))
+        self._tick += 1
+        self._busy[slot] += 1
+        self._key[slot] = key
+        self._used[slot] = self._tick
+        return slot
+
+    def release(self, slot: int) -> None:
+        self._busy[slot] = max(0, self._busy[slot] - 1)
+
+
+_slot_pools: dict[str, SlotPool] = {}
+
+
+def slot_pool(spec: ModelSpec, total: int) -> SlotPool:
+    """One slot pool per endpoint, rebuilt when the slot count or the interactive share changes."""
+    pool = _slot_pools.get(spec.endpoint_key)
+    if pool is None or (pool.total, pool.interactive) != (total, spec.interactive_slots):
+        pool = SlotPool(total, spec.interactive_slots)
+        _slot_pools[spec.endpoint_key] = pool
+    return pool
+
+
+@dataclass(slots=True)
+class ServerFacts:
+    """What an OpenAI-compatible endpoint turned out to be when asked (openai_compat.py)."""
+
+    kind: Provider
+    slots: int | None = None  # llama.cpp's total_slots
+    retry_at: float = 0.0  # when a look that failed is taken again (monotonic); 0 = settled
+    priority: bool = True  # False once a vLLM server refused a non-zero priority
+
+
+server_facts: dict[str, ServerFacts] = {}
+
+
 def reset_endpoint_semaphores() -> None:
     _endpoint_semaphores.clear()
+    _slot_pools.clear()
+    server_facts.clear()
 
 
 async def wait_cancellable(coro_event: asyncio.Event, cancel: asyncio.Event) -> None:

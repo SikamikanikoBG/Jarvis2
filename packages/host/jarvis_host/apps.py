@@ -45,7 +45,7 @@ def _enum_windows() -> list[Window]:
     user32: Any = ctypes.windll.user32  # pyright: ignore[reportAttributeAccessIssue]
     out: list[Window] = []
 
-    @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)  # pyright: ignore[reportAttributeAccessIssue]
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)  # pyright: ignore[reportAttributeAccessIssue, reportUntypedFunctionDecorator]
     def on_window(hwnd: Any, _lparam: Any) -> bool:
         pid = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
@@ -121,7 +121,9 @@ class Apps:
         self._popen = popen or subprocess.Popen
         self._sleep = sleep or time.sleep
 
-    def start(self, path: str, args: list[str] | None = None, cwd: str | None = None, wait_s: float = 8.0) -> dict:
+    def start(
+        self, path: str, args: list[str] | None = None, cwd: str | None = None, wait_s: float = 8.0
+    ) -> dict[str, Any]:
         if not self.allowed:
             raise AppError("starting programs is disabled on this host (shell.allow = false in host.toml)")
         if sys.platform != "win32" and self._popen is subprocess.Popen:
@@ -156,7 +158,7 @@ class Apps:
             out.setdefault("note", "running, with no visible window yet (still starting, or a tray/background program)")
         return out
 
-    def windows(self, process: str) -> dict:
+    def windows(self, process: str) -> dict[str, Any]:
         """Windows of a running program, by pid or by name (e.g. 'terminal64')."""
         text = str(process).strip()
         pids = {int(text)} if text.isdigit() else set(self._pids_named(text))

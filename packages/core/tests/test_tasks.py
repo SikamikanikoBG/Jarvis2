@@ -1197,3 +1197,56 @@ async def test_tasks_list_shows_a_task_that_ended_today_so_he_can_have_it_finish
     assert "Ended in the last day" in listed.text
     assert task.id in listed.text and "Candidate research" in listed.text
     assert "Old trip" not in listed.text
+
+
+# --- his words, not the chat's spec (2026-11-17, the FX/MT5 task) -------------------------------
+
+
+async def test_a_spec_written_by_the_chat_is_refused_and_a_short_hand_off_goes(harness: Harness):
+    """Three sentences of his became a 4,000-character brief with a false premise ("MT5 Linux on
+    Vader"), and the task spent an hour on it. A hand-off is his words plus facts he did not say."""
+    split = await tasks_on(harness)
+    await with_tools(harness)
+    spec = ToolCall(
+        id="d1",
+        name="tasks.delegate",
+        arguments={
+            "title": "FX: Python-controlled MT5",
+            "goal": "Compare eight brokers, verify Wine on Linux, refactor the execution layer. " * 30,
+            "context": "Vader is a Windows gaming PC.",
+            "dod": [{"item": "broker comparison"}],
+        },
+    )
+    split.push(
+        FakeTurn(tool_calls=[spec]),
+        FakeTurn(tool_calls=[ToolCall(id="d2", name="tasks.delegate", arguments={"title": "FX: MT5 via Python"})]),
+        FakeTurn(text="On it."),
+    )
+    _run, conv = await ask(harness, "Find a demo account with MetaTrader 5 desktop and drive it from Python")
+    task = await the_task(harness)
+    msgs = await harness.core.store.list_messages(conv.id)
+    refusal = next(m for m in msgs if m.role is Role.TOOL and m.tool_call_id == "d1")
+    assert "is a spec" in refusal.content and "not a hand-off" in refusal.content
+    assert task.title == "FX: MT5 via Python" and task.brief.goal == "" and not task.brief.written
+
+
+def test_the_brief_puts_his_words_first_and_marks_the_chats_reading_as_such():
+    from jarvis_core.features.tasks import brief_text
+    from jarvis_proto import DodItem, Task, TaskBrief
+
+    task = Task(
+        id="t",
+        title="FX",
+        brief=TaskBrief(
+            goal="MT5 Linux on Vader",
+            context="Vader is a Windows gaming PC",
+            asked=["Намери демо сметка с MetaTrader 5 desktop и я управлявай с Python"],
+            written=True,
+            dod=[DodItem(item="round trip on demo")],
+        ),
+        origin_conversation_id="c",
+        origin_run_id="r",
+    )
+    text = brief_text(task, user="Arsen")
+    assert text.index("Arsen's own words - this is the ask") < text.index("## Goal")
+    assert "not his words" in text and "to be checked, not trusted" in text

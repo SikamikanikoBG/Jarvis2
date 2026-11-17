@@ -100,6 +100,9 @@ SWEEP_S = 30.0
 REPORT_ANSWER_CHARS = 6_000
 #: The task-side tool that ends a round; the report reads the text written beside it.
 FINISH_TOOL = "task.finish"
+#: What the chat may hand a task besides his words (goal + context + constraints + DoD). His words
+#: travel as they are; above this the chat is writing a spec, and the spec is what the task follows.
+HANDOFF_MAX_CHARS = 1200
 #: The tools that write a task down from a chat; only Arsen's own message may call them.
 _DELEGATING = frozenset({"tasks.delegate", "tasks.note"})
 #: Never offered to a task: it does not message other chats, and it does not ring Arsen - its
@@ -429,11 +432,22 @@ def brief_text(task: Task, *, user: str, call: str = "") -> str:
             "Its brief is not written yet: write it first, with task.brief - goal, context, a checkable "
             "Definition of Done - from his words and where he asked it, below."
         )
-    if b.goal:
-        lines.append(f"## Goal\n{b.goal}")
+    # His words first, and the chat's reading marked as such. 2026-11-17: three sentences ("a demo
+    # account with MetaTrader 5 desktop, drive it from Python") reached the task as a 4,000-character
+    # spec the chat had written - eight brokers to compare, "MT5 Linux on Vader", Wine as "the crux",
+    # Vader called a Windows PC. The task did exactly that for an hour; what he asked was on jarvisvm.
     if b.asked:
         said = "\n".join(f"> {line}" for text in b.asked for line in text.splitlines())
-        lines.append(f"## {user}'s own words (as he said them)\n{said}")
+        lines.append(f"## {user}'s own words - this is the ask\n{said}")
+        if b.goal or b.context or b.constraints or (b.dod and b.written):
+            lines.append(
+                "Everything below is how the chat that handed this off read his words, not his words. Where it "
+                "adds to them or differs, his words win: an extra deliverable is optional, and a statement about a "
+                "machine, a file or what is installed is to be checked, not trusted. Do the simplest thing that "
+                "gives him what he asked - look at what is already there before researching alternatives."
+            )
+    if b.goal:
+        lines.append(f"## Goal\n{b.goal}")
     if b.context:
         lines.append(f"## Context\n{b.context}")
     if b.constraints:
@@ -1351,11 +1365,14 @@ class _DelegateArgs(BaseModel):
         default_factory=list,
         description="The tool namespaces it needs, e.g. browser, web, fetch, workocholic - checked against what is up",
     )
-    goal: str = Field(default="", description="Optional: what it delivers. Without it the task writes its own brief.")
+    goal: str = Field(
+        default="",
+        description="Leave empty unless he dictated it: the task writes its own brief from his words.",
+    )
     dod: list[_DodArg] = Field(
         default_factory=list,
         max_length=8,
-        description="Optional: the Definition of Done. Without it the task writes it.",
+        description="Leave empty unless he dictated it: the task writes its Definition of Done from his words.",
     )
     constraints: list[str] = Field(
         default_factory=list,
@@ -1437,7 +1454,8 @@ class TasksTools(BuiltinProvider):
             "Hand longer work to a background task and tell Arsen at once, so he does not wait: work that needs "
             "many tool steps or minutes (research across sites, a document, a comparison). A quick lookup or a "
             "short answer you do yourself, now. A short title is enough: his words and this chat go with it, "
-            "and the task writes its own brief and Definition of Done. Before you hand anything off, be honest: "
+            "and the task writes its own brief and Definition of Done - do not write a spec for it, and never put a "
+            "guess about a machine or what is installed into it as a fact. Before you hand anything off, be honest: "
             "if what it needs is not connected or is down (see 'What you can reach now'), say you cannot do it "
             "and why, and make no task; if a fact only he knows is missing (which document, which person, how "
             "much), ask him that one question instead. Two separate asks are two tasks - hand both off in the "
@@ -1479,6 +1497,14 @@ class TasksTools(BuiltinProvider):
                     "Tell Arsen so in one line."
                 )
                 return result.model_copy(update={"ends_turn": True})
+        handed = len(goal) + len(context) + sum(len(c) for c in constraints) + sum(len(str(d)) for d in dod)
+        if handed > HANDOFF_MAX_CHARS:
+            return ToolResult.failure(
+                f"That is a spec ({handed} characters), not a hand-off. His words go with the task as they are, "
+                "and the task writes its own brief from them. Call tasks.delegate again with the title, needs, and "
+                f"in context only facts he did not say that it cannot find (an id, a file, a tab) - under "
+                f"{HANDOFF_MAX_CHARS} characters in all; no goal or DoD of your own unless he dictated them."
+            )
         items = [DodItem.model_validate(d) for d in dod]
         brief = TaskBrief(
             goal=goal,
@@ -1711,8 +1737,9 @@ class TasksTools(BuiltinProvider):
         "task.brief",
         description=(
             "Write this task's brief from his words and the call in the first message - before any other tool. "
-            "The context must hold every name, date, amount and link it needs; the DoD 1-8 checkable items; "
-            "what you assume that he did not say goes in assumptions. The card shows it to him."
+            "The goal and the DoD are what HE asked for, no wider: an item he did not ask for is not in the DoD. "
+            "The context must hold every name, date, amount and link it needs; what you assume that he did not "
+            "say goes in assumptions. The card shows it to him."
         ),
         args=_BriefArgs,
         read_only=True,
@@ -1889,6 +1916,9 @@ class TaskBlock:
             "received: that is not where the task ends, and never cancel the prompt. Leave it waiting (or ask "
             "the site to send it again), task.ask him for that one step, end your turn, and when he answers "
             "carry on from the same page. Never type a password or code he has not given you for this.\n"
+            "- The simplest path first: what he asked, on what is already there (installed, open, signed in), before "
+            "comparing alternatives or researching options he did not ask for. Check a claim in the brief about a "
+            "machine or a file before building on it.\n"
             "- In the browser, start from what is already open: browser.tabs first, and when one of his tabs "
             "(or the asking chat's) already shows the page you need - signed in, mid-course, mid-form - work "
             "in that tab by its id instead of opening the page afresh.\n"

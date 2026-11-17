@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from datetime import datetime
@@ -428,7 +429,7 @@ class ContextAssembler:
             if self._compactor.cost(history) > budget_chars:  # type: ignore[attr-defined]
                 self._compactor.schedule(run.conversation_id, self.compaction_view)  # type: ignore[attr-defined]
         # ... and again once trimmed: a reference whose full copy fell off is written out in place.
-        trimmed = self.trim(history, budget_chars)
+        trimmed = self.trim(history, budget_chars, run_id=run.id)
         if len(trimmed) < len(history):
             # History dropped to fit: the next model call of this task reports it (Context screen).
             ids = {id(m) for m in trimmed}
@@ -689,25 +690,103 @@ class ContextAssembler:
             )
         return out
 
-    def trim(self, history: list[Message], budget_chars: int | None = None) -> list[Message]:
+    def trim(self, history: list[Message], budget_chars: int | None = None, run_id: str | None = None) -> list[Message]:
         """Newest messages that fit the budget, cut at a user-message boundary so no tool
-        message is ever orphaned from the assistant call that produced it."""
+        message is ever orphaned from the assistant call that produced it.
+
+        With ``run_id`` (a step of that run), a cut that falls inside the run itself keeps the run
+        whole where it matters. A long task outgrows the budget within its own turn, and the cut used
+        to drop its oldest steps silently - then everything up to the next user message, often the
+        whole run. 2026-11-17, the FX task: it re-read the same regions of execute.py some fifteen
+        times ("reading the last regions I must reuse") because each read had fallen out of its
+        context. Now the run's ask stays, the cut may land on any of its assistant calls, and the
+        steps that fell off are listed in a pinned index: what was called, its ref, its first line.
+        """
         # The compaction summary is pinned: it is the memory of everything trimmed away.
         pinned = [m for m in history if m.name == "summary"]
         rest = [m for m in history if m.name != "summary"]
-        kept: list[Message] = []
-        used = sum(len(m.content) + 8 for m in pinned)
+        ask = None
+        if run_id is not None:
+            ask = next((m for m in rest if m.run_id == run_id and m.role is Role.USER and m.name is None), None)
         budget = budget_chars if budget_chars is not None else self.budget_chars
-        for m in reversed(rest):
-            cost = len(m.content) + sum(len(str(c.arguments)) for c in m.tool_calls) + 8
-            if used + cost > budget and kept:
-                break
-            kept.append(m)
-            used += cost
-        kept.reverse()
-        while kept and kept[0].role is not Role.USER:
+        base = sum(len(m.content) + 8 for m in pinned)
+        kept = _newest_that_fit(rest, budget - base)
+        if ask is not None and not any(m is ask for m in kept):
+            # The cut falls inside the run: make room for the ask and the index of what fell off.
+            kept = _newest_that_fit(rest, budget - base - len(ask.content) - STEPS_INDEX_CHARS)
+        if ask is None or any(m is ask for m in kept):
+            while kept and kept[0].role is not Role.USER:
+                kept.pop(0)
+            return [*pinned, *kept]
+        # The cut is inside this run: a tool result must not lead (its call fell off), anything else may.
+        while kept and kept[0].role is Role.TOOL:
             kept.pop(0)
-        return [*pinned, *kept]
+        kept_ids = {id(m) for m in kept}
+        dropped = [m for m in rest if m.run_id == run_id and id(m) not in kept_ids and m is not ask]
+        index = steps_index(dropped)
+        head: list[Message] = [ask]
+        if index:
+            head.append(Message.user(index, name="steps_index", conversation_id=ask.conversation_id, run_id=run_id))
+        return [*pinned, *head, *kept]
+
+
+#: The most the index of a run's dropped steps may take.
+STEPS_INDEX_CHARS = 6000
+
+
+def _newest_that_fit(messages: list[Message], budget: int) -> list[Message]:
+    """The newest messages whose cost fits ``budget`` (always at least one), oldest first."""
+    kept: list[Message] = []
+    used = 0
+    for m in reversed(messages):
+        cost = len(m.content) + sum(len(str(c.arguments)) for c in m.tool_calls) + 8
+        if used + cost > budget and kept:
+            break
+        kept.append(m)
+        used += cost
+    kept.reverse()
+    return kept
+
+
+def steps_index(dropped: list[Message]) -> str | None:
+    """One line per tool call of this run that no longer fits above: what was called, the ref to
+    read it back with, how big it was and how it began. Newest last; the oldest go first when it
+    is too long."""
+    calls: dict[str, tuple[str, str]] = {}
+    for m in dropped:
+        for c in m.tool_calls:
+            args = " ".join(json.dumps(c.arguments, ensure_ascii=False, default=str).split())
+            calls[c.id] = (c.name, args)
+    lines: list[str] = []
+    for m in dropped:
+        if m.role is not Role.TOOL or not m.tool_call_id:
+            continue
+        name, args = calls.get(m.tool_call_id, (m.name or "tool", ""))
+        body = m.content
+        tag = f"[ref {m.tool_call_id}]"
+        if body.startswith(tag):
+            body = body[len(tag) :]
+        first = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
+        lines.append(
+            f"- @{m.tool_call_id} {name} {_short(args, 160)} -> {len(m.content):,} chars: {_short(first, 140)}"
+        )
+    if not lines:
+        return None
+    head = (
+        "[Steps of this run that no longer fit above. You DID these - do not run them again to see the same "
+        "thing: jarvis.result_read(ref='@<id>') brings one back, jarvis.result_search searches it.]"
+    )
+    skipped = 0
+    while lines and len(head) + sum(len(x) + 1 for x in lines) > STEPS_INDEX_CHARS:
+        lines.pop(0)
+        skipped += 1
+    if skipped:
+        head += f"\n({skipped} earlier steps not listed)"
+    return head + "\n" + "\n".join(lines)
+
+
+def _short(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 @dataclass

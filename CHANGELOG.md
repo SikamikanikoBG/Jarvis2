@@ -2,6 +2,35 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-17 — core 2.0.0a130 / host 2.0.0a35
+
+From the FX/MT5 task of 17 Nov (one hour, 127 steps, 9.5M prompt tokens, no order placed).
+
+### Fixed
+- **jarvisvm can get its screen back.** The host is not elevated, so its one-shot SYSTEM task for
+  `tscon` failed ("Access is denied") and every `screen_*` tool with it. It now runs the
+  `Jarvis2 host console` task that `scripts/install-console-task.ps1` installs once (elevated);
+  until that is installed the tools say so instead of "Access is denied". `host_status.desktop`
+  reports session, console and whether the task is installed.
+- **Programs that must keep running, and the dialog in front of them.** New host tools: `app_start`
+  (detached, outlives the call; reports whether it still runs and its windows, dialogs called out)
+  and `app_windows` (by pid or name, works with nobody at the screen). MT5 had sat behind a "Login"
+  dialog nobody could see while its Python API timed out.
+- **A long run no longer forgets what it read.** When a run outgrows its context within its own turn,
+  its ask stays first, the cut lands on a call (never an orphaned result), and a pinned index lists
+  every dropped step with its `@ref`, so it is read back instead of run again (it re-read the same
+  file regions ~15 times).
+- **Skill triggers match as phrases, not inside words** ("x.com" fired inside "forex.com"), and the
+  skill picker needs the request to be about the skill, not to share a word with it.
+
+### Changed
+- **A hand-off is his words, not the chat's spec.** `tasks.delegate` refuses more than 1,200
+  characters of goal/context/constraints/DoD; the brief shows his words first and marks the chat's
+  reading as such (his words win, extras optional, claims about machines/files to be checked); the
+  DoD is what he asked, no wider; tasks take the simplest path on what is already there first.
+- **The supervisor judges against his words** (not the first 600 characters of the brief), and being
+  blocked on something only Arsen can give is a nudge to ask him, never a stop.
+
 ## 2026-11-16 — core 2.0.0a129 / extension 2.5.0
 
 ### Fixed

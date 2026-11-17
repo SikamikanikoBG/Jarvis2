@@ -182,7 +182,15 @@ Skills:
 
 Request: {message}
 
+A skill applies only when the request is about doing what that skill describes. Sharing a word with
+it (an operating system, a site, a product name) is not enough. When in doubt, pick none.
+
 Answer with JSON only: {{"skills": ["<name>", ...]}} — at most 2, empty list if none apply."""
+
+
+def _says(message: str, phrase: str) -> bool:
+    """The phrase as words of its own in the message (case-insensitive), not part of a longer word."""
+    return re.search(r"(?<!\w)" + re.escape(phrase.strip()) + r"(?!\w)", message, re.IGNORECASE) is not None
 
 
 class SkillDetector:
@@ -203,9 +211,10 @@ class SkillDetector:
         skills = [s for s in await self.store.list() if s.enabled]
         if not skills or len(message.strip()) < 8:
             return []
-        lowered = message.lower()
-        # Structural first: a trigger phrase literally present needs no model.
-        structural = [s.name for s in skills if any(t.lower() in lowered for t in s.triggers if len(t) >= 4)]
+        # Structural first: a trigger phrase literally present needs no model - as a phrase of its
+        # own, not inside another word. 2026-11-17: the trigger "x.com" fired inside "forex.com" in
+        # an FX brief, and an X-posting playbook rode along on every step of an hour-long run.
+        structural = [s.name for s in skills if any(_says(message, t) for t in s.triggers if len(t) >= 4)]
         if structural:
             if trace is not None:
                 trace["by"] = "trigger"

@@ -228,3 +228,28 @@ async def test_the_judge_is_told_what_already_failed_and_is_not_offered_it_as_a_
     assert "browser.wait" in offered
     assert "Never tell it to type a password" in prompt
     assert "task.ask" in prompt
+
+
+def test_the_judge_reads_his_words_not_the_chats_brief():
+    """2026-11-17: the judge got the first 600 characters of a 4,000-character brief and nudged the
+    FX task toward that brief's detours twice, then stopped it where it should have asked him."""
+    from jarvis_core.engine.supervision import the_ask
+    from jarvis_core.features.tasks import brief_text
+    from jarvis_proto import Task, TaskBrief
+
+    brief = brief_text(
+        Task(
+            id="t",
+            title="FX: Python-controlled MT5 (MetaTrader 5 Linux on Vader)",
+            brief=TaskBrief(
+                goal="Compare eight brokers. " * 40,
+                asked=["Find a demo account with MetaTrader 5 desktop.", "Drive it from Python."],
+                written=True,
+            ),
+            origin_conversation_id="c",
+            origin_run_id="r",
+        ),
+        user="Arsen",
+    )
+    assert the_ask(brief) == "Find a demo account with MetaTrader 5 desktop. Drive it from Python."
+    assert the_ask("plain chat question\nsecond line") == "plain chat question second line"

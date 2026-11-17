@@ -235,8 +235,8 @@ class Supervisor:
         routine: bool = False,
     ) -> Verdict:
         prompt = (
-            "You supervise an AI assistant's task run. Decide whether it is making progress.\n"
-            f"Task: {run.input_text[:600]}\n"
+            "You supervise an AI assistant's task run. Decide whether it is making progress on what was ASKED.\n"
+            f"What he asked: {the_ask(run.input_text)}\n"
             f"Signal: {detail}\n"
             f"Recent tool steps (oldest first):\n{render_steps(watch.steps[-8:])}\n\n"
             + self._failed(watch)
@@ -250,7 +250,9 @@ class Supervisor:
             "continue = the repetition is justified (e.g. paging); nudge = it should change approach — then "
             "the reason MUST name the tool or the concrete step to take instead, from the list above when one "
             "fits (e.g. 'use browser.wait instead of sleeping and re-reading'); "
-            "stop = it is looping or cannot succeed.\n"
+            "stop = it is looping or cannot succeed, and asking him would not help either. Blocked on something\n"
+            "only he can give or decide is NOT a stop: it is a nudge to ask him that, in one line.\n"
+            "A nudge must serve what he asked - never send it toward work he did not ask for.\n"
             "Never tell it to type a password, a one-time code or to approve a sign-in, and never to retry a\n"
             "tool that already failed above for a reason that has not changed. When what blocks it is a step\n"
             "only the person it works for can take (approving a sign-in on his phone, a captcha, a code he\n"
@@ -316,6 +318,28 @@ class Supervisor:
         if not lines:
             return ""
         return "Tools in the same family it has NOT used in these steps:\n" + "\n".join(lines[:12]) + "\n\n"
+
+
+#: The heading a task's brief puts his words under (features/tasks.brief_text).
+_ASK_HEADING = "own words - this is the ask"
+
+
+def the_ask(input_text: str, limit: int = 600) -> str:
+    """What he asked, for the judge: his own words when the run's input quotes them (a delegated
+    task's brief), else the start of the input. 2026-11-17: the judge read the first 600 characters
+    of a 4,000-character brief the chat had written and twice nudged the FX task toward that brief's
+    detours (edit MT5's config, open broker comparison pages) instead of what he had asked."""
+    at = input_text.find(_ASK_HEADING)
+    if at != -1:
+        body = input_text[input_text.find("\n", at) + 1 :]
+        quoted = []
+        for line in body.splitlines():
+            if not line.startswith(">"):
+                break
+            quoted.append(line[1:].strip())
+        if quoted:
+            return _clip(" ".join(quoted), limit)
+    return _clip(" ".join(input_text.split()), limit)
 
 
 def _shared_head(values: Sequence[str], minimum: int = 40) -> str:

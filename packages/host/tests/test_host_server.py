@@ -64,6 +64,8 @@ EXPECTED_ANNOTATIONS = {
     "fs_edit": ("destructive", False),
     "fs_search": ("read", True),
     "shell_run": ("destructive", False),
+    "app_start": ("destructive", False),
+    "app_windows": ("read", True),
     "volume_get": ("read", True),
     # Mutating but not destructive: setting the volume is trivially reversible, so it should
     # not stop an interactive run for a confirmation.

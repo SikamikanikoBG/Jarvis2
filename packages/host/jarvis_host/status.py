@@ -87,8 +87,11 @@ class Status:
         worker: ComWorker,
         outlook: OutlookService | None,
         process_state: Callable[[], dict[str, Any] | None] | None = None,
+        desktop: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.config = config
+        #: Is there a screen for the screen tools, and can the host get one back by itself.
+        self.desktop = desktop
         self.worker = worker
         self.outlook = outlook
         self.process_state = process_state or outlook_process_state
@@ -163,4 +166,13 @@ class Status:
             "fs_roots": [str(r) for r in self.config.fs_roots],
             "shell_allowed": self.config.shell_allow,
             "screen_enabled": self.config.screen_enabled,
+            "desktop": await self._desktop(),
         }
+
+    async def _desktop(self) -> dict[str, Any] | None:
+        if self.desktop is None or not self.config.screen_enabled:
+            return None
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(self.desktop), timeout=10)
+        except Exception as exc:  # the status must answer even when the probe does not
+            return {"available": False, "detail": f"{type(exc).__name__}: {exc}"[:200]}

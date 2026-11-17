@@ -165,7 +165,8 @@ def test_the_tools_are_refused_when_the_screen_is_switched_off():
         ui.windows()
 
 
-def test_a_session_off_the_console_is_put_back_on_it_as_system():
+def test_a_session_off_the_console_is_put_back_by_the_installed_task():
+    """The task scripts/install-console-task.ps1 installs is run, never created or deleted here."""
     state = {"console": 1}
     ran: list[list[str]] = []
 
@@ -177,12 +178,46 @@ def test_a_session_off_the_console_is_put_back_on_it_as_system():
 
     console = Console(own_session=lambda: 2, console_session=lambda: state["console"], run=run)
     assert console.ensure() == "session 2 was not on the console; reattached it"
-    create = ran[0]
-    assert create[:2] == ["schtasks", "/Create"] and "tscon 2 /dest:console" in create and "SYSTEM" in create
-    assert [a[1] for a in ran] == ["/Create", "/Run", "/Delete"]  # the one-shot task is removed
-    # Already there: nothing runs.
+    assert ran == [["schtasks", "/Run", "/TN", "Jarvis2 host console"]]
     ran.clear()
     assert console.ensure() is None and ran == []
+
+
+def test_without_the_installed_task_an_elevated_host_makes_a_one_shot_and_removes_it():
+    state = {"console": 1}
+    ran: list[list[str]] = []
+
+    def run(argv: list[str]) -> str:
+        ran.append(argv)
+        if argv[1] == "/Run" and argv[3] == "Jarvis2 host console":
+            raise UiError("schtasks /Run failed: ERROR: The system cannot find the file specified.")
+        if argv[1] == "/Run":
+            state["console"] = 2
+        return ""
+
+    console = Console(own_session=lambda: 2, console_session=lambda: state["console"], run=run)
+    assert console.ensure() == "session 2 was not on the console; reattached it"
+    create = ran[1]
+    assert create[:2] == ["schtasks", "/Create"] and "tscon 2 /dest:console" in create and "SYSTEM" in create
+    assert [a[1] for a in ran] == ["/Run", "/Create", "/Run", "/Delete"]
+
+
+def test_a_host_that_cannot_reattach_says_what_arsen_must_install_not_access_denied():
+    """jarvisvm 2026-11-17: the host is not elevated and nothing was installed; every screen tool
+    answered "schtasks /Create failed: Access is denied" and the model never learned why."""
+
+    def run(argv: list[str]) -> str:
+        if argv[1] in ("/Run", "/Create", "/Query"):
+            raise UiError(f"schtasks {argv[1]} failed: ERROR: Access is denied.")
+        return ""
+
+    console = Console(own_session=lambda: 1, console_session=lambda: 2, run=run)
+    with pytest.raises(UiError, match=r"install-console-task.ps1") as err:
+        console.ensure()
+    assert "Access is denied" in str(err.value)
+    state = console.state()
+    assert state["on_console"] is False and state["reattach_task"] is False
+    assert "install-console-task.ps1" in str(state["note"])
 
 
 def test_a_reattach_that_does_not_take_is_an_error_and_still_cleans_up(monkeypatch: pytest.MonkeyPatch):
@@ -195,4 +230,4 @@ def test_a_reattach_that_does_not_take_is_an_error_and_still_cleans_up(monkeypat
     console = Console(own_session=lambda: 2, console_session=lambda: 1, run=lambda a: ran.append(a[1]) or "")
     with pytest.raises(UiError, match="could not be put on the console"):
         console.ensure()
-    assert ran[-1] == "/Delete"
+    assert ran == ["/Run"], "the installed task is run, never deleted"

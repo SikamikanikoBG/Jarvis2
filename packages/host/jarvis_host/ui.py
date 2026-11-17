@@ -35,7 +35,16 @@ MAX_CONTROLS = 300
 #: And the longest it walks: a full walk of a busy desktop took over 90 s on jarvisvm.
 WALK_BUDGET_S = 20.0
 
+#: Installed once by scripts/install-console-task.ps1 (SYSTEM; this host's user may run it).
 _TASK = "Jarvis2 host console"
+#: Created and deleted on the spot when the host itself runs elevated.
+_ONE_SHOT = "Jarvis2 host console once"
+NO_SCREEN = (
+    "this session is disconnected (no one is signed in at the screen) and the host cannot put it back on the "
+    "console: that needs the 'Jarvis2 host console' task, which Arsen installs once with "
+    "scripts/install-console-task.ps1 in an elevated PowerShell. Until then the screen tools see and click "
+    "nothing, and a GUI program's dialogs cannot be answered - tell him that instead of retrying"
+)
 #: The window class Windows puts over a locked session (seen on jarvisvm 2026-10-19).
 _LOCK_CLASS = "LockScreenBackstopFrame"
 LOCKED = (
@@ -62,28 +71,65 @@ class Console:
         self._run = run or _run
 
     def ensure(self) -> str | None:
-        """Attach this session to the console when it is not; what was done, or None."""
+        """Attach this session to the console when it is not; what was done, or None.
+
+        tscon of a disconnected session needs SYSTEM. The way to be SYSTEM is a task: the one
+        ``scripts/install-console-task.ps1`` installs (this host's user may run it), else a one-shot
+        task this process creates - which only works when the host runs elevated. On jarvisvm it
+        does not (2026-11-17: "schtasks /Create ... Access is denied"), and every screen tool failed
+        with that line while an FX task spent forty minutes guessing why a terminal would not answer.
+        """
         own = self._own()
         if self._console() == own:
             return None
-        # tscon of a disconnected session needs SYSTEM; a one-shot task is the way to be SYSTEM.
-        self._run(
-            [
-                "schtasks", "/Create", "/TN", _TASK, "/TR", f"tscon {own} /dest:console",
-                "/SC", "ONCE", "/ST", "00:00", "/RU", "SYSTEM", "/RL", "HIGHEST", "/F",
-            ]
-        )  # fmt: skip
         try:
             self._run(["schtasks", "/Run", "/TN", _TASK])
-            deadline = time.monotonic() + 10
-            while self._console() != own and time.monotonic() < deadline:
-                time.sleep(0.25)
-        finally:
-            with contextlib.suppress(Exception):
-                self._run(["schtasks", "/Delete", "/TN", _TASK, "/F"])
+        except UiError:
+            self._one_shot(own)
+        else:
+            self._wait_for(own)
         if self._console() != own:
             raise UiError(f"session {own} could not be put on the console (tscon as SYSTEM did not take)")
         return f"session {own} was not on the console; reattached it"
+
+    def _one_shot(self, own: int) -> None:
+        try:
+            self._run(
+                [
+                    "schtasks", "/Create", "/TN", _ONE_SHOT, "/TR", f"tscon {own} /dest:console",
+                    "/SC", "ONCE", "/ST", "00:00", "/RU", "SYSTEM", "/RL", "HIGHEST", "/F",
+                ]
+            )  # fmt: skip
+        except UiError as exc:
+            raise UiError(f"{NO_SCREEN} ({exc})") from exc
+        try:
+            self._run(["schtasks", "/Run", "/TN", _ONE_SHOT])
+            self._wait_for(own)
+        finally:
+            with contextlib.suppress(Exception):
+                self._run(["schtasks", "/Delete", "/TN", _ONE_SHOT, "/F"])
+
+    def _wait_for(self, own: int) -> None:
+        deadline = time.monotonic() + 10
+        while self._console() != own and time.monotonic() < deadline:
+            time.sleep(0.25)
+
+    def state(self) -> dict[str, object]:
+        """For host_status: is there a screen now, and can the host get one back by itself?"""
+        try:
+            own = self._own()
+            on_console = self._console() == own
+        except Exception as exc:  # off Windows, or the probe failed: say so, do not fail the status
+            return {"available": False, "detail": str(exc)[:200]}
+        installed = True
+        try:
+            self._run(["schtasks", "/Query", "/TN", _TASK])
+        except Exception:
+            installed = False
+        out: dict[str, object] = {"session": own, "on_console": on_console, "reattach_task": installed}
+        if not on_console and not installed:
+            out["note"] = NO_SCREEN
+        return out
 
 
 class Ui:

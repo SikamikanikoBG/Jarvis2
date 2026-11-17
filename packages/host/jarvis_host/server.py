@@ -32,6 +32,7 @@ from starlette.routing import Mount, Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from jarvis_host import __version__
+from jarvis_host.apps import AppError, Apps
 from jarvis_host.audio import Audio
 from jarvis_host.com import ComWorker
 from jarvis_host.config import HostConfig
@@ -76,6 +77,7 @@ class Deps:
     audio: Audio
     status: Status
     meetings: MeetingCapture
+    apps: Apps | None = None
 
 
 def make_deps(
@@ -97,6 +99,7 @@ def make_deps(
     files = Files(roots)
     shell = Shell(allowed=config.shell_allow, default_cwd=files.roots[0])
     screen = Screen(enabled=config.screen_enabled)
+    ui = Ui(enabled=config.screen_enabled)
     return Deps(
         config,
         worker,
@@ -105,10 +108,11 @@ def make_deps(
         files,
         shell,
         screen,
-        Ui(enabled=config.screen_enabled),
+        ui,
         Audio(),
-        Status(config, worker, outlook),
+        Status(config, worker, outlook, desktop=ui.console.state if sys.platform == "win32" else None),
         MeetingCapture(),
+        Apps(allowed=config.shell_allow),
     )
 
 
@@ -181,6 +185,11 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
         if deps.outlook is None:
             raise OutlookError("Outlook is only available on a Windows host")
         return deps.outlook
+
+    def _apps() -> Apps:
+        if deps.apps is None:
+            raise AppError("app tools are not set up on this host")
+        return deps.apps
 
     def onenote() -> OneNoteService:
         if deps.onenote is None:
@@ -594,6 +603,18 @@ def build_mcp(deps: Deps, config: HostConfig | None = None) -> FastMCP:
         return json_text(
             await _run("shell_run", lambda: asyncio.to_thread(deps.shell.run, command, cwd, float(timeout_s)))
         )
+
+    @tool("app_start", DESTRUCTIVE)
+    async def app_start(path: str, args: list[str] | None = None, cwd: str | None = None, wait_s: float = 8.0) -> str:
+        """Start a program that must KEEP running after this call (a GUI app, a trading terminal, a server) - shell_run kills what it started when the command ends. Waits wait_s (max 60), then says whether it is still running and lists its windows; a window marked dialog over it (a login, a first-run wizard, an update prompt) usually means it is waiting for input and answers nothing else until that is dealt with."""
+        apps = _apps()
+        return json_text(await _run("app_start", lambda: asyncio.to_thread(apps.start, path, args, cwd, wait_s)))
+
+    @tool("app_windows", READ)
+    async def app_windows(process: str) -> str:
+        """The windows a running program shows, by pid or name (e.g. 'terminal64'), dialogs marked. Works with nobody at the screen. Check it first when a program does not answer its API, IPC or automation: a dialog in front of it is the usual reason."""
+        apps = _apps()
+        return json_text(await _run("app_windows", lambda: asyncio.to_thread(apps.windows, process)))
 
     @tool("volume_get", READ)
     async def volume_get() -> str:

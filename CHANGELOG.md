@@ -2,6 +2,19 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-21 — core 2.0.0a131
+
+From the TTFT review of 20 Nov (flash-next on llama.cpp, `-c 98304 -np 4 -kvu`).
+
+### Fixed
+- **The clock's runs take turns by run, not by step, on a shared KV pool.** Up to three scheduled
+  runs worked at once for 5 h and took turns step by step on one 98k KV pool that cannot keep two
+  ~55k prompts: every step after another run's step re-read ~42k tokens (TTFT p50 55 s against
+  2.3 s after its own step; 48 % of all main-loop TTFT time that day). Scheduled and triage runs now
+  start only when the clock's runs already on that lane leave a whole window (`num_ctx`) of the
+  server's shared pool free (vader: one at a time). Chat, mail, voice, meetings and tasks are not
+  held; on vLLM (no shared pool) nothing changes. A run that parks on a question now wakes the queue.
+
 ## 2026-11-17 — core 2.0.0a130 / host 2.0.0a35
 
 From the FX/MT5 task of 17 Nov (one hour, 127 steps, 9.5M prompt tokens, no order placed).

@@ -1360,6 +1360,8 @@ class AgentLoop:
         await self._store.save_run(run)
         await emit(RunWaitingUser(run_id="", conversation_id="", reason=reason, call_id=call.id))
         await ctl.emitter.announce_activity()  # the sidebar dot turns from "working" to "asks you"
+        if ctl.on_park is not None:
+            ctl.on_park()
         cancel_task = asyncio.create_task(ctl.cancel.wait())
         try:
             done, _ = await asyncio.wait({fut, cancel_task}, return_when=asyncio.FIRST_COMPLETED)

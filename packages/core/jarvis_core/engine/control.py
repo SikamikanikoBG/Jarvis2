@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from jarvis_core.engine.emit import RunEmitter
@@ -30,6 +31,9 @@ class RunControl:
     # The thinking chip was changed while the run worked: its next step reasons (or not) the new
     # way even if adaptive thinking would call it mechanical - he asked for it just now.
     think_changed: bool = False
+    # Called when the run parks on a question to Arsen (waiting_user): a parked run holds no
+    # place in the engine's queue, so whatever waited for it may start now (RunEngine.wake).
+    on_park: Callable[[], None] | None = None
 
     def resolve_confirmation(self, call_id: str, approved: bool, note: str | None) -> bool:
         fut = self.confirmations.get(call_id)

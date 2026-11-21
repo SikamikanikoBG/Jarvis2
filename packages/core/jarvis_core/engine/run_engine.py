@@ -21,7 +21,7 @@ from jarvis_core.engine.control import RunCancelledError, RunControl
 from jarvis_core.engine.current import current_conversation_id, current_run_id
 from jarvis_core.engine.emit import RunEmitter
 from jarvis_core.engine.loop import AgentLoop
-from jarvis_core.models.base import BACKGROUND, TYPED, VOICE, ModelError, call_urgency
+from jarvis_core.models.base import BACKGROUND, TYPED, VOICE, ModelError, call_urgency, server_facts
 from jarvis_core.models.factory import current_run_kind
 from jarvis_proto import (
     Channel,
@@ -53,6 +53,12 @@ log = logging.getLogger(__name__)
 #: What may still start while a call is going: what Arsen types is his own business, and a
 #: system run is the machine keeping itself alive. Everything else waits for the call to end.
 _BESIDE_A_CALL = frozenset({RunKind.CHAT, RunKind.SYSTEM})
+
+#: Runs the clock starts: nobody waits on any one step of them, so on a server whose slots share
+#: one KV pool they take turns by run rather than by step (RunEngine._waits_for_kv). Not a TASK
+#: (its own gate, tasks.max_running; it may sit for hours on a wait_until), not what Arsen types
+#: (chat, mail), not a meeting or the machine keeping itself alive.
+_TAKE_TURNS = frozenset({RunKind.SCHEDULED, RunKind.TRIAGE})
 
 _PRIORITY = {
     RunKind.CHAT: 0,
@@ -417,8 +423,12 @@ class RunEngine:
                     self._queued[run_id] = run
                     held.append(entry)
                     continue
+                if self._waits_for_kv(run):
+                    self._queued[run_id] = run
+                    held.append(entry)
+                    continue
                 resumed = bool(getattr(run, "_resumed", False))
-                ctl = RunControl(emitter=RunEmitter(run, self._store, self._bus), resumed=resumed)
+                ctl = RunControl(emitter=RunEmitter(run, self._store, self._bus), resumed=resumed, on_park=self.wake)
                 task = asyncio.create_task(self._execute(run, ctl), name=f"run-{run.id}")
                 self._active[run.id] = (task, ctl)
                 self._tasks.add(task)
@@ -467,6 +477,41 @@ class RunEngine:
             self._active.pop(run.id, None)
             await self._after_run(run)
             self._wake.set()
+
+    @staticmethod
+    def _background(run: Run) -> bool:
+        """A run the clock started (_TAKE_TURNS), not on a call."""
+        return run.channel is not Channel.VOICE and run.kind in _TAKE_TURNS
+
+    def _waits_for_kv(self, run: Run) -> bool:
+        """Whether a run of the clock must wait for the clock's runs already working on its lane.
+
+        A llama-server started with ``-kvu`` keeps ONE KV pool for all its slots (vader: 98,304
+        tokens for 4 slots), and a prompt stays cached only while the pool has room for it. The
+        endpoint gate lets one call in at a time, but between steps it lets the next run in: on
+        2026-11-20 up to three scheduled runs took turns step by step for 5 h, each step pushed the
+        others' ~55k-token prompts out, and every step that followed another run's step re-read
+        ~42k tokens (TTFT p50 55 s; 2.3 s after its own run's step). Their tools take seconds, so
+        taking turns by run instead of by step costs no idle time. So as many background runs work
+        on a lane at once as whole run windows (the lane's num_ctx) fit in the server's shared
+        pool, at least one. Where the server reports no shared pool (vLLM's paged prefix cache,
+        Ollama, or not learned yet) nothing is held, as before."""
+        if not self._background(run):
+            return False
+        settings = self._settings()
+        spec = settings.roles[settings.lane_for(run.kind)]
+        facts = server_facts.get(spec.endpoint_key)
+        if facts is None or not facts.kv_pool:
+            return False
+        fits = max(1, facts.kv_pool // (spec.num_ctx or facts.kv_pool))
+        working = sum(
+            1
+            for _t, c in self._active.values()
+            if c.emitter.run.status is not RunStatus.WAITING_USER
+            and self._background(c.emitter.run)
+            and settings.roles[settings.lane_for(c.emitter.run.kind)].endpoint_key == spec.endpoint_key
+        )
+        return working >= fits
 
     def _running_count(self) -> int:
         """Parked (waiting_user) runs hold no slot: a question to Arsen must not block the queue."""

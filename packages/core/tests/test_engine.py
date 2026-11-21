@@ -270,3 +270,86 @@ async def test_an_approval_given_before_a_restart_does_not_answer_did_it_complet
     req = next(e for e in seen if e.type == "tool.confirm_requested")
     assert "did it complete?" in req.reason
     assert tools2.calls == []  # not sent again on the strength of the first approval
+
+
+def _shared_kv_lane(harness: Harness, pool: int | None, window: int = 98_304) -> None:
+    """The chat lane's server as llama.cpp with ``-kvu``: its slots share one KV pool of ``pool``
+    tokens (None = no shared pool, e.g. vLLM), and each run may grow to ``window`` tokens."""
+    from jarvis_core.models.base import ServerFacts, server_facts
+    from jarvis_proto import Provider
+
+    settings = harness.core.settings
+    roles = {r: s.model_copy(update={"num_ctx": window}) for r, s in settings.roles.items()}
+    harness.enable(roles=roles)
+    kind = Provider.LLAMACPP if pool else Provider.VLLM
+    server_facts[roles[RoleName.CHAT].endpoint_key] = ServerFacts(kind=kind, slots=4, kv_pool=pool)
+
+
+async def _scheduled_hang_then_two_more(harness: Harness) -> tuple[list[str], str, str]:
+    """A scheduled run hangs in its first model call; a second scheduled run and a typed chat are
+    created after it. Returns the inputs in the order the model saw them, and the two run ids."""
+    order: list[str] = []
+    harness.chat.on_call = lambda n: order.append(
+        next(m.content for m in reversed(harness.chat.calls[-1][0]) if m.name != "context")
+    )
+    harness.chat.push(FakeTurn(hang=True), FakeTurn(text="x"), FakeTurn(text="y"))
+    c1, c2, c3 = [await harness.core.store.create_conversation() for _ in range(3)]
+    sub = harness.subscribe(c1.id)
+    first, _ = await harness.core.engine.create_run(text="nightly", conversation_id=c1.id, kind=RunKind.SCHEDULED)
+    await harness.wait_for(sub, "model.call")
+    second, _ = await harness.core.engine.create_run(text="digest", conversation_id=c2.id, kind=RunKind.SCHEDULED)
+    await harness.core.engine.create_run(text="typed", conversation_id=c3.id)
+    await asyncio.sleep(0.3)
+    return order, first.id, second.id
+
+
+async def test_background_runs_take_turns_when_the_shared_kv_pool_holds_one_run(harness: Harness):
+    """2026-11-20, flash-next on llama.cpp (-c 98304 -np 4 -kvu): up to three scheduled runs were
+    in flight for 5 h and took turns step by step on one 98k KV pool that cannot keep two ~55k
+    prompts. Every step after another run's step re-read ~42k tokens (TTFT p50 55 s, against 2.3 s
+    for a step that followed its own run's step). A background run now starts only when the runs
+    already working on that lane leave a whole window of the pool free; Arsen's chat is not held."""
+    _shared_kv_lane(harness, pool=98_304)
+    order, first, second = await _scheduled_hang_then_two_more(harness)
+    assert order == ["nightly", "typed"]
+    assert (await harness.core.store.get_run(second)).status is RunStatus.QUEUED
+    sub = harness.subscribe((await harness.core.store.get_run(second)).conversation_id)
+    await harness.core.engine.cancel(first)
+    await harness.wait_for(sub, "run.done")
+    assert order == ["nightly", "typed", "digest"]
+
+
+async def test_background_runs_still_overlap_where_the_server_keeps_its_own_kv(harness: Harness):
+    """vLLM (no shared pool reported) keeps many prefixes in its paged cache: nothing is held."""
+    _shared_kv_lane(harness, pool=None)
+    order, first, _ = await _scheduled_hang_then_two_more(harness)
+    assert order == ["nightly", "digest", "typed"]
+    await harness.core.engine.cancel(first)
+
+
+async def test_a_pool_with_room_for_two_windows_runs_two_background_runs(harness: Harness):
+    _shared_kv_lane(harness, pool=2 * 98_304)
+    order, first, _ = await _scheduled_hang_then_two_more(harness)
+    assert order == ["nightly", "digest", "typed"]
+    await harness.core.engine.cancel(first)
+
+
+async def test_a_run_that_parks_on_a_question_wakes_the_queue(harness: Harness):
+    """A parked run holds no place (running count, the clock's turn on a shared KV pool): what was
+    held behind it must be looked at again when it parks, not only when some run ends."""
+    from jarvis_proto import Confirmations
+
+    harness.enable(confirmations=Confirmations(mode="destructive", always_ask=["schedule.create"]))
+    woken: list[int] = []
+    wake = harness.core.engine.wake
+    harness.core.engine.wake = lambda: (woken.append(1), wake())[1]
+    args = {"name": "Boiler", "cron": "0 9 * * 1", "prompt": "check the boiler"}
+    harness.chat.push(FakeTurn(tool_calls=[ToolCall(id="c1", name="schedule.create", arguments=args)]))
+    conv = await harness.core.store.create_conversation()
+    sub = harness.subscribe(conv.id)
+    run, _ = await harness.core.engine.create_run(text="remind me", conversation_id=conv.id)
+    before = len(woken)
+    await harness.wait_for(sub, "run.waiting_user")
+    await asyncio.sleep(0.05)
+    assert len(woken) > before
+    await harness.core.engine.cancel(run.id)

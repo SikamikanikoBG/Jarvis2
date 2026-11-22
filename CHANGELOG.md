@@ -2,6 +2,23 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-22 — core 2.0.0a132
+
+From the TTFT review of 21 Nov (flash-next on llama.cpp, a hybrid model: it resumes a prompt only
+from a context checkpoint, the first of which sits at the first user message, right after the
+tool schemas and the system message).
+
+### Fixed
+- **Every scheduled run starts from the same cached prefix.** The schedule's name stood in the
+  system message ("## This run … '<name>'"), so no two scheduled runs had the same system text and
+  each first call re-read all ~31k tokens of tools and system (cached 0 on 6 of 6 first calls,
+  TTFT p50 23 s, 22 Nov 01:00–05:00; chats, whose system text is identical, resume at 28,881). The
+  rules stay in the system message, worded the same for every schedule; the name is now a
+  `ScheduledRun` block in the run's own context.
+- Also measured: the a131 turn-taking works. The 22 Nov night batch (11 runs) ran one at a time;
+  scheduled main-loop TTFT p50 3.4 s / p90 19.5 s against 39.2 s / 90.6 s for the same batch on
+  21 Nov, which still ran on a130.
+
 ## 2026-11-21 — core 2.0.0a131
 
 From the TTFT review of 20 Nov (flash-next on llama.cpp, `-c 98304 -np 4 -kvu`).

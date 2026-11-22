@@ -517,9 +517,13 @@ class ContextAssembler:
         if run.kind is RunKind.SCHEDULED:
             # The model must know it IS the reminder. Without this, "Remind Arsen to ..." firing
             # at 08:45 was read as "set up a reminder" and it created a second schedule.
-            name = conversation.folder_label if conversation and conversation.folder_label else "scheduled prompt"
+            # Worded the same for every schedule: which one fired is in the run's own context
+            # (turn_blocks). With the name here, no two scheduled runs shared a cached prefix,
+            # and a hybrid model's first checkpoint (the first user message, right after this)
+            # was lost for each: every first call re-read ~31k tokens (2026-11-22).
             parts.append(
-                f"## This run\nYou are executing the scheduled prompt '{name}' which is firing NOW. "
+                "## This run\nYou are executing the scheduled prompt named in this request's context, "
+                "which is firing NOW. "
                 "Do what it says immediately, in this run. Do not create, edit or re-schedule any "
                 "schedule for it - it already exists and is what triggered you. Your final reply IS "
                 "the reminder/report; Arsen reads it in the Scheduled folder, so write it for him. "
@@ -545,6 +549,11 @@ class ContextAssembler:
                 block = None
             if block:
                 out.append((type(provider).__name__, block))
+        if run.kind is RunKind.SCHEDULED:
+            # The per-schedule half of the system message's "This run" block (see there).
+            conversation = await self._store.get_conversation(run.conversation_id)
+            name = conversation.folder_label if conversation and conversation.folder_label else "scheduled prompt"
+            out.append(("ScheduledRun", f"## This run\nThe scheduled prompt firing now: '{name}'."))
         if run.kind is not RunKind.TRIAGE:
             out.append(("NowBlock", self._now_block(run, self._settings())))
         return out

@@ -722,9 +722,13 @@ async def test_scheduled_run_knows_it_is_the_reminder(harness: Harness):
     async with asyncio.timeout(10):
         while (await core.store.get_run(fires[0].run_id)).status is not RunStatus.DONE:  # type: ignore[union-attr, arg-type]
             await asyncio.sleep(0.05)
-    system = harness.chat.calls[-1][0][0].content
-    assert "## This run" in system and "Daily Approvals" in system and "firing NOW" in system
+    messages = harness.chat.calls[-1][0]
+    system = messages[0].content
+    assert "## This run" in system and "firing NOW" in system
     assert "Do not create, edit or re-schedule" in system
+    # Which prompt fired rides in the run's own context, after the cached prefix.
+    context = next(m.content for m in messages if m.name == "context")
+    assert "Daily Approvals" in context and "Daily Approvals" not in system
     # A plain chat run gets no such framing.
     harness.chat.push(FakeTurn(text="hi"))
     c2 = await core.store.create_conversation()
@@ -732,6 +736,35 @@ async def test_scheduled_run_knows_it_is_the_reminder(harness: Harness):
     await core.engine.create_run(text="hello", conversation_id=c2.id)
     await harness.wait_for(sub, "run.done")
     assert "## This run" not in harness.chat.calls[-1][0][0].content
+
+
+async def test_scheduled_runs_share_one_system_prefix(harness: Harness):
+    """Every scheduled run's system message is byte-identical, whichever schedule fired.
+
+    flash-next on llama.cpp is hybrid (linear attention): it resumes only from a context
+    checkpoint, and the first one is at the start of the first user message, right after
+    tools + system. The schedule's name in the system message made every scheduled run's
+    first call re-read all ~31k tokens of tools and system (cached 0, TTFT p50 23 s, 6 of 6
+    first calls on 2026-11-22 01:00-05:00); chats, whose system is identical, resume at
+    28,881. The name belongs in the run's own context, after that checkpoint."""
+    core = harness.core
+    from datetime import UTC, datetime, timedelta
+
+    systems = []
+    for name in ("Patzer Star Hunt", "World news"):
+        harness.chat.push(FakeTurn(text="done"))
+        sched = await core.schedules.create(
+            name=name, prompt=f"Do the {name} run", at=datetime.now(UTC) - timedelta(minutes=1), tz="UTC"
+        )
+        assert await core.scheduler.tick() == 1
+        fire = (await core.schedules.fires(sched.id))[0]
+        async with asyncio.timeout(10):
+            while (await core.store.get_run(fire.run_id)).status is not RunStatus.DONE:  # type: ignore[union-attr, arg-type]
+                await asyncio.sleep(0.05)
+        messages = harness.chat.calls[-1][0]
+        systems.append(messages[0].content)
+        assert name in next(m.content for m in messages if m.name == "context")
+    assert systems[0] == systems[1]
 
 
 async def test_schedule_create_asks_when_he_lists_it(harness: Harness):

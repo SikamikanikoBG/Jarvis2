@@ -54,6 +54,7 @@ from jarvis_core.features.knowledge import KnowledgeLearner, KnowledgeStore, Kno
 from jarvis_core.features.mail import MailTools
 from jarvis_core.features.maildesk import MailDesk
 from jarvis_core.features.meetings import MeetingService
+from jarvis_core.features.memory import MemoryTools
 from jarvis_core.features.notify import NotifyTools
 from jarvis_core.features.office import OfficeHub
 from jarvis_core.features.planner import Planner
@@ -430,6 +431,7 @@ class Core:
                 self.builtin,
                 NotesTools(self.boards),
                 KnowledgeTools(self.knowledge),
+                MemoryTools(self),
                 ResultsTools(self.store),
                 FilesTools(self),
                 SkillsTools(self.skills),

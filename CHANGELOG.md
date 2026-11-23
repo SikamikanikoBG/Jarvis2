@@ -2,6 +2,24 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-23 — core 2.0.0a133
+
+From the TTFT review of 22 Nov (27b on vLLM since 09:16) and long-term memory step 1 (agreed 22 Nov).
+
+### Fixed
+- **A screenshot no longer makes the model read the last 13k tokens again.** Past the six-picture
+  limit every new picture dropped the oldest, which rewrote the prompt where that one stood: 9 of 9
+  screenshots past the limit in one 22 Nov run fell back to the cache before it (17.6 s each; not one
+  other step of the day fell back). Old tool pictures now leave half the limit at a time, so the next
+  ones are appended. What Arsen attached, and what the current step captured, is not dropped early.
+
+### Added
+- **`memory.recall`: what was said, in every conversation, by words and by day.** Migration 0023
+  indexes what Arsen wrote or said, what meetings heard and what Jarvis answered (full text, SQLite
+  FTS5; prefixes, so inflected forms are found) and keeps it in step with the messages. Private chats
+  are never searched, the question being asked is not its own answer, and it is not offered to another
+  agent's runs. Tool results, steps that only call a tool and the core's own notes are left out.
+
 ## 2026-11-22 — core 2.0.0a132
 
 From the TTFT review of 21 Nov (flash-next on llama.cpp, a hybrid model: it resumes a prompt only

@@ -155,6 +155,8 @@ Learning is a background `system` run after each `run.done` (classifier role, th
 WS: `kg.changed {entity_ids: string[]}`.
 Tools (builtin): `kg.who_is {name}`, `kg.related_to {name}`, `kg.remember {name, type, summary, relations?: [{to, relation}]}`.
 
+Memory (builtin): `memory.recall {words?: [..], since?: YYYY-MM-DD, until?: YYYY-MM-DD, limit?}` searches what was said in every conversation (private ones excluded); read-only, owner's runs only.
+
 ## Skills (Phase 2)
 
 Markdown files with YAML frontmatter (`name`, `description`, optional `triggers: string[]`)

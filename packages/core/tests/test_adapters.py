@@ -402,3 +402,58 @@ def test_a_prompt_never_carries_more_pictures_than_the_endpoint_accepts():
         )
         == 9
     )
+
+
+def test_screenshots_past_the_limit_do_not_rewrite_the_prompt_every_step():
+    # 2026-11-22: past the 6-picture limit each new screenshot dropped the oldest one, so each of 9
+    # screenshots rewrote the prompt ~13.6k tokens back and vLLM read all of that again (17.6 s each).
+    from jarvis_core.models.openai_compat import to_openai_messages
+    from jarvis_proto import Attachment, AttachmentKind, Message, Role, ToolCall
+
+    def pic(name: str) -> Attachment:
+        return Attachment(
+            id=name,
+            kind=AttachmentKind.IMAGE,
+            name=name,
+            mime="image/png",
+            bytes=10,
+            data_url=f"data:image/png;base64,{name}",
+        )
+
+    def urls(out: list) -> list[str]:
+        return [
+            p["image_url"]["url"].rsplit(",", 1)[1]
+            for m in out
+            if isinstance(m["content"], list)
+            for p in m["content"]
+            if p.get("type") == "image_url"
+        ]
+
+    def step(i: int) -> list[Message]:
+        call = ToolCall(id=f"c{i}", name="browser.screenshot", arguments={})
+        return [
+            Message(role=Role.ASSISTANT, content="", tool_calls=[call]),
+            Message(
+                role=Role.TOOL, content=f"shot {i}", tool_call_id=f"c{i}", name=call.name, attachments=[pic(f"s{i}")]
+            ),
+        ]
+
+    def rewrites(messages: list[Message], first: int, last: int) -> int:
+        previous: list = []
+        n = 0
+        for i in range(first, last):
+            messages = [*messages, *step(i)]
+            out = to_openai_messages(messages, max_media=6)
+            shown = urls(out)
+            assert len(shown) <= 6 and shown[-1] == f"s{i}", "never over the limit; what it just captured is there"
+            n += out[: len(previous)] != previous
+            previous = out
+        return n
+
+    # 18 screenshots, 12 of them past the limit: three leave at a time, so four rewrites, not twelve.
+    assert rewrites([Message(role=Role.USER, content="look")], 0, 18) == 4
+
+    # What Arsen attached only leaves when the limit itself demands it, one picture at a time.
+    asked = Message(role=Role.USER, content="compare", attachments=[pic(f"u{i}") for i in range(6)])
+    out = to_openai_messages([asked, *step(0)], max_media=6)
+    assert urls(out) == ["u1", "u2", "u3", "u4", "u5", "s0"]

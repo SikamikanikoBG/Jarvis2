@@ -41,28 +41,38 @@ log = logging.getLogger(__name__)
 
 
 def _cap_media(messages: list[Message], max_media: int) -> list[Message]:
-    """Keep pixels for the newest ``max_media`` pictures/clips in the whole prompt; the rest become a
-    line in the text. vLLM refuses the entire request past its per-prompt limit ("At most 6 image(s)
-    may be provided in one prompt", 2026-09-28 - browser screenshots of one LinkedIn run)."""
-    keep = max_media
-    capped: list[Message] = []
-    for m in reversed(messages):
-        media = [a for a in m.attachments if a.data_url and a.kind in (AttachmentKind.IMAGE, AttachmentKind.VIDEO)]
-        if not media:
-            capped.append(m)
-            continue
-        kept_ids = {a.id for a in media[-keep:]} if keep > 0 else set()
-        keep -= len(kept_ids)
-        dropped = [a for a in media if a.id not in kept_ids]
-        if not dropped:
-            capped.append(m)
-            continue
-        atts = [a.model_copy(update={"data_url": None}) if a in dropped else a for a in m.attachments]
-        note = f"[{len(dropped)} earlier picture(s) not shown again - the model takes at most {max_media} per request]"
-        capped.append(
-            m.model_copy(update={"attachments": atts, "content": f"{m.content}\n{note}" if m.content else note})
-        )
-    return list(reversed(capped))
+    """Keep pixels for the newest pictures/clips in the whole prompt, at most ``max_media``; the rest
+    become a line in the text. vLLM refuses the entire request past its per-prompt limit ("At most 6
+    image(s) may be provided in one prompt", 2026-09-28 - browser screenshots of one LinkedIn run).
+
+    Dropping a picture rewrites the prompt where it was, and everything after it is read again. One
+    out for every one in did that on each screenshot past the limit (2026-11-22, a 73-step run: 9
+    screenshots, 9 re-reads of ~13.6k tokens, 17.6 s each). So the old ones go half the limit at a
+    time and the next screenshots are appended. Only a tool's pictures from earlier steps go early:
+    what Arsen attached, and what this step captured, stays as long as the limit allows."""
+    held = [
+        (i, j)
+        for i, m in enumerate(messages)
+        for j, a in enumerate(m.attachments)
+        if a.data_url and a.kind in (AttachmentKind.IMAGE, AttachmentKind.VIDEO)
+    ]
+    over = len(held) - max_media
+    if over <= 0:
+        return messages
+    batch = max(1, max_media // 2)
+    goal = -(-over // batch) * batch
+    last_assistant = max((i for i, m in enumerate(messages) if m.role is Role.ASSISTANT), default=-1)
+    dropped: dict[int, set[int]] = {}
+    for n, (i, j) in enumerate(held[:goal]):
+        if n < over or (messages[i].role is Role.TOOL and i < last_assistant):
+            dropped.setdefault(i, set()).add(j)
+    capped = list(messages)
+    for i, gone in dropped.items():
+        m = messages[i]
+        atts = [a.model_copy(update={"data_url": None}) if j in gone else a for j, a in enumerate(m.attachments)]
+        note = f"[{len(gone)} earlier picture(s) not shown again - the model takes at most {max_media} per request]"
+        capped[i] = m.model_copy(update={"attachments": atts, "content": f"{m.content}\n{note}" if m.content else note})
+    return capped
 
 
 def to_openai_messages(messages: list[Message], max_media: int | None = None) -> list[dict[str, Any]]:

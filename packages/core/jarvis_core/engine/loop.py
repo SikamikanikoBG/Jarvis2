@@ -290,6 +290,43 @@ class AgentLoop:
         task = asyncio.create_task(go(), name="shadow:preflight")
         task.add_done_callback(lambda t: t.cancelled() or t.exception())
 
+    def _offered(self, spec: ToolSpec, run: Run | None, *, incognito: bool, voice: bool) -> bool:
+        """One tool, one audience: is it on the list this run gets?"""
+        if incognito and is_memory_writer(spec):
+            return False
+        if voice and not self._settings().voice.allows(spec.namespace):
+            # On a call he thinks and remembers; he does not act (settings.voice.namespaces).
+            return False
+        if run is None:
+            return True
+        if self._tasks is not None and self._tasks.hidden(run, spec):
+            return False
+        # Another agent holding a collab key is not Arsen (docs/stories/14_agent_admin.md).
+        return run.kind is not RunKind.COLLAB or not spec.owner_only
+
+    def _shared_first(self, specs: list[ToolSpec], run: Run) -> list[ToolSpec]:
+        """The tools every kind of run gets, then the ones some kinds do not, fewest exceptions first.
+
+        The list is the top of the prompt, so two kinds of run share a cached prefix only up to
+        the first tool one of them lacks. By name that was `jarvis.call_me` for a task (a quarter
+        into the list) and `task*` for the rest: on 2026-11-23 the first call after another kind
+        of run re-read 18-20k tokens of schemas it shared (19-22 s). Which tools those are is
+        asked of the same rule that hides them, for every kind there is - nothing is listed here.
+        """
+        me = run.model_copy(update={"plan": None, "channel": Channel.TEXT, "call_id": None, "from_owner": True})
+        audiences: list[tuple[Run, bool, bool]] = [
+            (me.model_copy(update={"kind": kind, "from_owner": kind is RunKind.CHAT}), False, False) for kind in RunKind
+        ]
+        chat = me.model_copy(update={"kind": RunKind.CHAT})
+        audiences.append((chat, True, False))  # an incognito chat
+        call = chat.model_copy(update={"channel": Channel.VOICE, "call_id": run.call_id or "call"})
+        audiences.append((call, False, True))
+
+        def exceptions(spec: ToolSpec) -> int:
+            return sum(not self._offered(spec, who, incognito=inc, voice=voice) for who, inc, voice in audiences)
+
+        return sorted(specs, key=exceptions)  # stable: by name within a rank
+
     def _exposed_tools(
         self, plan_active: bool, *, incognito: bool = False, voice: bool = False, run: Run | None = None
     ) -> list[ToolSpec]:
@@ -297,17 +334,9 @@ class AgentLoop:
         self._policy.mode = s.tool_exposure
         self._policy.threshold = s.facade_threshold
         specs = [t for t in self._registry.specs() if not t.internal]
-        if incognito:
-            specs = [t for t in specs if not is_memory_writer(t)]
-        if voice:
-            # On a call he thinks and remembers; he does not act (settings.voice.namespaces).
-            specs = [t for t in specs if s.voice.allows(t.namespace)]
-        if run is not None and self._tasks is not None:
-            gate = self._tasks
-            specs = [t for t in specs if not gate.hidden(run, t)]
-        if run is not None and run.kind is RunKind.COLLAB:
-            # Another agent holding a collab key is not Arsen (docs/stories/14_agent_admin.md).
-            specs = [t for t in specs if not t.owner_only]
+        if run is not None:
+            specs = self._shared_first(specs, run)
+        specs = [t for t in specs if self._offered(t, run, incognito=incognito, voice=voice)]
         tools = self._policy.expose(specs)
         if plan_active:
             tools = [*tools, *PLAN_TOOLS]

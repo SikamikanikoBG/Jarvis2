@@ -21,6 +21,7 @@ from jarvis_core.models.factory import current_run_kind
 from jarvis_core.models.fake import FakeAdapter, FakeTurn
 from jarvis_core.tools import BuiltinProvider, tool
 from jarvis_proto import (
+    Channel,
     Confirmations,
     ConversationKind,
     EmailPolicy,
@@ -1250,3 +1251,34 @@ def test_the_brief_puts_his_words_first_and_marks_the_chats_reading_as_such():
     text = brief_text(task, user="Arsen")
     assert text.index("Arsen's own words - this is the ask") < text.index("## Goal")
     assert "not his words" in text and "to be checked, not trusted" in text
+
+
+async def test_kinds_of_run_share_the_prompt_up_to_the_tools_only_some_of_them_get(harness: Harness):
+    """The tool list is the top of the prompt: two kinds of run share a cached prefix up to the
+    first tool one of them lacks. By name alone that was a tool in the middle of the list."""
+    await tasks_on(harness, deny_tools=["test.echo"])
+    await with_tools(harness)
+    loop = harness.core.loop
+
+    def run(kind: RunKind, **kw: Any) -> Run:
+        return Run(id="r", conversation_id="c", kind=kind, **kw)
+
+    def names(r: Run, **kw: Any) -> list[str]:
+        return [t.name for t in loop._exposed_tools(False, run=r, **kw)]
+
+    lists = {
+        "chat": names(run(RunKind.CHAT, from_owner=True)),
+        "call": names(run(RunKind.CHAT, from_owner=True, channel=Channel.VOICE, call_id="k"), voice=True),
+        "scheduled": names(run(RunKind.SCHEDULED)),
+        "task": names(run(RunKind.TASK)),
+        "collab": names(run(RunKind.COLLAB)),
+        "incognito": names(run(RunKind.CHAT, from_owner=True), incognito=True),
+    }
+    everyone = set.intersection(*(set(v) for v in lists.values()))
+    assert len(everyone) > 5
+    for kind, listed in lists.items():
+        assert set(listed[: len(everyone)]) == everyone, f"{kind}: a tool only some kinds get stands before one all get"
+    assert len({tuple(v[: len(everyone)]) for v in lists.values()}) == 1
+    # What one kind lacks stays out of it: the order changed, not what is offered.
+    assert "test.echo" not in lists["task"] and "test.echo" in lists["chat"]
+    assert not {n for n in lists["scheduled"] if n.startswith(("task.", "tasks."))}

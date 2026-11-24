@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import wave
 from pathlib import Path
 
@@ -680,3 +681,129 @@ def test_a_calls_trace_is_appended_to_its_file_only_with_voice_debug_on(client: 
     for i in range(KEEP_TRACES + 2):
         client.post("/api/voice/trace", json={**batch, "id": f"c{i:03d}"}, headers=_h())
     assert len(list(traces.glob("*.jsonl"))) == KEEP_TRACES
+
+
+# --- episodes ------------------------------------------------------------------------------------
+
+
+def _episode_json(title: str, what: str, *, continues: bool = False, people: tuple[str, ...] = ()) -> str:
+    return json.dumps(
+        {
+            "summary": f"{title}.",
+            "waiting": "",
+            "quiet": False,
+            "episode": {
+                "continues": continues,
+                "title": title,
+                "what": what,
+                "people": list(people),
+                "places": [],
+                "importance": 4,
+                "valence": "opportunity",
+            },
+        },
+        ensure_ascii=False,
+    )
+
+
+async def test_a_talk_is_one_episode_until_it_turns_to_something_else(harness: Harness):
+    core = harness.core
+    writer = _journal_on(harness)
+    conv = await core.store.create_conversation(title="Работа")
+    writer.push(FakeTurn(text=_episode_json("A-Flow with Gyuzelev", "He wants a demo.", people=("Niki (Ники)",))))
+    await _turn(harness, conv.id, "говорих с Ники за A-Flow", "Noted.")
+    await core.journal.flush()
+    # The next run goes on with it: the same row, and a name said once stays.
+    writer.push(
+        FakeTurn(
+            text=_episode_json("A-Flow with Gyuzelev", "He wants a demo on Friday.", continues=True, people=("Mimi",))
+        )
+    )
+    await _turn(harness, conv.id, "демото е в петък", "OK.")
+    await core.journal.flush()
+    # Then the talk turns to something else: a new one, the old one untouched.
+    writer.push(FakeTurn(text=_episode_json("Winter tyres", "Booked for Monday.")))
+    await _turn(harness, conv.id, "запази час за гумите", "Booked.")
+    await core.journal.flush()
+
+    day = core.journal.today().isoformat()
+    first, second = await core.journal.episodes.of_day(conv.id, day)
+    assert first.what == "He wants a demo on Friday." and first.people == ["Niki (Ники)", "Mimi"]
+    assert (first.importance, first.valence) == (4, "opportunity")
+    assert first.started_at < first.ended_at <= second.started_at and first.last_run_id != second.last_run_id
+    # The second prompt showed the episode so far and only the run it had not seen.
+    second_prompt = writer.calls[1][0][0].content
+    assert "He wants a demo." in second_prompt and "демото е в петък" in second_prompt
+    assert "говорих с Ники" not in second_prompt
+
+
+async def test_runs_that_end_together_all_reach_the_episode(harness: Harness):
+    core = harness.core
+    writer = _journal_on(harness)
+    conv = await core.store.create_conversation(title="Домо")
+    await _turn(harness, conv.id, "първо: ключовете са у Мими", "One.")
+    await _turn(harness, conv.id, "второ", "Two.")
+    writer.push(FakeTurn(text=_episode_json("Keys", "Mimi has the keys.")))
+    await core.journal.flush()
+    assert "ключовете са у Мими" in writer.calls[0][0][0].content
+
+
+async def test_a_routine_check_or_a_private_chat_leaves_no_episode(harness: Harness):
+    core = harness.core
+    writer = _journal_on(harness)
+    conv = await core.store.create_conversation(title="Alerts", kind=ConversationKind.SCHEDULED)
+    quiet = json.loads(_episode_json("Nothing", "Nothing new."))
+    writer.push(FakeTurn(text=json.dumps({**quiet, "quiet": True})))
+    await _turn(harness, conv.id, "check", "Nothing new.")
+    secret = await core.store.create_conversation(title="Лично", incognito=True)
+    await _turn(harness, secret.id, "между нас", "OK.")
+    await core.journal.flush()
+    rows = await core.db.fetchall("SELECT * FROM episodes")
+    assert rows == []
+
+
+async def test_a_usable_line_with_a_broken_episode_keeps_the_line(harness: Harness):
+    core = harness.core
+    writer = _journal_on(harness)
+    conv = await core.store.create_conversation(title="Чат")
+    writer.push(FakeTurn(text='{"summary": "Fine.", "episode": {"title": 3, "importance": "high", "people": "x"}}'))
+    await _turn(harness, conv.id, "как е", "Fine.")
+    await core.journal.flush()
+    assert [d.summary for d in await core.journal.digests()] == ["Fine."]
+    assert await core.db.fetchall("SELECT * FROM episodes") == []
+
+
+async def test_without_a_model_the_line_is_what_the_day_already_remembers(harness: Harness):
+    core = harness.core
+    writer = _journal_on(harness)
+    conv = await core.store.create_conversation(title="Чат")
+    writer.push(FakeTurn(text=_episode_json("A-Flow with Gyuzelev", "He wants a demo.")))
+    await _turn(harness, conv.id, "говорих с Ники", "Noted.")
+    await core.journal.flush()
+    writer.push(FakeTurn(text="not JSON"))
+    await _turn(harness, conv.id, "и още", "Yes. Judge a day by what it leaves behind.")
+    await core.journal.flush()
+    (row,) = await core.journal.digests()
+    assert row.summary == "A-Flow with Gyuzelev"
+
+
+async def test_episodes_are_found_by_words_and_day_and_go_with_their_conversation(harness: Harness):
+    from jarvis_core.features.memory import match_query
+
+    core = harness.core
+    writer = _journal_on(harness)
+    conv = await core.store.create_conversation(title="Работа")
+    writer.push(
+        FakeTurn(
+            text=_episode_json("A-Flow with Gyuzelev", "He wants a demo.", people=("Niki Gyuzelev (Ники Гюзелев)",))
+        )
+    )
+    await _turn(harness, conv.id, "говорихме с него", "Noted.")
+    await core.journal.flush()
+    store = core.journal.episodes
+    # His name was never typed: only the episode has it.
+    (row,) = await store.search(match_query(["Гюзелев"]), lo=None, hi=None, limit=5)
+    assert row["what"] == "He wants a demo." and row["conversation"] == "Работа"
+    assert await store.search(match_query(["Фибанк"]), lo=None, hi=None, limit=5) == []
+    await core.store.delete_conversation(conv.id)
+    assert await core.db.fetchall("SELECT rowid FROM episodes_fts WHERE episodes_fts MATCH 'demo'") == []

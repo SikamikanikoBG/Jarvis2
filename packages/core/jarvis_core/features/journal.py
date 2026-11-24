@@ -27,6 +27,7 @@ from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
+from jarvis_core.features import episodes
 from jarvis_core.features.knowledge import parse_json
 from jarvis_core.models.base import BACKGROUND, ModelAdapter, ModelTextChunk, call_urgency
 from jarvis_core.models.ledger import call_purpose
@@ -54,23 +55,31 @@ _KIND_LABEL = {
     ConversationKind.MAIL: "mail",
 }
 
-_DIGEST_PROMPT = """You keep {user}'s assistant's journal of the day: one entry per conversation,
+_DIGEST_PROMPT = (
+    """You keep {user}'s assistant's journal of the day: one entry per conversation,
 saying where that conversation stands today. Update the entry for this conversation.
 
 Conversation: "{title}" ({kind})
 Its entry so far today: {previous}
-Latest run ({time}, {status}):
-REQUEST: {request}
-ANSWER: {answer}
+Its last episode today: {last_episode}
+The runs since then, oldest first:
+{runs}
 
-Return JSON only: {{"summary": "...", "waiting": "...", "quiet": false}}
+Return JSON only: {{"summary": "...", "waiting": "...", "quiet": false, "episode": {{"continues": false,
+"title": "...", "what": "...", "people": [], "places": [], "importance": 2, "valence": "neutral"}}}}
 - summary: at most two short English sentences, 40 words in all, on where this conversation
   stands today - what was done or found and what came of it, with the names and numbers that
   matter. Merge it with the entry so far and drop what the latest run superseded. Write it as a
   note to yourself: no preamble, never "the assistant" or "{user} asked", and do not repeat the
   waiting part.
 - waiting: what it needs from {user} before it can go on, as a short phrase; "" if nothing.
-- quiet: true only when the run was a routine check that found nothing new worth mentioning."""
+- quiet: true only when the run was a routine check that found nothing new worth mentioning.
+"""
+    + episodes.ASK
+)
+
+#: The runs an episode has not seen yet, written up at once (a call's turns end seconds apart).
+RUNS_MAX = 5
 
 
 @dataclass(slots=True)
@@ -86,6 +95,7 @@ class DayJournal:
     def __init__(self, core: Core, model: Callable[[], ModelAdapter]) -> None:
         self._core = core
         self._model = model
+        self.episodes = episodes.EpisodeStore(core.db)
         self._pending: dict[str, asyncio.TimerHandle] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         # One digest at a time: they are background work on a shared GPU.
@@ -160,27 +170,46 @@ class DayJournal:
             return
         runs = [
             r
-            for r in await store.list_runs(conversation_id, limit=5)
+            for r in await store.list_runs(conversation_id, limit=RUNS_MAX)
             if r.status.terminal or r.status is RunStatus.WAITING_USER
         ]
         if not runs:
             return
         run = runs[0]
-        request, answer = await self._exchange(run)
-        # A secret Jarvis read out in this chat is never written into the day's journal
-        # (docs/stories/14_agent_admin.md): the stored values themselves are masked, no word list.
-        request, answer = self._core.admin.redact(request), self._core.admin.redact(answer)
         day = self.today()
         previous = await self._row(conversation_id, day)
-        data = await self._ask(conv, run, request, answer, previous)
+        told = await self.episodes.of_day(conversation_id, day.isoformat())
+        last = told[-1] if told else None
+        fresh = self._unseen(runs, last, day)
+        exchanges: list[tuple[Run, str, str]] = []
+        for r in fresh:
+            asked, said = await self._exchange(r)
+            # A secret Jarvis read out in this chat is never written into the day's journal
+            # (docs/stories/14_agent_admin.md): the stored values themselves are masked, no word list.
+            exchanges.append((r, self._core.admin.redact(asked), self._core.admin.redact(said)))
+        answer = exchanges[-1][2]
+        data = await self._ask(conv, exchanges, previous, last)
         if data is None:
-            summary = _first_sentences(answer or request, 240) or conv.title
+            # What the day already says about it comes before the answer's first words.
+            summary = (last.title if last else "") or _first_sentences(answer or exchanges[-1][1], 240) or conv.title
             waiting = _first_sentences(run.waiting_reason or "", 120) if run.status is RunStatus.WAITING_USER else ""
             quiet = False
         else:
             summary = " ".join(str(data.get("summary") or "").split())[:320] or _first_sentences(answer, 240)
             waiting = " ".join(str(data.get("waiting") or "").split())[:160]
             quiet = bool(data.get("quiet")) and not waiting
+            episode = episodes.from_model(
+                None if quiet else data.get("episode"),
+                conversation_id=conversation_id,
+                day=day.isoformat(),
+                started_at=fresh[0].created_at,
+                ended_at=run.finished_at or run.created_at,
+                first_run_id=fresh[0].id,
+                last_run_id=run.id,
+                last=last,
+            )
+            if episode is not None:
+                await self.episodes.save(episode)
         if not summary:
             return
         await self._core.db.execute(
@@ -190,6 +219,17 @@ class DayJournal:
             " updated_at = excluded.updated_at",
             (conversation_id, day.isoformat(), summary, waiting, int(quiet), run.id, datetime.now(UTC).isoformat()),
         )
+
+    def _unseen(self, runs: list[Run], last: episodes.Episode | None, day: date) -> list[Run]:
+        """The runs the last episode has not got yet, oldest first (``runs`` is newest first)."""
+        tz = ZoneInfo(self._core.settings.timezone)
+        fresh: list[Run] = []
+        for r in runs:
+            if last is not None and r.id == last.last_run_id:
+                break
+            if r.created_at.astimezone(tz).date() == day:
+                fresh.append(r)
+        return list(reversed(fresh)) or [runs[0]]
 
     async def _exchange(self, run: Run) -> tuple[str, str]:
         """What was asked and what was answered last in this run."""
@@ -206,21 +246,29 @@ class DayJournal:
         return request, answer
 
     async def _ask(
-        self, conv: Conversation, run: Run, request: str, answer: str, previous: Digest | None
+        self,
+        conv: Conversation,
+        exchanges: list[tuple[Run, str, str]],
+        previous: Digest | None,
+        last: episodes.Episode | None,
     ) -> dict[str, Any] | None:
         s = self._core.settings
-        when = (run.finished_at or run.created_at).astimezone(ZoneInfo(s.timezone)).strftime("%H:%M")
+        tz = ZoneInfo(s.timezone)
+        status = {"done": "finished", "failed": "failed", "waiting_user": "waiting for an answer"}
+        # The newest run in full; what came before it just now, shorter.
+        runs = "\n".join(
+            f"[{(r.finished_at or r.created_at).astimezone(tz):%Y-%m-%d %H:%M}, {status.get(r.status.value, r.status.value)}]\n"
+            f"REQUEST: {_clip(asked, 1500)}\nANSWER: {_clip(said, 3000 if i == len(exchanges) - 1 else 900)}"
+            for i, (r, asked, said) in enumerate(exchanges)
+        )
+        told = f'"{last.title}" - {last.what} (people: {", ".join(last.people) or "-"})' if last else "(none yet)"
         prompt = _DIGEST_PROMPT.format(
             user=s.user_name,
             title=conv.title,
             kind=_KIND_LABEL.get(conv.kind, conv.kind.value),
             previous=previous.summary if previous else "(none yet)",
-            time=when,
-            status={"done": "finished", "failed": "failed", "waiting_user": "waiting for an answer"}.get(
-                run.status.value, run.status.value
-            ),
-            request=_clip(request, 1500),
-            answer=_clip(answer, 3000),
+            last_episode=told,
+            runs=runs,
         )
         try:
             async with asyncio.timeout(MODEL_TIMEOUT_S):

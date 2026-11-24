@@ -2,6 +2,28 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-24 — core 2.0.0a134
+
+From the TTFT review of 23 Nov (27b on vLLM) and long-term memory step 2 (agreed 22 Nov).
+
+### Fixed
+- **Kinds of run share the top of the prompt up to the tools only some of them get.** The list is
+  sorted by name, and a task's list differs from a chat's at `jarvis.call_me`, a quarter into it;
+  scheduled, text and call lists part at `task*`. On 23 Nov two first calls after another kind of
+  run re-read ~20k tokens of shared tool schemas (19 s and 22 s). Tools that every kind of run
+  gets now stand first, and the rest follow, the ones fewest kinds lack first; the rank is asked of
+  the rules that hide them, for every kind. The set on offer is unchanged.
+
+### Added
+- **Episodes: what happened, as a person would keep it.** Migration 0024. The day journal's one
+  background call also writes the conversation's episodes: what it was about, who and where, what came
+  of it, how much it matters (1-5) and its valence (threat, risk, opportunity, reward, loss,
+  neutral). The model says whether a run goes on with the last episode or begins another; names are
+  never dropped in a rewrite, the messages stay. Private chats and routine checks leave none. Runs
+  that end together all reach it, and a journal line written without a model falls back to the last
+  episode's title. Nothing reads them into a prompt yet: shown first in `memory.recall` on a trial they
+  drew the model away from the words (the MT5 question: 0 of 6 right, 2 of 2 without).
+
 ## 2026-11-23 — core 2.0.0a133
 
 From the TTFT review of 22 Nov (27b on vLLM since 09:16) and long-term memory step 1 (agreed 22 Nov).

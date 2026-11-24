@@ -545,6 +545,7 @@ export class CallSession {
       this.set({ phase: 'speaking' });
       return;
     }
+    if (this.state.phase === 'listening') this.set({ phase: this.restPhase() });
     if (this.state.phase === 'ended' || this.suspended.length === 0 || this.held) return;
     const rest = this.suspended;
     this.suspended = [];
@@ -569,6 +570,8 @@ export class CallSession {
       // The first words of a sound settle whether it holds a turn that was waiting for him.
       if (sound === this.sound && this.talking && !(r instanceof Error)) {
         this.soundWords = this.soundWords === true || r.text.trim() !== '' || said.length > 0;
+        // Words while Jarvis works: now he is being listened to, and the waiting sound stops.
+        if (this.soundWords && this.state.phase === 'thinking') this.set({ phase: 'listening' });
         this.reclock();
       }
       // Sure he has finished: close the utterance at this pause rather than wait out the release.
@@ -628,7 +631,9 @@ export class CallSession {
     // The silence began before the listener said so: the release (or the pause it was closed at)
     // is part of the wait already.
     const quietSince = this.now() - silentMs;
-    this.set({ phase: 'transcribing', problem: null });
+    // While Jarvis works, a sound changes nothing until Whisper finds words in it: the music plays
+    // on (2026-11-24: one noise stopped it and the screen said "Listening" for the 57 s he thought).
+    this.set(this.state.phase === 'thinking' ? { problem: null } : { phase: 'transcribing', problem: null });
     // The utterance ended at the pause already being recognised: that answer is this answer.
     // Otherwise the rest is recognised now - asked before the pieces are let go, since their
     // words are its prompt.
@@ -673,7 +678,7 @@ export class CallSession {
       if (this.state.problem !== message) this.fail(message);
       if (!text && !this.held) {
         if (this.paused) this.onSpeechDropped();
-        else this.set({ phase: 'listening' });
+        else this.set({ phase: this.restPhase() });
         this.reclock();
         return;
       }
@@ -682,7 +687,8 @@ export class CallSession {
       // Nothing in it - a cough, a chair, the room: it does not hold the turn, whose clock goes on
       // from where it stood rather than starting again. Only words extend the wait (2026-09-16:
       // "it catches every sound but not me").
-      this.set({ phase: this.pending > 0 ? 'transcribing' : 'listening' });
+      // What he heard before it goes on: the music while Jarvis still works (restPhase).
+      this.set({ phase: this.restPhase() });
       this.onSpeechDropped();
       this.reclock();
       return;
@@ -713,6 +719,16 @@ export class CallSession {
       reason,
     });
     this.reclock();
+  }
+
+  /** What the call is doing after a sound that had no words in it: what it was doing before. Not
+   *  `thinking` while an answer of his is held mid-sentence (onSpeechDropped says the rest of it),
+   *  nor while Arsen's turn is, or he is saying words now - that is listening. */
+  private restPhase(): CallPhase {
+    const working = this.state.runId !== null || this.pendingCreate;
+    const his = this.held !== '' || (this.talking && this.soundWords === true);
+    if (working && !his && !this.paused && this.suspended.length === 0) return 'thinking';
+    return this.pending > 0 ? 'transcribing' : 'listening';
   }
 
   private patience(): number {

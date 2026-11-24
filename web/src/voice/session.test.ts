@@ -1036,6 +1036,70 @@ describe('CallSession', () => {
     expect(t.speaker.spoken.map((s) => s.text)).toEqual(['Готово, записах го.']);
   });
 
+  describe('a sound while Jarvis works', () => {
+    // 2026-11-24, a real call: a noise at 31 s, Whisper found no words, and the screen said
+    // "Listening" without the music for the 57 s the run still worked.
+    async function working() {
+      const t = build();
+      await t.session.start();
+      t.listener.say();
+      await settle();
+      t.session.onRunQueued('r1', 'c1');
+      expect(t.session.state.phase).toBe('thinking');
+      t.cues.log.length = 0;
+      t.states.length = 0;
+      return t;
+    }
+
+    it('with no words in it changes nothing: the music plays on, nothing is sent', async () => {
+      const t = await working();
+      t.transcriber.next = '';
+      t.listener.say();
+      await settle();
+      expect(new Set(t.phases())).toEqual(new Set(['thinking']));
+      expect(t.cues.log).toEqual([]); // not stopped, not started again
+      expect(t.transport.steered).toEqual([]);
+      t.session.onDelta('r1', 'Готово.');
+      t.session.onStepDone('r1', false);
+      t.session.onRunDone('r1');
+      await tick();
+      expect(t.session.state.phase).toBe('speaking'); // and the answer is said as ever
+    });
+
+    it('a cough the listener drops, or Whisper failing, leaves the music on too', async () => {
+      const t = await working();
+      t.listener.cough();
+      t.transcriber.fail = true;
+      t.listener.say();
+      await settle();
+      expect(new Set(t.phases())).toEqual(new Set(['thinking']));
+      expect(t.cues.log).toEqual([]);
+    });
+
+    it('with words in it is him: the music stops and the words reach the run', async () => {
+      const t = await working();
+      t.transcriber.next = 'чакай, и утре';
+      t.listener.say();
+      await settle();
+      expect(t.cues.log[0]).toBe('thinking:false');
+      expect(t.phases()).toContain('listening');
+      expect(t.transport.steered).toEqual([{ runId: 'r1', text: 'чакай, и утре' }]);
+    });
+
+    it('is listened to at the first pause that has words, not only at the end of the sentence', async () => {
+      const t = await working();
+      t.transcriber.next = 'чакай';
+      t.listener.h?.onSpeechStart();
+      expect(t.session.state.phase).toBe('thinking'); // a sound, not yet words
+      t.listener.h?.onPause(new Blob(['x']), 100);
+      await tick();
+      expect(t.session.state.phase).toBe('listening');
+      expect(t.cues.log).toEqual(['thinking:false']);
+      t.listener.h?.onSpeechDropped(); // came to nothing after all: back to the music
+      expect(t.session.state.phase).toBe('thinking');
+    });
+  });
+
   it('words said while the answer is written reach the run, and that answer is not read out', async () => {
     const t = build();
     await t.session.start();

@@ -126,6 +126,10 @@ one slot more than the limit.
   ends before its attack ever held (over the hold music the attack is 450 ms) is still an utterance
   if it lasted 400 ms, and Whisper decides; while he makes a sound or his words are with Whisper
   nothing is read out, and an answer written meanwhile is parked like one he talked over.
+- **Only words stop the music (2026-11-24):** while Jarvis works, a sound leaves the call on Thinking,
+  music and all, until Whisper finds words in it - at the first pause that has them, or at the end of
+  the utterance. Then it is listening. Until then every sound that held 450 ms stopped the music, and
+  one with no words left the call on "Listening" for the rest of the run (57 s in one call).
 - **Incognito:** with `voice_debug` on, an incognito call writes no trace and its clips are not kept
   (`/api/stt keep=false`).
 - **On the screen:** while a turn waits for him the call reads "Listening — go on" with an amber

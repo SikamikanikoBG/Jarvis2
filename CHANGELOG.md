@@ -2,6 +2,16 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-24 — web 2.0.0-alpha.94
+
+### Fixed
+- **A noise no longer takes the hold music away.** While Jarvis works, any sound that held 450 ms
+  stopped the music before Whisper had looked at it, and one with no words in it left the call on
+  "Listening" until the answer came: in a call on 24 Nov a noise at 31 s, then 57 s of silence while
+  the run still worked. Now a sound changes nothing until Whisper finds words in it. With words (at
+  the first pause that has them) the music stops and he is listened to, as before; without, the call
+  stays on Thinking. No level or threshold was changed.
+
 ## 2026-11-24 — core 2.0.0a134
 
 From the TTFT review of 23 Nov (27b on vLLM) and long-term memory step 2 (agreed 22 Nov).

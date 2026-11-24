@@ -2,6 +2,13 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-24 — core 2.0.0a135
+
+### Fixed
+- **The cloud voice (edge-tts) speaks again.** Microsoft answers 403 to edge-tts 7.2.8, so with the
+  local voice down every sentence failed and the phone read it in its own voice. edge-tts is now
+  7.3.1 or newer, which was tried with the configured English and Bulgarian voices.
+
 ## 2026-11-24 — web 2.0.0-alpha.94
 
 ### Fixed

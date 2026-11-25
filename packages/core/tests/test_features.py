@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from jarvis_core.features.schedules import compute_next
 from jarvis_core.features.triage_audit import seconds_until_hour
@@ -96,6 +99,33 @@ async def test_boards_tools_and_context(harness: Harness):
 
 
 # --- knowledge ----------------------------------------------------------------------------
+
+
+async def test_matching_names_costs_nothing_for_the_names_a_message_does_not_hold(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+):
+    """Every turn looks for every known name, on the event loop and before the model is asked. A
+    pattern was compiled for each of them (5,713 on 2026-11-24, past the 512 `re` keeps): 0.3 s of
+    silence per turn, growing with every name learned. Only a name that stands in the text is
+    worth a pattern - and what matches stays what matched."""
+    kg = harness.core.knowledge
+    for i in range(30):
+        await kg.upsert(f"Unmentioned {i:02d}")
+    vader = await kg.upsert("Vader", aliases=["Вейдър"])
+    cpp = await kg.upsert("C++ (lab)")
+    await kg.upsert("invade")
+    seen: list[str] = []
+    real = re.search
+
+    def counting(pattern, *a, **kw):
+        seen.append(str(pattern))
+        return real(pattern, *a, **kw)
+
+    monkeypatch.setattr("jarvis_core.features.knowledge.re.search", counting)
+    hits = await kg.match_in_text("VADER and the C++ (lab), the invader")
+    assert {e.id for e in hits} == {vader.id, cpp.id}  # "invade" is inside a longer word
+    assert not any("unmentioned" in pattern for pattern in seen)
+    assert [e.id for e in await kg.match_in_text("питай вейдър")] == [vader.id]
 
 
 async def test_knowledge_context_uses_literal_matches_and_learner_upserts(harness: Harness):

@@ -2,6 +2,17 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-25 — core 2.0.0a136
+
+From the TTFT review of 24 Nov.
+
+### Fixed
+- **Looking for known names no longer holds up the turn.** Before the model is asked, every turn
+  looks for each name and alias of the knowledge graph in the message. It compiled a pattern for all
+  5,713 of them (Python keeps 512), about 0.3 s per turn on the event loop, growing with every name
+  learned and not counted in any time-to-first-token figure. Now only a name that stands in the text
+  gets a pattern. The same names match: checked on 12 real messages against the live graph.
+
 ## 2026-11-24 — core 2.0.0a135
 
 ### Fixed

@@ -173,7 +173,10 @@ class KnowledgeStore:
             term = str(r["term"]).strip()
             if len(term) < 3:
                 continue
-            if re.search(r"(?<!\w)" + re.escape(term.lower()) + r"(?!\w)", lowered):
+            # Most names are not in the text at all: a pattern is compiled only for one that is.
+            # Compiling one per known name (5,713, where `re` keeps 512) took 0.3 s of every turn.
+            needle = term.lower()
+            if needle in lowered and re.search(r"(?<!\w)" + re.escape(needle) + r"(?!\w)", lowered):
                 hits[r["id"]] = max(hits.get(r["id"], 0), len(term))
         ordered = sorted(hits, key=lambda i: -hits[i])[:limit]
         out: list[Entity] = []

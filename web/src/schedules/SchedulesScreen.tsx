@@ -36,6 +36,8 @@ function statusChip(status: string | null): string {
   return 'chip-outline';
 }
 
+const OPEN_KEY = 'jarvis.schedules.open';
+
 /** Scheduled prompts, grouped by the project each serves: list, create/edit, run now, fires. */
 export function SchedulesScreen() {
   const version = useStore((s) => s.featureVersion.schedules);
@@ -49,7 +51,16 @@ export function SchedulesScreen() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [confirmProject, setConfirmProject] = useState<string | null>(null);
-  const [folded, setFolded] = useState<string[]>([]);
+  // Sections start closed - the screen opens as the list of projects - and the ones he opens are
+  // remembered on this device (a convenience: without storage they simply start closed again).
+  const [open, setOpen] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(OPEN_KEY);
+      return raw ? (JSON.parse(raw) as string[]) : [];
+    } catch {
+      return [];
+    }
+  });
   const [query, setQuery] = useState('');
   const [activeOnly, setActiveOnly] = useState(false);
   const now = useTicker(30_000);
@@ -85,7 +96,16 @@ export function SchedulesScreen() {
   const remove = (id: string) => api.schedules.remove(id).then(reload).catch(fail('Delete'));
   const removeProject = (id: string) => api.projects.remove(id).then(reload).catch(fail('Delete project'));
   const accept = (s: Schedule) => api.schedules.accept(s.id).then(reload).catch(fail('Accept'));
-  const fold = (key: string) => setFolded((f) => (f.includes(key) ? f.filter((k) => k !== key) : [...f, key]));
+  const fold = (key: string) =>
+    setOpen((o) => {
+      const next = o.includes(key) ? o.filter((k) => k !== key) : [...o, key];
+      try {
+        localStorage.setItem(OPEN_KEY, JSON.stringify(next));
+      } catch {
+        // storage blocked: the choice lasts until the screen closes
+      }
+      return next;
+    });
 
   const row = (s: Schedule) =>
     editing !== 'new' && editing?.id === s.id ? (
@@ -138,7 +158,7 @@ export function SchedulesScreen() {
     <div className="screen">
       <div className="screen-inner">
         <div className="section-head">
-          <h1>Schedules</h1>
+          <h1>Projects</h1>
           <div className="row">
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditingProject('new')}>
               <Icon name="folderPlus" size={15} />
@@ -196,8 +216,9 @@ export function SchedulesScreen() {
         <div className="proj-list">
           {sections.map(({ project, schedules: list }) => {
             const key = project?.id ?? 'loose';
-            // Folded only while not searching: a match must never hide behind a closed head.
-            const isFolded = folded.includes(key) && !q;
+            // Never folded while searching: a match must not hide behind a closed head. Nor when it
+            // is the only section, or while a new schedule is being added to it.
+            const isFolded = !open.includes(key) && !q && !activeOnly && sections.length > 1 && !(editing === 'new' && newIn === key);
             const on = list.filter((s) => s.enabled).length;
             const failed = list.filter((s) => s.last_status === 'failed').length;
             const next = list.find((s) => s.enabled && s.next_fire)?.next_fire;

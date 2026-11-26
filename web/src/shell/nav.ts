@@ -21,7 +21,7 @@ export const NAV_MORE: NavItem[] = [
   { view: 'boards', label: 'Boards', icon: 'boards' },
   { view: 'knowledge', label: 'Knowledge', icon: 'graph' },
   { view: 'skills', label: 'Skills', icon: 'book' },
-  { view: 'schedules', label: 'Schedules', icon: 'calendar' },
+  { view: 'schedules', label: 'Projects', icon: 'folder' },
   { view: 'meetings', label: 'Meetings', icon: 'headphones' },
   { view: 'triage', label: 'Triage', icon: 'inbox' },
   { view: 'office', label: 'Office', icon: 'users' },

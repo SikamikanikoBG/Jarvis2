@@ -1153,6 +1153,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 0 1 auto;
   min-width: 0;
   max-width: 100%;
   padding: 4px 0;
@@ -1171,6 +1172,24 @@
 }
 .proj-goal {
   margin-top: -2px;
+}
+/* A row's name may share its line with chips; they wrap below it instead of squeezing it out. */
+.sched-main .row {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+.sched-main .sched-name {
+  min-width: 0;
+  max-width: 100%;
+}
+@media (max-width: 640px) {
+  .proj-head {
+    flex-wrap: nowrap;
+    gap: 4px;
+  }
+  .proj-next {
+    display: none;
+  }
 }
 @media (max-width: 640px) {
   .sched-main {

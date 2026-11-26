@@ -2,6 +2,15 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-26 — web 2.0.0-alpha.98
+
+### Changed
+- **Projects is its own screen.** The Schedules entry is now **Projects**: it opens as the list of
+  projects (sections start closed; the ones you open are remembered on the device), each unfolding
+  to its schedules. On a phone the section header stays on one line and a schedule's name no longer
+  disappears behind its chips. All 70 schedules are filed into 13 projects; the two villa briefs
+  that ran the same scan 5 minutes apart are one now (the 04:35 one is paused).
+
 ## 2026-11-26 — core 2.0.0a137, web 2.0.0-alpha.97
 
 ### Added

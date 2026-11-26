@@ -430,7 +430,11 @@ async def test_schedule_get_update_fires_and_revert(harness: Harness):
     core = harness.core
     sched = await core.schedules.create(name="Сутрешен брифинг", prompt="Brief me" * 750, cron="0 8 * * *", tz="UTC")
     harness.chat.push(FakeTurn(text="fired"))
-    await core.scheduler.run_now(sched)
+    fired_run, _ = await core.scheduler.run_now(sched)
+    # Its run must have taken its scripted turn before the chat starts, or the chat takes it.
+    async with asyncio.timeout(5):
+        while (r := await core.store.get_run(fired_run)) is None or not r.status.terminal:
+            await asyncio.sleep(0.02)
     _run, seen = await run_chat(
         harness,
         call("schedule.get", {"id": sched.id}, "a"),

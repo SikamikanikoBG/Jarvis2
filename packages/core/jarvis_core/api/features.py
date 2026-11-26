@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from jarvis_core.api.deps import agent, core_of, require_token
 from jarvis_core.features.admin import Who
 from jarvis_core.features.schedules import schedule_diff
-from jarvis_proto import Board, Entity, EntityDetail, Graph, Note, Schedule, ScheduleFire, Skill
+from jarvis_proto import Board, Entity, EntityDetail, Graph, Note, Project, Schedule, ScheduleFire, Skill
 from jarvis_proto.features import CatchUp, EntityType, NoteColor, ScheduleCallMe
 from jarvis_proto.runs import ThinkLevel
 
@@ -235,6 +235,8 @@ class ScheduleBody(BaseModel):
     think: bool | None = None
     think_level: ThinkLevel | None = None
     call_me: ScheduleCallMe | None = None
+    # The project it serves; sent as null on a PATCH it takes the schedule out of its project.
+    project_id: str | None = None
 
 
 @router.get("/schedules", response_model=list[Schedule], openapi_extra=agent("read", prefer="schedule.list"))
@@ -261,6 +263,7 @@ async def create_schedule(request: Request, body: ScheduleBody) -> Schedule:
             think=body.think,
             think_level=body.think_level,
             call_me=body.call_me or "default",
+            project_id=body.project_id or None,
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -289,7 +292,7 @@ async def patch_schedule(request: Request, schedule_id: str, body: ScheduleBody)
     if before is None:
         raise HTTPException(404, "schedule not found")
     fields = body.model_dump(exclude_none=True)
-    for key in ("think", "think_level"):
+    for key in ("think", "think_level", "project_id"):
         if key in body.model_fields_set:
             fields[key] = getattr(body, key)
     if body.prompt is not None:
@@ -350,6 +353,63 @@ async def run_schedule(request: Request, schedule_id: str) -> dict[str, str]:
 )
 async def schedule_fires(request: Request, schedule_id: str, limit: int = 20) -> list[ScheduleFire]:
     return await core_of(request).schedules.fires(schedule_id, limit=_clamp(limit, 200, default=20))
+
+
+# --- projects: schedules that serve one goal (features/projects.py) ---------------------
+
+
+class ProjectBody(BaseModel):
+    name: str | None = None
+    goal: str | None = None
+    brief: str | None = None
+    ends_at: datetime | None = None
+    position: int | None = None
+
+
+@router.get("/projects", response_model=list[Project], openapi_extra=agent("read", prefer="project.list"))
+async def list_projects(request: Request) -> list[Project]:
+    return await core_of(request).projects.list()
+
+
+@router.post("/projects", response_model=Project, status_code=201, openapi_extra=agent("none", prefer="project.create"))
+async def create_project(request: Request, body: ProjectBody) -> Project:
+    core = core_of(request)
+    try:
+        return await core.projects.create(
+            name=body.name or "",
+            goal=body.goal or "",
+            brief=body.brief or "",
+            ends_at=body.ends_at,
+            tz=core.settings.timezone,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.patch("/projects/{project_id}", response_model=Project, openapi_extra=agent("none", prefer="project.update"))
+async def patch_project(request: Request, project_id: str, body: ProjectBody) -> Project:
+    """Only the fields sent change; ``ends_at`` sent as null makes it open-ended again."""
+    core = core_of(request)
+    fields: dict[str, Any] = body.model_dump(exclude_none=True)
+    if "ends_at" in body.model_fields_set:
+        fields["ends_at"] = body.ends_at
+    try:
+        project = await core.projects.update(project_id, tz=core.settings.timezone, **fields)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if project is None:
+        raise HTTPException(404, "project not found")
+    return project
+
+
+@router.delete("/projects/{project_id}", status_code=204, openapi_extra=agent("none", prefer="project.delete"))
+async def delete_project(request: Request, project_id: str) -> Response:
+    """The project goes; its schedules stay, on their own."""
+    core = core_of(request)
+    if await core.projects.get(project_id) is None:
+        raise HTTPException(404, "project not found")
+    await core.projects.delete(project_id)
+    return Response(status_code=204)
 
 
 # --- conversation summary (compaction divider) ------------------------------------------

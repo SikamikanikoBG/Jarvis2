@@ -1,4 +1,5 @@
 import type {
+  Project,
   ChangeRecord,
   Attachment,
   ContextLive,
@@ -254,6 +255,12 @@ export const api = {
     fires: (id: string, limit = 20) => request<ScheduleFire[]>('GET', `/api/schedules/${encodeURIComponent(id)}/fires?limit=${limit}`),
     /** He accepts a prompt a run wrote: it fires with the schedule's own authority again. */
     accept: (id: string) => request<Schedule>('POST', `/api/schedules/${encodeURIComponent(id)}/accept`),
+  },
+  projects: {
+    list: () => request<Project[]>('GET', '/api/projects'),
+    create: (body: Partial<Project>) => request<Project>('POST', '/api/projects', body),
+    patch: (id: string, body: Partial<Project>) => request<Project>('PATCH', `/api/projects/${encodeURIComponent(id)}`, body),
+    remove: (id: string) => request<null>('DELETE', `/api/projects/${encodeURIComponent(id)}`),
   },
   mail: {
     /** Log in with these (unsaved) details and count the Inbox. Empty app_password = the saved one. */

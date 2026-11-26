@@ -10,8 +10,9 @@ import { matchesQuery } from '../lib/filter';
 import { formatDuration } from '../lib/format';
 import { THINK_CHOICES, thinkChoiceKey } from '../lib/think';
 import { errorText, useLoader } from '../lib/useLoader';
-import type { CatchUp, Schedule, ScheduleCallMe, ScheduleFire } from '../protocol/types';
+import type { CatchUp, Project, Schedule, ScheduleCallMe, ScheduleFire } from '../protocol/types';
 import { useStore } from '../store/store';
+import { groupByProject } from './projects';
 
 function formatUntil(ts: string, now: number): string {
   const diff = Date.parse(ts) - now;
@@ -35,29 +36,44 @@ function statusChip(status: string | null): string {
   return 'chip-outline';
 }
 
-/** Scheduled prompts: list, create/edit, run now, fires. */
+/** Scheduled prompts, grouped by the project each serves: list, create/edit, run now, fires. */
 export function SchedulesScreen() {
   const version = useStore((s) => s.featureVersion.schedules);
   const notify = useStore((s) => s.notify);
   const openConversation = useStore((s) => s.openConversation);
-  const load = useCallback(() => api.schedules.list(), []);
+  const load = useCallback(() => Promise.all([api.schedules.list(), api.projects.list().catch(() => [] as Project[])]), []);
   const { data, error, loading, reload } = useLoader(load, version);
   const [editing, setEditing] = useState<Schedule | 'new' | null>(null);
+  const [newIn, setNewIn] = useState<string | null>(null);
+  const [editingProject, setEditingProject] = useState<Project | 'new' | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [confirmProject, setConfirmProject] = useState<string | null>(null);
+  const [folded, setFolded] = useState<string[]>([]);
   const [query, setQuery] = useState('');
   const [activeOnly, setActiveOnly] = useState(false);
   const now = useTicker(30_000);
-  const all = [...(data ?? [])].sort((a, b) => (a.next_fire ?? '9').localeCompare(b.next_fire ?? '9'));
+  const projects = data?.[1] ?? [];
+  const projectName = new Map(projects.map((p) => [p.id, p.name]));
+  const all = [...(data?.[0] ?? [])].sort((a, b) => (a.next_fire ?? '9').localeCompare(b.next_fire ?? '9'));
   const q = query.trim();
   // The prompt is searched too: a schedule is named once and then remembered by what it does.
+  // Its project's name too: "FX" finds the whole FX project.
   const schedules = all.filter(
-    (s) => (!activeOnly || s.enabled) && matchesQuery(q, s.name, s.prompt, s.cron, s.tz, s.last_status),
+    (s) =>
+      (!activeOnly || s.enabled) &&
+      matchesQuery(q, s.name, s.prompt, s.cron, s.tz, s.last_status, s.project_id ? projectName.get(s.project_id) : null),
   );
   const enabledCount = all.filter((s) => s.enabled).length;
+  const sections = groupByProject(schedules, projects, q !== '' || activeOnly);
 
   const fail = (what: string) => (e: unknown) => notify(`${what} failed: ${errorText(e)}`, 'error');
   const toggle = (s: Schedule, enabled: boolean) => api.schedules.patch(s.id, { enabled }).then(reload).catch(fail('Update'));
+  /** Pause or resume every schedule of a project in one go. */
+  const toggleAll = (list: Schedule[], enabled: boolean) =>
+    Promise.all(list.filter((s) => s.enabled !== enabled).map((s) => api.schedules.patch(s.id, { enabled })))
+      .then(reload)
+      .catch(fail(enabled ? 'Resume' : 'Pause'));
   const runNow = (s: Schedule) =>
     api.schedules
       .run(s.id)
@@ -67,24 +83,86 @@ export function SchedulesScreen() {
       })
       .catch(fail('Run now'));
   const remove = (id: string) => api.schedules.remove(id).then(reload).catch(fail('Delete'));
+  const removeProject = (id: string) => api.projects.remove(id).then(reload).catch(fail('Delete project'));
   const accept = (s: Schedule) => api.schedules.accept(s.id).then(reload).catch(fail('Accept'));
+  const fold = (key: string) => setFolded((f) => (f.includes(key) ? f.filter((k) => k !== key) : [...f, key]));
+
+  const row = (s: Schedule) =>
+    editing !== 'new' && editing?.id === s.id ? (
+      <ScheduleForm key={s.id} schedule={s} projects={projects} onClose={() => setEditing(null)} onSaved={reload} />
+    ) : (
+      <div key={s.id} className={`card sched-row${s.enabled ? '' : ' disabled'}`}>
+        <div className="sched-main">
+          <Switch checked={s.enabled} onChange={(v) => void toggle(s, v)} label={`Enable ${s.name}`} />
+          <div className="grow" style={{ minWidth: 0 }}>
+            <div className="row">
+              <span className="sched-name truncate">
+                <Highlight text={s.name} query={q} />
+              </span>
+              {s.last_status && <span className={`chip ${statusChip(s.last_status)}`}>{s.last_status}</span>}
+              {s.call_me === 'never' && <span className="chip chip-outline">no call</span>}
+              {/* A prompt a run wrote fires asking like a task until he accepts it (docs/stories/14_agent_admin.md). */}
+              {s.prompt_by && (
+                <button type="button" className="chip chip-warn" title="Written by a run, not by you: it asks before acting until you accept it" onClick={() => void accept(s)}>
+                  by Jarvis · Accept
+                </button>
+              )}
+            </div>
+            {/* Only when the prompt is what matched — otherwise the row stays as it was. */}
+            {q && !matchesQuery(q, s.name) && matchesQuery(q, s.prompt) && (
+              <div className="small muted truncate">
+                <Highlight text={s.prompt} query={q} />
+              </div>
+            )}
+            <div className="small muted">
+              {s.cron ? describeCron(s.cron) : s.at ? `Once at ${new Date(s.at).toLocaleString()}` : '—'} · {s.tz}
+              {s.next_fire && s.enabled && (
+                <>
+                  {' '}
+                  · next {formatUntil(s.next_fire, now)}
+                </>
+              )}
+            </div>
+          </div>
+          <IconButton icon="play" label={`Run ${s.name} now`} size="sm" onClick={() => void runNow(s)} />
+          <IconButton icon="edit" label={`Edit ${s.name}`} size="sm" onClick={() => setEditing(s)} />
+          <IconButton icon="clock" label="Fires" size="sm" active={expanded === s.id} onClick={() => setExpanded(expanded === s.id ? null : s.id)} />
+          <IconButton icon="trash" label={`Delete ${s.name}`} size="sm" onClick={() => setConfirmDelete(s.id)} />
+        </div>
+        {confirmDelete === s.id && <InlineConfirm text={`Delete "${s.name}"? Past conversations stay.`} confirmLabel="Delete" danger onConfirm={() => void remove(s.id)} onCancel={() => setConfirmDelete(null)} />}
+        {expanded === s.id && <FiresList schedule={s} version={version} />}
+      </div>
+    );
 
   return (
     <div className="screen">
       <div className="screen-inner">
         <div className="section-head">
           <h1>Schedules</h1>
-          <button type="button" className="btn btn-secondary btn-sm" onClick={() => setEditing('new')}>
-            <Icon name="plus" size={15} />
-            New schedule
-          </button>
+          <div className="row">
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditingProject('new')}>
+              <Icon name="folderPlus" size={15} />
+              New project
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => {
+                setNewIn(null);
+                setEditing('new');
+              }}
+            >
+              <Icon name="plus" size={15} />
+              New schedule
+            </button>
+          </div>
         </div>
         {error && <div className="field-error">{error}</div>}
         {all.length > 0 && (
           <ScreenFilter
             query={query}
             onQuery={setQuery}
-            placeholder="Search schedules"
+            placeholder="Search schedules and projects"
             shown={schedules.length}
             total={all.length}
             noun="schedule"
@@ -99,7 +177,8 @@ export function SchedulesScreen() {
             ]}
           />
         )}
-        {editing === 'new' && <ScheduleForm onClose={() => setEditing(null)} onSaved={reload} />}
+        {editingProject === 'new' && <ProjectForm onClose={() => setEditingProject(null)} onSaved={reload} />}
+        {editing === 'new' && newIn === null && <ScheduleForm projects={projects} onClose={() => setEditing(null)} onSaved={reload} />}
         {!loading && all.length === 0 && editing !== 'new' && (
           <div className="empty">
             <strong>No schedules</strong>
@@ -114,55 +193,153 @@ export function SchedulesScreen() {
             </span>
           </div>
         )}
-        <div className="sched-list">
-          {schedules.map((s) =>
-            editing !== 'new' && editing?.id === s.id ? (
-              <ScheduleForm key={s.id} schedule={s} onClose={() => setEditing(null)} onSaved={reload} />
-            ) : (
-              <div key={s.id} className={`card sched-row${s.enabled ? '' : ' disabled'}`}>
-                <div className="sched-main">
-                  <Switch checked={s.enabled} onChange={(v) => void toggle(s, v)} label={`Enable ${s.name}`} />
-                  <div className="grow" style={{ minWidth: 0 }}>
-                    <div className="row">
-                      <span className="sched-name truncate">
-                        <Highlight text={s.name} query={q} />
-                      </span>
-                      {s.last_status && <span className={`chip ${statusChip(s.last_status)}`}>{s.last_status}</span>}
-                      {s.call_me === 'never' && <span className="chip chip-outline">no call</span>}
-                      {/* A prompt a run wrote fires asking like a task until he accepts it (docs/stories/14_agent_admin.md). */}
-                      {s.prompt_by && (
-                        <button type="button" className="chip chip-warn" title="Written by a run, not by you: it asks before acting until you accept it" onClick={() => void accept(s)}>
-                          by Jarvis · Accept
-                        </button>
+        <div className="proj-list">
+          {sections.map(({ project, schedules: list }) => {
+            const key = project?.id ?? 'loose';
+            // Folded only while not searching: a match must never hide behind a closed head.
+            const isFolded = folded.includes(key) && !q;
+            const on = list.filter((s) => s.enabled).length;
+            const failed = list.filter((s) => s.last_status === 'failed').length;
+            const next = list.find((s) => s.enabled && s.next_fire)?.next_fire;
+            const addingHere = editing === 'new' && newIn !== null && newIn === project?.id;
+            if (project && editingProject !== 'new' && editingProject?.id === project.id) {
+              return <ProjectForm key={key} project={project} onClose={() => setEditingProject(null)} onSaved={reload} />;
+            }
+            return (
+              <section key={key} className={`proj-section${project ? '' : ' proj-loose'}`} aria-label={project?.name ?? 'Schedules on their own'}>
+                <div className="proj-head">
+                  <button type="button" className="proj-toggle" aria-expanded={!isFolded} onClick={() => fold(key)}>
+                    <Icon name={isFolded ? 'chevronRight' : 'chevronDown'} size={15} />
+                    <span className="proj-name truncate">{project ? <Highlight text={project.name} query={q} /> : 'On their own'}</span>
+                  </button>
+                  <span className="chip chip-outline" title="Enabled / all schedules in it">
+                    {on}/{list.length} on
+                  </span>
+                  {failed > 0 && <span className="chip chip-danger">{failed} failed</span>}
+                  {project?.ends_at && (
+                    <span className="chip chip-outline" title="Its schedules pause themselves then">
+                      ends {new Date(project.ends_at).toLocaleDateString()}
+                    </span>
+                  )}
+                  {next && <span className="small muted proj-next">next {formatUntil(next, now)}</span>}
+                  <span className="grow" />
+                  {project && (
+                    <>
+                      {list.length > 0 && (
+                        <IconButton
+                          icon={on > 0 ? 'pause' : 'play'}
+                          label={on > 0 ? `Pause every schedule in ${project.name}` : `Resume every schedule in ${project.name}`}
+                          size="sm"
+                          onClick={() => void toggleAll(list, on === 0)}
+                        />
                       )}
-                    </div>
-                    {/* Only when the prompt is what matched — otherwise the row stays as it was. */}
-                    {q && !matchesQuery(q, s.name) && matchesQuery(q, s.prompt) && (
-                      <div className="small muted truncate">
-                        <Highlight text={s.prompt} query={q} />
-                      </div>
-                    )}
-                    <div className="small muted">
-                      {s.cron ? describeCron(s.cron) : s.at ? `Once at ${new Date(s.at).toLocaleString()}` : '—'} · {s.tz}
-                      {s.next_fire && s.enabled && (
-                        <>
-                          {' '}
-                          · next {formatUntil(s.next_fire, now)}
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  <IconButton icon="play" label={`Run ${s.name} now`} size="sm" onClick={() => void runNow(s)} />
-                  <IconButton icon="edit" label={`Edit ${s.name}`} size="sm" onClick={() => setEditing(s)} />
-                  <IconButton icon="clock" label="Fires" size="sm" active={expanded === s.id} onClick={() => setExpanded(expanded === s.id ? null : s.id)} />
-                  <IconButton icon="trash" label={`Delete ${s.name}`} size="sm" onClick={() => setConfirmDelete(s.id)} />
+                      <IconButton
+                        icon="plus"
+                        label={`New schedule in ${project.name}`}
+                        size="sm"
+                        onClick={() => {
+                          setNewIn(project.id);
+                          setEditing('new');
+                        }}
+                      />
+                      <IconButton icon="edit" label={`Edit project ${project.name}`} size="sm" onClick={() => setEditingProject(project)} />
+                      <IconButton icon="trash" label={`Delete project ${project.name}`} size="sm" onClick={() => setConfirmProject(project.id)} />
+                    </>
+                  )}
                 </div>
-                {confirmDelete === s.id && <InlineConfirm text={`Delete "${s.name}"? Past conversations stay.`} confirmLabel="Delete" danger onConfirm={() => void remove(s.id)} onCancel={() => setConfirmDelete(null)} />}
-                {expanded === s.id && <FiresList schedule={s} version={version} />}
-              </div>
-            ),
-          )}
+                {project && confirmProject !== null && confirmProject === project.id ? (
+                  <InlineConfirm
+                    text={`Delete the project "${project.name}"? Its ${list.length} schedule(s) stay, on their own.`}
+                    confirmLabel="Delete project"
+                    danger
+                    onConfirm={() => void removeProject(project.id)}
+                    onCancel={() => setConfirmProject(null)}
+                  />
+                ) : null}
+                {!isFolded && project?.goal && <div className="small muted proj-goal">{project.goal}</div>}
+                {!isFolded && (
+                  <div className="sched-list">
+                    {addingHere && <ScheduleForm projects={projects} projectId={newIn} onClose={() => setEditing(null)} onSaved={reload} />}
+                    {list.map(row)}
+                    {project && list.length === 0 && !addingHere && (
+                      <div className="small muted">No schedules yet: add one with +, or move one here from its edit form.</div>
+                    )}
+                  </div>
+                )}
+              </section>
+            );
+          })}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ProjectForm({ project, onClose, onSaved }: { project?: Project; onClose: () => void; onSaved: () => void }) {
+  const [name, setName] = useState(project?.name ?? '');
+  const [goal, setGoal] = useState(project?.goal ?? '');
+  const [brief, setBrief] = useState(project?.brief ?? '');
+  const [ends, setEnds] = useState(toLocalInput(project?.ends_at ?? null));
+  const [err, setErr] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const endsOk = ends === '' || !Number.isNaN(Date.parse(ends));
+  const valid = name.trim() !== '' && endsOk;
+
+  const save = () => {
+    if (!valid) return;
+    const body: Partial<Project> = {
+      name: name.trim(),
+      goal: goal.trim(),
+      brief: brief.trim(),
+      ends_at: ends ? new Date(ends).toISOString() : null,
+    };
+    setSaving(true);
+    setErr(null);
+    (project ? api.projects.patch(project.id, body) : api.projects.create(body))
+      .then(() => {
+        onSaved();
+        onClose();
+      })
+      .catch((e: unknown) => setErr(errorText(e)))
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <div className="card role-card sched-form" aria-label={project ? `Edit project ${project.name}` : 'New project'}>
+      <div className="form-grid">
+        <div className="field">
+          <label>Project name</label>
+          <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="FX trading" autoFocus />
+        </div>
+        <div className="field">
+          <label>Ends (optional)</label>
+          <input className={`input${endsOk ? '' : ' invalid'}`} type="datetime-local" value={ends} onChange={(e) => setEnds(e.target.value)} />
+          <div className="field-hint">Its schedules pause themselves then. Empty = open-ended.</div>
+        </div>
+        <div className="field span-2">
+          <label>Goal</label>
+          <textarea className="textarea" rows={2} value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="What its schedules achieve together" />
+        </div>
+        <div className="field span-2">
+          <label>Brief for every schedule in it (optional)</label>
+          <textarea
+            className="textarea"
+            rows={4}
+            value={brief}
+            onChange={(e) => setBrief(e.target.value)}
+            placeholder="Instructions each of its runs is given: where the files are, which playbooks to read, how to deliver"
+          />
+          <div className="field-hint">Each run in the project also sees the other schedules and what they last reported.</div>
+        </div>
+      </div>
+      {err && <div className="field-error">{err}</div>}
+      <div className="row">
+        <button type="button" className="btn btn-primary btn-sm" onClick={save} disabled={!valid || saving}>
+          {saving ? 'Saving…' : project ? 'Save' : 'Create project'}
+        </button>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>
+          Cancel
+        </button>
       </div>
     </div>
   );
@@ -193,7 +370,19 @@ function FiresList({ schedule, version }: { schedule: Schedule; version: number 
   );
 }
 
-function ScheduleForm({ schedule, onClose, onSaved }: { schedule?: Schedule; onClose: () => void; onSaved: () => void }) {
+function ScheduleForm({
+  schedule,
+  projects,
+  projectId,
+  onClose,
+  onSaved,
+}: {
+  schedule?: Schedule;
+  projects: Project[];
+  projectId?: string;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
   const notify = useStore((s) => s.notify);
   const [name, setName] = useState(schedule?.name ?? '');
   const [prompt, setPrompt] = useState(schedule?.prompt ?? '');
@@ -205,6 +394,7 @@ function ScheduleForm({ schedule, onClose, onSaved }: { schedule?: Schedule; onC
   const [enabled, setEnabled] = useState(schedule?.enabled ?? true);
   const [callMe, setCallMe] = useState<ScheduleCallMe>(schedule?.call_me ?? 'default');
   const [thinkKey, setThinkKey] = useState(thinkChoiceKey({ think: schedule?.think ?? null, think_level: schedule?.think_level ?? null }));
+  const [project, setProject] = useState(schedule?.project_id ?? projectId ?? '');
   const [err, setErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -226,6 +416,7 @@ function ScheduleForm({ schedule, onClose, onSaved }: { schedule?: Schedule; onC
       call_me: callMe,
       think: think.think,
       think_level: think.think ? think.think_level : null,
+      project_id: project || null,
     };
     setSaving(true);
     setErr(null);
@@ -278,6 +469,17 @@ function ScheduleForm({ schedule, onClose, onSaved }: { schedule?: Schedule; onC
             <div className="field-hint">Fires once, then disables itself.</div>
           </div>
         )}
+        <div className="field">
+          <label>Project</label>
+          <select className="select" value={project} onChange={(e) => setProject(e.target.value)}>
+            <option value="">On its own</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </div>
         <div className="field">
           <label>If a fire was missed</label>
           <select className="select" value={catchUp} onChange={(e) => setCatchUp(e.target.value as CatchUp)}>

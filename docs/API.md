@@ -284,6 +284,21 @@ and then got through (a `[playbook]` note lands in the conversation).
 `browser.context` feeds a context provider ("the page Arsen is looking at") for runs created
 from the side panel. The side panel is the SPA in an iframe: `/?mode=panel&token=…`.
 
+## Projects (2026-11-26)
+
+Several schedules that serve one goal (`features/projects.py`). A member's run gets a `ProjectBlock` in
+its context: the goal, the brief, and every other member with its timing, last outcome and the gist of
+its last report. After `ends_at` the scheduler pauses its schedules. In the sidebar a project's fires
+are one group under Scheduled. Tools: `project.list|get|create|update|delete`; a run nobody watches
+may not write a goal or brief.
+
+```
+GET    /api/projects                  → Project[] {id, name, goal, brief, ends_at, position, schedule_ids}
+POST   /api/projects {name, goal?, brief?, ends_at?}  → Project 201  (422 without a name)
+PATCH  /api/projects/{id} {…same…, position?}         → Project   (ends_at: null = open-ended)
+DELETE /api/projects/{id}                             (its schedules stay, on their own; 404 unknown)
+```
+
 ## Schedules (Phase 4)
 
 Replaces V1 reminders/scheduler. Each fire = a new conversation (`kind=scheduled`,
@@ -298,6 +313,7 @@ DELETE /api/schedules/{id}                         (404 unknown)
 POST   /api/schedules/{id}/run       → {run_id, conversation_id}   (fires now)
 POST   /api/schedules/{id}/accept    → Schedule   (a prompt a run wrote fires with full authority again)
 GET    /api/schedules/{id}/fires?limit=20 → Fire[] {scheduled_for, run_id, conversation_id, status}
+       project_id on POST/PATCH: the project it serves (PATCH null = out of it; unknown id = 422)
 ```
 `Schedule {id, name, prompt, cron: string|null, at: datetime|null, tz, enabled, catch_up: "skip"|"run_once",
 think, think_level, call_me, prompt_by, next_fire, last_fired_for, last_run_id, last_status, created_at, updated_at}`

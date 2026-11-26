@@ -912,10 +912,27 @@ export interface Schedule {
   /** Who wrote the prompt: null = Arsen; a run id = a run nobody asked from. Such a prompt fires
    *  asking like a task until he accepts it. Absent from cores before 2026-11-15. */
   prompt_by?: string | null;
+  /** The project it serves; null = on its own. Absent from cores before 2026-11-26. */
+  project_id?: string | null;
   next_fire: string | null;
   last_fired_for: string | null;
   last_run_id: string | null;
   last_status: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Several schedules that serve one goal; a member's run is told the goal, the brief and what the
+ *  others last reported (core features/projects.py). */
+export interface Project {
+  id: string;
+  name: string;
+  goal: string;
+  brief: string;
+  /** After this its schedules pause themselves; null = open-ended. */
+  ends_at: string | null;
+  position: number;
+  schedule_ids: string[];
   created_at: string;
   updated_at: string;
 }

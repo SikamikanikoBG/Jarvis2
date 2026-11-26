@@ -127,6 +127,7 @@ class ScheduleStore:
             think_level=row["think_level"],
             call_me=row["call_me"],
             prompt_by=row["prompt_by"],
+            project_id=row["project_id"],
             next_fire=_dt(row["next_fire"]),
             last_fired_for=_dt(row["last_fired_for"]),
             last_run_id=fire["run_id"] if fire else None,
@@ -157,6 +158,7 @@ class ScheduleStore:
         think_level: ThinkLevel | None = None,
         call_me: ScheduleCallMe = "default",
         prompt_by: str | None = None,
+        project_id: str | None = None,
     ) -> Schedule:
         if not name.strip() or not prompt.strip():
             raise ValueError("name and prompt are required")
@@ -167,6 +169,7 @@ class ScheduleStore:
         if cron and not croniter.is_valid(cron):
             raise ValueError(f"invalid cron expression {cron!r}")
         ZoneInfo(tz)  # validates
+        await self._check_project(project_id)
         if at is not None and at.tzinfo is None:
             at = at.replace(tzinfo=ZoneInfo(tz))
         now = _now()
@@ -175,7 +178,8 @@ class ScheduleStore:
         sid = new_id("sch")
         await self.db.execute(
             "INSERT INTO schedules(id, name, prompt, cron, at, tz, enabled, catch_up, think, think_level, call_me,"
-            " prompt_by, next_fire, last_fired_for, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?)",
+            " prompt_by, project_id, next_fire, last_fired_for, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?)",
             (
                 sid,
                 name.strip(),
@@ -189,6 +193,7 @@ class ScheduleStore:
                 think_level,
                 call_me,
                 prompt_by,
+                project_id,
                 next_fire.isoformat() if next_fire else None,
                 now.isoformat(),
                 now.isoformat(),
@@ -213,6 +218,10 @@ class ScheduleStore:
                 data[key] = value
         if "prompt_by" in fields:
             data["prompt_by"] = fields["prompt_by"]
+        if "project_id" in fields:
+            # Like prompt_by, None is a value here: it takes the schedule out of its project.
+            data["project_id"] = fields["project_id"] or None
+            await self._check_project(data["project_id"])
         if not str(data["name"]).strip() or not str(data["prompt"]).strip():
             raise ValueError("name and prompt may not be empty")
         if len(data["prompt"]) > PROMPT_MAX_CHARS:
@@ -236,7 +245,7 @@ class ScheduleStore:
         next_fire = compute_next(data["cron"], at, data["tz"], _now()) if data["enabled"] else None
         await self.db.execute(
             "UPDATE schedules SET name=?, prompt=?, cron=?, at=?, tz=?, enabled=?, catch_up=?, think=?, think_level=?,"
-            " call_me=?, prompt_by=?, next_fire=?, updated_at=? WHERE id=?",
+            " call_me=?, prompt_by=?, project_id=?, next_fire=?, updated_at=? WHERE id=?",
             (
                 data["name"].strip(),
                 data["prompt"].strip(),
@@ -249,6 +258,7 @@ class ScheduleStore:
                 data["think_level"],
                 data["call_me"],
                 data["prompt_by"],
+                data["project_id"],
                 next_fire.isoformat() if next_fire else None,
                 _now().isoformat(),
                 schedule_id,
@@ -256,6 +266,26 @@ class ScheduleStore:
         )
         self._changed(schedule_id)
         return await self.get(schedule_id)
+
+    async def _check_project(self, project_id: str | None) -> None:
+        if project_id and await self.db.fetchone("SELECT 1 FROM projects WHERE id = ?", (project_id,)) is None:
+            raise ValueError(f"no project {project_id!r}")
+
+    async def pause_ended(self, now: datetime) -> list[str]:
+        """Pause every enabled schedule whose project has ended; their ids. The project's end is
+        what turns a trip's or a campaign's watches off - not a one-off that deletes them."""
+        rows = await self.db.fetchall(
+            "SELECT s.id, p.ends_at FROM schedules s JOIN projects p ON p.id = s.project_id"
+            " WHERE s.enabled = 1 AND p.ends_at IS NOT NULL"
+        )
+        ended = [r["id"] for r in rows if (_dt(r["ends_at"]) or now) <= now]
+        for sid in ended:
+            await self.db.execute(
+                "UPDATE schedules SET enabled = 0, next_fire = NULL, updated_at = ? WHERE id = ?",
+                (now.isoformat(), sid),
+            )
+            self._changed(sid)
+        return ended
 
     async def delete(self, schedule_id: str) -> None:
         await self.db.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
@@ -362,6 +392,8 @@ class Scheduler:
     async def tick(self, now: datetime | None = None) -> int:
         now = now or _now()
         fired = 0
+        for sid in await self.store.pause_ended(now):
+            log.info("schedule %s paused: its project has ended", sid)
         for schedule in await self.store.due(now):
             slot = schedule.next_fire
             if slot is None:
@@ -427,6 +459,9 @@ class _CreateArgs(BaseModel):
     think: _THINK = "default"
     think_level: _LEVEL = "default"
     call_me: ScheduleCallMe = "default"
+    project_id: str | None = Field(
+        default=None, description="The project it serves (project.list), when it is one part of a bigger goal"
+    )
 
 
 class _UpdateArgs(BaseModel):
@@ -441,6 +476,7 @@ class _UpdateArgs(BaseModel):
     think: _THINK | None = None
     think_level: _LEVEL | None = None
     call_me: ScheduleCallMe | None = None
+    project_id: str | None = Field(default=None, description="Move it into this project; '' = out of its project")
     reason: str = ""
 
 
@@ -471,6 +507,7 @@ CHANGE_FIELDS = (
     "think_level",
     "call_me",
     "prompt_by",
+    "project_id",
 )
 
 
@@ -572,14 +609,27 @@ class ScheduleTools(BuiltinProvider):
         items = await self.store.list()
         if not items:
             return ToolResult.empty("No schedules.")
-        return ToolResult.data(
-            "\n".join(
+
+        def line(s: Schedule) -> str:
+            return (
                 f"- [{s.id}] {s.name} — {_when(s)}"
                 f" — next {s.next_fire.isoformat() if s.next_fire else 'never'}{'' if s.enabled else ' (paused)'}"
-                for s in items
-            ),
-            count=len(items),
-        )
+            )
+
+        # Grouped by the project each serves, so related schedules read as the one job they are.
+        rows = await self.store.db.fetchall("SELECT id, name FROM projects ORDER BY position, created_at")
+        out: list[str] = []
+        for p in rows:
+            members = [s for s in items if s.project_id == p["id"]]
+            if members:
+                out.append(f"Project [{p['id']}] {p['name']}:")
+                out += ["  " + line(s) for s in members]
+        loose = [s for s in items if not s.project_id or s.project_id not in {p["id"] for p in rows}]
+        if loose:
+            if out:
+                out.append("On their own:")
+            out += [line(s) for s in loose]
+        return ToolResult.data("\n".join(out), count=len(items))
 
     @tool(
         "schedule.get",
@@ -598,6 +648,11 @@ class ScheduleTools(BuiltinProvider):
             f"catch_up={s.catch_up} think={'default' if s.think is None else s.think}"
             f" think_level={s.think_level or 'default'} call_me={s.call_me}",
         ]
+        if s.project_id:
+            project = await self.store.db.fetchone("SELECT name FROM projects WHERE id = ?", (s.project_id,))
+            lines.append(
+                f"project: [{s.project_id}] {project['name'] if project else '?'} (project.get shows the rest of it)"
+            )
         if s.prompt_by is not None:
             lines.append("prompt written by a run, not yet accepted by Arsen: it fires asking like a task")
         lines.append(f"prompt:\n{s.prompt}")
@@ -636,7 +691,8 @@ class ScheduleTools(BuiltinProvider):
         "schedule.create",
         description=(
             "Create a NEW scheduled prompt (recurring cron or one-shot at) when Arsen asks for a future or "
-            "recurring reminder/job. Never call it from inside a scheduled run - that run already IS the schedule."
+            "recurring reminder/job. Never call it from inside a scheduled run - that run already IS the schedule. "
+            "When it is one part of a bigger job other schedules already serve, put it in their project (project_id)."
         ),
         args=_CreateArgs,
     )
@@ -652,6 +708,7 @@ class ScheduleTools(BuiltinProvider):
         think: str = "default",
         think_level: str = "default",
         call_me: ScheduleCallMe = "default",
+        project_id: str | None = None,
         idempotency_key: str = "",
     ) -> ToolResult:
         who = await self._who(idempotency_key)
@@ -669,6 +726,7 @@ class ScheduleTools(BuiltinProvider):
                 think_level=None if think_level == "default" else think_level,  # type: ignore[arg-type]
                 call_me=call_me,
                 prompt_by=who.author,
+                project_id=project_id or None,
             )
         except (ValueError, TypeError, KeyError) as exc:
             return ToolResult.failure(str(exc))
@@ -698,6 +756,7 @@ class ScheduleTools(BuiltinProvider):
         think: str | None = None,
         think_level: str | None = None,
         call_me: ScheduleCallMe | None = None,
+        project_id: str | None = None,
         reason: str = "",
         idempotency_key: str = "",
     ) -> ToolResult:
@@ -721,6 +780,8 @@ class ScheduleTools(BuiltinProvider):
             fields["think_level"] = None if think_level == "default" else think_level
         if prompt is not None and prompt.strip() != before.prompt:
             fields["prompt_by"] = who.author
+        if project_id is not None:
+            fields["project_id"] = project_id or None
         try:
             if at:
                 fields["at"] = datetime.fromisoformat(at)

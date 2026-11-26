@@ -115,10 +115,27 @@ class Schedule(BaseModel):
     # run id = a run nobody was asking from. Such a prompt is standing authority nobody approved,
     # so it fires with a task's approvals until he accepts it (docs/stories/14_agent_admin.md).
     prompt_by: str | None = None
+    # The project this schedule serves (features/projects.py); None = on its own.
+    project_id: str | None = None
     next_fire: datetime | None = None
     last_fired_for: datetime | None = None
     last_run_id: str | None = None
     last_status: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class Project(BaseModel):
+    """Several schedules that serve one bigger goal. When one of them fires, its run is told the
+    goal, the brief and what the others last reported (features/projects.py)."""
+
+    id: str
+    name: str
+    goal: str = ""
+    brief: str = ""
+    ends_at: datetime | None = None
+    position: int = 0
+    schedule_ids: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

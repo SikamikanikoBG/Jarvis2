@@ -175,7 +175,17 @@ export function selectUnreadIds(conversations: Record<string, Conversation>): st
 export function selectSidebar(
   conversations: Record<string, Conversation>,
   chatFolders: ChatFolder[] = [],
-  { attentionOnly = false, keepId = null }: { attentionOnly?: boolean; keepId?: string | null } = {},
+  {
+    attentionOnly = false,
+    keepId = null,
+    projectOf = {},
+  }: {
+    attentionOnly?: boolean;
+    keepId?: string | null;
+    /** Schedule id -> the project it serves: a project's fires share one group under Scheduled
+     * instead of one per schedule (core features/projects.py). */
+    projectOf?: Record<string, { id: string; name: string }>;
+  } = {},
 ): SidebarModel {
   const { rolled, subtasks, orphans } = rollUpTasks(conversations, keepId);
   conversations = rolled;
@@ -208,8 +218,10 @@ export function selectSidebar(
     buckets.set(f, groups);
     // A mail chat's key is its thread (that is how the core finds it again); the group is the
     // mailbox, which the label names - one head per thread would be the clutter all over again.
-    const key = (c.kind === 'mail' ? c.folder_label : c.folder_key) ?? '';
-    const g = groups.get(key) ?? { key, label: c.folder_label ?? c.folder_key ?? '', conversations: [], unread: 0 };
+    const project = c.kind === 'scheduled' && c.folder_key ? projectOf[c.folder_key] : undefined;
+    const key = project ? `project:${project.id}` : ((c.kind === 'mail' ? c.folder_label : c.folder_key) ?? '');
+    const label = project ? project.name : (c.folder_label ?? c.folder_key ?? '');
+    const g = groups.get(key) ?? { key, label, conversations: [], unread: 0 };
     g.conversations.push(c);
     if (c.unread) g.unread += 1;
     groups.set(key, g);

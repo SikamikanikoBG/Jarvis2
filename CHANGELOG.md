@@ -2,6 +2,23 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-26 — core 2.0.0a137, web 2.0.0-alpha.97
+
+### Added
+- **Projects: schedules that serve one goal.** The FX nightly analysis, its hourly pass and its
+  morning audit; the property briefs; a repo's discussions lead and its star hunt - separate
+  schedules, one job. A project has a name, a goal, an optional brief every one of its schedules is
+  given, and an optional end date after which they pause themselves.
+  - **Jarvis knows.** When a schedule in a project fires, its run is told the project, the goal,
+    the brief and each of the other schedules: when it runs, how its last run ended and the gist of
+    what it reported - so the hourly pass builds on what the nightly run decided. `schedule.list`
+    lists them by project; `project.*` tools create, change and file them (a run nobody watches may
+    file schedules but not rewrite a goal or brief).
+  - **Schedules screen** is grouped by project: a folding section each, with how many are on, any
+    failures, the next fire, pause / resume all, a + for a new schedule in it, and edit / delete
+    (deleting a project keeps its schedules). A schedule's form has a Project field.
+  - **Sidebar:** a project's runs are one group under Scheduled, named after the project.
+
 ## 2026-11-26 — web 2.0.0-alpha.96
 
 ### Fixed

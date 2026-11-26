@@ -58,6 +58,7 @@ from jarvis_core.features.memory import MemoryTools
 from jarvis_core.features.notify import NotifyTools
 from jarvis_core.features.office import OfficeHub
 from jarvis_core.features.planner import Planner
+from jarvis_core.features.projects import ProjectBlock, ProjectStore, ProjectTools
 from jarvis_core.features.reflection import PlaybookReflector
 from jarvis_core.features.results import ResultsTools
 from jarvis_core.features.rsvp import RsvpJob
@@ -119,6 +120,7 @@ class Core:
         self.learner = KnowledgeLearner(self.knowledge, lambda: self.adapters.for_role(RoleName.CLASSIFIER))
         self.reflector = PlaybookReflector(self.skills, lambda: self.adapters.for_role(RoleName.CLASSIFIER))
         self.schedules = ScheduleStore(self.db, self.bus)
+        self.projects = ProjectStore(self.db, self.bus)
         # Jarvis's own settings, schedules and routes (docs/stories/14_agent_admin.md): the one
         # settings write path, its trail, and the tools over it. ``policy_epoch`` moves whenever the
         # approval rules change by anyone but a run (engine/loop.AdminGate).
@@ -185,6 +187,7 @@ class Core:
                 TaskBlock(settings),
                 TasksBlock(lambda: self.tasks, settings),
                 HealthBlock(lambda: self.registry, settings),
+                ProjectBlock(self.projects, self.schedules, self.store, lambda: self.settings.timezone),
             ],
             compactor=self.compactor,
             attachments=self.attachments,
@@ -436,6 +439,7 @@ class Core:
                 FilesTools(self),
                 SkillsTools(self.skills),
                 ScheduleTools(self.schedules, tz=lambda: self.settings.timezone, scheduler=self.scheduler, core=self),
+                ProjectTools(self.projects, self.schedules, tz=lambda: self.settings.timezone, core=self),
                 self.settings_tools,
                 self.api_tools,
                 self.sessions,

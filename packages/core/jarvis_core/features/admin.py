@@ -956,6 +956,7 @@ _SCHEDULE_FIELDS = (
     "think_level",
     "call_me",
     "prompt_by",
+    "project_id",
 )
 
 

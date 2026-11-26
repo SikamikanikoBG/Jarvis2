@@ -1130,6 +1130,48 @@
   gap: 10px;
   font-size: var(--fs-sm);
 }
+/* Projects: schedules that serve one goal, one section each (core features/projects.py). */
+.proj-list {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.proj-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.proj-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.proj-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+.proj-name {
+  font-weight: 650;
+  font-size: var(--fs-md, 1rem);
+}
+.proj-loose .proj-name {
+  color: var(--fg-muted);
+}
+.proj-goal {
+  margin-top: -2px;
+}
 @media (max-width: 640px) {
   .sched-main {
     flex-wrap: wrap;

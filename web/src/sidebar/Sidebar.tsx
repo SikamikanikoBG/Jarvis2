@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
+import { api } from '../api/client';
 import { Icon } from '../components/Icon';
 import { IconButton } from '../components/primitives';
 import { DISAPPEAR_DEFAULT_TTL, ttlLabel } from '../lib/privacy';
+import { useLoader } from '../lib/useLoader';
 import type { Conversation } from '../protocol/types';
 import { selectSidebar, selectUnreadIds, type Folder, type SidebarModel } from '../store/selectors';
 import { useStore } from '../store/store';
@@ -30,9 +32,18 @@ export function Sidebar() {
   const markAllRead = useStore((s) => s.markAllRead);
   const unread = useMemo(() => selectUnreadIds(conversations).length, [conversations]);
   const setAttentionOnly = useStore((s) => s.setAttentionOnly);
+  // Which project each schedule serves, so a project's fires are one group under Scheduled.
+  const schedulesVersion = useStore((s) => s.featureVersion.schedules);
+  const loadProjects = useCallback(() => api.projects.list().catch(() => []), []);
+  const { data: projects } = useLoader(loadProjects, schedulesVersion);
+  const projectOf = useMemo(() => {
+    const out: Record<string, { id: string; name: string }> = {};
+    for (const p of projects ?? []) for (const sid of p.schedule_ids) out[sid] = { id: p.id, name: p.name };
+    return out;
+  }, [projects]);
   const model = useMemo(
-    () => selectSidebar(conversations, chatFolders, { attentionOnly, keepId: openId }),
-    [conversations, chatFolders, attentionOnly, openId],
+    () => selectSidebar(conversations, chatFolders, { attentionOnly, keepId: openId, projectOf }),
+    [conversations, chatFolders, attentionOnly, openId, projectOf],
   );
   const [query, setQuery] = useState('');
   // Select mode is entered by the button and left by Done; a ctrl-click on a row also puts a

@@ -12,6 +12,7 @@ import type { Meeting, MeetingStatus } from '../protocol/types';
 import { useStore } from '../store/store';
 import { DESKTOP_QUERY, useMediaQuery } from '../shell/useMediaQuery';
 import { phoneRecorder, type RecorderState } from './recorder';
+import { useWakeLock } from '../voice/useWakeLock';
 
 /** The host name of a meeting recorded by this browser (core: features/meetings.PHONE_HOST). */
 const PHONE = 'phone';
@@ -146,6 +147,7 @@ function RecorderBanner({
   notify: (text: string, level?: 'info' | 'error') => void;
 }) {
   const now = useTicker(1000, rec.recording);
+  useWakeLock(rec.recording); // the screen's idle lock must not end the recording
   if (!rec.meetingId && !rec.pending) return null;
   const id = rec.meetingId;
   return (

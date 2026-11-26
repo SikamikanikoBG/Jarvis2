@@ -5,6 +5,7 @@ import { useTicker } from '../components/useTicker';
 import { formatSeconds } from '../lib/format';
 import { errorText } from '../lib/useLoader';
 import { useStore } from '../store/store';
+import { useWakeLock } from '../voice/useWakeLock';
 
 interface Props {
   disabled: boolean;
@@ -23,6 +24,9 @@ export function MicButton({ disabled, onTranscript }: Props) {
   const rec = useRef<MediaRecorder | null>(null);
   const chunks = useRef<Blob[]>([]);
   const now = useTicker(1000, state === 'recording');
+  // A phone that dims and locks after its idle minute suspends the page, and the recording went
+  // with it (2026-11-26): the screen stays on while the microphone is open.
+  useWakeLock(state === 'recording');
 
   useEffect(() => () => rec.current?.stream.getTracks().forEach((t) => t.stop()), []);
 
@@ -55,7 +59,9 @@ export function MicButton({ disabled, onTranscript }: Props) {
           .finally(() => setState('idle'));
       };
       rec.current = r;
-      r.start();
+      // In one-second pieces, so what was said is already kept if the recording is cut short
+      // (the system takes the microphone): stopping uploads whatever arrived.
+      r.start(1000);
       setStartedAt(Date.now());
       setState('recording');
     } catch (e) {

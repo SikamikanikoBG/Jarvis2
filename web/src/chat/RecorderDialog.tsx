@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Icon } from '../components/Icon';
 import { IconButton } from '../components/primitives';
+import { useWakeLock } from '../voice/useWakeLock';
 import { captureConstraints, clipFilename, describeCameraError, nextCamera, recorderMime } from '../lib/camera';
 
 interface Props {
@@ -38,6 +39,7 @@ export function RecorderDialog({ onCapture, onClose }: Props) {
   const [cam, setCam] = useState<CamState | null>(null);
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
+  useWakeLock(recording); // the screen's idle lock must not cut the clip short
   const current = cam?.for === deviceId ? cam : null;
   const ready = current?.status === 'ready';
   const error = current?.status === 'error' ? current.message : null;

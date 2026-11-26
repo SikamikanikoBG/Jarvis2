@@ -2,6 +2,19 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-26 — web 2.0.0-alpha.96
+
+### Fixed
+- **A phone on its side has room for the chat.** Turned sideways (~360 px tall) the header, the
+  composer and the bottom bar left the conversation 149 px. In landscape the bottom bar is now a
+  rail of icons at the left edge, and the header and composer are tighter: 238 px of chat.
+- **Tables read on a phone.** A table squeezed into the bubble wrapped its long cells into narrow
+  columns 250-700 px tall. A cell now gets a minimum width that grows with its text (a short column
+  stays short), a reply with a table uses the whole width, and a wider table scrolls sideways.
+- **The screen stays on while recording.** A dictation (the mic in the composer), a video clip or a
+  meeting recording was lost when the phone dimmed and locked after its idle minute; the screen is
+  now kept awake while the microphone records, and dictation keeps its audio in one-second pieces.
+
 ## 2026-11-26 — web 2.0.0-alpha.95
 
 ### Fixed

@@ -29,7 +29,25 @@ function ensureHooks(): void {
       node.setAttribute('target', '_blank');
       node.setAttribute('rel', 'noopener noreferrer');
     }
+    if (node.tagName === 'TD' || node.tagName === 'TH') {
+      const cls = cellWidthClass(node.textContent?.length ?? 0);
+      if (cls) node.classList.add(cls);
+    }
   });
+}
+
+/**
+ * How wide a table cell may not get narrower than, by how much text it holds. A table squeezed
+ * into the bubble wrapped its long cells into narrow columns hundreds of pixels tall (2026-11-26,
+ * a phone on its side); with a floor that grows with the text, a short column stays short, a long
+ * one gets room to read, and a table wider than the bubble scrolls sideways.
+ */
+export function cellWidthClass(chars: number): string | null {
+  if (chars <= 12) return null;
+  if (chars <= 40) return 'cell-w1';
+  if (chars <= 120) return 'cell-w2';
+  if (chars <= 300) return 'cell-w3';
+  return 'cell-w4';
 }
 
 const cache = new Map<string, string>();

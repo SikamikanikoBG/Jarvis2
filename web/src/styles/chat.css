@@ -199,6 +199,27 @@
   border: 1px solid var(--border);
   padding: 4px 8px;
   text-align: left;
+  /* Words are not split letter by letter (the bubble's overflow-wrap: anywhere), and a cell
+     with more text has a wider floor (lib/markdown.ts cellWidthClass): a table wider than the
+     bubble scrolls sideways instead of turning into narrow, tall columns (2026-11-26). */
+  overflow-wrap: break-word;
+  vertical-align: top;
+}
+.md .cell-w1 {
+  min-width: 8em;
+}
+.md .cell-w2 {
+  min-width: 13em;
+}
+.md .cell-w3 {
+  min-width: 18em;
+}
+.md .cell-w4 {
+  min-width: 26em;
+}
+/* A reply with a table gets the whole width of the chat, not 86% of it. */
+.msg:has(.md table) {
+  max-width: 100%;
 }
 .md th {
   background: var(--bg-elevated);

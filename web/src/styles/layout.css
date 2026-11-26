@@ -749,3 +749,70 @@
     flex: none;
   }
 }
+
+/* ---- a phone on its side ------------------------------------------------------------------ */
+/* Turned sideways a phone is ~360 px tall, and the header, the composer and the bottom bar left
+   the chat 149 px of it (2026-11-26). Width is what is plenty there: the bottom bar becomes a
+   rail of icons at the left edge, the header and the composer get tight. */
+@media (orientation: landscape) and (max-height: 520px) and (max-width: 1199.98px) {
+  :root {
+    --header-h: 40px;
+    --rail-w: 52px;
+  }
+  .app:has(> .bottomnav) {
+    padding-left: calc(var(--rail-w) + env(safe-area-inset-left));
+  }
+  .bottomnav {
+    position: fixed;
+    z-index: 20;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: calc(var(--rail-w) + env(safe-area-inset-left));
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom) env(safe-area-inset-left);
+    flex-direction: column;
+    border-top: 0;
+    border-right: 1px solid var(--border);
+    min-height: 0;
+  }
+  .bottomnav button {
+    flex: 1;
+    min-height: 0;
+    padding: 0;
+    font-size: 0; /* the icons alone: the labels are on their titles */
+  }
+  .bottomnav button.active::before {
+    top: 50%;
+    left: 0;
+    transform: translateY(-50%);
+    width: 2px;
+    height: 26px;
+    border-radius: 0 2px 2px 0;
+  }
+  .bottomnav .nav-badge {
+    top: calc(50% - 14px);
+    right: calc(50% - 16px);
+  }
+  .transcript {
+    padding-top: var(--s-2);
+  }
+  .composer-wrap {
+    padding-top: 2px;
+    padding-bottom: calc(4px + env(safe-area-inset-bottom));
+    padding-right: calc(var(--pad-x) + env(safe-area-inset-right));
+  }
+  .composer {
+    padding-top: 2px;
+    padding-bottom: 2px;
+  }
+  .composer textarea {
+    max-height: 30dvh;
+  }
+  .send-btn {
+    width: 34px;
+    height: 34px;
+  }
+  .composer-hint {
+    margin-top: 2px;
+  }
+}

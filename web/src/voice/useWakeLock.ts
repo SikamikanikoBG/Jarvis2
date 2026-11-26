@@ -1,7 +1,8 @@
 import { useEffect } from 'react';
 
 /**
- * Keep the screen (and with it the page, the microphone and the voice) awake while `on`.
+ * Keep the screen (and with it the page, the microphone and the voice) awake while `on`: a
+ * call, and every recording (the composer's dictation, a clip, a meeting).
  *
  * A phone locks its screen after a minute of no touches, and a locked screen suspends the
  * page: the microphone stops, `speechSynthesis` goes quiet mid-sentence. The Screen Wake Lock

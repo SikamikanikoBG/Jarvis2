@@ -162,4 +162,20 @@ describe('the sidebar', () => {
     expect(model.attention).toBe(1);
     expect(selectSidebar({ a: c('a', 'chat'), w: c('w', 'task') }, [], { attentionOnly: true }).chats.map((x) => x.id)).toEqual(['a']);
   });
+
+  it('a chat whose task works is working, and the live task is a row under it (2026-11-26)', () => {
+    const c = (id: string, kind: Conversation['kind'], activity: Conversation['activity'], parent: string | null = null): Conversation =>
+      ({ id, kind, title: id, folder_key: parent, folder_label: null, folder_id: null, archived: false, unread: false, pinned: false, title_auto: true, instructions: '', preview: null, message_count: 1, activity, incognito: false, ttl_seconds: null, expires_at: null, created_at: iso(0), updated_at: iso(0) });
+    const convs = { a: c('a', 'chat', 'idle'), w: c('w', 'task', 'running', 'a'), d: c('d', 'task', 'idle', 'a'), x: c('x', 'task', 'waiting', 'w') };
+    const model = selectSidebar(convs);
+    expect(model.chats.map((x) => x.id)).toEqual(['a']);
+    expect(model.chats[0]?.activity).toBe('waiting'); // its task's task waits on him
+    expect(model.subtasks.a?.map((x) => x.id)).toEqual(['w']); // the finished one stays behind its card
+    expect(model.subtasks.w?.map((x) => x.id)).toEqual(['x']);
+    expect(model.attention).toBe(1);
+    expect(selectSidebar(convs, [], { attentionOnly: true }).chats.map((x) => x.id)).toEqual(['a']);
+    // The task on screen stays under its chat once it is done; a live task of an unlisted chat is a row.
+    expect(selectSidebar(convs, [], { keepId: 'd' }).subtasks.a?.map((x) => x.id).sort()).toEqual(['d', 'w']);
+    expect(selectSidebar({ w: c('w', 'task', 'running', 'gone') }).chats.map((x) => x.id)).toEqual(['w']);
+  });
 });

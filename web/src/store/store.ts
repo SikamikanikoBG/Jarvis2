@@ -254,6 +254,8 @@ let callStarting = false;
 let speaker: DeviceSpeaker | ServerSpeaker | LineSpeaker | null = null;
 /** The call's line, when its sound goes over one (voice/line.ts). */
 let line: VoiceLine | null = null;
+/** The live call's microphone, for the speaker button on the line. */
+let micListener: MicListener | null = null;
 /** The call as the core sees it: its id, the heartbeat, the hang-up (voice/callLife.ts). */
 let callLife: CallLife | null = null;
 
@@ -551,6 +553,7 @@ export const useStore = create<AppState>()((set, get) => ({
     if (debug) callTrace.start({ line: onLine, tts, languages, turnThreshold, patienceMs: patience, waiting, holdVolume });
     if (debug && callLine) callTrace.watchStats(() => callLine.stats());
     const listener = new MicListener({ line: onLine });
+    micListener = listener;
     // Off the line, the voice plays through the microphone's own context (opened in this tap,
     // proven running), never a second one opened later while the phone is in call mode.
     speaker = callLine
@@ -677,6 +680,7 @@ export const useStore = create<AppState>()((set, get) => ({
     speaker = null;
     line?.close();
     line = null;
+    micListener = null;
     releaseScreen();
     set({ call: null });
   },
@@ -741,18 +745,20 @@ export const useStore = create<AppState>()((set, get) => ({
 
   setCallRoute: (route) => {
     if (line && !line.down && session) {
-      // On the line the route is the call's output, chosen without touching the microphone or
-      // what is being said. A browser that offers no choice gets the old way: the call starts
-      // again with the page playing the voice, on the speaker.
+      // On the line the call's sound follows the microphone's route: Chrome on Android opens
+      // "Speakerphone" / "Headset earpiece" as inputs (listener.ts). A browser without them
+      // (a desktop) may offer a choice of outputs instead. Either way the call goes on: hanging
+      // up and dialling again on the speaker, as it did until 2026-11-26, read as "the call
+      // restarts" and lost what was being said.
       const call = session;
-      void line.nextOutput().then((moved) => {
+      const mic = micListener;
+      const callLine = line;
+      void (async () => {
+        const moved = (await mic?.switchLineRoute(route)) === true || (await callLine.nextOutput().catch(() => false));
         if (session !== call) return;
         if (moved) call.noteRoute(route);
-        else {
-          get().endCall();
-          void get().startCall({ page: true, route });
-        }
-      });
+        else get().notify("This browser offers no other output for the call - use the phone's own volume or a headset.", 'error');
+      })();
       return;
     }
     writeRoute(route);

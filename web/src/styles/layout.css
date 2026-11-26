@@ -319,6 +319,29 @@
   flex: 1;
   min-width: 0;
 }
+/* A delegated task working for the chat above it (selectors.ts subtasks). */
+.conv-subtasks {
+  margin-left: 14px;
+  padding-left: 6px;
+  border-left: 1px solid var(--border);
+}
+.conv.conv-task {
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+.conv.conv-task .conv-title {
+  font-size: var(--fs-sm);
+}
+.conv-task-tag {
+  flex: none;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
 .conv-title {
   display: flex;
   align-items: center;

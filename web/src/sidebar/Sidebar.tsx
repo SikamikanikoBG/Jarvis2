@@ -11,6 +11,7 @@ import { ConversationRow } from './ConversationRow';
 import { isConversationDrag, readDragIds } from './dnd';
 import { SearchBox, SearchResults } from './SearchBox';
 import { SelectionBar } from './SelectionBar';
+import { SubtasksContext } from './subtasks';
 
 export function Sidebar() {
   const conversations = useStore((s) => s.conversations);
@@ -169,6 +170,7 @@ export function Sidebar() {
           onDragOver={(e) => !attentionOnly && isConversationDrag(e.dataTransfer) && e.preventDefault()}
           onDrop={onDropToRoot}
         >
+          <SubtasksContext.Provider value={model.subtasks}>
           {loaded && <SidebarEmpty model={model} attentionOnly={attentionOnly} onShowAll={() => setAttentionOnly(false)} />}
           {attentionOnly && unread > 0 && !selecting && (
             <button type="button" className="mark-all-read" onClick={() => void markAllRead()}>
@@ -192,6 +194,7 @@ export function Sidebar() {
           {model.folders.map((f) => (
             <FolderSection key={f.kind} folder={f} openId={openId} selecting={selecting} ordered={ordered} />
           ))}
+          </SubtasksContext.Provider>
         </div>
       )}
     </nav>

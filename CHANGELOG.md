@@ -2,6 +2,20 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-26 — web 2.0.0-alpha.95
+
+### Fixed
+- **The speaker button no longer restarts a call.** On the line (the call's voice as a WebRTC call),
+  a phone whose browser offers no choice of outputs - Chrome on Android - got the call hung up and
+  dialled again on the speaker. Now the microphone moves to Chrome's own route input
+  ("Speakerphone" / "Headset earpiece"), echo cancelling still on, and the call's sound follows it:
+  the new microphone opens before the old one is let go, so the line, Jarvis's sentence and what
+  you are saying go on. A browser with neither gets a note instead of a restart.
+- **Delegated tasks show in the sidebar while they work.** A chat whose task (sub-agent) is working
+  now has the working dot itself (amber when the task waits on you), and the live task is an
+  indented row under it, marked "task", that opens the task's own conversation. A finished task
+  goes back behind its card; the one on screen stays until you leave it.
+
 ## 2026-11-25 — core 2.0.0a136
 
 From the TTFT review of 24 Nov.

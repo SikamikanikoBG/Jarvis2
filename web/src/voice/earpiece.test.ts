@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { earpieceInput } from './earpiece';
+import { earpieceInput, routeInput } from './earpiece';
 
 const input = (deviceId: string, label: string) => ({ kind: 'audioinput', deviceId, label }) as MediaDeviceInfo;
 const camera = { kind: 'videoinput', deviceId: 'c', label: 'camera 1, facing front' } as MediaDeviceInfo;
@@ -19,5 +19,13 @@ describe('earpieceInput', () => {
     expect(earpieceInput([input('default', 'Default'), input('x', 'Built-in Microphone')])).toBeNull();
     expect(earpieceInput([input('', ''), input('', '')])).toBeNull();
     expect(earpieceInput([])).toBeNull();
+  });
+
+  it("finds Chrome's speakerphone route for the speaker button on the line", () => {
+    const devices = [input('default', 'Default'), input('a1', 'Speakerphone'), input('b2', 'Headset earpiece'), camera];
+    expect(routeInput(devices, 'speaker')).toBe('a1');
+    expect(routeInput(devices, 'earpiece')).toBe('b2');
+    expect(routeInput([...devices, input('c3', 'Bluetooth headset')], 'speaker')).toBeNull();
+    expect(routeInput([input('default', 'Default'), input('x', 'Built-in Microphone')], 'speaker')).toBeNull();
   });
 });

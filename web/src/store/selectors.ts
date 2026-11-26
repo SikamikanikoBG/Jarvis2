@@ -60,6 +60,12 @@ export interface SidebarModel {
    * still off.
    */
   attention: number;
+  /**
+   * The delegated tasks working for a chat, by that chat's id: shown as rows under it, so a
+   * sub-agent at work can be found and opened from the sidebar (2026-11-26). Only live ones,
+   * plus the one on screen; a finished task is reached from its card in the chat.
+   */
+  subtasks: Record<string, Conversation[]>;
 }
 
 const byUpdatedDesc = (a: Conversation, b: Conversation) => b.updated_at.localeCompare(a.updated_at);
@@ -71,9 +77,64 @@ function folderOf(c: Conversation): FolderKind | 'chat' {
   return c.kind === 'task' ? 'chat' : c.kind;
 }
 
-/** Not a row of the sidebar at all (Gate B 2026-10-29): a task's work lives behind its card. */
+/** Not a row of its own (Gate B 2026-10-29): a task's work lives behind its card, and while it
+ *  works, under the chat it works for (see `subtasks`). */
 function inSidebar(c: Conversation): boolean {
   return c.kind !== 'task';
+}
+
+const ACTIVITY_RANK: Record<Conversation['activity'], number> = { idle: 0, running: 1, waiting: 2 };
+
+/**
+ * Every conversation with its delegated tasks' activity rolled into its own: a chat whose task
+ * is working is working, and one whose task waits on Arsen waits on him. A task's conversation
+ * names the chat it works for in `folder_key` (core tasks.py); a task of a task rolls up through
+ * its parent. Returned with the live tasks per parent. Conversations that do not change keep
+ * their identity.
+ */
+function rollUpTasks(
+  conversations: Record<string, Conversation>,
+  keepId: string | null,
+): { rolled: Record<string, Conversation>; subtasks: Record<string, Conversation[]>; orphans: Conversation[] } {
+  const children = new Map<string, Conversation[]>();
+  for (const c of Object.values(conversations)) {
+    if (c.kind !== 'task' || !c.folder_key) continue;
+    const list = children.get(c.folder_key) ?? [];
+    list.push(c);
+    children.set(c.folder_key, list);
+  }
+  if (children.size === 0) return { rolled: conversations, subtasks: {}, orphans: [] };
+  const memo = new Map<string, Conversation['activity']>();
+  const activityOf = (c: Conversation, seen: Set<string>): Conversation['activity'] => {
+    const known = memo.get(c.id);
+    if (known) return known;
+    let best = c.activity;
+    seen.add(c.id);
+    for (const child of children.get(c.id) ?? []) {
+      if (seen.has(child.id)) continue; // a loop in bad data must not hang the sidebar
+      const a = activityOf(child, seen);
+      if (ACTIVITY_RANK[a] > ACTIVITY_RANK[best]) best = a;
+    }
+    memo.set(c.id, best);
+    return best;
+  };
+  const rolled: Record<string, Conversation> = {};
+  for (const c of Object.values(conversations)) {
+    const a = activityOf(c, new Set());
+    rolled[c.id] = a === c.activity ? c : { ...c, activity: a };
+  }
+  const subtasks: Record<string, Conversation[]> = {};
+  const orphans: Conversation[] = [];
+  for (const [parent, list] of children) {
+    const shown = list.map((c) => rolled[c.id] ?? c).filter((c) => c.activity !== 'idle' || c.id === keepId).sort(byUpdatedDesc);
+    if (shown.length === 0) continue;
+    const p = conversations[parent];
+    // A live task whose chat this client does not list (archived, not loaded): a row of its own,
+    // rather than a sub-agent at work that nothing in the sidebar leads to.
+    if (!p || p.archived || p.kind === 'archive') orphans.push(...shown.filter((c) => c.activity !== 'idle'));
+    else subtasks[parent] = shown;
+  }
+  return { rolled, subtasks, orphans };
 }
 
 /**
@@ -116,7 +177,9 @@ export function selectSidebar(
   chatFolders: ChatFolder[] = [],
   { attentionOnly = false, keepId = null }: { attentionOnly?: boolean; keepId?: string | null } = {},
 ): SidebarModel {
-  const all = Object.values(conversations).filter(inSidebar).sort(byUpdatedDesc);
+  const { rolled, subtasks, orphans } = rollUpTasks(conversations, keepId);
+  conversations = rolled;
+  const all = [...Object.values(conversations).filter(inSidebar), ...orphans].sort(byUpdatedDesc);
   const wanted = all.filter(wantsAttention);
   // The filter is a flat list on purpose: it answers one question — what is waiting for me —
   // and a scheduled fire that is working belongs in that answer next to a chat, not behind a
@@ -125,8 +188,9 @@ export function selectSidebar(
     // `keepId` is the conversation on screen. Opening an unread chat marks it read, and without
     // this the row being read would vanish from under the cursor — the list must not move while
     // he is in it. It does not count towards `attention`.
-    const shown = keepId && conversations[keepId] && !wantsAttention(conversations[keepId]) ? [...wanted, conversations[keepId]] : wanted;
-    return { chats: shown.sort(byPinnedThenUpdated), chatFolders: [], folders: [], attention: wanted.length };
+    const kept = keepId ? conversations[keepId] : undefined;
+    const shown = kept && kept.kind !== 'task' && !wantsAttention(kept) ? [...wanted, kept] : wanted;
+    return { chats: shown.sort(byPinnedThenUpdated), chatFolders: [], folders: [], attention: wanted.length, subtasks };
   }
   const attention = wanted.length;
   const chats: Conversation[] = [];
@@ -174,7 +238,7 @@ export function selectSidebar(
       unread: list.reduce((n, g) => n + g.unread, 0),
     });
   }
-  return { chats, chatFolders: sections, folders, attention };
+  return { chats, chatFolders: sections, folders, attention, subtasks };
 }
 
 /** Newest non-terminal run of a conversation, if any. */

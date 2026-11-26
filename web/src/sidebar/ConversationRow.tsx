@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from 'react';
+import { useContext, useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from 'react';
 import { Icon } from '../components/Icon';
 import { IconButton, InlineConfirm, Menu, RelativeTime, type MenuItem } from '../components/primitives';
 import { useTicker } from '../components/useTicker';
@@ -9,6 +9,7 @@ import type { Conversation } from '../protocol/types';
 import { useStore } from '../store/store';
 import { ActivityDot } from './ActivityDot';
 import { setDragIds } from './dnd';
+import { SubtasksContext } from './subtasks';
 
 interface Props {
   conversation: Conversation;
@@ -20,7 +21,24 @@ interface Props {
   ordered?: string[];
 }
 
-export function ConversationRow({ conversation: c, active, selecting = false, selected = false, ordered = [] }: Props) {
+/** The row, and under it the delegated tasks working for this chat (selectors.ts `subtasks`). */
+export function ConversationRow(props: Props) {
+  const subtasks = useContext(SubtasksContext)[props.conversation.id];
+  const openId = useStore((s) => s.openConversationId);
+  if (!subtasks?.length) return <Row {...props} />;
+  return (
+    <>
+      <Row {...props} />
+      <div className="conv-subtasks" role="group" aria-label={`Tasks working for ${props.conversation.title}`}>
+        {subtasks.map((t) => (
+          <ConversationRow key={t.id} conversation={t} active={t.id === openId} selecting={props.selecting ?? false} selected={false} />
+        ))}
+      </div>
+    </>
+  );
+}
+
+function Row({ conversation: c, active, selecting = false, selected = false, ordered = [] }: Props) {
   const open = useStore((s) => s.openConversation);
   // An incognito row never quotes the chat - not from the server's preview (there is none) and
   // not from the messages this client has loaded either.
@@ -141,6 +159,7 @@ export function ConversationRow({ conversation: c, active, selecting = false, se
 
   const cls = [
     'conv',
+    c.kind === 'task' ? 'conv-task' : '',
     active ? 'active' : '',
     c.unread ? 'unread' : '',
     menuAnchor ? 'menu-open' : '',
@@ -179,6 +198,7 @@ export function ConversationRow({ conversation: c, active, selecting = false, se
               ) : (
                 c.expires_at && <Icon name="chatDots" size={12} className="conv-privacy" aria-label={`Disappears in ${timeLeft(c.expires_at, now)}`} />
               )}
+              {c.kind === 'task' && <span className="conv-task-tag">task</span>}
               <span className="truncate">{c.title}</span>
             </div>
             {/* A disappearing chat says so in words, not only as a 12px glyph: the icon alone read

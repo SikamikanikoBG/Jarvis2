@@ -29,7 +29,7 @@
  *   keeps his voice from the loudspeaker out of the utterances (see MIC_CONSTRAINTS).
  */
 
-import { earpieceInput } from './earpiece';
+import { routeInput } from './earpiece';
 import { EchoGate } from './gate';
 import { rmsOf, Segmenter, type SegmentEvent } from './segmenter';
 import type { CallRoute, Listener, ListenerHandlers } from './session';
@@ -126,6 +126,8 @@ export class MicListener implements Listener {
   /** Until this moment on the call's clock the microphone is ignored (a cue is sounding). */
   private suppressUntil = 0;
   private route: CallRoute = 'earpiece';
+  /** On the line: the route the speaker button chose, opened as Chrome's input for it. */
+  private lineRoute: CallRoute = 'earpiece';
   private muted = false;
   private handlers: ListenerHandlers | null = null;
   private t0 = 0;
@@ -177,10 +179,10 @@ export class MicListener implements Listener {
     let stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS[route]);
     // On the earpiece route, Chrome's earpiece route rather than "Default", which is the
     // loudspeaker (earpiece.ts). Asked after the first microphone: device names are given out
-    // only once one has been allowed.
+    // only once one has been allowed. On the line, the route the speaker button chose.
     if (route === 'earpiece' && this.started) {
       const devices = await navigator.mediaDevices.enumerateDevices().catch(() => [] as MediaDeviceInfo[]);
-      const id = earpieceInput(devices);
+      const id = routeInput(devices, this.o.line ? this.lineRoute : 'earpiece');
       const now = stream.getAudioTracks()[0]?.getSettings?.().deviceId;
       if (id && id !== now) {
         stream.getTracks().forEach((t) => t.stop());
@@ -303,6 +305,49 @@ export class MicListener implements Listener {
     this.route = route;
     if (!this.started || this.o.line) return Promise.resolve();
     return this.rebuild();
+  }
+
+  /**
+   * On the line, the speaker button: the microphone moves to Chrome's input for the route
+   * ("Speakerphone" / "Headset earpiece", earpiece.ts), echo cancelling still on, and the call's
+   * sound follows it. The new microphone opens before the old one is let go, into the same
+   * context, so the phone never leaves call mode and nothing else is touched: the line, the
+   * voice and what he is saying go on. Until 2026-11-26 a phone without a choice of outputs got
+   * the call hung up and dialled again instead. False when the browser has no such routes.
+   */
+  async switchLineRoute(route: CallRoute): Promise<boolean> {
+    if (!this.o.line || !this.started || !this.ctx || !this.tap) return false;
+    const devices = await navigator.mediaDevices.enumerateDevices().catch(() => [] as MediaDeviceInfo[]);
+    const id = routeInput(devices, route);
+    if (!id) return false;
+    if (route === this.lineRoute && this.stream?.getAudioTracks()[0]?.getSettings?.().deviceId === id) return true;
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { ...(MIC_CONSTRAINTS.earpiece.audio as MediaTrackConstraints), deviceId: { exact: id } } });
+    } catch (e) {
+      callTrace.mark('mic.route.failed', { route, error: e instanceof Error ? e.message : String(e) });
+      return false;
+    }
+    const ctx = this.ctx;
+    const tap = this.tap;
+    if (!this.started || this.ctx !== ctx || this.tap !== tap) {
+      stream.getTracks().forEach((t) => t.stop()); // hung up or rebuilt meanwhile
+      return false;
+    }
+    const old = this.stream;
+    this.source?.disconnect();
+    this.stream = stream;
+    this.lineRoute = route;
+    for (const track of stream.getAudioTracks()) track.onended = () => this.lost(stream);
+    this.source = ctx.createMediaStreamSource(stream);
+    this.source.connect(tap);
+    old?.getTracks().forEach((t) => {
+      t.onended = null;
+      t.stop();
+    });
+    const track = stream.getAudioTracks()[0];
+    callTrace.mark('mic.route', { route, label: track?.label ?? null, settings: track?.getSettings?.() ?? null });
+    return true;
   }
 
   /** Close everything and open it again for the current route. One at a time; a call while one

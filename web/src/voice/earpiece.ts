@@ -19,9 +19,19 @@ const EARPIECE = 'Headset earpiece';
 
 /** The deviceId of Chrome's earpiece route, or null when the default should decide. */
 export function earpieceInput(devices: readonly MediaDeviceInfo[]): string | null {
+  return routeInput(devices, 'earpiece');
+}
+
+/**
+ * The deviceId of Chrome's input for a call route - "Headset earpiece" or "Speakerphone" - or null
+ * when the browser lists no such routes (a desktop, an iPhone) or a headset is there, which is
+ * where the call belongs. On the line (line.ts) this is how the speaker button moves the call: the
+ * microphone is opened on the other route, echo cancelling on, and the call's sound follows it.
+ */
+export function routeInput(devices: readonly MediaDeviceInfo[], route: 'earpiece' | 'speaker'): string | null {
   const inputs = devices.filter((d) => d.kind === 'audioinput' && d.deviceId !== 'default' && d.deviceId !== 'communications');
-  const earpiece = inputs.find((d) => d.label === EARPIECE);
-  if (!earpiece) return null;
+  const want = inputs.find((d) => d.label === (route === 'speaker' ? SPEAKERPHONE : EARPIECE));
+  if (!want) return null;
   const other = inputs.some((d) => d.label !== EARPIECE && d.label !== SPEAKERPHONE);
-  return other ? null : earpiece.deviceId;
+  return other ? null : want.deviceId;
 }

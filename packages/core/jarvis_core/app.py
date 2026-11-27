@@ -42,6 +42,7 @@ from jarvis_core.engine.supervision import Supervisor
 from jarvis_core.features.admin import SettingsAdmin, SettingsTools
 from jarvis_core.features.admin_api import ApiTools
 from jarvis_core.features.attachments import AttachmentStore
+from jarvis_core.features.backfill import EpisodeBackfill
 from jarvis_core.features.boards import BoardStore, NotesTools
 from jarvis_core.features.callme import CallMe
 from jarvis_core.features.collab import CollabAuthMiddleware, CollabKeys, build_mcp_server
@@ -114,6 +115,7 @@ class Core:
         # The core's own housekeeping goes to the lane that is not answering Arsen.
         self.compactor = Compactor(self.db, self._housekeeping_model)
         self.journal = DayJournal(self, self._housekeeping_model)
+        self.backfill = EpisodeBackfill(self)
         self.planner = Planner(
             lambda: self.adapters.for_role(RoleName.CLASSIFIER), lambda: self.adapters.for_role(RoleName.PLANNER)
         )
@@ -351,6 +353,7 @@ class Core:
         await self.rsvp.start()
         await self.reaper.start()
         await self.context_usage.start()
+        await self.backfill.start()
         # The end-of-turn model, fetched and loaded now rather than on a call's first pause.
         self.turns.warm()
         # Today's lines the journal does not have yet (runs before a restart), written in the background.
@@ -392,6 +395,7 @@ class Core:
         await self.api_tools.aclose()
         await self.reaper.stop()
         await self.context_usage.stop()
+        await self.backfill.stop()
         await self.triage.stop()
         await self.triage_audit.stop()
         await self.rsvp.stop()

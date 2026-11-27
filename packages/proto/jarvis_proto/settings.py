@@ -673,6 +673,9 @@ class AssistantSettings(BaseModel):
     first) that a call and the Jarvis conversation carry, and that ``sessions.today`` returns.
     ``home_conversation_id`` is the Jarvis conversation, made on first use. ``housekeeping_lane``
     is where the journal's and compaction's own model calls go - never in front of a reply.
+    ``backfill``: the days before episodes existed are written up as episodes too, one call at a
+    time, only between ``backfill_hours`` [from, until) of his night and only while no chat or call
+    of his is running or recent (features/backfill.py; Arsen 2026-11-22: "All history", overnight).
     """
 
     journal: bool = True
@@ -680,11 +683,16 @@ class AssistantSettings(BaseModel):
     overview_on_calls: bool = True
     home_conversation_id: str | None = None
     housekeeping_lane: RoleName = RoleName.BACKGROUND
+    backfill: bool = True
+    backfill_hours: tuple[int, int] = (1, 5)
 
     @model_validator(mode="after")
     def _lane(self) -> AssistantSettings:
         if self.housekeeping_lane not in LANES:
             raise ValueError(f"housekeeping_lane must be one of {[r.value for r in LANES]}")
+        start, end = self.backfill_hours
+        if not (0 <= start <= 23 and 0 <= end <= 24 and start != end):
+            raise ValueError("backfill_hours is [from, until), hours 0-24, not the same hour")
         return self
 
 

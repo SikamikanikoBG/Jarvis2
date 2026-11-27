@@ -578,6 +578,25 @@ class Store:
         )
         return [self._run(r) for r in rows]
 
+    async def runs_oldest_first(
+        self,
+        statuses: tuple[RunStatus, ...],
+        *,
+        not_run_kinds: tuple[str, ...],
+        not_conversation_kinds: tuple[str, ...],
+    ) -> list[Run]:
+        """Every run in one of ``statuses`` outside private chats and the given kinds, oldest first."""
+        marks = ",".join("?" for _ in statuses)
+        runs_out = ",".join("?" for _ in not_run_kinds) or "''"
+        convs_out = ",".join("?" for _ in not_conversation_kinds) or "''"
+        rows = await self.db.fetchall(
+            "SELECT r.* FROM runs r JOIN conversations c ON c.id = r.conversation_id"
+            f" WHERE r.status IN ({marks}) AND r.kind NOT IN ({runs_out}) AND c.incognito = 0"
+            f" AND c.kind NOT IN ({convs_out}) ORDER BY r.created_at, r.id",
+            (*(st.value for st in statuses), *not_run_kinds, *not_conversation_kinds),
+        )
+        return [self._run(r) for r in rows]
+
     async def runs_with_status(self, *statuses: RunStatus) -> list[Run]:
         marks = ",".join("?" for _ in statuses)
         rows = await self.db.fetchall(

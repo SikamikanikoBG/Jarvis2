@@ -2,6 +2,19 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-27 — core 2.0.0a138
+
+### Added
+- **Memory: the weeks before episodes are written up too** (memory-track step 3). Episodes began on
+  2026-11-24; the ~1,500 conversation-days since 2026-09-05 had only their messages. At night
+  (`assistant.backfill_hours`, default 01-05) and only while no chat or call of Arsen's is running or
+  began in the last 30 minutes, the core asks the day journal's own question over those runs, oldest
+  day first, five runs at a time, one call at a time - so a talk over several runs is one episode, as
+  it would have been live. Only episodes are written: a day's digest stays as written that day.
+  Progress is kept per conversation and day (`episode_backfill`, migration 0026): a restart goes on,
+  a routine day is asked once, an answer that cannot be read is asked again later and passed over
+  after three. Off with `assistant.backfill: false`.
+
 ## 2026-11-26 — web 2.0.0-alpha.98
 
 ### Changed

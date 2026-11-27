@@ -46,7 +46,7 @@ CATCH_UP_MAX = 40
 MODEL_TIMEOUT_S = 90.0
 #: The kinds that are the machine's own plumbing, not something Arsen would call "today".
 # A task's own conversation is not a line of the day: its report in the chat that asked is.
-_SKIPPED_KINDS = frozenset({ConversationKind.TRIAGE, ConversationKind.ARCHIVE, ConversationKind.TASK})
+SKIPPED_KINDS = frozenset({ConversationKind.TRIAGE, ConversationKind.ARCHIVE, ConversationKind.TASK})
 _KIND_LABEL = {
     ConversationKind.CHAT: "chat",
     ConversationKind.COLLAB: "chat",
@@ -166,7 +166,7 @@ class DayJournal:
     async def _digest(self, conversation_id: str) -> None:
         store = self._core.store
         conv = await store.get_conversation(conversation_id)
-        if conv is None or conv.incognito or conv.kind in _SKIPPED_KINDS:
+        if conv is None or conv.incognito or conv.kind in SKIPPED_KINDS:
             return
         runs = [
             r
@@ -219,6 +219,39 @@ class DayJournal:
             " updated_at = excluded.updated_at",
             (conversation_id, day.isoformat(), summary, waiting, int(quiet), run.id, datetime.now(UTC).isoformat()),
         )
+
+    async def past_episode(self, conv: Conversation, runs: list[Run], day: date) -> bool:
+        """Write up ``runs`` (one past day of ``conv``, oldest first) as the live journal would have
+        that day: the same question, the episode it was in before them. Only the episode is kept:
+        the day's digest stays as it was written then (features/backfill.py). False when the model
+        gave no usable answer, so the caller can ask again later."""
+        told = [e for e in await self.episodes.of_day(conv.id, day.isoformat()) if e.started_at <= runs[0].created_at]
+        last = told[-1] if told else None
+        exchanges: list[tuple[Run, str, str]] = []
+        for r in runs:
+            asked, said = await self._exchange(r)
+            exchanges.append((r, self._core.admin.redact(asked), self._core.admin.redact(said)))
+        previous = await self._row(conv.id, day)
+        call_urgency.set(BACKGROUND)
+        call_purpose.set("journal")
+        async with self._sem:  # one write-up at a time, with the live journal's own
+            data = await self._ask(conv, exchanges, previous, last)
+        if data is None:
+            return False
+        quiet = bool(data.get("quiet")) and not " ".join(str(data.get("waiting") or "").split())
+        episode = episodes.from_model(
+            None if quiet else data.get("episode"),
+            conversation_id=conv.id,
+            day=day.isoformat(),
+            started_at=runs[0].created_at,
+            ended_at=runs[-1].finished_at or runs[-1].created_at,
+            first_run_id=runs[0].id,
+            last_run_id=runs[-1].id,
+            last=last,
+        )
+        if episode is not None:
+            await self.episodes.save(episode)
+        return True
 
     def _unseen(self, runs: list[Run], last: episodes.Episode | None, day: date) -> list[Run]:
         """The runs the last episode has not got yet, oldest first (``runs`` is newest first)."""
@@ -319,7 +352,7 @@ class DayJournal:
             c
             for c in convs
             if c.id != exclude
-            and c.kind not in _SKIPPED_KINDS
+            and c.kind not in SKIPPED_KINDS
             and (c.id in digests or c.updated_at.astimezone(tz).date() == day)
             and c.message_count > 0
         ]

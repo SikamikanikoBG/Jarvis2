@@ -668,6 +668,10 @@ export interface LocationView {
   country: string | null;
   place: string | null;
   from_home_km: number | null;
+  /** still | walking | running | cycling | vehicle | flying | unknown - from speed. */
+  motion?: string | null;
+  motion_since?: string | null;
+  motion_kmh?: number | null;
 }
 
 export interface LocationSettings {

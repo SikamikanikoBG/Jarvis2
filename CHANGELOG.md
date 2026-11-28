@@ -2,6 +2,16 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-28 — core 2.0.0a141, web 2.0.0-alpha.100
+
+### Added
+- **Still or moving, and how.** Each turn's "Where Arsen is" now says "Still for 2 h", "Walking,
+  about 5 km/h, for 12 min", "In a vehicle - car, bus or train, about 58 km/h, for 25 min" or
+  "Flying". From the phone's own GPS speed, or the distance from the previous fix over the time
+  between them (two fixes within their accuracy count as not moved). Speed alone cannot tell a bike
+  from a car in traffic or a brisk walk from a jog, so those bands say both. A stop under 3 min is
+  "Just stopped". Only the previous fix is kept beside the last one - still no trail.
+
 ## 2026-11-28 — core 2.0.0a140, web 2.0.0-alpha.99
 
 ### Added

@@ -196,6 +196,71 @@ class Gazetteer:
         return f"{town.name}, {city[0].name}", town.country
 
 
+# --- motion -------------------------------------------------------------------------------------
+
+# Upper speed of each state in m/s (km/h in brackets). Speed alone cannot tell a bike from a car
+# in traffic, or a brisk walk from a jog - the words for those bands say both.
+MOTION_BANDS: tuple[tuple[str, float], ...] = (
+    ("still", 0.4),  # (1.4) GPS jitter on a phone lying still
+    ("walking", 2.0),  # (7.2)
+    ("running", 4.2),  # (15)
+    ("cycling", 8.3),  # (30)
+    ("vehicle", 70.0),  # (250)
+    ("flying", math.inf),
+)
+MOTION_WORDS = {
+    "walking": "Walking",
+    "running": "Running (or a slow bike)",
+    "cycling": "Cycling, or in slow traffic",
+    "vehicle": "In a vehicle - car, bus or train",
+    "flying": "Flying",
+}
+# Displacement between two fixes says something about speed only over a sensible gap: under this
+# the noise dominates, over the other he may have stopped and gone again in between.
+_DERIVE_MIN_S = 15
+_DERIVE_MAX_S = 30 * 60
+# A stop shorter than this is a traffic light, not being still.
+_STILL_AFTER_S = 3 * 60
+
+
+def band(speed_mps: float) -> str:
+    return next(name for name, top in MOTION_BANDS if speed_mps < top)
+
+
+def classify(
+    fix: DeviceLocation,
+    prev: DeviceLocation | None,
+    prev_motion: str | None,
+    prev_since: datetime | None,
+) -> tuple[str, datetime, float | None]:
+    """(motion, since, speed m/s) for a new fix. The device's own speed wins; without it, the
+    distance from the previous fix over the time between them, where two fixes that differ by
+    less than their accuracies count as not moved."""
+    speed: float | None = fix.speed_mps
+    started = fix.taken_at
+    if speed is None and prev is not None:
+        dt = (fix.taken_at - prev.taken_at).total_seconds()
+        if _DERIVE_MIN_S <= dt <= _DERIVE_MAX_S:
+            d = haversine_km(prev.lat, prev.lon, fix.lat, fix.lon) * 1000
+            noise = (fix.accuracy_m or 15) + (prev.accuracy_m or 15)
+            speed = 0.0 if d <= noise else d / dt
+            started = prev.taken_at  # the move happened between the two
+    if speed is None:
+        return "unknown", fix.taken_at, None
+    motion = band(speed)
+    if motion == prev_motion and prev_since is not None:
+        return motion, prev_since, speed
+    return motion, started, speed
+
+
+def duration(seconds: float) -> str:
+    m = int(seconds // 60)
+    if m < 60:
+        return f"{max(m, 1)} min"
+    h, m = divmod(m, 60)
+    return f"{h} h {m} min" if m and h < 6 else f"{h} h"
+
+
 # --- the store ----------------------------------------------------------------------------------
 
 
@@ -217,12 +282,31 @@ class LocationStore:
         )
         return fix, datetime.fromisoformat(row["received_at"])
 
-    async def put(self, fix: DeviceLocation, received_at: datetime) -> None:
+    async def motion(self) -> tuple[str | None, datetime | None, float | None]:
+        row = await self.db.fetchone("SELECT motion, motion_since, motion_speed_mps FROM location_last WHERE id = 1")
+        if row is None or row["motion"] is None:
+            return None, None, None
+        since = datetime.fromisoformat(row["motion_since"]) if row["motion_since"] else None
+        return row["motion"], since, row["motion_speed_mps"]
+
+    async def put(
+        self,
+        fix: DeviceLocation,
+        received_at: datetime,
+        *,
+        prev: DeviceLocation | None = None,
+        motion: tuple[str, datetime, float | None] | None = None,
+    ) -> None:
+        m, since, speed = motion or (None, None, None)
         await self.db.execute(
-            "INSERT INTO location_last(id, lat, lon, accuracy_m, speed_mps, source, taken_at, received_at)"
-            " VALUES (1,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET lat=excluded.lat, lon=excluded.lon,"
-            " accuracy_m=excluded.accuracy_m, speed_mps=excluded.speed_mps, source=excluded.source,"
-            " taken_at=excluded.taken_at, received_at=excluded.received_at",
+            "INSERT INTO location_last(id, lat, lon, accuracy_m, speed_mps, source, taken_at, received_at,"
+            " prev_lat, prev_lon, prev_accuracy_m, prev_taken_at, motion, motion_since, motion_speed_mps)"
+            " VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET lat=excluded.lat,"
+            " lon=excluded.lon, accuracy_m=excluded.accuracy_m, speed_mps=excluded.speed_mps,"
+            " source=excluded.source, taken_at=excluded.taken_at, received_at=excluded.received_at,"
+            " prev_lat=excluded.prev_lat, prev_lon=excluded.prev_lon, prev_accuracy_m=excluded.prev_accuracy_m,"
+            " prev_taken_at=excluded.prev_taken_at, motion=excluded.motion, motion_since=excluded.motion_since,"
+            " motion_speed_mps=excluded.motion_speed_mps",
             (
                 fix.lat,
                 fix.lon,
@@ -231,6 +315,13 @@ class LocationStore:
                 fix.source,
                 fix.taken_at.astimezone(UTC).isoformat(),
                 received_at.isoformat(),
+                prev.lat if prev else None,
+                prev.lon if prev else None,
+                prev.accuracy_m if prev else None,
+                prev.taken_at.astimezone(UTC).isoformat() if prev else None,
+                m,
+                since.astimezone(UTC).isoformat() if since else None,
+                speed,
             ),
         )
 
@@ -330,15 +421,17 @@ class LocationService:
         if fix.taken_at > now:
             fix = fix.model_copy(update={"taken_at": now})
         held = await self.store.last()
-        if held is not None:
-            old, _received = held
-            if fix.taken_at < old.taken_at:
+        prev = held[0] if held is not None else None
+        if prev is not None:
+            if fix.taken_at < prev.taken_at:
                 return False
-            same_minute = (fix.taken_at - old.taken_at).total_seconds() < _SAME_MINUTE_S
-            coarser = (fix.accuracy_m or 0) > 4 * max(old.accuracy_m or 0, 10)
+            same_minute = (fix.taken_at - prev.taken_at).total_seconds() < _SAME_MINUTE_S
+            coarser = (fix.accuracy_m or 0) > 4 * max(prev.accuracy_m or 0, 10)
             if same_minute and coarser:
                 return False
-        await self.store.put(fix, now)
+        prev_motion, prev_since, _speed = await self.store.motion()
+        motion = classify(fix, prev, prev_motion, prev_since)
+        await self.store.put(fix, now, prev=prev, motion=motion)
         return True
 
     async def view(self) -> LocationView:
@@ -351,7 +444,11 @@ class LocationService:
         places = await self.store.places()
         place = place_at(places, fix.lat, fix.lon, fix.accuracy_m)
         home = next((p for p in places if p.name.casefold() == "home"), None)
+        motion, since, speed = await self.store.motion()
         return LocationView(
+            motion=motion,
+            motion_since=since,
+            motion_kmh=round(speed * 3.6, 1) if speed is not None else None,
             fix=fix,
             received_at=received,
             locality=locality,
@@ -380,8 +477,7 @@ class LocationService:
         line = f"{head} ({', '.join(bits)})."
         if view.from_home_km is not None and (view.place or "").casefold() != "home" and view.from_home_km >= 1:
             line += f" {view.from_home_km:,.0f} km from Home."
-        if fix.speed_mps is not None and fix.speed_mps >= 2:
-            line += f" Moving at about {round(fix.speed_mps * 3.6)} km/h when it was taken."
+        line += self._motion_line(view, fix)
         age_h = (now - fix.taken_at).total_seconds() / 3600
         if age_h >= self.settings.stale_after_h:
             line += " That is the last fix he sent; he may well be somewhere else by now."
@@ -391,6 +487,19 @@ class LocationService:
                 " weather. Use them for him; never put them in anything sent to someone else unless he asks."
             )
         return line
+
+    @staticmethod
+    def _motion_line(view: LocationView, fix: DeviceLocation) -> str:
+        """ " Walking, about 5 km/h, for 12 min." - as of the fix, not of now."""
+        if view.motion in (None, "unknown") or view.motion_since is None:
+            return ""
+        lasted = (fix.taken_at - view.motion_since).total_seconds()
+        if view.motion == "still":
+            if lasted < _STILL_AFTER_S:
+                return " Just stopped."
+            return f" Still for {duration(lasted)}."
+        speed = f", about {round(view.motion_kmh)} km/h" if view.motion_kmh is not None else ""
+        return f" {MOTION_WORDS[view.motion]}{speed}, for {duration(lasted)}."
 
 
 class LocationBlock:

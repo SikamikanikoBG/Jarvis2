@@ -20,7 +20,8 @@ function describe(view: LocationView | null): string {
   const head = view.place ? `At ${view.place}${where ? ` (${where})` : ''}` : where ? `In ${where}` : 'Between towns';
   const when = new Date(view.fix.taken_at).toLocaleString();
   const acc = view.fix.accuracy_m !== null ? ` ±${Math.round(view.fix.accuracy_m)} m,` : '';
-  return `${head} -${acc} ${when}, ${view.fix.source === 'owntracks' ? 'OwnTracks' : 'phone'}`;
+  const motion = view.motion && view.motion !== 'unknown' ? ` · ${view.motion}${view.motion_kmh && view.motion !== 'still' ? ` ~${Math.round(view.motion_kmh)} km/h` : ''}` : '';
+  return `${head} -${acc} ${when}, ${view.fix.source === 'owntracks' ? 'OwnTracks' : 'phone'}${motion}`;
 }
 
 /**

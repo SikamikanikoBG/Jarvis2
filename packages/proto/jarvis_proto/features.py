@@ -178,6 +178,12 @@ class LocationView(BaseModel):
     place: str | None = None
     #: Distance from Home in km, when a place named Home exists.
     from_home_km: float | None = None
+    #: still | walking | running | cycling | vehicle | flying | unknown, from speed
+    #: (features/location.py classify). None before the second fix.
+    motion: str | None = None
+    #: Since when he has been in that state (as of the fix).
+    motion_since: datetime | None = None
+    motion_kmh: float | None = None
 
 
 class ScheduleFire(BaseModel):

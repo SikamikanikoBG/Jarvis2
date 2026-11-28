@@ -182,3 +182,62 @@ def test_location_and_places_rest(client: TestClient):
     assert client.delete(f"/api/places/{home['id']}", headers=H).status_code == 404
     assert client.delete("/api/location", headers=H).status_code == 204
     assert client.get("/api/location", headers=H).json()["fix"] is None
+
+
+# --- motion (2026-11-28: still or moving, and how) ------------------------------------------------
+
+
+def test_bands_and_classify():
+    from jarvis_core.features.location import band, classify
+
+    assert [band(v / 3.6) for v in (0.5, 5, 10, 22, 90, 800)] == [
+        "still",
+        "walking",
+        "running",
+        "cycling",
+        "vehicle",
+        "flying",
+    ]
+    t0 = datetime(2026, 11, 28, 9, 0, tzinfo=UTC)
+    a = DeviceLocation(lat=42.680, lon=23.320, accuracy_m=10, taken_at=t0)
+    # 500 m in 6 min without a device speed = 5 km/h: walking, since the previous fix.
+    b = DeviceLocation(lat=42.6845, lon=23.320, accuracy_m=10, taken_at=t0 + timedelta(minutes=6))
+    m, since, speed = classify(b, a, None, None)
+    assert m == "walking" and since == t0 and speed is not None and 4.5 < speed * 3.6 < 5.5
+    # The same state again keeps its start.
+    c = DeviceLocation(lat=42.689, lon=23.320, accuracy_m=10, taken_at=t0 + timedelta(minutes=12))
+    assert classify(c, b, "walking", t0)[:2] == ("walking", t0)
+    # Within the two fixes' accuracy = not moved.
+    d = DeviceLocation(lat=42.68905, lon=23.320, accuracy_m=10, taken_at=t0 + timedelta(minutes=13))
+    assert classify(d, c, "walking", t0)[0] == "still"
+    # The device's own speed wins; a gap over 30 min says nothing.
+    e = d.model_copy(update={"speed_mps": 25.0, "taken_at": t0 + timedelta(minutes=14)})
+    assert classify(e, d, "still", t0)[0] == "vehicle"
+    far = DeviceLocation(lat=45.0, lon=9.0, taken_at=t0 + timedelta(hours=5))
+    assert classify(far, d, "still", t0)[0] == "unknown"
+
+
+async def test_the_turn_hears_still_or_moving_and_since_when(harness: Harness):
+    core = harness.core
+    write_towns(core.config.home / "geo")
+    await core.location.store.add_place("Home", 42.680, 23.320, 150)
+    base = datetime.now(UTC) - timedelta(minutes=40)
+
+    def at(m: float, lat: float = 42.680, **kw) -> DeviceLocation:  # type: ignore[no-untyped-def]
+        return DeviceLocation(lat=lat, lon=23.320, accuracy_m=10, taken_at=base + timedelta(minutes=m), **kw)
+
+    for m in (0, 10, 20):
+        await core.location.update(at(m))
+    text = core.location.describe(await core.location.view(), exact=False)
+    assert text is not None and "At Home" in text and "Still for 20 min." in text
+
+    await core.location.update(at(26, lat=42.6845))  # 500 m in 6 min
+    await core.location.update(at(32, lat=42.6890))
+    view = await core.location.view()
+    assert view.motion == "walking" and view.motion_kmh is not None
+    assert "Walking, about 5 km/h, for 12 min." in (core.location.describe(view, exact=False) or "")
+
+    await core.location.update(at(33, lat=42.7000, speed_mps=16.0))
+    assert "In a vehicle - car, bus or train, about 58 km/h" in (
+        core.location.describe(await core.location.view(), exact=False) or ""
+    )

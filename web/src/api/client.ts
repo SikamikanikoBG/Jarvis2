@@ -4,6 +4,8 @@ import type {
   NavView,
   Place,
   Project,
+  Trigger,
+  TriggerFire,
   ChangeRecord,
   Attachment,
   ContextLive,
@@ -264,6 +266,14 @@ export const api = {
     get: () => request<LocationView>('GET', '/api/location'),
     post: (fix: DeviceLocation) => request<{ kept: boolean }>('POST', '/api/location', fix),
     forget: () => request<null>('DELETE', '/api/location'),
+  },
+  triggers: {
+    list: () => request<Trigger[]>('GET', '/api/triggers'),
+    patch: (id: string, body: { enabled?: boolean; name?: string; project_id?: string | null }) =>
+      request<Trigger>('PATCH', `/api/triggers/${encodeURIComponent(id)}`, body),
+    accept: (id: string) => request<Trigger>('POST', `/api/triggers/${encodeURIComponent(id)}/accept`),
+    remove: (id: string) => request<null>('DELETE', `/api/triggers/${encodeURIComponent(id)}`),
+    fires: (id: string, limit = 20) => request<TriggerFire[]>('GET', `/api/triggers/${encodeURIComponent(id)}/fires?limit=${limit}`),
   },
   nav: {
     get: () => request<NavView | null>('GET', '/api/nav'),

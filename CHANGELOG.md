@@ -2,6 +2,22 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-28 — core 2.0.0a144, web 2.0.0-alpha.102
+
+### Added
+- **Triggers: webhooks for the code Jarvis writes, and location events.** `trigger.create`
+  gives a webhook URL (tailnet, and `http://jarvis2-core:9020/...` for code on the workspace
+  host) that any script or task he builds can POST to; or fires on arriving at / leaving /
+  staying at / heading towards one of your named places. The action starts a run with its prompt
+  (the event and the payload attached as data, never as instructions), fires a schedule, or just
+  tells you. Loops cannot run away: a trigger a run made with nobody watching waits for your
+  Accept; days/hours window; location fires on the change (two fixes agreeing, a wider circle to
+  leave than to enter) and re-arms only after the opposite; `X-Jarvis-Chain` refuses a trigger
+  already in the chain or a chain three long; not while its last run still works; cooldown and
+  daily cap; over 20 firings in an hour pause all triggers for an hour and tell you once. Every
+  attempt is logged with why. The Projects screen lists them with on/off, Accept, copy URL and
+  the history.
+
 ## 2026-11-28 — core 2.0.0a143
 
 ### Changed

@@ -78,6 +78,10 @@ from jarvis_proto.features import (
     ScheduleFire,
     Skill,
     TriageState,
+    Trigger,
+    TriggerAction,
+    TriggerFire,
+    TriggerWindow,
 )
 from jarvis_proto.ids import new_id
 from jarvis_proto.messages import (
@@ -257,6 +261,10 @@ __all__ = [
     "TriageRules",
     "TriageSettings",
     "TriageState",
+    "Trigger",
+    "TriggerAction",
+    "TriggerFire",
+    "TriggerWindow",
     "Unsubscribe",
     "VoiceSettings",
     "new_id",

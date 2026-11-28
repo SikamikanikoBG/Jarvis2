@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 
@@ -25,6 +26,8 @@ from jarvis_proto import (
     Schedule,
     ScheduleFire,
     Skill,
+    Trigger,
+    TriggerFire,
 )
 from jarvis_proto.features import CatchUp, EntityType, NoteColor, ScheduleCallMe
 from jarvis_proto.runs import ThinkLevel
@@ -526,6 +529,79 @@ async def get_nav(request: Request) -> NavView | None:
 async def stop_nav(request: Request) -> dict[str, bool]:
     """The Stop button on the phone's guidance banner."""
     return {"stopped": await core_of(request).navigation.stop("stopped on the phone")}
+
+
+# --- triggers (features/triggers.py) ------------------------------------------------------
+
+
+class TriggerBody(BaseModel):
+    enabled: bool | None = None
+    name: str | None = None
+    project_id: str | None = None
+
+
+@router.get("/triggers", response_model=list[Trigger], openapi_extra=agent("read", prefer="trigger.list"))
+async def list_triggers(request: Request) -> list[Trigger]:
+    return await core_of(request).triggers.list()
+
+
+@router.patch("/triggers/{trigger_id}", response_model=Trigger, openapi_extra=agent("none", prefer="trigger.update"))
+async def patch_trigger(request: Request, trigger_id: str, body: TriggerBody) -> Trigger:
+    engine = core_of(request).triggers
+    if await engine.get(trigger_id) is None:
+        raise HTTPException(404, "trigger not found")
+    fields = body.model_dump(exclude_none=True)
+    if "project_id" in body.model_fields_set:
+        fields["project_id"] = body.project_id
+    if fields:
+        await engine.store.update(trigger_id, fields)
+        engine.changed()
+    t = await engine.get(trigger_id)
+    assert t is not None
+    return t
+
+
+@router.post("/triggers/{trigger_id}/accept", response_model=Trigger, openapi_extra=agent("none"))
+async def accept_trigger(request: Request, trigger_id: str) -> Trigger:
+    """Arsen accepts a trigger a run made with nobody watching: from now on it may fire."""
+    engine = core_of(request).triggers
+    if await engine.get(trigger_id) is None:
+        raise HTTPException(404, "trigger not found")
+    await engine.accept(trigger_id)
+    t = await engine.get(trigger_id)
+    assert t is not None
+    return t
+
+
+@router.delete("/triggers/{trigger_id}", status_code=204, openapi_extra=agent("none", prefer="trigger.delete"))
+async def delete_trigger(request: Request, trigger_id: str) -> Response:
+    engine = core_of(request).triggers
+    if await engine.get(trigger_id) is None:
+        raise HTTPException(404, "trigger not found")
+    await engine.store.delete(trigger_id)
+    engine.changed()
+    return Response(status_code=204)
+
+
+@router.get(
+    "/triggers/{trigger_id}/fires", response_model=list[TriggerFire], openapi_extra=agent("read", prefer="trigger.get")
+)
+async def trigger_fires(request: Request, trigger_id: str, limit: int = 20) -> list[TriggerFire]:
+    return await core_of(request).triggers.store.fires(trigger_id, limit=_clamp(limit, 200, default=20))
+
+
+# Webhooks: no bearer token - the secret in the path is the key, and an unknown id or a wrong
+# secret answer the same 404. Bodies are kept to the first 8,000 characters.
+hooks_router = APIRouter()
+
+
+@hooks_router.post("/hooks/{trigger_id}/{secret}")
+async def call_webhook(request: Request, trigger_id: str, secret: str) -> Response:
+    raw = (await request.body())[:64_000].decode("utf-8", errors="replace")
+    status, out = await core_of(request).triggers.webhook(
+        trigger_id, secret, raw, request.headers.get("x-jarvis-chain")
+    )
+    return Response(content=json.dumps(out), status_code=status, media_type="application/json")
 
 
 # --- conversation summary (compaction divider) ------------------------------------------

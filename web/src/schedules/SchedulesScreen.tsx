@@ -13,6 +13,7 @@ import { errorText, useLoader } from '../lib/useLoader';
 import type { CatchUp, Project, Schedule, ScheduleCallMe, ScheduleFire } from '../protocol/types';
 import { useStore } from '../store/store';
 import { groupByProject } from './projects';
+import { TriggersSection } from './TriggersSection';
 
 function formatUntil(ts: string, now: number): string {
   const diff = Date.parse(ts) - now;
@@ -290,6 +291,7 @@ export function SchedulesScreen() {
               </section>
             );
           })}
+          <TriggersSection projects={projects} version={version} />
         </div>
       </div>
     </div>

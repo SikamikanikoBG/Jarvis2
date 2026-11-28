@@ -437,6 +437,7 @@ def test_every_api_route_refuses_a_missing_token(client: TestClient):
         "seq": "1",
         "task_id": "t",
         "change_id": "chg",
+        "trigger_id": "trg",
     }
     checked: list[str] = []
     for path in _get_paths(client.app):

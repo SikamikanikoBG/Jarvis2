@@ -81,6 +81,7 @@ from jarvis_core.features.tasks import (
 from jarvis_core.features.titles import Titler
 from jarvis_core.features.triage import TriageJob
 from jarvis_core.features.triage_audit import TriageAudit
+from jarvis_core.features.triggers import TriggerEngine, TriggerTools
 from jarvis_core.features.tts import Synthesizer
 from jarvis_core.features.turn import TurnDetector
 from jarvis_core.features.web import WebTools
@@ -128,6 +129,8 @@ class Core:
         self.location = LocationService(self.db, self.config.home / "geo", lambda: self.settings.location)
         self.navigation = NavService(self.db, self.bus, self.location)
         self.location.listeners.append(self.navigation.on_fix)
+        self.triggers = TriggerEngine(self)
+        self.location.listeners.append(self.triggers.on_fix)
         # Jarvis's own settings, schedules and routes (docs/stories/14_agent_admin.md): the one
         # settings write path, its trail, and the tools over it. ``policy_epoch`` moves whenever the
         # approval rules change by anyone but a run (engine/loop.AdminGate).
@@ -454,6 +457,7 @@ class Core:
                 ProjectTools(self.projects, self.schedules, tz=lambda: self.settings.timezone, core=self),
                 LocationTools(self.location, core=self),
                 NavTools(self.navigation),
+                TriggerTools(self.triggers),
                 self.settings_tools,
                 self.api_tools,
                 self.sessions,
@@ -501,6 +505,7 @@ def create_app(config: CoreConfig | None = None, *, core: Core | None = None) ->
     app.include_router(rest.open_router)
     app.include_router(rest.router)
     app.include_router(features.router)
+    app.include_router(features.hooks_router)
     app.include_router(collab.owner_router)
     app.include_router(collab.router)
     app.include_router(media.router)

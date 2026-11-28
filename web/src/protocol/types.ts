@@ -674,6 +674,41 @@ export interface LocationView {
   motion_kmh?: number | null;
 }
 
+/** Something happened, so act (core features/triggers.py): a webhook for Jarvis's own code, or
+ *  a location event at a named place. */
+export interface Trigger {
+  id: string;
+  name: string;
+  project_id: string | null;
+  enabled: boolean;
+  source: 'webhook' | 'location';
+  event: 'arrive' | 'leave' | 'dwell' | 'heading' | null;
+  place_id: string | null;
+  dwell_min: number | null;
+  window: { days: number[]; start: string; end: string } | null;
+  action: { kind: 'prompt' | 'schedule' | 'notify'; prompt?: string | null; schedule_id?: string | null; text?: string | null };
+  cooldown_s: number;
+  daily_cap: number;
+  /** null = Arsen's; a run id = made by a run nobody watched, inactive until accepted. */
+  created_by: string | null;
+  webhook_url: string | null;
+  webhook_local_url: string | null;
+  last_fired_at: string | null;
+  fired_today: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TriggerFire {
+  trigger_id: string;
+  at: string;
+  outcome: string;
+  why: string;
+  payload: string | null;
+  run_id: string | null;
+  conversation_id: string | null;
+}
+
 /** What the phone shows while Jarvis guides him (core features/navigation.py). */
 export interface NavView {
   destination: string;

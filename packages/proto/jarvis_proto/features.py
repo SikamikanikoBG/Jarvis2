@@ -217,6 +217,63 @@ class NavView(BaseModel):
     started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+TriggerSource = Literal["webhook", "location"]
+LocationEvent = Literal["arrive", "leave", "dwell", "heading"]
+
+
+class TriggerWindow(BaseModel):
+    """When a trigger may fire, in his timezone. Days 0 = Monday."""
+
+    days: list[int] = Field(default_factory=lambda: list(range(7)))
+    start: str = "00:00"
+    end: str = "23:59"
+
+
+class TriggerAction(BaseModel):
+    """What a trigger does: start a run with a prompt (the event and its payload attached as data),
+    fire one of his schedules, or just tell him."""
+
+    kind: Literal["prompt", "schedule", "notify"]
+    prompt: str | None = None
+    schedule_id: str | None = None
+    text: str | None = None
+
+
+class Trigger(BaseModel):
+    id: str
+    name: str
+    project_id: str | None = None
+    enabled: bool = True
+    source: TriggerSource
+    #: location: the event and the place; webhook: nothing here (the secret is never sent back
+    #: whole except in `webhook_url`).
+    event: LocationEvent | None = None
+    place_id: str | None = None
+    dwell_min: int | None = None
+    window: TriggerWindow | None = None
+    action: TriggerAction
+    cooldown_s: int
+    daily_cap: int
+    #: None = Arsen's; a run id = made by a run nobody watched: inactive until he accepts it.
+    created_by: str | None = None
+    webhook_url: str | None = None
+    webhook_local_url: str | None = None
+    last_fired_at: datetime | None = None
+    fired_today: int = 0
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class TriggerFire(BaseModel):
+    trigger_id: str
+    at: datetime
+    outcome: str
+    why: str = ""
+    payload: str | None = None
+    run_id: str | None = None
+    conversation_id: str | None = None
+
+
 class ScheduleFire(BaseModel):
     schedule_id: str
     scheduled_for: datetime

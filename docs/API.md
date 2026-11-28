@@ -302,6 +302,20 @@ PATCH  /api/places/{id} {name?, lat?, lon?, radius_m?} → Place   (radius 20 m 
 DELETE /api/places/{id}
 ```
 
+## Triggers (2026-11-28)
+
+`features/triggers.py`. Tools `trigger.list|get|create|update|delete|fire`.
+
+```
+POST   /hooks/{trigger_id}/{secret}       no token; body JSON/text (8,000 chars kept); header X-Jarvis-Chain
+                                          → 202 {outcome:"fired"} | 200 {outcome: cooldown|cap|busy|window|chain|breaker|pending|off} | 404
+GET    /api/triggers                      → Trigger[] (webhook_url, webhook_local_url, fired_today, last_fired_at)
+PATCH  /api/triggers/{id} {enabled?, name?, project_id?}
+POST   /api/triggers/{id}/accept
+DELETE /api/triggers/{id}
+GET    /api/triggers/{id}/fires?limit=20  → TriggerFire[] {at, outcome, why, payload, run_id, conversation_id}
+```
+
 ## Navigation (2026-11-28)
 
 Turn-by-turn guidance (`features/navigation.py`), started by the `nav.start` tool; driven by

@@ -18,6 +18,7 @@ from jarvis_proto import (
     EntityDetail,
     Graph,
     LocationView,
+    NavView,
     Note,
     Place,
     Project,
@@ -509,6 +510,22 @@ async def delete_place(request: Request, place_id: str) -> Response:
     if not await core_of(request).location.store.delete_place(place_id):
         raise HTTPException(404, "place not found")
     return Response(status_code=204)
+
+
+# --- navigation (features/navigation.py) --------------------------------------------------
+
+
+@router.get("/nav", response_model=NavView | None, openapi_extra=agent("read", prefer="nav.status"))
+async def get_nav(request: Request) -> NavView | None:
+    core = core_of(request)
+    held = await core.location.store.last()
+    return core.navigation.view(held[0] if held else None)
+
+
+@router.post("/nav/stop", openapi_extra=agent("none", prefer="nav.stop"))
+async def stop_nav(request: Request) -> dict[str, bool]:
+    """The Stop button on the phone's guidance banner."""
+    return {"stopped": await core_of(request).navigation.stop("stopped on the phone")}
 
 
 # --- conversation summary (compaction divider) ------------------------------------------

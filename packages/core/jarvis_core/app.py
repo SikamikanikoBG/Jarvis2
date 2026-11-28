@@ -57,6 +57,7 @@ from jarvis_core.features.mail import MailTools
 from jarvis_core.features.maildesk import MailDesk
 from jarvis_core.features.meetings import MeetingService
 from jarvis_core.features.memory import MemoryTools
+from jarvis_core.features.navigation import NavBlock, NavService, NavTools
 from jarvis_core.features.notify import NotifyTools
 from jarvis_core.features.office import OfficeHub
 from jarvis_core.features.planner import Planner
@@ -125,6 +126,8 @@ class Core:
         self.schedules = ScheduleStore(self.db, self.bus)
         self.projects = ProjectStore(self.db, self.bus)
         self.location = LocationService(self.db, self.config.home / "geo", lambda: self.settings.location)
+        self.navigation = NavService(self.db, self.bus, self.location)
+        self.location.listeners.append(self.navigation.on_fix)
         # Jarvis's own settings, schedules and routes (docs/stories/14_agent_admin.md): the one
         # settings write path, its trail, and the tools over it. ``policy_epoch`` moves whenever the
         # approval rules change by anyone but a run (engine/loop.AdminGate).
@@ -193,6 +196,7 @@ class Core:
                 HealthBlock(lambda: self.registry, settings),
                 ProjectBlock(self.projects, self.schedules, self.store, lambda: self.settings.timezone),
                 LocationBlock(self.location, self.store),
+                NavBlock(self.navigation),
             ],
             compactor=self.compactor,
             attachments=self.attachments,
@@ -350,6 +354,7 @@ class Core:
         await self.tasks.reconcile()
         # A lifeline change still on probation when the core stopped is checked again now.
         await self.admin.recover()
+        await self.navigation.load()
         await self.scheduler.start()
         await self.triage.start()
         await self.triage_audit.start()
@@ -448,6 +453,7 @@ class Core:
                 ScheduleTools(self.schedules, tz=lambda: self.settings.timezone, scheduler=self.scheduler, core=self),
                 ProjectTools(self.projects, self.schedules, tz=lambda: self.settings.timezone, core=self),
                 LocationTools(self.location, core=self),
+                NavTools(self.navigation),
                 self.settings_tools,
                 self.api_tools,
                 self.sessions,

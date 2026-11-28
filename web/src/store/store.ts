@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { ApiError, api, describeError } from '../api/client';
 import { WsClient, type ConnectionState } from '../api/ws';
 import { conversationToMarkdown, downloadText, safeFilename } from '../lib/export';
-import { deviceLocation } from '../lib/location';
+import { deviceLocation, setNavigating } from '../lib/location';
 import { readCollapsedFolders, writeCollapsedFolders } from '../lib/folders';
 import { notifyDesktop, readNotifyPref, writeNotifyPref } from '../lib/notify';
 import { navigate, parseLocation, rememberConversation, takeRing, type IncomingRing, type View } from '../lib/router';
@@ -34,6 +34,7 @@ import type {
   RunScopedEvent,
   ServerEvent,
   Task,
+  NavView,
 } from '../protocol/types';
 import { isRunScoped, isTerminal } from '../protocol/types';
 import { applyFeatureEvents, initialFeatureState, type FeatureState } from './features';
@@ -140,6 +141,9 @@ export interface UiState {
 
 export interface Actions {
   boot: () => void;
+  /** Guidance in progress (core features/navigation.py), or null. */
+  nav: NavView | null;
+  stopNav: () => Promise<void>;
   applyEvents: (events: ServerEvent[]) => void;
   setView: (view: View) => void;
   /** `stay` keeps the current screen and URL: the mail desk opens a thread's chat beside it. */
@@ -306,6 +310,16 @@ export const useStore = create<AppState>()((set, get) => ({
   ...initialChatState(),
   ...initialFeatureState(),
   view: 'chat',
+  nav: null,
+  stopNav: async () => {
+    try {
+      await api.nav.stop();
+    } catch (e) {
+      get().notify(`Stop failed: ${String(e)}`, 'error');
+    }
+    set({ nav: null });
+    setNavigating(false);
+  },
   connection: 'connecting',
   connectionAttempt: 0,
   sidebarOpen: false,
@@ -345,6 +359,14 @@ export const useStore = create<AppState>()((set, get) => ({
   scrollToMessage: null,
 
   boot: () => {
+    // Guidance that was running when the page was last open (the core keeps it across restarts).
+    void api.nav
+      .get()
+      .then((v) => {
+        set({ nav: v });
+        setNavigating(v !== null);
+      })
+      .catch(() => undefined);
     const route = parseLocation();
     set({ view: route.view });
     applyThemePref(get().themePref);
@@ -442,6 +464,24 @@ export const useStore = create<AppState>()((set, get) => ({
         else if (e.type === 'model.done') session.onStepDone(e.run_id, e.tool_call_count > 0 || e.finish_reason === 'tool_calls');
         else if (e.type === 'run.done' || e.type === 'run.cancelled') session.onRunDone(e.run_id);
         else if (e.type === 'run.failed') session.onRunFailed(e.run_id, e.error);
+      }
+    }
+    // Guidance on the way: the banner follows nav.updated; each prompt is said on a call and shown
+    // (and felt) otherwise - a turn cannot wait for him to look at the screen.
+    for (const e of events) {
+      if (e.type === 'nav.updated') {
+        set({ nav: e.view });
+        setNavigating(e.view !== null);
+      } else if (e.type === 'nav.prompt') {
+        if (session && session.state.phase !== 'ended') session.say(e.text);
+        else {
+          get().notify(e.text);
+          try {
+            navigator.vibrate(e.kind === 'near' || e.kind === 'arrive' ? [120, 80, 120] : 80);
+          } catch {
+            // no vibration on this device
+          }
+        }
       }
     }
     // A conversation the server created for our null-conversation send: subscribe and route to it.

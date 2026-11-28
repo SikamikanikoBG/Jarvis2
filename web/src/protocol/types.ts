@@ -674,6 +674,21 @@ export interface LocationView {
   motion_kmh?: number | null;
 }
 
+/** What the phone shows while Jarvis guides him (core features/navigation.py). */
+export interface NavView {
+  destination: string;
+  mode: 'walking' | 'cycling' | 'driving';
+  next_instruction: string | null;
+  next_landmark: string | null;
+  to_next_m: number | null;
+  left_m: number | null;
+  eta_s: number | null;
+  step: number;
+  steps: number;
+  conversation_id: string | null;
+  started_at: string;
+}
+
 export interface LocationSettings {
   enabled: boolean;
   /** "exact": turns also get the coordinates; "city": only the town and the named place. */
@@ -1258,6 +1273,18 @@ export interface KgChanged extends Base {
 export interface SkillsChanged extends Base {
   type: 'skills.changed';
 }
+export interface NavUpdated extends Base {
+  type: 'nav.updated';
+  view: NavView | null;
+}
+
+/** Something to say now on the way: spoken on a call, shown otherwise. */
+export interface NavPrompt extends Base {
+  type: 'nav.prompt';
+  text: string;
+  kind: string;
+}
+
 export interface ScheduleChanged extends Base {
   type: 'schedule.changed';
   schedule_id: string | null;
@@ -1311,6 +1338,8 @@ export type FeatureEvent =
   | KgChanged
   | SkillsChanged
   | ScheduleChanged
+  | NavUpdated
+  | NavPrompt
   | SettingsChanged
   | ChangeRecorded
   | ToolsChanged

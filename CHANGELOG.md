@@ -2,6 +2,21 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-28 — core 2.0.0a142, web 2.0.0-alpha.101
+
+### Added
+- **Jarvis guides you there.** "Take me to Cafe Luna" (walking, cycling or driving): `nav.start`
+  finds the place (your named places, then OpenStreetMap), gets a route with its turns (FOSSGIS
+  OSRM) and words each turn, with a landmark at the corner when OpenStreetMap has one ("Turn left
+  onto Graf Ignatiev, at the pharmacy Sopharma"). Then, with no model in the loop, every fix from
+  the phone moves it on: "In 120 m, turn left...", "Turn left... now", the next turn once you
+  are past, a new route after two fixes off the line, "You have arrived". On a call each line is
+  spoken; otherwise it is shown and the phone vibrates. A banner over every screen (and the call)
+  shows the next turn, the distance and what is left, with Stop; the screen stays on and the
+  phone sends its position every ~8 m / 4 s while guiding. The guidance survives a core restart.
+  The turn's context tells the model where the guidance stands. Landmarks are best effort: the
+  public Overpass servers are often full.
+
 ## 2026-11-28 — core 2.0.0a141, web 2.0.0-alpha.100
 
 ### Added

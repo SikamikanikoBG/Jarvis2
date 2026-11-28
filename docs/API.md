@@ -302,6 +302,17 @@ PATCH  /api/places/{id} {name?, lat?, lon?, radius_m?} → Place   (radius 20 m 
 DELETE /api/places/{id}
 ```
 
+## Navigation (2026-11-28)
+
+Turn-by-turn guidance (`features/navigation.py`), started by the `nav.start` tool; driven by
+location fixes. Events: `nav.updated {view: NavView|null}`, `nav.prompt {text, kind}` (kind:
+start|far|near|reroute|arrive).
+
+```
+GET  /api/nav       → NavView | null {destination, mode, next_instruction, next_landmark, to_next_m, left_m, eta_s, step, steps}
+POST /api/nav/stop  → {stopped}
+```
+
 ## Projects (2026-11-26)
 
 Several schedules that serve one goal (`features/projects.py`). A member's run gets a `ProjectBlock` in

@@ -1,6 +1,7 @@
 import type {
   DeviceLocation,
   LocationView,
+  NavView,
   Place,
   Project,
   ChangeRecord,
@@ -263,6 +264,10 @@ export const api = {
     get: () => request<LocationView>('GET', '/api/location'),
     post: (fix: DeviceLocation) => request<{ kept: boolean }>('POST', '/api/location', fix),
     forget: () => request<null>('DELETE', '/api/location'),
+  },
+  nav: {
+    get: () => request<NavView | null>('GET', '/api/nav'),
+    stop: () => request<{ stopped: boolean }>('POST', '/api/nav/stop'),
   },
   places: {
     list: () => request<Place[]>('GET', '/api/places'),

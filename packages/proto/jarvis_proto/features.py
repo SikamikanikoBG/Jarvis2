@@ -186,6 +186,37 @@ class LocationView(BaseModel):
     motion_kmh: float | None = None
 
 
+NavMode = Literal["walking", "cycling", "driving"]
+
+
+class NavStep(BaseModel):
+    """One manoeuvre of a route, worded for speaking (core features/navigation.py)."""
+
+    instruction: str
+    lat: float
+    lon: float
+    #: Length of the stretch after this manoeuvre, to the next one, in metres.
+    distance_m: float = 0
+    kind: str = "turn"
+    landmark: str | None = None
+
+
+class NavView(BaseModel):
+    """What the phone shows while Jarvis guides him: the next manoeuvre and what is left."""
+
+    destination: str
+    mode: NavMode
+    next_instruction: str | None = None
+    next_landmark: str | None = None
+    to_next_m: float | None = None
+    left_m: float | None = None
+    eta_s: float | None = None
+    step: int = 0
+    steps: int = 0
+    conversation_id: str | None = None
+    started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class ScheduleFire(BaseModel):
     schedule_id: str
     scheduled_for: datetime

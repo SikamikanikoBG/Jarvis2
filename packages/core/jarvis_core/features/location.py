@@ -22,7 +22,7 @@ import logging
 import math
 import time
 import zipfile
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -405,6 +405,8 @@ class LocationService:
         self.store = LocationStore(db)
         self.gazetteer = gazetteer or Gazetteer(folder)
         self._settings = settings
+        #: Called with every fix kept - the guidance in progress moves on with them.
+        self.listeners: list[Callable[[DeviceLocation], Awaitable[Any]]] = []
 
     @property
     def settings(self) -> LocationSettings:
@@ -432,6 +434,11 @@ class LocationService:
         prev_motion, prev_since, _speed = await self.store.motion()
         motion = classify(fix, prev, prev_motion, prev_since)
         await self.store.put(fix, now, prev=prev, motion=motion)
+        for listener in list(self.listeners):
+            try:
+                await listener(fix)
+            except Exception:
+                log.exception("location listener failed")
         return True
 
     async def view(self) -> LocationView:

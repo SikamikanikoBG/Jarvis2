@@ -44,6 +44,8 @@ export function applyServerEvent<S extends ChatState>(state: S, event: ServerEve
     case 'tools.changed':
     case 'meeting.segment':
     case 'meeting.changed':
+    case 'nav.updated':
+    case 'nav.prompt':
       return state; // feature screens react to these in the store (refetch), not in chat state
     default:
       return runScoped(state, event, now);

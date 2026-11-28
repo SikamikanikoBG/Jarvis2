@@ -17,4 +17,11 @@ describe('location', () => {
     expect(shouldPost(fix(42.681, 23.32), fix(42.68, 23.32), now - 60_000, now)).toBe(true); // 111 m
     expect(shouldPost(fix(42.68, 23.32), fix(42.68, 23.32), now - 11 * 60_000, now)).toBe(true); // ten minutes
   });
+
+  it('posts every few metres and seconds while guiding', () => {
+    const now = 1_000_000_000;
+    expect(shouldPost(fix(42.68007, 23.32), fix(42.68, 23.32), now - 1_000, now, true)).toBe(false); // 8 m? no: 7.8 m, 1 s
+    expect(shouldPost(fix(42.6801, 23.32), fix(42.68, 23.32), now - 1_000, now, true)).toBe(true); // 11 m
+    expect(shouldPost(fix(42.68, 23.32), fix(42.68, 23.32), now - 5_000, now, true)).toBe(true); // 5 s
+  });
 });

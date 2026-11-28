@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
 
-from jarvis_proto.features import ChangeField, ChangeRecord, DeviceLocation
+from jarvis_proto.features import ChangeField, ChangeRecord, DeviceLocation, NavView
 from jarvis_proto.messages import Channel, Message, ToolResult
 from jarvis_proto.runs import Conversation, ModelUsage, Plan, Run, RunKind, ThinkLevel
 from jarvis_proto.tasks import Task
@@ -335,6 +335,22 @@ class TaskRemoved(_Base):
     task_id: str
 
 
+class NavUpdated(_Base):
+    """Guidance started, moved on, or ended (view None)."""
+
+    type: Literal["nav.updated"] = "nav.updated"
+    view: NavView | None = None
+
+
+class NavPrompt(_Base):
+    """Something to say now, while he is on his way - spoken on a call, shown otherwise."""
+
+    type: Literal["nav.prompt"] = "nav.prompt"
+    text: str
+    #: far | near | reroute | arrive | start
+    kind: str = "near"
+
+
 ServerEvent = Annotated[
     RunQueued
     | RunStarted
@@ -375,7 +391,9 @@ ServerEvent = Annotated[
     | MeetingSegment
     | MeetingChanged
     | TaskChanged
-    | TaskRemoved,
+    | TaskRemoved
+    | NavUpdated
+    | NavPrompt,
     Field(discriminator="type"),
 ]
 

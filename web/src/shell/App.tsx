@@ -18,6 +18,7 @@ import { StatusScreen } from '../status/StatusScreen';
 import { ContextScreen } from '../context/ContextScreen';
 import { useStore } from '../store/store';
 import { TriageScreen } from '../triage/TriageScreen';
+import { NavBanner } from '../nav/NavBanner';
 import { CallScreen } from '../voice/CallScreen';
 import { IncomingCall } from '../voice/IncomingCall';
 import type { View } from '../lib/router';
@@ -130,6 +131,7 @@ export function App() {
       )}
       <Toast />
       <CallScreen />
+      <NavBanner />
       <IncomingCall />
     </div>
   );

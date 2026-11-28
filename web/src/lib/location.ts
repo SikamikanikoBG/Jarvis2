@@ -16,6 +16,15 @@ const KEY = 'jarvis.location.share';
 const ATTACH_MAX_AGE_MS = 30 * 60_000;
 const POST_MOVED_M = 100;
 const POST_EVERY_MS = 10 * 60_000;
+/** While Jarvis guides him every turn counts: a fix every few metres, every few seconds. */
+const NAV_MOVED_M = 8;
+const NAV_EVERY_MS = 4_000;
+let navigating = false;
+
+/** Guidance started or ended (store, on nav.updated): post fixes fast while it runs. */
+export function setNavigating(on: boolean): void {
+  navigating = on;
+}
 
 let latest: DeviceLocation | null = null;
 let lastPosted: DeviceLocation | null = null;
@@ -46,8 +55,9 @@ export function distanceM(a: { lat: number; lon: number }, b: { lat: number; lon
 }
 
 /** Whether a new fix is worth its own post: moved far enough, or long enough since the last one. */
-export function shouldPost(fix: DeviceLocation, prev: DeviceLocation | null, prevAt: number, now: number): boolean {
+export function shouldPost(fix: DeviceLocation, prev: DeviceLocation | null, prevAt: number, now: number, fast = false): boolean {
   if (!prev) return true;
+  if (fast) return distanceM(fix, prev) >= NAV_MOVED_M || now - prevAt >= NAV_EVERY_MS;
   return distanceM(fix, prev) >= POST_MOVED_M || now - prevAt >= POST_EVERY_MS;
 }
 
@@ -66,7 +76,7 @@ function fromPosition(p: GeolocationPosition): DeviceLocation {
 function onFix(p: GeolocationPosition) {
   latest = fromPosition(p);
   const now = Date.now();
-  if (shouldPost(latest, lastPosted, lastPostedAt, now)) {
+  if (shouldPost(latest, lastPosted, lastPostedAt, now, navigating)) {
     lastPosted = latest;
     lastPostedAt = now;
     void api.location.post(latest).catch(() => {
@@ -80,7 +90,7 @@ function start() {
   if (watchId !== null || !supported() || !sharingEnabled()) return;
   watchId = navigator.geolocation.watchPosition(onFix, () => undefined, {
     enableHighAccuracy: true,
-    maximumAge: 60_000,
+    maximumAge: 5_000,
     timeout: 30_000,
   });
 }

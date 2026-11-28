@@ -8,6 +8,7 @@ import { CallsSection } from './CallsSection';
 import { ChangesSection } from './ChangesSection';
 import { CollabSection } from './CollabSection';
 import { MailAccountsSection } from './MailAccountsSection';
+import { GarminSection } from './GarminSection';
 import { LocationSection } from './LocationSection';
 import { McpServersSection } from './McpServersSection';
 import { PersonalitySection } from './PersonalitySection';
@@ -285,6 +286,12 @@ export function SettingsScreen() {
         <div id="settings-calls" className="settings-anchor">
           <CallsSection value={draft.call_me_default} onChange={(v) => patch('call_me_default', v)} discord={Boolean(original?.discord_webhook_url)} />
         </div>
+
+        {draft.garmin && (
+          <div id="settings-garmin" className="settings-anchor">
+            <GarminSection value={draft.garmin} onChange={(v) => patch('garmin', v)} error={errors.garmin} />
+          </div>
+        )}
 
         {draft.location && (
           <div id="settings-location" className="settings-anchor">

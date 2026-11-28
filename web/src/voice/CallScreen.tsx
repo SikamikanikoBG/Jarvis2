@@ -4,7 +4,7 @@ import { useTicker } from '../components/useTicker';
 import { formatSeconds } from '../lib/format';
 import { NEW_CONVERSATION_KEY } from '../store/state';
 import { selectActiveRun } from '../store/selectors';
-import { useStore } from '../store/store';
+import { cameraStream, useStore } from '../store/store';
 import { NotedList } from './NotedList';
 import { goOnDrain, phaseLabel } from './callView';
 import { FINGER_MAX_PX, useAtEar } from './earPose';
@@ -56,6 +56,9 @@ export function CallScreen() {
     return run ? run.call_me : (s.callMeNext[s.openConversationId ?? NEW_CONVERSATION_KEY] ?? false);
   });
   const toggleCallMe = useStore((s) => s.toggleCallMe);
+  const cameraOn = useStore((s) => s.cameraOn);
+  const toggleCamera = useStore((s) => s.toggleCamera);
+  const flipCamera = useStore((s) => s.flipCamera);
   const conv = useStore((s) => (s.openConversationId ? s.conversations[s.openConversationId] : undefined));
   // The last contact's size: a tap that was a cheek (wider than a fingertip) presses nothing.
   // The ear pose needs that cheek before the screen goes dark, so for a moment the controls are
@@ -130,7 +133,11 @@ export function CallScreen() {
         </span>
       </div>
 
-      <Ring phase={call.phase} level={call.level} muted={call.muted} goOn={call.muted ? null : call.goOn} />
+      {cameraOn ? (
+        <CameraPreview onFlip={() => void flipCamera()} />
+      ) : (
+        <Ring phase={call.phase} level={call.level} muted={call.muted} goOn={call.muted ? null : call.goOn} />
+      )}
       <div className={`call-phase${call.goOn && !call.muted ? ' call-phase-goon' : ''}`} aria-live="polite">
         {phaseLabel(call)}
       </div>
@@ -168,6 +175,15 @@ export function CallScreen() {
           </button>
           <button
             type="button"
+            className={`call-btn${cameraOn ? ' on-accent' : ''}`}
+            onClick={byFinger(() => void toggleCamera())}
+            aria-pressed={cameraOn}
+            aria-label={cameraOn ? 'Camera on — Jarvis sees what you point it at when you speak. Tap to turn off' : 'Show Jarvis with the camera'}
+          >
+            <Icon name="camera" size={22} />
+          </button>
+          <button
+            type="button"
             className={`call-btn${callMe ? ' on-accent' : ''}`}
             onClick={byFinger(() => toggleCallMe({ voice: true }))}
             aria-pressed={callMe}
@@ -200,6 +216,28 @@ export function CallScreen() {
       )}
       {/* The guard: under the controls, over everything else. Every touch on it goes nowhere. */}
       {locked && <div className="call-guard" aria-hidden="true" onTouchMove={(e) => e.preventDefault()} />}
+    </div>
+  );
+}
+
+/** What the camera sees, live; the frame of the moment he stops speaking goes with his words. */
+function CameraPreview({ onFlip }: { onFlip: () => void }) {
+  const ref = useRef<HTMLVideoElement | null>(null);
+  const stream = cameraStream();
+  useEffect(() => {
+    const v = ref.current;
+    if (v && v.srcObject !== stream) {
+      v.srcObject = stream;
+      void v.play().catch(() => undefined);
+    }
+  }, [stream]);
+  return (
+    <div className="call-camera">
+      <video ref={ref} muted playsInline autoPlay aria-label="Camera preview" />
+      <button type="button" className="call-camera-flip" onClick={onFlip} aria-label="Switch camera">
+        <Icon name="refresh" size={18} />
+      </button>
+      <span className="call-camera-hint">Point and ask — he sees the moment you finish speaking</span>
     </div>
   );
 }

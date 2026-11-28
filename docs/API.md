@@ -302,6 +302,15 @@ PATCH  /api/places/{id} {name?, lat?, lon?, radius_m?} → Place   (radius 20 m 
 DELETE /api/places/{id}
 ```
 
+## Garmin (2026-11-28)
+
+`features/garmin.py`, settings `garmin {enabled, api_key (secret), sync_every_min, keep_days}`.
+
+```
+GET  /api/garmin       → {configured, last_sync, last_error, days_stored, first_day, today}
+POST /api/garmin/sync  → {stored, failed[]}   (422 without a key)
+```
+
 ## Triggers (2026-11-28)
 
 `features/triggers.py`. Tools `trigger.list|get|create|update|delete|fire`.

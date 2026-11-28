@@ -712,6 +712,22 @@ class SessionsSettings(BaseModel):
     reply_timeout_s: int = 180
 
 
+class GarminSettings(BaseModel):
+    """His Garmin watch through the Garmin Connect Personal API (features/garmin.py): sleep, Body
+    Battery, stress, heart rate, HRV, steps and activities, pulled every few minutes and summed
+    up in every turn of his, so Jarvis can look after him with what his body says."""
+
+    enabled: bool = True
+    #: The Personal API key from connect.garmin.com/app/settings/personalApiToken (shown once
+    #: when made; expires after the 30-365 days chosen there).
+    api_key: str = Field(default="", json_schema_extra=marks("secret"))
+    #: How often to pull. Garmin's own data arrives from the watch through the phone app every
+    #: few minutes to an hour, so faster gains nothing.
+    sync_every_min: int = Field(default=30, ge=10, le=720)
+    #: Days of daily data kept, for "worse than your normal".
+    keep_days: int = Field(default=90, ge=7, le=730)
+
+
 class LocationSettings(BaseModel):
     """Where Arsen is (features/location.py): his phone sends its position with each message while
     he lets that device share it, OwnTracks may send it in the background, and every turn - a
@@ -961,6 +977,7 @@ class Settings(BaseModel):
     voice: VoiceSettings = Field(default_factory=VoiceSettings)
     sessions: SessionsSettings = Field(default_factory=SessionsSettings)
     location: LocationSettings = Field(default_factory=LocationSettings)
+    garmin: GarminSettings = Field(default_factory=GarminSettings)
     assistant: AssistantSettings = Field(default_factory=AssistantSettings)
     shadow: ShadowSettings = Field(default_factory=ShadowSettings)
     tasks: TasksSettings = Field(default_factory=TasksSettings)

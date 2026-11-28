@@ -154,6 +154,11 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     keywords: ['calendar', 'accept', 'decline', 'cancelled meetings', 'invite'],
   },
   {
+    id: 'settings-garmin',
+    label: 'Garmin',
+    keywords: ['watch', 'sleep', 'body battery', 'heart rate', 'hrv', 'stress', 'steps', 'health', 'api key', 'fitness'],
+  },
+  {
     id: 'settings-location',
     label: 'Location',
     keywords: ['where', 'gps', 'phone', 'places', 'home', 'office', 'owntracks', 'background', 'precision', 'city'],

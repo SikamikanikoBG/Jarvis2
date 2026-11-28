@@ -873,7 +873,14 @@ def _with_attachment_note(message: Message, attachments: list[Attachment], *, sh
         if att.meta.get("outgoing"):
             parts.append(f"[you attached {att.name} ({size}) to this reply; Arsen downloads it from the chat]")
             continue
-        if att.kind is AttachmentKind.IMAGE:
+        if att.kind is AttachmentKind.IMAGE and att.name.startswith("camera-"):
+            # A frame from his phone's camera on a call (web voice/camera.ts), taken the moment he
+            # finished saying this: what he is pointing at, not a file he chose to send.
+            note = "[his phone camera, live as he said this - what he is looking at / pointing the phone at"
+            if not att.data_url:
+                note += unseen
+            parts.append(note + "]")
+        elif att.kind is AttachmentKind.IMAGE:
             note = f"[image attached: {att.name}, {size}"
             if not att.data_url:
                 note += unseen

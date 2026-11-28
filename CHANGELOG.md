@@ -2,6 +2,24 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-28 — core 2.0.0a145, web 2.0.0-alpha.103
+
+### Added
+- **The camera on a call.** A camera button on the call screen turns the ring into a live
+  preview (switch front/back). When you finish saying something, the frame of that moment is
+  taken and uploaded while your words are transcribed, and goes with the turn - "what is this?"
+  sends what you were pointing at as you said it. The model is told it is his phone camera, live,
+  not a file he chose. Not a video stream: the model reads pictures, one per thing you say. The
+  camera stops with the call.
+- **Garmin (Personal API).** Settings > Garmin takes the key from Garmin Connect (Settings >
+  Personal API). The core swaps it for Garmin's 24-hour token and pulls, every 30 min, today's and
+  yesterday's sleep, Body Battery, stress, heart rate, HRV, steps and the week's activities - the
+  first time also the 30 days before, for baselines; 90 days are kept. Each turn of yours (chat,
+  scheduled, task; never collab/mail or a private chat) hears "Slept 6 h 10 (score 64); his 30-day
+  average is 7 h 00. Body Battery 35 now..." with a note to look after you without lecturing.
+  Tools `garmin.day|trend|raw|sync`. Garmin does not document its field names; they are read
+  defensively and a missing one is left out - to be checked against the first real data.
+
 ## 2026-11-28 — core 2.0.0a144, web 2.0.0-alpha.102
 
 ### Added

@@ -11,6 +11,7 @@ import { DRAFT_NORMAL, ttlLabel, type DraftPrivacy } from '../lib/privacy';
 import type { Annotation } from '../lib/annotations';
 import type { ThinkChoice } from '../lib/think';
 import { enablePush, pushSupported, refreshPush } from '../push/push';
+import { CallCamera } from '../voice/camera';
 import { MicListener } from '../voice/listener';
 import { requestMotionPermission } from '../voice/earPose';
 import { patienceMs } from '../voice/patience';
@@ -96,6 +97,10 @@ export interface UiState {
   sessions: SessionRef[];
   /** The call in progress (docs/stories/10_voice.md), or null. A pure function of the session. */
   call: CallState | null;
+  /** The camera is on during the call; its frame goes with each turn. */
+  cameraOn: boolean;
+  toggleCamera: () => Promise<void>;
+  flipCamera: () => Promise<void>;
   /** The live call's id (voice/callLife.ts): what the call screen's noted list is about. */
   callId: string | null;
   /** The call's sound comes over the line (voice/line.ts), not from the page. */
@@ -263,6 +268,22 @@ let line: VoiceLine | null = null;
 let micListener: MicListener | null = null;
 /** The call as the core sees it: its id, the heartbeat, the hang-up (voice/callLife.ts). */
 let callLife: CallLife | null = null;
+/** The camera on a call (voice/camera.ts): its frame goes with the turn he just said. */
+const callCamera = new CallCamera();
+/** The frame taken when his last utterance ended, uploaded while it is transcribed. */
+let readyFrame: string | null = null;
+
+/** The frame ready for the turn being sent, once: a frame goes with the words it was taken for. */
+function takeFrame(): { attachment_ids?: string[] } {
+  const id = readyFrame;
+  readyFrame = null;
+  return id ? { attachment_ids: [id] } : {};
+}
+
+/** The live camera stream, for the call screen's preview. */
+export function cameraStream(): MediaStream | null {
+  return callCamera.stream;
+}
 
 /** Where the phone is (Europe/Berlin on a trip), so the turn is told the local time there. */
 function deviceTimezone(): { timezone?: string } {
@@ -310,6 +331,34 @@ export const useStore = create<AppState>()((set, get) => ({
   ...initialChatState(),
   ...initialFeatureState(),
   view: 'chat',
+  cameraOn: false,
+  toggleCamera: async () => {
+    if (get().cameraOn) {
+      callCamera.stop();
+      readyFrame = null;
+      set({ cameraOn: false });
+      return;
+    }
+    if (!CallCamera.supported()) {
+      get().notify('This browser cannot use the camera.', 'error');
+      return;
+    }
+    try {
+      await callCamera.start();
+      set({ cameraOn: true });
+    } catch (e) {
+      get().notify(`Camera: ${e instanceof Error ? e.message : String(e)}`, 'error');
+    }
+  },
+  flipCamera: async () => {
+    if (!get().cameraOn) return;
+    try {
+      await callCamera.flip();
+      set({ cameraOn: true });
+    } catch (e) {
+      get().notify(`Camera: ${e instanceof Error ? e.message : String(e)}`, 'error');
+    }
+  },
   nav: null,
   stopNav: async () => {
     try {
@@ -648,6 +697,7 @@ export const useStore = create<AppState>()((set, get) => ({
             channel: 'voice',
             ...deviceTimezone(),
             ...deviceLocation(incognito),
+            ...takeFrame(),
             ...(callLife ? { call_id: callLife.id } : {}),
             ...callMeField(takeCallMe(set, get, conversationId)),
             // Same as a typed first message: the draft's privacy opens the chat (a call started
@@ -677,6 +727,20 @@ export const useStore = create<AppState>()((set, get) => ({
           callTrace.mark('phase', { phase: state.phase, muted: state.muted, route: state.route, online: state.online, problem: state.problem });
         }
         callTrace.sample('level', 100, { v: Math.round(state.level * 1000) / 1000 });
+        // He has just finished saying something: the frame of this moment goes up while his
+        // words are with Whisper, so it is there when the turn is sent (voice/camera.ts).
+        if (state.phase === 'transcribing' && was?.phase !== 'transcribing' && get().cameraOn) {
+          readyFrame = null;
+          void callCamera
+            .frame()
+            .then((blob) =>
+              blob ? api.attachments.upload(new File([blob], `camera-${Date.now()}.jpg`, { type: 'image/jpeg' }), get().openConversationId, incognito) : null,
+            )
+            .then((att) => {
+              readyFrame = att?.id ?? null;
+            })
+            .catch(() => undefined);
+        }
         set({ call: { ...state } });
       },
     });
@@ -711,6 +775,10 @@ export const useStore = create<AppState>()((set, get) => ({
   },
 
   endCall: () => {
+    // The camera belongs to the call: it never outlives it.
+    callCamera.stop();
+    readyFrame = null;
+    if (get().cameraOn) set({ cameraOn: false });
     // Hang-up first, while the socket is surely there: what was noted on the call starts now.
     callLife?.end();
     callLife = null;

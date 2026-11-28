@@ -590,6 +590,33 @@ async def trigger_fires(request: Request, trigger_id: str, limit: int = 20) -> l
     return await core_of(request).triggers.store.fires(trigger_id, limit=_clamp(limit, 200, default=20))
 
 
+# --- Garmin (features/garmin.py) ----------------------------------------------------------
+
+
+@router.get("/garmin", openapi_extra=agent("read", prefer="garmin.day"))
+async def garmin_status(request: Request) -> dict[str, Any]:
+    g = core_of(request).garmin
+    days = await g.days()
+    return {
+        "configured": g.configured(),
+        "last_sync": g.last_sync.isoformat() if g.last_sync else None,
+        "last_error": g.last_error,
+        "days_stored": len(days),
+        "first_day": days[0] if days else None,
+        "today": await g.describe(),
+    }
+
+
+@router.post("/garmin/sync", openapi_extra=agent("none", prefer="garmin.sync"))
+async def garmin_sync(request: Request) -> dict[str, Any]:
+    from jarvis_core.features.garmin import GarminError
+
+    try:
+        return await core_of(request).garmin.sync()
+    except GarminError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 # Webhooks: no bearer token - the secret in the path is the key, and an unknown id or a wrong
 # secret answer the same 404. Bodies are kept to the first 8,000 characters.
 hooks_router = APIRouter()

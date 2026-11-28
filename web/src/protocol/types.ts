@@ -724,6 +724,23 @@ export interface NavView {
   started_at: string;
 }
 
+export interface GarminSettings {
+  enabled: boolean;
+  /** A secret: shown to the owner's own app, masked for Jarvis's tools and in the change trail. */
+  api_key: string;
+  sync_every_min: number;
+  keep_days: number;
+}
+
+export interface GarminStatus {
+  configured: boolean;
+  last_sync: string | null;
+  last_error: string | null;
+  days_stored: number;
+  first_day: string | null;
+  today: string | null;
+}
+
 export interface LocationSettings {
   enabled: boolean;
   /** "exact": turns also get the coordinates; "city": only the town and the named place. */
@@ -824,6 +841,8 @@ export interface Settings {
   sessions: SessionsSettings;
   /** Absent from cores before 2026-11-28. */
   location?: LocationSettings;
+  /** Absent from cores before 2026-11-28. */
+  garmin?: GarminSettings;
   assistant: AssistantSettings;
   /** The address people reach this core on; used for pairing/QR. Normally https. */
   public_url: string | null;

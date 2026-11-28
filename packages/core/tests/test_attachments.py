@@ -514,3 +514,21 @@ async def test_only_the_newest_pictures_ride_as_pixels(harness: Harness):
     assert [a.name for a in with_pixels] == ["two.png"]
     older = next(m for m in sent if any(a.name == "one.png" for a in m.attachments))
     assert "shown earlier" in older.content
+
+
+def test_a_camera_frame_on_a_call_is_described_as_what_he_is_looking_at():
+    from jarvis_core.engine.context import _with_attachment_note
+    from jarvis_proto import Attachment, AttachmentKind, Message
+
+    att = Attachment(
+        id="a1",
+        name="camera-1795870000000.jpg",
+        kind=AttachmentKind.IMAGE,
+        mime="image/jpeg",
+        bytes=80_000,
+        data_url="data:image/jpeg;base64,xx",
+    )
+    text = _with_attachment_note(Message.user("what is this?"), [att])
+    assert text.startswith("what is this?") and "his phone camera, live as he said this" in text
+    plain = att.model_copy(update={"name": "photo.jpg"})
+    assert "[image attached: photo.jpg" in _with_attachment_note(Message.user("x"), [plain])

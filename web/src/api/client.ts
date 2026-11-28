@@ -1,5 +1,6 @@
 import type {
   DeviceLocation,
+  GarminStatus,
   LocationView,
   NavView,
   Place,
@@ -274,6 +275,10 @@ export const api = {
     accept: (id: string) => request<Trigger>('POST', `/api/triggers/${encodeURIComponent(id)}/accept`),
     remove: (id: string) => request<null>('DELETE', `/api/triggers/${encodeURIComponent(id)}`),
     fires: (id: string, limit = 20) => request<TriggerFire[]>('GET', `/api/triggers/${encodeURIComponent(id)}/fires?limit=${limit}`),
+  },
+  garmin: {
+    status: () => request<GarminStatus>('GET', '/api/garmin'),
+    sync: () => request<{ stored: number; failed: string[] }>('POST', '/api/garmin/sync'),
   },
   nav: {
     get: () => request<NavView | null>('GET', '/api/nav'),

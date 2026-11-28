@@ -50,6 +50,7 @@ from jarvis_core.features.compaction import Compactor
 from jarvis_core.features.context_usage import ContextUsage
 from jarvis_core.features.expiry import Reaper, delete_conversation
 from jarvis_core.features.files import FilesTools, fetch_host_file
+from jarvis_core.features.garmin import BodyBlock, GarminService, GarminTools
 from jarvis_core.features.journal import DayJournal, TodayBlock
 from jarvis_core.features.knowledge import KnowledgeLearner, KnowledgeStore, KnowledgeTools
 from jarvis_core.features.location import LocationBlock, LocationService, LocationTools
@@ -130,6 +131,7 @@ class Core:
         self.navigation = NavService(self.db, self.bus, self.location)
         self.location.listeners.append(self.navigation.on_fix)
         self.triggers = TriggerEngine(self)
+        self.garmin = GarminService(self.db, lambda: self.settings.garmin, lambda: self.settings.timezone)
         self.location.listeners.append(self.triggers.on_fix)
         # Jarvis's own settings, schedules and routes (docs/stories/14_agent_admin.md): the one
         # settings write path, its trail, and the tools over it. ``policy_epoch`` moves whenever the
@@ -200,6 +202,7 @@ class Core:
                 ProjectBlock(self.projects, self.schedules, self.store, lambda: self.settings.timezone),
                 LocationBlock(self.location, self.store),
                 NavBlock(self.navigation),
+                BodyBlock(self.garmin, self.store),
             ],
             compactor=self.compactor,
             attachments=self.attachments,
@@ -358,6 +361,7 @@ class Core:
         # A lifeline change still on probation when the core stopped is checked again now.
         await self.admin.recover()
         await self.navigation.load()
+        self.garmin.start()
         await self.scheduler.start()
         await self.triage.start()
         await self.triage_audit.start()
@@ -397,6 +401,7 @@ class Core:
                     await self.registry.reindex(provider)
 
     async def stop(self) -> None:
+        await self.garmin.stop()
         watch = getattr(self, "_mcp_watch", None)
         if watch is not None:
             watch.cancel()
@@ -458,6 +463,7 @@ class Core:
                 LocationTools(self.location, core=self),
                 NavTools(self.navigation),
                 TriggerTools(self.triggers),
+                GarminTools(self.garmin),
                 self.settings_tools,
                 self.api_tools,
                 self.sessions,

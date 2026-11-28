@@ -133,3 +133,25 @@ async def test_an_answer_it_cannot_read_is_asked_again_then_passed_over(harness:
     (mark,) = await core.db.fetchall("SELECT done FROM episode_backfill")
     assert mark["done"] == 1
     assert await core.backfill.work(now=night) == 0
+
+
+async def test_a_server_that_does_not_answer_costs_no_try_and_passes_nothing_over(harness: Harness):
+    # 2026-11-28: vader was off the network all night. Every call failed to connect, each failure
+    # was counted as an unreadable answer, and five days were passed over with no episode.
+    core = harness.core
+    conv = await core.store.create_conversation(title="Чат")
+    await _turns(harness, conv.id, ["едно"], _local(harness, 10, 9))
+    writer = _writer(harness)
+    night = _local(harness, 12, 2)
+    for _ in range(MAX_TRIES + 2):
+        writer.push(FakeTurn(fail_before_first_byte=True))
+        assert await core.backfill.work(now=night) == 1
+        # Paused: the server is down, nothing is gained by asking again at once.
+        assert await core.backfill.work(now=night) == 0
+        core.backfill._paused_until = None
+    # Not one try counted, nothing marked: the day is exactly where it was.
+    assert await core.db.fetchall("SELECT * FROM episode_backfill WHERE done = 1 OR tries > 0") == []
+    # Once it answers, the day is written up after all.
+    writer.push(_answer("One", "The first thing."))
+    assert await core.backfill.work(now=night) == 1
+    assert [e.title for e in await core.journal.episodes.of_day(conv.id, "2026-11-10")] == ["One"]

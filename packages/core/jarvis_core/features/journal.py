@@ -44,6 +44,13 @@ DEBOUNCE_S = 6.0
 CATCH_UP_MAX = 40
 #: How long one digest may take before the plain fallback is written instead.
 MODEL_TIMEOUT_S = 90.0
+
+
+class ModelUnavailable(RuntimeError):
+    """The model did not answer at all (unreachable, failed, timed out) - as opposed to an answer
+    that could not be read. The back-fill waits for the first; only the second costs it a try."""
+
+
 #: The kinds that are the machine's own plumbing, not something Arsen would call "today".
 # A task's own conversation is not a line of the day: its report in the chat that asked is.
 SKIPPED_KINDS = frozenset({ConversationKind.TRIAGE, ConversationKind.ARCHIVE, ConversationKind.TASK})
@@ -223,8 +230,8 @@ class DayJournal:
     async def past_episode(self, conv: Conversation, runs: list[Run], day: date) -> bool:
         """Write up ``runs`` (one past day of ``conv``, oldest first) as the live journal would have
         that day: the same question, the episode it was in before them. Only the episode is kept:
-        the day's digest stays as it was written then (features/backfill.py). False when the model
-        gave no usable answer, so the caller can ask again later."""
+        the day's digest stays as it was written then (features/backfill.py). False when the model's
+        answer could not be read; ``ModelUnavailable`` when it gave none, so the caller can wait."""
         told = [e for e in await self.episodes.of_day(conv.id, day.isoformat()) if e.started_at <= runs[0].created_at]
         last = told[-1] if told else None
         exchanges: list[tuple[Run, str, str]] = []
@@ -235,7 +242,7 @@ class DayJournal:
         call_urgency.set(BACKGROUND)
         call_purpose.set("journal")
         async with self._sem:  # one write-up at a time, with the live journal's own
-            data = await self._ask(conv, exchanges, previous, last)
+            data = await self._ask(conv, exchanges, previous, last, strict=True)
         if data is None:
             return False
         quiet = bool(data.get("quiet")) and not " ".join(str(data.get("waiting") or "").split())
@@ -284,7 +291,12 @@ class DayJournal:
         exchanges: list[tuple[Run, str, str]],
         previous: Digest | None,
         last: episodes.Episode | None,
+        *,
+        strict: bool = False,
     ) -> dict[str, Any] | None:
+        """The model's answer as JSON, None if it could not be read. A model that did not answer
+        is None as well (the live journal then writes the digest plainly), or, ``strict``,
+        ``ModelUnavailable``."""
         s = self._core.settings
         tz = ZoneInfo(s.timezone)
         status = {"done": "finished", "failed": "failed", "waiting_user": "waiting for an answer"}
@@ -310,6 +322,8 @@ class DayJournal:
                     if isinstance(chunk, ModelTextChunk):
                         text += chunk.text
         except Exception as exc:
+            if strict:
+                raise ModelUnavailable(str(exc) or type(exc).__name__) from exc
             log.info("journal: model unavailable for %s (%s); writing it plainly", conv.id, exc)
             return None
         return parse_json(text)

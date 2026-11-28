@@ -23,7 +23,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
-from jarvis_core.features.journal import RUNS_MAX, SKIPPED_KINDS
+from jarvis_core.features.journal import RUNS_MAX, SKIPPED_KINDS, ModelUnavailable
 from jarvis_proto import Run, RunKind, RunStatus
 
 if TYPE_CHECKING:
@@ -38,7 +38,9 @@ QUIET_S = 30 * 60
 #: A batch whose answer cannot be read is asked again this many times, then passed over: one
 #: broken answer must not hold the rest of history back.
 MAX_TRIES = 3
-#: After an answer that could not be read (the server may be down), wait this long.
+#: After an answer that could not be read, or none at all (the server is down), wait this long.
+#: A server that does not answer costs no try: on 2026-11-28 vader was off the network all night,
+#: and counting each refused connection as an unreadable answer passed five days over unwritten.
 PAUSE_S = 15 * 60
 
 _WRITTEN = (RunStatus.DONE, RunStatus.FAILED, RunStatus.WAITING_USER)
@@ -162,7 +164,12 @@ class EpisodeBackfill:
     async def _write(self, conv: Any, day: date, runs: list[Run], mark: Any) -> bool:
         batch = runs[:RUNS_MAX]
         done = len(runs) <= RUNS_MAX
-        if await self.core.journal.past_episode(conv, batch, day):
+        try:
+            written = await self.core.journal.past_episode(conv, batch, day)
+        except ModelUnavailable as exc:
+            log.info("episode back-fill: model unavailable (%s); waiting", exc)
+            return False
+        if written:
             await self._mark(conv.id, day.isoformat(), batch[-1].id, tries=0, done=done)
             return True
         tries = (mark["tries"] if mark else 0) + 1

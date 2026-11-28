@@ -2,6 +2,15 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-28 — core 2.0.0a139
+
+### Fixed
+- **Memory back-fill: a server that does not answer no longer passes days over.** On the first night
+  vader was off the network, every call failed to connect, and each failure counted as an answer
+  that could not be read: five conversation-days were marked done with no episode. Now only an
+  answer that cannot be read costs a try; a model that gives no answer at all pauses the back-fill
+  (15 min) and the day is asked again when the server is back.
+
 ## 2026-11-27 — core 2.0.0a138
 
 ### Added

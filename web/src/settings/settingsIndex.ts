@@ -154,6 +154,11 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     keywords: ['calendar', 'accept', 'decline', 'cancelled meetings', 'invite'],
   },
   {
+    id: 'settings-location',
+    label: 'Location',
+    keywords: ['where', 'gps', 'phone', 'places', 'home', 'office', 'owntracks', 'background', 'precision', 'city'],
+  },
+  {
     id: 'settings-sessions',
     label: 'Sessions',
     keywords: ['@', 'handle', 'mention', 'chats talking', 'another chat', 'wake', 'chain', 'hops'],

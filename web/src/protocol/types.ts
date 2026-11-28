@@ -640,6 +640,43 @@ export interface AssistantSettings {
 }
 
 /** One chat writing to another: the guards, since Jarvis only does it when Arsen asks. */
+/** One position fix from one of his devices (core features/location.py). */
+export interface DeviceLocation {
+  lat: number;
+  lon: number;
+  accuracy_m: number | null;
+  taken_at: string;
+  source: 'browser' | 'owntracks' | 'manual';
+  speed_mps: number | null;
+}
+
+/** A place he named - Home, Office - so Jarvis says "at home", not an address. */
+export interface Place {
+  id: string;
+  name: string;
+  lat: number;
+  lon: number;
+  radius_m: number;
+  created_at: string;
+}
+
+/** What the core makes of the last fix. */
+export interface LocationView {
+  fix: DeviceLocation | null;
+  received_at: string | null;
+  locality: string | null;
+  country: string | null;
+  place: string | null;
+  from_home_km: number | null;
+}
+
+export interface LocationSettings {
+  enabled: boolean;
+  /** "exact": turns also get the coordinates; "city": only the town and the named place. */
+  precision: 'exact' | 'city';
+  stale_after_h: number;
+}
+
 export interface SessionsSettings {
   enabled: boolean;
   max_hops: number;
@@ -731,6 +768,8 @@ export interface Settings {
   rsvp: MeetingRsvpSettings;
   voice: VoiceSettings;
   sessions: SessionsSettings;
+  /** Absent from cores before 2026-11-28. */
+  location?: LocationSettings;
   assistant: AssistantSettings;
   /** The address people reach this core on; used for pairing/QR. Normally https. */
   public_url: string | null;
@@ -1339,6 +1378,8 @@ export interface RunCreateRequest {
   call_me?: boolean;
   /** This device's IANA timezone, so the turn knows the time where he is. */
   timezone?: string;
+  /** Where this device is, when he lets it share (lib/location.ts); never from a private chat. */
+  location?: DeviceLocation;
   /** The call this voice turn belongs to (voice/callLife.ts): what noted tasks hang on. */
   call_id?: string;
 }

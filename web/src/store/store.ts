@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { ApiError, api, describeError } from '../api/client';
 import { WsClient, type ConnectionState } from '../api/ws';
 import { conversationToMarkdown, downloadText, safeFilename } from '../lib/export';
+import { deviceLocation } from '../lib/location';
 import { readCollapsedFolders, writeCollapsedFolders } from '../lib/folders';
 import { notifyDesktop, readNotifyPref, writeNotifyPref } from '../lib/notify';
 import { navigate, parseLocation, rememberConversation, takeRing, type IncomingRing, type View } from '../lib/router';
@@ -606,6 +607,7 @@ export const useStore = create<AppState>()((set, get) => ({
             think_level: null,
             channel: 'voice',
             ...deviceTimezone(),
+            ...deviceLocation(incognito),
             ...(callLife ? { call_id: callLife.id } : {}),
             ...callMeField(takeCallMe(set, get, conversationId)),
             // Same as a typed first message: the draft's privacy opens the chat (a call started
@@ -878,6 +880,7 @@ export const useStore = create<AppState>()((set, get) => ({
       think_level: choice?.think ? (choice.think_level ?? null) : null,
       attachment_ids: attachments.map((a) => a.id),
       ...deviceTimezone(),
+      ...deviceLocation(selectIncognitoNow(s)),
       ...callMeField(takeCallMe(set, get, open)),
       // Only a first message opens a chat, so only then does the draft's privacy travel.
       ...(open ? {} : { incognito: s.draftPrivacy.incognito, ttl_seconds: s.draftPrivacy.ttlSeconds }),

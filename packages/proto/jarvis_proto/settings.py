@@ -712,6 +712,19 @@ class SessionsSettings(BaseModel):
     reply_timeout_s: int = 180
 
 
+class LocationSettings(BaseModel):
+    """Where Arsen is (features/location.py): his phone sends its position with each message while
+    he lets that device share it, OwnTracks may send it in the background, and every turn - a
+    scheduled one too - is told the town, the named place and how old the fix is."""
+
+    enabled: bool = True
+    #: "exact": the turn also gets the coordinates (for nearby, routes, weather). "city": only the
+    #: town and the named place; the coordinates stay in the core.
+    precision: Literal["exact", "city"] = "exact"
+    #: A fix older than this many hours is called out of date in the turn's context.
+    stale_after_h: int = Field(default=6, ge=1, le=168)
+
+
 class TasksSettings(BaseModel):
     """Delegated tasks (docs/stories/13_delegated_tasks.md): work handed to a run of its own and
     reported back where Arsen asked.
@@ -947,6 +960,7 @@ class Settings(BaseModel):
     rsvp: MeetingRsvpSettings = Field(default_factory=MeetingRsvpSettings)
     voice: VoiceSettings = Field(default_factory=VoiceSettings)
     sessions: SessionsSettings = Field(default_factory=SessionsSettings)
+    location: LocationSettings = Field(default_factory=LocationSettings)
     assistant: AssistantSettings = Field(default_factory=AssistantSettings)
     shadow: ShadowSettings = Field(default_factory=ShadowSettings)
     tasks: TasksSettings = Field(default_factory=TasksSettings)

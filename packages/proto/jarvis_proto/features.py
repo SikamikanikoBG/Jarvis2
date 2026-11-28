@@ -140,6 +140,46 @@ class Project(BaseModel):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+LocationSource = Literal["browser", "owntracks", "manual"]
+
+
+class DeviceLocation(BaseModel):
+    """One position fix from one of his devices (core features/location.py)."""
+
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+    #: Radius of the fix in metres, as the device reports it.
+    accuracy_m: float | None = Field(default=None, ge=0)
+    #: When the device took the fix (not when it arrived).
+    taken_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    source: LocationSource = "browser"
+    #: Speed in m/s when the device knows it - walking, driving, flying.
+    speed_mps: float | None = Field(default=None, ge=0)
+
+
+class Place(BaseModel):
+    """A place he named - Home, Office, Gym - so Jarvis says "at home", not an address."""
+
+    id: str
+    name: str
+    lat: float
+    lon: float
+    radius_m: float = 150
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class LocationView(BaseModel):
+    """What the core makes of the last fix: the fix, the town it is in, and the named place."""
+
+    fix: DeviceLocation | None = None
+    received_at: datetime | None = None
+    locality: str | None = None
+    country: str | None = None
+    place: str | None = None
+    #: Distance from Home in km, when a place named Home exists.
+    from_home_km: float | None = None
+
+
 class ScheduleFire(BaseModel):
     schedule_id: str
     scheduled_for: datetime

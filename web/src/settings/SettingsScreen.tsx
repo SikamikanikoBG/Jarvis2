@@ -8,6 +8,7 @@ import { CallsSection } from './CallsSection';
 import { ChangesSection } from './ChangesSection';
 import { CollabSection } from './CollabSection';
 import { MailAccountsSection } from './MailAccountsSection';
+import { LocationSection } from './LocationSection';
 import { McpServersSection } from './McpServersSection';
 import { PersonalitySection } from './PersonalitySection';
 import { ConfirmationsSection, EmailSection } from './SafetySections';
@@ -284,6 +285,12 @@ export function SettingsScreen() {
         <div id="settings-calls" className="settings-anchor">
           <CallsSection value={draft.call_me_default} onChange={(v) => patch('call_me_default', v)} discord={Boolean(original?.discord_webhook_url)} />
         </div>
+
+        {draft.location && (
+          <div id="settings-location" className="settings-anchor">
+            <LocationSection value={draft.location} onChange={(v) => patch('location', v)} publicUrl={draft.public_url} error={errors.location} />
+          </div>
+        )}
 
         <div id="settings-sessions" className="settings-anchor">
           <SessionsSection value={draft.sessions} onChange={(v) => patch('sessions', v)} error={errors.sessions} />

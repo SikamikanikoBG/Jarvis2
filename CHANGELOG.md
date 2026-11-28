@@ -2,6 +2,25 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-28 — core 2.0.0a140, web 2.0.0-alpha.99
+
+### Added
+- **Jarvis knows where you are.** Settings › Location › "Share this device's location" (per
+  device; the browser asks once). While Jarvis is open the phone sends its position with every
+  message and voice turn, and on its own when you move ~100 m or every ten minutes. Every turn of
+  yours - scheduled runs too, with the last known position - is told:
+  - the **town** ("Brera, Milan, IT"), looked up offline from GeoNames on ardi: the coordinates
+    never go to a geocoding service;
+  - the **place you named** - "At Home", "At the Office" - and how far you are from Home;
+  - **how old** the fix is (called out of date after 6 h by default), and the speed when moving;
+  - with precision "Exact", the coordinates, for nearby searches, routes and weather.
+  Only the last fix is kept, never a trail. Collab, mail and triage runs (which answer other
+  people) and private chats are never told; a private chat never sends a fix.
+- **Places:** name where you are (Settings, or "remember this as the gym" in chat:
+  `location.place_save`); radius per place. `location.get` / `location.places` for Jarvis.
+- **OwnTracks** for the background: `POST /api/location/owntracks?token=...` takes its HTTP-mode
+  positions, so Jarvis knows where you are with the app closed too (setup in Settings › Location).
+
 ## 2026-11-28 — core 2.0.0a139
 
 ### Fixed

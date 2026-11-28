@@ -284,6 +284,24 @@ and then got through (a `[playbook]` note lands in the conversation).
 `browser.context` feeds a context provider ("the page Arsen is looking at") for runs created
 from the side panel. The side panel is the SPA in an iframe: `/?mode=panel&token=…`.
 
+## Location (2026-11-28)
+
+Where Arsen is (`features/location.py`). Only the last fix is kept. `run.create` may carry
+`location: DeviceLocation` (ignored in a private chat). A `LocationBlock` tells chat, scheduled and
+task turns the town (offline GeoNames cities1000 in `<home>/geo`), the named place, distance from
+Home, the fix's age, and - with `settings.location.precision = "exact"` - the coordinates.
+
+```
+GET    /api/location                 → LocationView {fix, received_at, locality, country, place, from_home_km}
+POST   /api/location DeviceLocation  → {kept}   (false: location off, or older than the fix held)
+DELETE /api/location                 (forget the last fix)
+POST   /api/location/owntracks?token=…  OwnTracks HTTP mode {_type:"location", lat, lon, acc, tst, vel} → []
+GET    /api/places                   → Place[] {id, name, lat, lon, radius_m}
+POST   /api/places {name, radius_m?, lat?, lon?} → Place 201  (no lat/lon = where he is now; 422 without a fix)
+PATCH  /api/places/{id} {name?, lat?, lon?, radius_m?} → Place   (radius 20 m - 50 km)
+DELETE /api/places/{id}
+```
+
 ## Projects (2026-11-26)
 
 Several schedules that serve one goal (`features/projects.py`). A member's run gets a `ProjectBlock` in

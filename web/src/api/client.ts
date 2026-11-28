@@ -1,4 +1,7 @@
 import type {
+  DeviceLocation,
+  LocationView,
+  Place,
   Project,
   ChangeRecord,
   Attachment,
@@ -255,6 +258,18 @@ export const api = {
     fires: (id: string, limit = 20) => request<ScheduleFire[]>('GET', `/api/schedules/${encodeURIComponent(id)}/fires?limit=${limit}`),
     /** He accepts a prompt a run wrote: it fires with the schedule's own authority again. */
     accept: (id: string) => request<Schedule>('POST', `/api/schedules/${encodeURIComponent(id)}/accept`),
+  },
+  location: {
+    get: () => request<LocationView>('GET', '/api/location'),
+    post: (fix: DeviceLocation) => request<{ kept: boolean }>('POST', '/api/location', fix),
+    forget: () => request<null>('DELETE', '/api/location'),
+  },
+  places: {
+    list: () => request<Place[]>('GET', '/api/places'),
+    /** Without lat/lon: where he is now. */
+    create: (body: Partial<Place>) => request<Place>('POST', '/api/places', body),
+    patch: (id: string, body: Partial<Place>) => request<Place>('PATCH', `/api/places/${encodeURIComponent(id)}`, body),
+    remove: (id: string) => request<null>('DELETE', `/api/places/${encodeURIComponent(id)}`),
   },
   projects: {
     list: () => request<Project[]>('GET', '/api/projects'),

@@ -11,7 +11,20 @@ from pydantic import BaseModel
 from jarvis_core.api.deps import agent, core_of, require_token
 from jarvis_core.features.admin import Who
 from jarvis_core.features.schedules import schedule_diff
-from jarvis_proto import Board, Entity, EntityDetail, Graph, Note, Project, Schedule, ScheduleFire, Skill
+from jarvis_proto import (
+    Board,
+    DeviceLocation,
+    Entity,
+    EntityDetail,
+    Graph,
+    LocationView,
+    Note,
+    Place,
+    Project,
+    Schedule,
+    ScheduleFire,
+    Skill,
+)
 from jarvis_proto.features import CatchUp, EntityType, NoteColor, ScheduleCallMe
 from jarvis_proto.runs import ThinkLevel
 
@@ -409,6 +422,92 @@ async def delete_project(request: Request, project_id: str) -> Response:
     if await core.projects.get(project_id) is None:
         raise HTTPException(404, "project not found")
     await core.projects.delete(project_id)
+    return Response(status_code=204)
+
+
+# --- location: where Arsen is (features/location.py) -------------------------------------
+
+
+@router.get("/location", response_model=LocationView, openapi_extra=agent("read", prefer="location.get"))
+async def get_location(request: Request) -> LocationView:
+    return await core_of(request).location.view()
+
+
+@router.post("/location", openapi_extra=agent("none"))
+async def post_location(request: Request, fix: DeviceLocation) -> dict[str, bool]:
+    """A fix from one of his devices while it is open (the phone sends one when it moves, between
+    messages). ``kept`` is False when location is off or the fix is older than the one held."""
+    return {"kept": await core_of(request).location.update(fix)}
+
+
+@router.delete("/location", status_code=204, openapi_extra=agent("none"))
+async def forget_location(request: Request) -> Response:
+    """Forget the last fix (Settings > Location > Forget)."""
+    await core_of(request).location.store.forget()
+    return Response(status_code=204)
+
+
+@router.post("/location/owntracks", openapi_extra=agent("none"))
+async def owntracks(request: Request) -> list[Any]:
+    """OwnTracks in HTTP mode, for a position in the background when the app is closed. Its URL is
+    this route with ?token=...; what it sends besides positions is acknowledged and dropped."""
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(400, "not JSON") from exc
+    from jarvis_core.features.location import owntracks_fix
+
+    fix = owntracks_fix(body) if isinstance(body, dict) else None
+    if fix is not None:
+        await core_of(request).location.update(fix)
+    return []  # OwnTracks reads the reply as a list of messages for it: none
+
+
+class PlaceBody(BaseModel):
+    name: str | None = None
+    lat: float | None = None
+    lon: float | None = None
+    radius_m: float | None = None
+
+
+@router.get("/places", response_model=list[Place], openapi_extra=agent("read", prefer="location.places"))
+async def list_places(request: Request) -> list[Place]:
+    return await core_of(request).location.store.places()
+
+
+@router.post(
+    "/places", response_model=Place, status_code=201, openapi_extra=agent("none", prefer="location.place_save")
+)
+async def create_place(request: Request, body: PlaceBody) -> Place:
+    """Without lat/lon: where he is now."""
+    service = core_of(request).location
+    lat, lon = body.lat, body.lon
+    if lat is None or lon is None:
+        held = await service.store.last()
+        if held is None:
+            raise HTTPException(422, "no location yet: give lat and lon")
+        lat, lon = held[0].lat, held[0].lon
+    try:
+        return await service.store.add_place(body.name or "", lat, lon, body.radius_m or 150)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.patch("/places/{place_id}", response_model=Place, openapi_extra=agent("none"))
+async def patch_place(request: Request, place_id: str, body: PlaceBody) -> Place:
+    try:
+        place = await core_of(request).location.store.update_place(place_id, **body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if place is None:
+        raise HTTPException(404, "place not found")
+    return place
+
+
+@router.delete("/places/{place_id}", status_code=204, openapi_extra=agent("none", prefer="location.place_delete"))
+async def delete_place(request: Request, place_id: str) -> Response:
+    if not await core_of(request).location.store.delete_place(place_id):
+        raise HTTPException(404, "place not found")
     return Response(status_code=204)
 
 

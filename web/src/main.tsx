@@ -8,11 +8,14 @@ import './styles/chat.css';
 import './styles/panels.css';
 import './styles/features.css';
 import './styles/mail.css';
+import { initLocation } from './lib/location';
 import { getToken } from './lib/token';
 import { App } from './shell/App';
 import { useStore } from './store/store';
 
 useStore.getState().boot();
+// Watches this device's position while the app is in front - only if he switched sharing on here.
+initLocation();
 
 const rootEl = document.getElementById('root');
 if (!rootEl) throw new Error('#root missing');

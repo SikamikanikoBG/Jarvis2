@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
 
-from jarvis_proto.features import ChangeField, ChangeRecord
+from jarvis_proto.features import ChangeField, ChangeRecord, DeviceLocation
 from jarvis_proto.messages import Channel, Message, ToolResult
 from jarvis_proto.runs import Conversation, ModelUsage, Plan, Run, RunKind, ThinkLevel
 from jarvis_proto.tasks import Task
@@ -416,6 +416,9 @@ class RunCreateRequest(BaseModel):
     call_me: bool | None = None
     # The sending device's IANA timezone (Intl.DateTimeFormat().resolvedOptions().timeZone).
     timezone: str | None = None
+    # Where the phone is, when he lets this device share it (features/location.py). Never sent
+    # from a private chat, and ignored there if it is.
+    location: DeviceLocation | None = None
     # The call this voice turn belongs to: the web's id for one call, hang-up to hang-up. What a
     # task noted on the call hangs on (docs/stories/13_delegated_tasks.md).
     call_id: str | None = None

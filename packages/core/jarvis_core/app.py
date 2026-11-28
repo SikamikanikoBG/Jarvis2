@@ -52,6 +52,7 @@ from jarvis_core.features.expiry import Reaper, delete_conversation
 from jarvis_core.features.files import FilesTools, fetch_host_file
 from jarvis_core.features.journal import DayJournal, TodayBlock
 from jarvis_core.features.knowledge import KnowledgeLearner, KnowledgeStore, KnowledgeTools
+from jarvis_core.features.location import LocationBlock, LocationService, LocationTools
 from jarvis_core.features.mail import MailTools
 from jarvis_core.features.maildesk import MailDesk
 from jarvis_core.features.meetings import MeetingService
@@ -123,6 +124,7 @@ class Core:
         self.reflector = PlaybookReflector(self.skills, lambda: self.adapters.for_role(RoleName.CLASSIFIER))
         self.schedules = ScheduleStore(self.db, self.bus)
         self.projects = ProjectStore(self.db, self.bus)
+        self.location = LocationService(self.db, self.config.home / "geo", lambda: self.settings.location)
         # Jarvis's own settings, schedules and routes (docs/stories/14_agent_admin.md): the one
         # settings write path, its trail, and the tools over it. ``policy_epoch`` moves whenever the
         # approval rules change by anyone but a run (engine/loop.AdminGate).
@@ -190,6 +192,7 @@ class Core:
                 TasksBlock(lambda: self.tasks, settings),
                 HealthBlock(lambda: self.registry, settings),
                 ProjectBlock(self.projects, self.schedules, self.store, lambda: self.settings.timezone),
+                LocationBlock(self.location, self.store),
             ],
             compactor=self.compactor,
             attachments=self.attachments,
@@ -444,6 +447,7 @@ class Core:
                 SkillsTools(self.skills),
                 ScheduleTools(self.schedules, tz=lambda: self.settings.timezone, scheduler=self.scheduler, core=self),
                 ProjectTools(self.projects, self.schedules, tz=lambda: self.settings.timezone, core=self),
+                LocationTools(self.location, core=self),
                 self.settings_tools,
                 self.api_tools,
                 self.sessions,

@@ -105,6 +105,11 @@ async def _ui_leg(ws: WebSocket) -> None:
                 sub.conversations.add(conversation_id)
                 if msg.call_id:
                     await core.tasks.call_seen(msg.call_id, conversation_id)
+                if msg.location is not None:
+                    # Before the run starts, so its own turn already knows. Never from a private chat.
+                    conv_now = await core.store.get_conversation(conversation_id)
+                    if conv_now is not None and not conv_now.incognito:
+                        await core.location.update(msg.location)
                 await core.engine.create_run(
                     text=msg.text,
                     conversation_id=conversation_id,

@@ -2,6 +2,13 @@
 
 Notable changes to Jarvis2. Older history lives in the commit log, `docs/journal.md` and `docs/WAVE2.md`.
 
+## 2026-11-28 — core 2.0.0a143
+
+### Changed
+- **Guidance no longer says "Continue straight on."** The live walk test (NDK to Sofia
+  University) announced every straight continuation twice; those steps are now passed over
+  silently, and the banner and the "In 120 m..." line point at the next real turn.
+
 ## 2026-11-28 — core 2.0.0a142, web 2.0.0-alpha.101
 
 ### Added

@@ -144,6 +144,15 @@ def instruction(step: dict[str, Any], destination: str) -> str:
     return f"{_turn(mod)}{onto}"
 
 
+def silent(step: dict[str, Any]) -> bool:
+    """A manoeuvre that is no manoeuvre - the street changes its name, or the way simply goes on
+    straight. Said aloud it is noise on a walk ("Continue straight on." twice in 60 m, live test
+    2026-11-28); the guidance looks past it to the next real turn."""
+    return str(step.get("kind")) in ("continue", "new name") and str(step.get("instruction", "")).startswith(
+        "continue straight"
+    )
+
+
 def spoken_distance(m: float) -> str:
     if m < 100:
         return f"{max(10, round(m / 10) * 10)} m"
@@ -340,6 +349,8 @@ class NavService:
         if s is None:
             return None
         i = min(s.next_index, len(s.steps) - 1)
+        while i < len(s.steps) - 1 and silent(s.steps[i]):
+            i += 1
         nxt = s.step(i)
         to_next = _m(fix.lat, fix.lon, nxt.lat, nxt.lon) if fix else None
         rest = sum(float(st["distance_m"]) for st in s.steps[i:])
@@ -421,13 +432,17 @@ class NavService:
         self.session = session
         await self._save()
         first = session.step(0).instruction
-        second = session.step(1) if len(session.steps) > 2 else None
+        j = 1
+        while j < len(session.steps) - 1 and silent(session.steps[j]):
+            j += 1
+        second = session.step(j) if j < len(session.steps) - 1 else None
         line = (
             f"On our way to {session.destination}: {spoken_distance(session.total_m)}, about "
             f"{max(1, round(session.total_s / 60))} min {mode}. {_capital(first)}."
         )
         if second is not None:
-            line += f" Then in {spoken_distance(session.steps[0]['distance_m'])}, {second.instruction}."
+            ahead = sum(float(st["distance_m"]) for st in session.steps[:j])
+            line += f" Then in {spoken_distance(ahead)}, {second.instruction}."
         self._publish(here, [("start", line)])
         return line
 
@@ -485,7 +500,12 @@ class NavService:
             self._publish(fix, prompts)
             return prompts
 
+        while s.next_index < len(s.steps) - 1 and silent(s.steps[s.next_index]):
+            s.next_index += 1
         while s.next_index < len(s.steps):
+            if s.next_index < len(s.steps) - 1 and silent(s.steps[s.next_index]):
+                s.next_index += 1
+                continue
             step = s.step(s.next_index)
             d = _m(fix.lat, fix.lon, step.lat, step.lon)
             gone_past = s.near_said and d > s.min_d + r.passed

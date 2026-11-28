@@ -64,6 +64,14 @@ def at(lat: float, lon: float, sec: float = 0) -> DeviceLocation:
     return DeviceLocation(lat=lat, lon=lon, accuracy_m=5, taken_at=datetime.now(UTC) + timedelta(seconds=sec))
 
 
+def test_straight_on_is_not_said():
+    from jarvis_core.features.navigation import silent
+
+    assert silent({"kind": "new name", "instruction": "continue straight on onto X"})
+    assert not silent({"kind": "continue", "instruction": "turn left onto X"})
+    assert not silent({"kind": "turn", "instruction": "turn right"})
+
+
 def test_wording():
     assert (
         instruction({"name": "Graf Ignatiev", "maneuver": {"type": "turn", "modifier": "slight left"}}, "X")
